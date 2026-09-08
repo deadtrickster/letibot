@@ -1,0 +1,69 @@
+{
+  "name": "reasoning-effort-low",
+  "why": "The effort line sits at position 3 of every prompt, before the tools block. Changing it re-prefills the whole conversation, so it has to be rendered exactly and it has to be part of the corpus.",
+  "reasoning_effort": "low",
+  "prefix": {
+    "system": "Be brief.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "Read a file from disk.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "path"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Read a.txt."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "One call.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "read",
+          "arguments": "{\"path\":\"a.txt\"}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "read",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "alpha"
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

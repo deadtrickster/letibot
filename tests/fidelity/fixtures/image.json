@@ -1,0 +1,41 @@
+{
+  "name": "image",
+  "why": "DECLARED DIVERGENCE. An image part. llama.cpp swaps media for a per-process random nonce marker before the template runs, so emit_image() never executes on the server path and byte equality is not available. The runner normalises the marker on both sides; nothing stronger exists.",
+  "prefix": {},
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "What is in this?"
+        },
+        {
+          "kind": "image",
+          "media_type": "image/png",
+          "data_ref": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        },
+        {
+          "kind": "text",
+          "text": "Be brief."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "One pixel.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "A single black pixel."
+    }
+  ],
+  "dialect": "glm-5.3-flash",
+  "normalise": [
+    {
+      "id": "media-marker",
+      "why": "get_media_marker() is <__media_NONCE__> with a nonce regenerated per server process (mtmd), and content parts are flattened to it before the template sees them. Our renderer emits what the template's emit_image() would have: <|begin_of_image|><|image|><|end_of_image|>."
+    }
+  ]
+}

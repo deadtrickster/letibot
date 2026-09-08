@@ -1,0 +1,63 @@
+{
+  "name": "reasoning-leak",
+  "why": "DECLARED DIVERGENCE. A second assistant turn with no reasoning of its own. CPython Jinja2 renders <think></think>; llama.cpp's jinja replays the previous turn's reasoning because {% set %} survives the loop iteration. We render the Jinja2 reading, which is what the model was trained against.",
+  "prefix": {},
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "First."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "R1 is a real thought.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "one."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Second."
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "text": "two."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Third."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "three."
+    }
+  ],
+  "divergences": [
+    {
+      "id": "reasoning-leak",
+      "why": "llama.cpp's jinja leaks {% set reasoning_content %} across for-loop iterations; CPython Jinja2 does not. Measured 2026-09-09 with identical inputs on both engines. We follow Jinja2 because Hugging Face is what rendered the training data, and because our production path submits token ids and never touches llama.cpp's renderer."
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

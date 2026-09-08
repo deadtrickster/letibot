@@ -1,0 +1,46 @@
+{
+  "name": "assistant-reasoning",
+  "why": "An assistant turn with reasoning, replayed as reasoning_content. GLM's whole cache story rests on prior reasoning coming back byte-identical.",
+  "prefix": {
+    "system": "You are a careful assistant."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Explain."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Consider the two cases, then pick.\nCase 1 wins.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "Case 1, because it is cheaper."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Why?"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Restate the cost argument.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "It avoids the second scan."
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

@@ -1,0 +1,92 @@
+{
+  "name": "tool-outcomes",
+  "why": "Abstained is not Ok (§8.2). The NO_RESULT envelope must reach the model as a distinct token sequence, and every non-Ok outcome must render distinguishably.",
+  "prefix": {
+    "system": "You are a research assistant.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "Search the tree — «поиск» 🔍.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "glob": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Find the retention policy."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Search the corpus.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "grep",
+          "arguments": "{\"pattern\":\"retention\"}"
+        },
+        {
+          "id": "c2",
+          "name": "grep",
+          "arguments": "{\"pattern\":\"policy\",\"glob\":\"*.md\"}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "grep",
+      "outcome": {
+        "outcome": "abstained",
+        "reason": "the corpus does not cover it"
+      },
+      "payload": ""
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c2",
+      "name": "grep",
+      "outcome": {
+        "outcome": "timeout"
+      },
+      "payload": "partial hits, timed out at 30s"
+    },
+    {
+      "type": "reasoning",
+      "text": "Retrieval abstained. Say so; do not invent a citation.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "The corpus does not cover the retention policy."
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

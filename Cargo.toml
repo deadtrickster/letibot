@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/transcript",
     "crates/dialect",
+    "crates/dialect-glm",
     "crates/tokencore",
 ]
 

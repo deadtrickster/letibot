@@ -1,0 +1,37 @@
+{
+  "name": "plain-turn",
+  "why": "The floor. One user message, one reply. If this moves, nothing else means anything.",
+  "prefix": {
+    "system": "You are a careful assistant."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "What is 2+2?"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Trivial.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "4."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Thanks."
+        }
+      ]
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

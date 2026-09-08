@@ -1,0 +1,51 @@
+{
+  "name": "system-mid-history",
+  "why": "A system message at index > 0. GLM renders it in place, which is what makes SystemUpdateMode::InHistory true for this dialect and saves a cold re-prefill.",
+  "prefix": {
+    "system": "Bootstrap rules."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Start."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Fine.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "Started."
+    },
+    {
+      "type": "system",
+      "text": "New rule: answer in one sentence.",
+      "origin": "update"
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Continue."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "One sentence.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "Continued."
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

@@ -1,0 +1,93 @@
+{
+  "name": "segment-marks",
+  "why": "SegmentMark renders to nothing — zero bytes, and no state transition either: a mark between two tool results must not split the observation block.",
+  "prefix": {},
+  "items": [
+    {
+      "type": "segment_mark",
+      "segment_id": "s1",
+      "label": "opening",
+      "kind": "task",
+      "edge": "open"
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Two calls."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Go.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "f",
+          "arguments": "{}"
+        },
+        {
+          "id": "c2",
+          "name": "f",
+          "arguments": "{}"
+        }
+      ]
+    },
+    {
+      "type": "segment_mark",
+      "segment_id": "s2",
+      "label": "mid",
+      "kind": "task",
+      "edge": "open"
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "f",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "one"
+    },
+    {
+      "type": "segment_mark",
+      "segment_id": "s2",
+      "label": "mid",
+      "kind": "task",
+      "edge": "close"
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c2",
+      "name": "f",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "two"
+    },
+    {
+      "type": "reasoning",
+      "text": "Both back.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "Done."
+    },
+    {
+      "type": "segment_mark",
+      "segment_id": "s1",
+      "label": "opening",
+      "kind": "task",
+      "edge": "close"
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

@@ -1,0 +1,35 @@
+{
+  "name": "whitespace",
+  "why": "Assistant content is stripped by the template; user content is not. A renderer that strips both, or neither, diverges on any turn with a trailing newline — which is most of them.",
+  "prefix": {},
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "  leading and trailing  "
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "  reasoning is NOT stripped  ",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "\n  content is stripped  \n"
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "\ttabs\n"
+        }
+      ]
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

@@ -1,0 +1,34 @@
+{
+  "name": "empty-assistant-turn",
+  "why": "The content:\"\" case. An assistant turn that produced nothing still renders its <think></think> and its turn boundary, and the next turn must line up behind it exactly.",
+  "prefix": {},
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Hello?"
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "text": ""
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Still there?"
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "text": "Yes."
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

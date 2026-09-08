@@ -1,0 +1,56 @@
+{
+  "name": "argument-types",
+  "why": "Every JSON value kind through <arg_value>. Strings go raw, everything else goes through tojson with ', ' / ': ' separators and no ASCII escaping. This fixture is the one that catches serde_json's compact writer.",
+  "prefix": {
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "f",
+          "description": "",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Call it."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Pass one of each.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "f",
+          "arguments": "{\"s\":\"str\",\"n\":3,\"f\":1.5,\"b\":true,\"nul\":null,\"arr\":[1,2,\"x\"],\"obj\":{\"a\":1,\"b\":\"two\"},\"uni\":\"héllo → 🔍\"}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "f",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "ok"
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}

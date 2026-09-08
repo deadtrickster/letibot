@@ -1,0 +1,122 @@
+{
+  "name": "reasoning-two-tool-calls",
+  "why": "§7.2's headline shape: reasoning interleaved with two tool calls and their results, then a second reasoning block and a reply. Results are appended in call order, which is what keeps the shipped template's sort a no-op.",
+  "prefix": {
+    "system": "You are a coding assistant.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "Read a file from disk.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "path"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "Search the tree — «поиск» 🔍.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "glob": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Compare a.txt and b.txt."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Read both, then diff them mentally.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "read",
+          "arguments": "{\"path\":\"a.txt\"}"
+        },
+        {
+          "id": "c2",
+          "name": "read",
+          "arguments": "{\"path\":\"b.txt\",\"limit\":40}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "read",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "alpha\nbeta\n"
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c2",
+      "name": "read",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "alpha\ngamma\n"
+    },
+    {
+      "type": "reasoning",
+      "text": "Line 2 differs.",
+      "field": "reasoning_content"
+    },
+    {
+      "type": "assistant",
+      "text": "They differ on line 2: beta vs gamma."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Good."
+        }
+      ]
+    }
+  ],
+  "dialect": "glm-5.3-flash"
+}
