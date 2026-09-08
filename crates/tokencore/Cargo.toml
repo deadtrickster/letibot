@@ -1,0 +1,20 @@
+[package]
+name = "letibot-tokencore"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+letibot-transcript.workspace = true
+letibot-dialect.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+sha2 = "0.10"
+rusqlite = "0.40"
+
+[build-dependencies]
+cc = "1"

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/transcript",
     "crates/dialect",
+    "crates/tokencore",
 ]
 
 [workspace.package]
@@ -15,3 +16,4 @@ repository = "https://github.com/deadtrickster/letibot"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 letibot-transcript = { path = "crates/transcript" }
+letibot-dialect = { path = "crates/dialect" }
