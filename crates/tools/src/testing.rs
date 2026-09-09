@@ -65,6 +65,10 @@ pub fn fixture_tree(root: &std::path::Path) {
 pub struct Harness {
     pub rt: ToolRuntime,
     pub sink: RecordingToolSink,
+    /// The process host, for a session built by [`runner_harness`]. Tests reach it
+    /// to declare a protected pid, to end a scope, and to read the reap log —
+    /// none of which is a tool call, and all of which a daemon does.
+    pub processes: Option<Arc<crate::exec::HostProcesses>>,
     /// Held so the tree outlives the backend.
     _dir: TempDir,
 }
@@ -164,6 +168,41 @@ pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
     ))))
 }
 
+/// A session that can run commands, or the reason it cannot.
+///
+/// **Deliberately a `Result` and not an `Option`.** A test that silently skipped
+/// when there is no cgroup v2 would be a green test that measured nothing, which
+/// is the same defect as the reaper whose zero is unfalsifiable — so the error
+/// comes back and the caller has to say what it did about it.
+///
+/// `gate` is explicit for the same reason [`writable_harness`]'s is: a harness
+/// whose gate happened to admit would make every exec test also a test that the
+/// gate is broken.
+pub fn runner_harness() -> Result<Harness, crate::exec::ExecError> {
+    runner_harness_with_gate(Some(allow_all()))
+}
+
+pub fn runner_harness_with_gate(
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+) -> Result<Harness, crate::exec::ExecError> {
+    let dir = TempDir::new();
+    fixture_tree(dir.path());
+    let host = Arc::new(crate::exec::HostProcesses::new(dir.path())?);
+    let backend = crate::backend::HostBackend::executable_with(dir.path(), Arc::clone(&host))
+        .expect("fixture root");
+    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let mut rt = ToolRuntime::new(registry, Box::new(backend));
+    if let Some(g) = gate {
+        rt = rt.with_gate(g);
+    }
+    Ok(Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: Some(host),
+        _dir: dir,
+    })
+}
+
 fn build(
     spiller: Spiller,
     retrieval: Arc<dyn Retrieval>,
@@ -190,6 +229,7 @@ fn build(
     Harness {
         rt,
         sink: RecordingToolSink::new(),
+        processes: None,
         _dir: dir,
     }
 }

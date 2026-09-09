@@ -52,11 +52,13 @@
 //!
 //! # What this crate deliberately does not do
 //!
-//! - **No exec tool.** `bash` needs §11.4's boundary — *the guest sees a copy of
-//!   one project and nothing else of the host* — and no adjudicator on this side
-//!   of that boundary can make an unsandboxed shell on the operator's box into
-//!   the thing the plan describes. [`backend::ExecBackend::run`] is named and
-//!   [`backend::HostBackend`] refuses it.
+//! - **No §11.4 guest boundary.** [`exec`] is the *lifetime* half of what `bash`
+//!   needed — every process in a cgroup owned by a scope — and it is emphatically
+//!   not the other half: *the guest sees a copy of one project and nothing else of
+//!   the host*. A cgroup bounds how long a process lives, not what it can read, so
+//!   a command run through [`backend::HostBackend::executable`] still reads this
+//!   user's filesystem. That is why the constructor is separate, why `describe()`
+//!   says `UNSANDBOXED`, and why `bash` is seated only by [`roles::m2_runner`].
 //! - **No §11.3 policy table and no auto mode.** One adjudicator is attached per
 //!   session, not a table of them; [`adjudicate::ActionClass`] is the routing key
 //!   that table will use, derived and logged from the first call.
@@ -76,6 +78,7 @@ pub mod backend;
 pub mod builtins;
 pub mod edit;
 pub mod events;
+pub mod exec;
 pub mod files;
 pub mod result;
 pub mod runtime;
@@ -94,6 +97,10 @@ pub use adjudicate::{
 pub use args::{Repair, SalvageError, Salvaged, salvage};
 pub use backend::{BackendError, Command, DirEntry, ExecBackend, HostBackend, Output};
 pub use edit::{ChangedSpan, FileEdit, FileText, Relax};
+pub use exec::{
+    Cgroup2, ExecError, HostProcesses, JobId, JobState, JobView, NoScopes, ProcessHost, Reaped,
+    Reaping, ScopeId, ScopeKind, ScopeTree, SpawnRequest, Waited, exec_budget,
+};
 pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use files::{FileLedger, Seen};
 pub use result::{Envelope, Propagation, ToolResult, propagate};
@@ -155,6 +162,37 @@ pub fn coder_tools(
     let mut reg = read_only_tools(retrieval)?;
     reg.register(Box::new(builtins::write::Write))?;
     reg.register(Box::new(builtins::edit::Edit))?;
+    Ok(reg)
+}
+
+/// The exec tool set: `bash` and the four job-control tools, on top of the
+/// read-only ones.
+///
+/// # Three mechanisms below a command, and none of them is the default
+///
+/// Same shape as [`coder_tools`], one capability further out:
+///
+/// 1. the tools are registered — this function;
+/// 2. an adjudicator is attached, so [`runtime::Gate`] admits `bash` and
+///    `job_kill`. The default is [`NoBoundary`], which refuses with `NotRun` —
+///    *nobody decided*;
+/// 3. the backend was opened with [`HostBackend::executable`], which needs a
+///    delegated cgroup v2 subtree. **Without one it fails rather than degrading**:
+///    a process with no owner is the leak `TODO.md` T24 exists to stop.
+///
+/// And a fourth thing that is not a mechanism but a seat: `bash` is reachable only
+/// under [`roles::m2_runner`]. [`roles::m1_orchestrator`] and [`roles::m2_coder`]
+/// are unchanged, so no session that exists today gains an exec path by this
+/// function existing.
+pub fn runner_tools(
+    retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
+) -> Result<Registry, RegisterError> {
+    let mut reg = read_only_tools(retrieval)?;
+    reg.register(Box::new(builtins::bash::Bash))?;
+    reg.register(Box::new(builtins::jobs::JobList))?;
+    reg.register(Box::new(builtins::jobs::JobOutput))?;
+    reg.register(Box::new(builtins::jobs::JobWait))?;
+    reg.register(Box::new(builtins::jobs::JobKill))?;
     Ok(reg)
 }
 

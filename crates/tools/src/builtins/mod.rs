@@ -21,6 +21,8 @@
 //! | [`retrieval`] | a corpus that does not cover the question abstains, in the `NO_RESULT` envelope, and says what it searched |
 //! | [`edit`] | a miss reports **the text that is actually there**, at which lines, and whether the difference is whitespace, indentation or case; more than one match reports every line number |
 //! | [`mod@write`] | an overwrite of an unread or changed file is refused **with the file**, and the refusal records it so the retry proceeds |
+//! | [`bash`] | a command whose process predicate matches the process that would run it is refused with the pids it matches and the handle-shaped call that does what was meant |
+//! | [`jobs`] | an unknown job id comes back with the jobs there are and the nearest; an unknown scope with the scopes there are and the three kinds |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
@@ -28,9 +30,11 @@
 //! because the alternative to a good miss report is a model guessing at a file it
 //! is about to change.
 
+pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod jobs;
 pub mod outline;
 pub mod pattern;
 pub mod read;

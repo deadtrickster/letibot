@@ -114,6 +114,19 @@ pub trait ExecBackend: Send + Sync {
     /// larger holes than this is a convenience.
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError>;
 
+    /// The process host, when this backend can start a process whose **lifetime
+    /// is owned by something**.
+    ///
+    /// `None` by default, and that default is the whole safety property: an
+    /// existing backend gains no exec path by this method existing, and a tool
+    /// that wants one gets a refusal naming the backend rather than a process
+    /// nothing will reap. See [`crate::exec`] — and note what it is *not*: a
+    /// cgroup bounds a process's lifetime, not what it can read, so this is not
+    /// §11.4's guest boundary and must never be described as one.
+    fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
+        None
+    }
+
     /// Whether [`ExecBackend::write`] can do anything.
     ///
     /// Defaults to `false` — a backend that has not said it is writable is not
@@ -166,6 +179,9 @@ pub trait ExecBackend: Send + Sync {
 pub struct HostBackend {
     root: PathBuf,
     writable: bool,
+    /// `Some` only via [`HostBackend::executable`]. Shared, because the job table
+    /// and the scope tree are session state and a `HostBackend` is cloned freely.
+    processes: Option<std::sync::Arc<crate::exec::HostProcesses>>,
 }
 
 impl HostBackend {
@@ -178,6 +194,7 @@ impl HostBackend {
         Ok(HostBackend {
             root,
             writable: false,
+            processes: None,
         })
     }
 
@@ -190,6 +207,57 @@ impl HostBackend {
             writable: true,
             ..Self::new(root)?
         })
+    }
+
+    /// A backend that can start processes: writable, **and unsandboxed**.
+    ///
+    /// The third constructor, for the same reason there is a second one — so that
+    /// `grep -rn 'HostBackend::executable'` finds every place in the tree where an
+    /// exec path became reachable. It is not a flag on the other two and it is not
+    /// reachable from them.
+    ///
+    /// # What this does and does not buy
+    ///
+    /// What it buys is [`crate::exec`]: every process lands in a cgroup owned by a
+    /// scope, a scope that ends kills its cgroup and records what it killed, and
+    /// `pkill`/`pgrep` become unnecessary rather than merely discouraged.
+    ///
+    /// What it does **not** buy is §11.4's boundary — *the guest sees a copy of
+    /// one project and nothing else of the host*. A command started here runs with
+    /// this user's rights over this user's whole filesystem. A cgroup bounds a
+    /// lifetime, not a view. [`ExecBackend::describe`] says `unsandboxed` for
+    /// exactly this reason: a disclosure that lists only the guarantees reads as a
+    /// claim about the rest, which is `docs/closed-loop.md`'s banner defect.
+    ///
+    /// Fails, rather than degrading, when there is no cgroup v2 subtree to
+    /// delegate: a process with no owner is the leak `TODO.md` T24 exists to stop.
+    pub fn executable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
+        let base = Self::writable(root)?;
+        let host = crate::exec::HostProcesses::new(base.root.clone())
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        Ok(HostBackend {
+            processes: Some(std::sync::Arc::new(host)),
+            ..base
+        })
+    }
+
+    /// An executable backend over a chosen process host. The seam tests reach
+    /// through, and the one a daemon uses when it wants to declare what it manages
+    /// — [`crate::exec::HostProcesses::protect_listener`] — before any tool runs.
+    pub fn executable_with(
+        root: impl AsRef<Path>,
+        host: std::sync::Arc<crate::exec::HostProcesses>,
+    ) -> Result<Self, BackendError> {
+        Ok(HostBackend {
+            processes: Some(host),
+            ..Self::writable(root)?
+        })
+    }
+
+    /// The process host, concretely, for a caller that needs to end a scope or
+    /// read the reap log — neither of which is a tool call.
+    pub fn host_processes(&self) -> Option<&std::sync::Arc<crate::exec::HostProcesses>> {
+        self.processes.as_ref()
     }
 
     pub fn root(&self) -> &Path {
@@ -246,13 +314,70 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
-    fn run(&self, _cmd: &Command) -> Result<Output, BackendError> {
-        // M1 has no adjudication boundary (§11.4) and therefore no place for an
-        // exec decision to be made. An unadjudicated `run` on the host is the one
-        // thing M2 exists to prevent, so this refuses rather than obliges.
-        Err(BackendError::Unsupported(
-            "exec needs the adjudication boundary (§11.4); it arrives with firecode in M2",
-        ))
+    /// Runs only on a backend built by [`HostBackend::executable`], and even there
+    /// it runs **through the job machinery** rather than beside it.
+    ///
+    /// There is deliberately no second exec path. A `Command` that bypassed
+    /// [`crate::exec`] would be a process with no scope to reap it, no capture to
+    /// read afterwards and no denominator on its output — three properties this
+    /// substrate exists to give — so this spawns a job in the turn scope and waits
+    /// for it. The synchronous shape is kept because `docs/workstreams.md` names
+    /// the seam that way and a firecode backend will implement it directly.
+    fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
+        let Some(host) = &self.processes else {
+            // Unchanged for every backend that did not ask to be executable, and
+            // unchanged in what it says: the boundary is still not here.
+            return Err(BackendError::Unsupported(
+                "this session's backend cannot start processes (HostBackend::new / \
+                 ::writable); a session that may run commands opens it with \
+                 HostBackend::executable, and §11.4's guest boundary is still not \
+                 what that gives",
+            ));
+        };
+        use crate::exec::{ProcessHost, ScopeKind, SpawnRequest, Waited};
+        // argv, not a shell string: `Command` is argv by contract and turning it
+        // back into one here would be inventing a quoting policy.
+        let joined = cmd
+            .argv
+            .iter()
+            .map(|a| shell_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let id = host
+            .spawn(&SpawnRequest {
+                command: joined,
+                cwd: cmd.cwd.clone(),
+                scope: ScopeKind::Turn,
+                scope_name: None,
+                background: false,
+                env: cmd.env.clone(),
+            })
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let waited = host
+            .wait_job(&id, std::time::Duration::from_secs(600))
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let out = host
+            .output(&id, 0, usize::MAX)
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let exit = match waited {
+            Waited::Happened {
+                state: Some(crate::exec::JobState::Exited { code }),
+                ..
+            } => code,
+            // A deadline is NOT an exit code and is not dressed as one (F5).
+            Waited::Deadline { .. } => {
+                return Err(BackendError::Io(format!(
+                    "`{id}` did not finish inside 600s and is still running; \
+                     it is in the turn scope and will be reaped with it"
+                )));
+            }
+            _ => -1,
+        };
+        Ok(Output {
+            stdout: out.bytes,
+            stderr: Vec::new(),
+            exit,
+        })
     }
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
@@ -406,12 +531,37 @@ impl ExecBackend for HostBackend {
         })
     }
 
+    /// **Found while adding exec:** this used to say `read-only` for every
+    /// `HostBackend`, including one built by [`HostBackend::writable`]. A hard-coded
+    /// banner asserting a property the session does not have is the exact defect
+    /// `docs/tool-design-brief.md` §1 names — *"a banner asserted 'read-only tools'
+    /// about a session that had write tools"* — and it was in the disclosure the
+    /// daemon prints at startup. It is now read off the fields.
     fn describe(&self) -> String {
-        format!(
-            "host filesystem, read-only, rooted at {}",
-            self.root.display()
-        )
+        let mode = match (self.writable, self.processes.is_some()) {
+            (_, true) => "writable + UNSANDBOXED EXEC",
+            (true, false) => "writable",
+            (false, false) => "read-only",
+        };
+        format!("host filesystem, {mode}, rooted at {}", self.root.display())
     }
+
+    fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
+        self.processes.as_ref().map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
+    }
+}
+
+/// Single-quote one argv element for a shell, the only way that is total: close
+/// the quote, escape the quote, reopen. Used solely by [`ExecBackend::run`], whose
+/// contract is argv and whose substrate takes a command string.
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/=:,+@".contains(c))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Recursive listing, in terms of `list` alone.

@@ -378,15 +378,46 @@ pub mod roles {
 
     /// What M2 can seat: §8.4's `coder` without `bash`.
     ///
-    /// `bash` is `Access::Exec`, and `HostBackend`s `run` still
-    /// refuses — an unadjudicated exec path on the host is the thing §11.4's
-    /// boundary exists to prevent, and a boundary is not what W10 built. Six
-    /// tools against a ceiling of eight; the two spare seats are `bash` and
-    /// `task`, in that order, and neither is a stub.
+    /// `bash` is `Access::Exec` and this role deliberately does not name it, even
+    /// now that the tool exists: a session seated as `coder` is a session that
+    /// edits files, and giving it a shell as a side effect of somebody else's
+    /// workstream is how a capability arrives without a decision. `bash` is seated
+    /// by [`m2_runner`] and by nothing else. Six tools against a ceiling of eight.
     pub fn m2_coder() -> Role {
         Role::new(
             "coder",
             &["read", "write", "edit", "grep", "glob", "read_spill"],
+        )
+    }
+
+    /// The only role that can run a command.
+    ///
+    /// Eight tools, **exactly** at §8.4's ceiling, and the arithmetic is the
+    /// argument: the exec surface is five seats (`bash` plus the four job verbs,
+    /// which cannot be fewer — starting, watching, reading and stopping are four
+    /// different questions and three harnesses independently found the same
+    /// shape), leaving three for everything else. `read`, `grep` and `read_spill`
+    /// take them.
+    ///
+    /// What that gives up is `glob`, and it is given up on purpose: a session with
+    /// a shell has a worse-but-real substitute for it in `ls` and `find`, and it
+    /// has **no** substitute for `read_spill`, which is what makes clause 5's
+    /// "bounded, never truncated" true rather than a slogan. Dropping the honest
+    /// one to keep the convenient one would be trading a correctness property for
+    /// a search.
+    pub fn m2_runner() -> Role {
+        Role::new(
+            "runner",
+            &[
+                "read",
+                "grep",
+                "read_spill",
+                "bash",
+                "job_list",
+                "job_output",
+                "job_wait",
+                "job_kill",
+            ],
         )
     }
 }
