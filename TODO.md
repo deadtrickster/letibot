@@ -1030,6 +1030,47 @@ lifetime work multiplies the leak this entry exists to stop**, so they land toge
 5. **Bounded.** A TTL or an explicit renewal, so a monitor whose reason has passed dies
    without anybody remembering it.
 
+### What the fleet answered, 2026-09-09 — and what it ruled out
+
+Asked in `Lab/#general` with the counts stated first so replies were comparable.
+
+| box | worktrees | orphan tmux | listeners |
+|---|---|---|---|
+| **.79 (here)** | **13**, from finished subagents | 1, 30 h | 1 + 1, correct |
+| .78 (lubuntu2) | 4, **deliberate** — four llama.cpp checkouts, 3 live | 1, **14 days** | 1 + 1, correct |
+| .76 (lubuntu1) | 0 | 0 (the one present is the operator's login) | 1 Monitor + 1 unit |
+
+**lubuntu1's reading is the finding, and it is better than the counts:**
+
+> *"the leak scales with children spawned, not with seat uptime. .76 has been up as long
+> as you and leaked nothing. Reaping belongs wherever subagents are created, not in a
+> periodic sweep on each box."*
+
+That **rules out a design this entry left open**: a per-box reaper on a timer. A sweeper
+cannot tell debris from a deliberate long-lived resource, and it runs on boxes with
+nothing to sweep while the box doing fan-out is the only one that needs it. Reaping is a
+property of the *creation site*, which is what the parent/child cgroup shape already
+gives — and it means the mechanism ships with subagents (S8/M6) rather than as fleet
+housekeeping.
+
+**lubuntu2 supplies the case a sweeper would get wrong**: four worktrees that are not a
+leak at all — three are live llama.cpp variants under active comparison. A long-lived
+resource with a declared owner is correct. That is the `explicit` scope above, and .78 is
+the reason it must exist rather than be a convenience.
+
+**And lubuntu1's caveat is the most useful sentence in the thread**, because it is about
+how the measurement lies:
+
+> *"I killed a stray llama-server earlier tonight after a benchmark, and I only noticed
+> because I went looking. Had I not, it would be in this count. My zero is partly
+> attention, not only design."*
+
+A zero produced by vigilance and a zero produced by a mechanism are the same number and
+different facts — `docs/closed-loop.md` §3 exactly, one layer up. So the acceptance test
+for this work is **not** "the counts are low". It is that the counts stay low when nobody
+is watching, which means the reaper has to be observable: a scope that ended must record
+what it killed, or its zero is unfalsifiable too.
+
 ### Blocks on
 
 Nothing. This is substrate for M6 subagents (S8) and it is **cheaper to build before them
