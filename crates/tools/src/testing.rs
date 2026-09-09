@@ -79,27 +79,116 @@ impl Harness {
         };
         self.rt.invoke("turn_1", &call, &mut self.sink)
     }
+
+    /// The tree's root. Tests for the write tools have to look at the disk
+    /// **behind** the backend: a test that asked the tool whether it wrote is a
+    /// test of the tool's opinion of itself.
+    pub fn root(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
+    /// What is actually on disk, read without going through the backend.
+    pub fn read_file(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.root().join(rel)).unwrap_or_default()
+    }
+
+    /// Write to the tree from outside the harness — somebody else's edit.
+    pub fn write_file(&self, rel: &str, body: &str) {
+        let p = self.root().join(rel);
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d).expect("fixture dir");
+        }
+        std::fs::write(p, body).expect("fixture write");
+    }
+
+    /// The modification time, for asserting that a no-op write really was one.
+    pub fn mtime(&self, rel: &str) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.root().join(rel))
+            .ok()
+            .and_then(|m| m.modified().ok())
+    }
 }
 
 pub fn harness() -> Harness {
-    build(Spiller::unset(), Arc::new(Unavailable))
+    build(Spiller::unset(), Arc::new(Unavailable), false, None)
 }
 
 pub fn harness_with_spiller(spiller: Spiller) -> Harness {
-    build(spiller, Arc::new(Unavailable))
+    build(spiller, Arc::new(Unavailable), false, None)
 }
 
 pub fn harness_with_retrieval(retrieval: Arc<dyn Retrieval>) -> Harness {
-    build(Spiller::unset(), retrieval)
+    build(Spiller::unset(), retrieval, false, None)
 }
 
-fn build(spiller: Spiller, retrieval: Arc<dyn Retrieval>) -> Harness {
+/// A session that can change the tree: the coder tool set, a writable backend,
+/// and an adjudicator that allows.
+///
+/// The adjudicator is explicit rather than absent, because a harness whose gate
+/// happened to admit would make every write test also a test that the gate is
+/// broken.
+pub fn writable_harness() -> Harness {
+    writable_harness_with_gate(Some(allow_all()))
+}
+
+/// A writable session with a chosen gate. `None` attaches **no adjudicator**,
+/// which is the fail-closed default a real daemon starts with.
+pub fn writable_harness_with_gate(gate: Option<Box<dyn crate::runtime::Gate>>) -> Harness {
+    build(Spiller::unset(), Arc::new(Unavailable), true, gate)
+}
+
+/// A writable session whose output is bounded. Clause 5 does not stop applying
+/// because a tool can write.
+pub fn writable_harness_with_budget(spiller: Spiller) -> Harness {
+    build(spiller, Arc::new(Unavailable), true, Some(allow_all()))
+}
+
+/// An adjudicator that says yes to everything, for tests about tools rather than
+/// about the gate.
+///
+/// Deliberately **not** exported from the crate root and deliberately not
+/// something a daemon can construct by accident: it lives behind the `testing`
+/// feature, and the fail-closed default is what ships.
+pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
+    use crate::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
+    Box::new(AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "test",
+        |req: &crate::adjudicate::AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_once",
+                "human:test",
+                "the test harness allows every gated call",
+            ))
+        },
+    ))))
+}
+
+fn build(
+    spiller: Spiller,
+    retrieval: Arc<dyn Retrieval>,
+    writable: bool,
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+) -> Harness {
     let dir = TempDir::new();
     fixture_tree(dir.path());
-    let backend = HostBackend::new(dir.path()).expect("fixture root");
-    let registry: Registry = crate::read_only_tools(retrieval).expect("built-ins register");
+    let (backend, registry): (HostBackend, Registry) = if writable {
+        (
+            HostBackend::writable(dir.path()).expect("fixture root"),
+            crate::coder_tools(retrieval).expect("built-ins register"),
+        )
+    } else {
+        (
+            HostBackend::new(dir.path()).expect("fixture root"),
+            crate::read_only_tools(retrieval).expect("built-ins register"),
+        )
+    };
+    let mut rt = ToolRuntime::new(registry, Box::new(backend)).with_spiller(spiller);
+    if let Some(g) = gate {
+        rt = rt.with_gate(g);
+    }
     Harness {
-        rt: ToolRuntime::new(registry, Box::new(backend)).with_spiller(spiller),
+        rt,
         sink: RecordingToolSink::new(),
         _dir: dir,
     }

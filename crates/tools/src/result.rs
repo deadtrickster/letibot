@@ -36,6 +36,12 @@ pub struct ToolResult {
     pub notes: Vec<String>,
     /// Clause 5: set when the full output went to the spill store.
     pub spill: Option<SpillRef>,
+    /// Both sides of a file this call changed, for a head to draw a diff from.
+    ///
+    /// **Not part of [`ToolResult::render`]**, and that is the point: this never
+    /// becomes prompt bytes. The model gets the confirmation in `payload`; the
+    /// head gets the file. See [`crate::edit::FileEdit`].
+    pub edit: Option<crate::edit::FileEdit>,
 }
 
 impl ToolResult {
@@ -48,6 +54,7 @@ impl ToolResult {
             repairs: Vec::new(),
             notes: Vec::new(),
             spill: None,
+            edit: None,
         }
     }
 

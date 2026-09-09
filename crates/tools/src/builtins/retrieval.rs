@@ -217,6 +217,7 @@ impl Tool for Ask {
                 outcome: ToolOutcome::NotRun { why: why.clone() },
                 payload: why,
                 notes: vec![],
+                edit: None,
             },
             Err(e @ RetrievalError::Transport(_)) => Invocation::failed(
                 e.to_string(),

@@ -11,7 +11,10 @@ use letibot_tools::events::ToolEvent;
 use letibot_tools::result::{Envelope, Propagation, propagate};
 use letibot_tools::schema::Access;
 use letibot_tools::spill::{FixedBudget, MemoryStore, Spiller};
-use letibot_tools::testing::{Scripted, harness, harness_with_retrieval, harness_with_spiller};
+use letibot_tools::testing::{
+    Scripted, harness, harness_with_retrieval, harness_with_spiller, writable_harness,
+    writable_harness_with_budget, writable_harness_with_gate,
+};
 use letibot_transcript::ToolOutcome;
 
 // ---------------------------------------------------------------------------
@@ -184,11 +187,12 @@ fn clause4_every_built_in_declares_read_and_none_of_them_reaches_the_gate() {
     impl letibot_tools::runtime::Gate for Exploding {
         fn admit(
             &mut self,
-            name: &str,
-            access: Access,
-            _args: &serde_json::Value,
+            call: &letibot_tools::runtime::GateCall<'_>,
         ) -> letibot_tools::runtime::GateDecision {
-            panic!("{name} ({access:?}) reached the gate and it declares read access");
+            panic!(
+                "{} ({:?}) reached the gate and it declares read access",
+                call.name, call.access
+            );
         }
     }
 
@@ -371,4 +375,321 @@ fn the_transcript_row_carries_the_envelope_the_model_saw() {
         }
         other => panic!("expected a tool result row, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The write tools (W10), against the same six clauses.
+//
+// Separated because these are the first tools that can change the operator's
+// tree, so for them the clause tests are also the safety tests: every one
+// asserts what is **on disk** afterwards, through `read_file`, and never through
+// what the tool said about itself.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clause1_an_edit_that_misses_reports_the_text_that_is_actually_there() {
+    // The measured shape, one tool over: the guess is refused *and* what would
+    // have been correct comes back, so the model corrects itself in the same call.
+    let mut h = writable_harness();
+    h.write_file("a.rs", "fn main() {\n\tlet ledger = 1;\n}\n");
+    h.call("read", r#"{"path":"a.rs"}"#);
+    let seen = h
+        .call(
+            "edit",
+            r#"{"path":"a.rs","old_string":"    let ledger = 1;","new_string":"    let ledger = 2;"}"#,
+        )
+        .render();
+
+    // Which relaxation, where, and the literal bytes to copy.
+    assert!(seen.contains("indentation"), "{seen}");
+    assert!(seen.contains("lines 2–2"), "{seen}");
+    assert!(
+        seen.contains("---8<---\n\tlet ledger = 1;\n--->8---"),
+        "{seen}"
+    );
+    assert!(seen.contains("nothing was written"), "{seen}");
+    // And the file is untouched, which is the assertion the wording cannot fake.
+    assert_eq!(h.read_file("a.rs"), "fn main() {\n\tlet ledger = 1;\n}\n");
+}
+
+#[test]
+fn clause1_more_than_one_match_reports_every_line_rather_than_asking_for_more_context() {
+    let mut h = writable_harness();
+    h.write_file("b.rs", "let n = 0;\nfoo();\nlet n = 0;\nbar();\nlet n = 0;\n");
+    h.call("read", r#"{"path":"b.rs"}"#);
+    let seen = h
+        .call(
+            "edit",
+            r#"{"path":"b.rs","old_string":"let n = 0;","new_string":"let n = 1;"}"#,
+        )
+        .render();
+    assert!(seen.contains("occurs 3 times"), "{seen}");
+    for line in ["at line 1:", "at line 3:", "at line 5:"] {
+        assert!(seen.contains(line), "{line} missing from {seen}");
+    }
+    // The surrounding lines are what tell the three apart, so they are shown.
+    assert!(seen.contains("foo();") && seen.contains("bar();"), "{seen}");
+    assert!(seen.contains("replace_all"), "{seen}");
+    assert_eq!(
+        h.read_file("b.rs"),
+        "let n = 0;\nfoo();\nlet n = 0;\nbar();\nlet n = 0;\n"
+    );
+}
+
+#[test]
+fn clause2_a_malformed_edit_call_is_salvaged_and_the_repair_is_said_out_loud() {
+    // Single quotes, unquoted keys, and `replace_all` as the string models
+    // actually emit. Salvaged — and the repairs are rendered, so the next call is
+    // not malformed the same way.
+    let mut h = writable_harness();
+    h.write_file("c.rs", "let n = 0;\nlet n = 0;\n");
+    h.call("read", r#"{"path":"c.rs"}"#);
+    let r = h.call(
+        "edit",
+        "{path: 'c.rs', 'old_string': 'let n = 0;', new_string: 'let n = 1;', \
+         replace_all: \"true\"}",
+    );
+    let seen = r.render();
+    assert!(r.is_grounded(), "{seen}");
+    assert!(!r.repairs.is_empty(), "the repairs must be carried");
+    assert!(seen.contains("[repaired]"), "{seen}");
+    assert_eq!(h.read_file("c.rs"), "let n = 1;\nlet n = 1;\n");
+}
+
+#[test]
+fn clause3_a_refused_write_is_never_ok_and_never_an_abstention() {
+    // Three refusals, three outcome classes, and none of them is `Ok`.
+
+    // Nothing decided: nobody was asked, and the *class* says so.
+    let mut closed = writable_harness_with_gate(None);
+    closed.call("read", r#"{"path":"README.md"}"#);
+    let r = closed.call("write", r#"{"path":"README.md","content":"x"}"#);
+    assert!(
+        matches!(r.outcome, ToolOutcome::NotRun { .. }),
+        "{:?}",
+        r.outcome
+    );
+
+    // A decision was made: `Denied`, carrying the request id.
+    let mut denied = writable_harness_with_gate(Some(deny_all()));
+    denied.call("read", r#"{"path":"README.md"}"#);
+    let r = denied.call("write", r#"{"path":"README.md","content":"x"}"#);
+    assert!(
+        matches!(r.outcome, ToolOutcome::Denied { .. }),
+        "{:?}",
+        r.outcome
+    );
+
+    // A tool-level refusal: the call ran and could not do what was asked.
+    let mut h = writable_harness();
+    let r = h.call("write", r#"{"path":"README.md","content":"x"}"#);
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(!r.is_grounded());
+
+    // Abstention is for "nothing to say about this", and a write never abstains:
+    // a write either happened or it did not.
+    assert_eq!(Envelope::classify(&r.render()), Some("TOOL_ERROR"));
+}
+
+#[test]
+fn clause4_both_write_tools_declare_write_and_a_write_always_reaches_the_gate() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let reg = letibot_tools::coder_tools(Arc::new(Unavailable)).unwrap();
+    for s in reg.schemas() {
+        let want = if matches!(s.name.as_str(), "write" | "edit") {
+            Access::Write
+        } else {
+            Access::Read
+        };
+        assert_eq!(s.access, want, "{} declares the wrong access", s.name);
+        // Still not shown to the model: policy input, not prompt.
+        assert!(!s.prompt_json().contains("access"), "{}", s.prompt_json());
+    }
+
+    // "A write tool always prompts unless policy says otherwise" as a
+    // control-flow fact: a counting gate, and a write call that must reach it.
+    struct Counting(Arc<AtomicUsize>);
+    impl letibot_tools::runtime::Gate for Counting {
+        fn admit(
+            &mut self,
+            _call: &letibot_tools::runtime::GateCall<'_>,
+        ) -> letibot_tools::runtime::GateDecision {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            letibot_tools::runtime::GateDecision::Admit
+        }
+    }
+    let n = Arc::new(AtomicUsize::new(0));
+    let mut h = writable_harness_with_gate(Some(Box::new(Counting(n.clone()))));
+    h.call("read", r#"{"path":"README.md"}"#);
+    assert_eq!(n.load(Ordering::Relaxed), 0, "a read never prompts");
+    h.call("write", r#"{"path":"README.md","content":"x\n"}"#);
+    assert_eq!(n.load(Ordering::Relaxed), 1, "a write always does");
+}
+
+#[test]
+fn clause5_a_write_tools_output_spills_like_everything_else() {
+    // The refusal that hands back a whole file is exactly the payload clause 5
+    // exists for: bounded, recoverable, and never silently cut.
+    let mut h = writable_harness_with_budget(Spiller::new(
+        Box::new(FixedBudget(900)),
+        Box::new(MemoryStore::new()),
+    ));
+    let r = h.call("write", r#"{"path":"big.txt","content":"gone\n"}"#);
+    let spill = r.spill.as_ref().expect("a 26 KB refusal must spill");
+    assert!(spill.full_bytes > spill.inline_bytes);
+
+    let back = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, spill.hash));
+    assert!(
+        back.render().contains("filler line 1999"),
+        "the rest is fetchable"
+    );
+    // …and nothing was written, which is what the refusal said.
+    assert!(h.read_file("big.txt").contains("filler line 0"));
+}
+
+#[test]
+fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
+    // opencode's `edit.txt` promises a read-before-write error and two error
+    // strings that do not exist anywhere in its code; grok-build strips a sentence
+    // from its served description when the behaviour is off, so *"the model is
+    // never told a rule that isn't running"*. Both promises here are behaviours,
+    // and this asserts them by making the tool keep them.
+    use std::sync::Arc;
+    let reg = letibot_tools::coder_tools(Arc::new(Unavailable)).unwrap();
+    let edit = reg.schemas().into_iter().find(|s| s.name == "edit").unwrap();
+    assert_eq!(
+        letibot_tools::schema::lint_description(&edit.description),
+        vec![]
+    );
+    assert!(edit.description.contains("Read the file first"));
+    assert!(edit.description.contains("exactly once unless `replace_all`"));
+
+    let mut h = writable_harness();
+    // …the read-before-write promise.
+    assert!(
+        !h.call(
+            "edit",
+            r#"{"path":"README.md","old_string":"letibot","new_string":"x"}"#
+        )
+        .is_grounded()
+    );
+    // …and the exactly-once promise.
+    h.write_file("d.rs", "x\nx\n");
+    h.call("read", r#"{"path":"d.rs"}"#);
+    assert!(
+        !h.call("edit", r#"{"path":"d.rs","old_string":"x","new_string":"y"}"#)
+            .is_grounded()
+    );
+}
+
+#[test]
+fn a_write_is_atomic_and_leaves_no_temporary_behind() {
+    // Neither prior harness does this: opencode's `writeWithDirs` and
+    // grok-build's `fs.write_file` are both plain truncating writes, so a crash
+    // mid-write publishes a half file and a fresh create loses the mode. This
+    // asserts the two observable consequences of temp-plus-rename: the mode
+    // survives, and the directory is left clean.
+    let mut h = writable_harness();
+    h.write_file("script.sh", "#!/bin/sh\necho one\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            h.root().join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    h.call("read", r#"{"path":"script.sh"}"#);
+    let r = h.call(
+        "edit",
+        r#"{"path":"script.sh","old_string":"echo one","new_string":"echo two"}"#,
+    );
+    assert!(r.is_grounded(), "{}", r.render());
+    assert_eq!(h.read_file("script.sh"), "#!/bin/sh\necho two\n");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(h.root().join("script.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "an edit must not disarm an executable");
+    }
+
+    let leftovers: Vec<String> = std::fs::read_dir(h.root())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains("letibot-") && n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporaries left behind: {leftovers:?}");
+}
+
+#[test]
+fn the_head_is_handed_both_sides_and_the_model_is_not() {
+    // The two halves of the hand-off decision, asserted together because they are
+    // one decision: `crates/ui`'s differ needs both sides, and the prompt must not
+    // carry a diff of an edit the model authored.
+    let mut h = writable_harness();
+    h.call("read", r#"{"path":"README.md"}"#);
+    let r = h.call(
+        "edit",
+        r#"{"path":"README.md","old_string":"a harness","new_string":"a local-first harness"}"#,
+    );
+    let e = r.edit.as_ref().expect("the head gets both sides");
+    assert_eq!(e.before, "letibot\na harness\n");
+    assert_eq!(e.after, "letibot\na local-first harness\n");
+    assert!(!e.before.contains('\r') && !e.after.contains('\r'));
+    assert_eq!(e.changed.first, 2);
+
+    // Nothing of a diff is in the prompt bytes; what is there is where it landed.
+    let seen = r.render();
+    assert!(seen.contains("1 replacement(s)"), "{seen}");
+    assert!(seen.contains("     2| a local-first harness"), "{seen}");
+    assert!(!seen.contains("\n-"), "no diff markers in the prompt: {seen}");
+}
+
+#[test]
+fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
+    // §11.9's rule: a `deny` row is evaluated before dispatch and no adjudicator
+    // can override it. `writable_harness` attaches one that says yes to
+    // everything, and it does not get asked.
+    let mut h = writable_harness();
+    h.write_file(".ssh/config", "Host x\n");
+    h.call("read", r#"{"path":".ssh/config"}"#);
+    let r = h.call(
+        "edit",
+        r#"{"path":".ssh/config","old_string":"Host x","new_string":"Host y"}"#,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Denied { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(r.render().contains("never-write list"), "{}", r.render());
+    assert_eq!(h.read_file(".ssh/config"), "Host x\n");
+}
+
+/// An adjudicator that denies, for the outcome-class test.
+fn deny_all() -> Box<dyn letibot_tools::runtime::Gate> {
+    use letibot_tools::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
+    Box::new(AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "test",
+        |req: &letibot_tools::adjudicate::AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "deny_and_tell",
+                "human:test",
+                "not that file, not tonight",
+            ))
+        },
+    ))))
 }

@@ -35,6 +35,14 @@ pub struct Invocation {
     pub payload: String,
     /// Clause 1's voice: what the tool did about a miss.
     pub notes: Vec<String>,
+    /// Both sides of a file this call changed, for a head to draw.
+    ///
+    /// `None` for every tool that changed nothing, **including a write tool whose
+    /// call was a no-op** — a head asked to render a diff of no change would draw
+    /// an empty card, and an empty card is indistinguishable from a bug. See
+    /// [`crate::edit::FileEdit`] for what the head does with it and for why it is
+    /// here rather than in a [`crate::events::ToolEvent`].
+    pub edit: Option<crate::edit::FileEdit>,
 }
 
 impl Invocation {
@@ -43,6 +51,7 @@ impl Invocation {
             outcome: ToolOutcome::Ok,
             payload: payload.into(),
             notes: Vec::new(),
+            edit: None,
         }
     }
 
@@ -54,6 +63,7 @@ impl Invocation {
             },
             payload: payload.into(),
             notes: Vec::new(),
+            edit: None,
         }
     }
 
@@ -64,6 +74,7 @@ impl Invocation {
             },
             payload: payload.into(),
             notes: Vec::new(),
+            edit: None,
         }
     }
 
@@ -98,6 +109,11 @@ impl Default for Limits {
 pub struct InvokeCtx<'a> {
     pub backend: &'a dyn ExecBackend,
     pub spiller: &'a Spiller,
+    /// What this session has shown the model, and therefore what it may change.
+    /// See [`crate::files`]: the read-only tools write to it, the write tools
+    /// read it, and it is on the context rather than on each tool so that two
+    /// tools cannot end up with two ledgers.
+    pub files: &'a crate::files::FileLedger,
     pub limits: Limits,
     turn_id: &'a str,
     call_id: &'a str,
@@ -131,13 +147,79 @@ pub trait Tool: Send + Sync {
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation;
 }
 
+/// One gated call, as the gate sees it.
+///
+/// W9's `admit(name, access, args)` was the smallest thing the runtime needed and
+/// `TODO.md` T16.3 said W11 should absorb it rather than build a parallel seam.
+/// W10 is the first caller that needs the gate to *decide* something, and three
+/// of §11.2's request fields could not be filled from the old signature: the turn
+/// and call this belongs to (so an audit row can be correlated), and whether the
+/// target exists (so [`crate::adjudicate::ActionClass`] can say whether the action
+/// is reversible). They are here rather than smuggled through `args`.
+#[derive(Debug, Clone, Copy)]
+pub struct GateCall<'a> {
+    /// The tool as **declared**, not as the model spelled it.
+    pub name: &'a str,
+    pub access: Access,
+    /// Already salvaged (clause 2), so the gate reads the same values the tool will.
+    pub args: &'a Value,
+    pub turn_id: &'a str,
+    pub call_id: &'a str,
+    /// What the backend calls itself. `EXPLAIN` and the adjudication brief both
+    /// want the operator to see where a write would land.
+    pub workspace: &'a str,
+    /// Whether the `path` argument names something that exists, when there is one.
+    /// `None` means the call has no path argument to stat, which is a different
+    /// fact from "the path is not there".
+    pub target_exists: Option<bool>,
+}
+
+impl GateCall<'_> {
+    /// Whether the `path` argument stays inside the workspace, decided
+    /// **lexically** and before the tool runs.
+    ///
+    /// Lexical on purpose: §11.4 says an action *"whose class says `in_run` but
+    /// whose arguments would leave the run"* escalates rather than hard-failing,
+    /// and that is a property of the argument, not of what the filesystem happens
+    /// to hold. [`crate::backend::HostBackend::resolve`] does the second, stricter
+    /// check (it canonicalises, so it catches a symlink out of the tree); this one
+    /// exists so the *class* is known before anything is opened.
+    pub fn path_is_inside(&self) -> bool {
+        let Some(path) = self.args.get("path").and_then(|v| v.as_str()) else {
+            return true;
+        };
+        if path.starts_with('/') {
+            return path.starts_with(self.workspace);
+        }
+        let mut depth: i32 = 0;
+        for seg in path.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                _ => depth += 1,
+            }
+        }
+        true
+    }
+}
+
 /// §11's seam, from the tool side.
 ///
 /// Consulted only for a call whose declared access is not [`Access::Read`], which
 /// is clause 4 as a control-flow fact: there is no code path from a read-only tool
 /// to a question.
-pub trait Gate {
-    fn admit(&mut self, name: &str, access: Access, args: &Value) -> GateDecision;
+///
+/// `Send + Sync` closes `TODO.md` T20.4 — *"`ToolRuntime` is not `Send` — `Gate`
+/// lacks `Send + Sync`, alone among the runtime's traits. Blocks §13.2's
+/// multi-head worker."* It was left for W11 to absorb; absorbing it means writing
+/// the bound down, and every implementation in the tree already satisfies it.
+pub trait Gate: Send + Sync {
+    fn admit(&mut self, call: &GateCall<'_>) -> GateDecision;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,26 +227,58 @@ pub enum GateDecision {
     Admit,
     /// The call does not happen, and this is the outcome it carries. `Denied` when
     /// somebody decided; `NotRun` when there was nobody to ask.
-    Refuse(ToolOutcome),
+    Refuse {
+        outcome: ToolOutcome,
+        /// What the **model** is told, which is not the same as what the audit
+        /// records. §11.5: *"the audit is log-only and never enters the model
+        /// transcript … the model sees the derived tool outcome, not the
+        /// deliberation."* An adjudicator that chose `deny_and_tell` puts its
+        /// reason here; a plain `deny` leaves it empty and the reason stays in the
+        /// row.
+        tell: String,
+    },
 }
 
-/// M1's gate: there is no adjudication boundary yet, so anything that is not a
-/// read is `NotRun` with the reason named.
+impl GateDecision {
+    pub fn refuse(outcome: ToolOutcome) -> Self {
+        GateDecision::Refuse {
+            outcome,
+            tell: String::new(),
+        }
+    }
+
+    pub fn refuse_and_tell(outcome: ToolOutcome, tell: impl Into<String>) -> Self {
+        GateDecision::Refuse {
+            outcome,
+            tell: tell.into(),
+        }
+    }
+}
+
+/// The gate for a session with **nothing attached**, and it refuses.
 ///
 /// This is deliberately not a `DenyAll` that says "denied": `Denied` means a
 /// decision was made, and no decision was made here. §8.2's discipline applied to
 /// the outcome vocabulary itself.
+///
+/// [`crate::adjudicate::AdjudicatedGate::closed`] is the same fail-closed
+/// behaviour reached through the full §11.2 shape, and it is what a session that
+/// *could* have an adjudicator should use, because it produces an audit row. This
+/// one produces none, which is right for a session that has no adjudication at
+/// all.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoBoundary;
 
 impl Gate for NoBoundary {
-    fn admit(&mut self, name: &str, access: Access, _args: &Value) -> GateDecision {
-        GateDecision::Refuse(ToolOutcome::NotRun {
+    fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+        GateDecision::refuse(ToolOutcome::NotRun {
             why: format!(
-                "`{name}` declares {} access, and this session has no adjudication \
-                 boundary: §11's adjudicators and §11.4's boundary arrive in M2. \
-                 Nothing was executed.",
-                access.as_str()
+                "`{}` declares {} access and no adjudicator is attached to this session, \
+                 so there is nobody to decide whether it may run. The gate fails closed: \
+                 nothing was executed and nothing on disk changed. This is not a denial — \
+                 nobody decided. Attach an adjudicator (§11) to make this callable.",
+                call.name,
+                call.access.as_str()
             ),
         })
     }
@@ -250,6 +364,20 @@ pub mod roles {
                 "ask_corpus",
                 "read_spill",
             ],
+        )
+    }
+
+    /// What M2 can seat: §8.4's `coder` without `bash`.
+    ///
+    /// `bash` is `Access::Exec`, and `HostBackend`s `run` still
+    /// refuses — an unadjudicated exec path on the host is the thing §11.4's
+    /// boundary exists to prevent, and a boundary is not what W10 built. Six
+    /// tools against a ceiling of eight; the two spare seats are `bash` and
+    /// `task`, in that order, and neither is a stub.
+    pub fn m2_coder() -> Role {
+        Role::new(
+            "coder",
+            &["read", "write", "edit", "grep", "glob", "read_spill"],
         )
     }
 }
@@ -464,6 +592,9 @@ pub struct ToolRuntime {
     pub spiller: Spiller,
     pub gate: Box<dyn Gate>,
     pub limits: Limits,
+    /// Session-scoped, and on the runtime rather than on a tool because
+    /// read-before-write is a fact about the *session*, not about `edit`.
+    pub files: crate::files::FileLedger,
 }
 
 impl ToolRuntime {
@@ -472,8 +603,11 @@ impl ToolRuntime {
             registry,
             backend,
             spiller: Spiller::unset(),
+            // Fail closed by default: a runtime nobody configured refuses every
+            // non-read call rather than allowing it.
             gate: Box::new(NoBoundary),
             limits: Limits::default(),
+            files: crate::files::FileLedger::new(),
         }
     }
 
@@ -538,14 +672,30 @@ impl ToolRuntime {
 
         // Clause 4. The gate is consulted **only** when the declared access is not
         // read: a read-only tool has no code path to a question.
-        if !schema.access.is_unattended()
-            && let GateDecision::Refuse(outcome) =
-                self.gate.admit(&schema.name, schema.access, &args)
-        {
-            let r = ToolResult::new(call.id.clone(), call.name.clone(), outcome)
-                .with_payload(String::new());
-            sink.emit(finished_event(turn_id, &r));
-            return r;
+        if !schema.access.is_unattended() {
+            let workspace = self
+                .backend
+                .root_path()
+                .unwrap_or_else(|| self.backend.describe());
+            let target_exists = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| self.backend.stat(p).is_some());
+            let gate_call = GateCall {
+                name: &schema.name,
+                access: schema.access,
+                args: &args,
+                turn_id,
+                call_id: &call.id,
+                workspace: &workspace,
+                target_exists,
+            };
+            if let GateDecision::Refuse { outcome, tell } = self.gate.admit(&gate_call) {
+                let r = ToolResult::new(call.id.clone(), call.name.clone(), outcome)
+                    .with_payload(tell);
+                sink.emit(finished_event(turn_id, &r));
+                return r;
+            }
         }
 
         sink.emit(ToolEvent::Started {
@@ -563,6 +713,7 @@ impl ToolRuntime {
             let mut ctx = InvokeCtx {
                 backend: self.backend.as_ref(),
                 spiller: &self.spiller,
+                files: &self.files,
                 limits: self.limits,
                 turn_id,
                 call_id: &call.id,
@@ -595,6 +746,10 @@ impl ToolRuntime {
             repairs,
             notes: invocation.notes,
             spill,
+            // Never spilled and never truncated: this is the head's copy, not the
+            // model's, and clause 5 bounds what goes into the prompt. A head that
+            // was handed half a file could not draw a diff at all.
+            edit: invocation.edit,
         };
         sink.emit(finished_event(turn_id, &result));
         result
@@ -695,8 +850,8 @@ mod tests {
     struct ExplodingGate;
 
     impl Gate for ExplodingGate {
-        fn admit(&mut self, _n: &str, _a: Access, _args: &Value) -> GateDecision {
-            panic!("a read-only tool must never reach the gate");
+        fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+            panic!("a read-only tool must never reach the gate: {}", call.name);
         }
     }
 
@@ -743,7 +898,7 @@ mod tests {
         let r = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
         match r.outcome {
             // `NotRun`, not `Denied`: nobody decided anything.
-            ToolOutcome::NotRun { why } => assert!(why.contains("M2"), "{why}"),
+            ToolOutcome::NotRun { why } => assert!(why.contains("fails closed"), "{why}"),
             other => panic!("a write tool must not run unattended: {other:?}"),
         }
         assert!(

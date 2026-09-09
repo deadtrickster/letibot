@@ -1,4 +1,4 @@
-//! The read-only built-ins, and the helpers clause 1 needs in all of them.
+//! The built-ins, and the helpers clause 1 needs in all of them.
 //!
 //! # Clause 1, which is the one that carries the value
 //!
@@ -18,17 +18,23 @@
 //! | [`glob`] | a miss returns the surrounding listing **and what would have matched**, under a named relaxation |
 //! | [`read_spill`] | an unknown hash lists the spilled outputs this session has |
 //! | [`retrieval`] | a corpus that does not cover the question abstains, in the `NO_RESULT` envelope, and says what it searched |
+//! | [`edit`] | a miss reports **the text that is actually there**, at which lines, and whether the difference is whitespace, indentation or case; more than one match reports every line number |
+//! | [`mod@write`] | an overwrite of an unread or changed file is refused **with the file**, and the refusal records it so the retry proceeds |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
-//! another call.
+//! another call. The two write tools pay more for it than the read-only ones do,
+//! because the alternative to a good miss report is a model guessing at a file it
+//! is about to change.
 
+pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod pattern;
 pub mod read;
 pub mod read_spill;
 pub mod retrieval;
+pub mod write;
 
 use crate::backend::{DirEntry, ExecBackend};
 
