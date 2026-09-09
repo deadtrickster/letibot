@@ -184,6 +184,10 @@ fn replay(args: &Args, cfg: RenderConfig) {
                 }
             }
             loop {
+                // The composer's double-tap windows are measured against a clock
+                // the head is told about, so a replay that never tells it one has
+                // an Esc from ten minutes ago still armed.
+                app.clock(now_ms());
                 let (w, h) = term.size();
                 if app.take_redraw() {
                     term.invalidate();
@@ -199,6 +203,13 @@ fn replay(args: &Args, cfg: RenderConfig) {
             }
         }
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>> {

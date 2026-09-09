@@ -265,6 +265,7 @@ version = "0.1.0"
 dependencies = [
  "letibot-sessionlog",
  "letibot-transcript",
+ "letibot-ui",
  "libc",
  "serde",
  "serde_json",

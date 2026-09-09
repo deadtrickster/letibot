@@ -67,7 +67,9 @@ pub fn tick(
 
     let mut actions = Vec::new();
     for k in keys {
-        if let Some(a) = app.key(*k) {
+        // Cloned rather than copied: `Key::Paste` carries the paste, because the
+        // point of bracketed paste is that a 3 KB stack trace is one key.
+        if let Some(a) = app.key(k.clone()) {
             actions.push(a);
         }
     }

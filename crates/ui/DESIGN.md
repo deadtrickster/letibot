@@ -1,13 +1,54 @@
 # `letibot-ui` — rendering primitives, and how to wire them into a head
 
 This crate was written by reading two other agent harnesses and taking the parts
-that solve problems letibot has. It does not integrate itself: `crates/tui` was
-being worked on concurrently and is deliberately untouched. This file is the
-handover.
+that solve problems letibot has. It did not integrate itself: `crates/tui` was
+being worked on concurrently and was deliberately untouched. This file is the
+handover, and §0 now records how much of it landed.
 
 Attribution for everything ported is in the top-level `NOTICE` and, per file, in
 each module's `# Provenance` header. Apache-2.0 requires *stating changes*, so
 those headers say what was altered and why, not just where it came from.
+
+---
+
+## 0. What landed
+
+`letibot-tui` depends on this crate and §2 is wired, in §2's order. What that
+changed, and what it did not:
+
+| §2 | state | notes |
+|---|---|---|
+| 2.1 `width` | **done** | `render::{visible_width, wrap, trim_to}` are re-exports now; the three local functions are gone. |
+| 2.2 `progress::prefill_line` | **done** | On a new in-flight row above the composer, not on the status line — see §0.1. |
+| 2.3 `card::Card` | **done** | `call_line` is gone. `TurnPane` keeps `started_ms`/`ended_ms`/`note` per call, so elapsed and the `ToolProgress` note render. `target` is still empty: §4.1 is not fixed. |
+| 2.4 `card::reasoning` | **done** | The rail reaches the *frozen prefix* through `render::Decor`, applied once when a line enters `BlockCache` rather than per line per frame. |
+| 2.5 `highlight::StreamingCode` | **done**, option (b) | `BlockCache` keeps one highlighter per open code block, keyed by absolute block index. No change to `markdown.rs` was needed after all. `BlockCache::bytes_highlighted()` is the instrument, and there is a regression test on the ratio. |
+| 2.6 `diff::render` | **not done** | §4.2 and §4.3 are unresolved; nothing in the pipeline carries both sides of an edit. |
+| 2.7 `editor::Editor` | **done** | `term.rs` grew a growable read with a carried tail, bracketed paste, and the full key vocabulary. `app::Key` mirrors `editor::Key` plus the head's five. |
+
+Also done, from §3's not-ported list: **DEC 2026 synchronised output**, in
+`term::draw_with_cursor`.
+
+### 0.1 Two things the integration changed on this side of the seam
+
+**`width::break_cells` did not know about `\n`.** `char_width` measures a C0
+byte as zero columns and `cells` absorbed it into the cluster before it, so a
+two-line composer wrapped to a **single row with a literal newline inside it** —
+which the terminal then obeys, putting a row on the screen the head did not
+count and scrolling the frame it had just painted. A newline is now a hard break
+that belongs to the row it ends (so the ranges still tile), `wrap` strips it, and
+`offset_at` will not park a cursor on it. This was invisible until something
+multi-line was drawn, which is exactly what §2.7 is.
+
+**`Card::bytes` and `Card::spill` are not used by this head.** They render
+`8192 B of 480000 B` and `spill 9fa3c1` in the header tail, and the head has a
+§8.3 obligation to say the thing that hash *means*: `8.0 KB of 468.8 KB went to
+the model, the rest is kept — read_spill hash=9fa3c1`. That goes in
+`Card::body`, not the tail, because the tail is dropped **whole** when it does
+not fit and "there is more, and here is how to get it" is not a line that may
+vanish on a narrow terminal. The head therefore never uses
+`DisplayMode::Collapsed` for a tool card: a fold is not a licence to hide a
+disclosure.
 
 ---
 
@@ -289,10 +330,15 @@ are already frozen-prefix-shaped, which is exactly the precondition
 
 Also not ported, with reasons:
 
-- **DEC 2026 synchronised output** (`\x1b[?2026h` / `\x1b[?2026l` around a
-  frame). One line in `term::draw`, and the single most effective anti-flicker
-  measure available. Left alone only because `crates/tui` is owned by another
-  agent this session and this is a two-line change in their file.
+- ~~**DEC 2026 synchronised output**~~ — **done**, in `term::draw_with_cursor`.
+  It arrived with a second anti-flicker fix that was not obvious until the
+  composer could change height: `term::paint` used to erase the whole screen
+  whenever the row count changed, on the argument that "every row moved". That
+  was true while the chrome was a fixed two lines and is false now, because the
+  composer grows a row every time a prompt wraps. Rows are addressed absolutely,
+  so a frame of a different height needs only the rows that differ plus an erase
+  of the rows that no longer exist; the whole-screen erase is kept for the two
+  cases where the glass really is unknown, a resize and Ctrl-L.
 - **grok-build's OSC 8 per-cell hyperlink layer.** Needs a cell buffer; letibot
   paints strings.
 - **grok-build's `EditHighlightPhase`** (highlight each hunk in isolation first,
@@ -369,7 +415,42 @@ Recommendation: the tool's payload keeps whatever the model needs, and the
 *display* target from §4.1 is extended for edit-shaped tools to carry a patch.
 Not decided here; it needs whoever owns `letibot-tools`.
 
-### 4.4 Reasoning has no server-supplied end time
+### 4.4 The head cannot name what it is talking to
+
+Measured while building the composer's facts line, which wants
+`model · dialect · endpoint` and can only fill the first.
+
+`TurnStarted { model }` is the **only** one of the three that reaches a head, and
+it only arrives when a turn starts — so a freshly attached head with no turn yet
+has nothing to say at all, and renders `no turn yet`. The daemon knows all three:
+they are its own command line (`--dialect qwen --model … --endpoint 127.0.0.1:8080`).
+
+**Proposed, smallest form:** `Hello` carries them. It is the frame that already
+exists to tell a head what session it has joined, it is sent exactly once per
+head, and none of the three is per-turn data. A `Snapshot` field would do as
+well and would also fix the resync path.
+
+This is small and it is not cosmetic: two daemons on one box serving two
+different models on two different ports is the normal case here, and a head that
+cannot say which one it is attached to is a head you have to guess about.
+
+### 4.5 A turn that fails ends nothing
+
+Already recorded in `app::inflight_line`'s comment and worth having in the list,
+because it was hit again while exercising the composer: when a turn fails, the
+engine publishes a `Warning` and **no `TurnFinished` and no `TurnInterrupted`**.
+`TurnState` stays `Running` for the rest of the session.
+
+Observed live: `! turn_failed — a frame advanced tokens_predicted 142 -> 144 but
+carried 1 id(s)`, after which the head sat at `Responding` forever.
+
+The head covers for it — past fifteen seconds of silence the in-flight line says
+`nothing received for 17.0s. The turn is still marked running; esc esc interrupts
+it.` — and that is a **disclosure, not a fix**. A head saying "nothing for 17s"
+cannot distinguish a failed turn from a slow one, and the only party that can is
+the one that saw the error.
+
+### 4.6 Reasoning has no server-supplied end time
 
 `card::reasoning` takes `elapsed_ms: Option<u64>` and renders `Thought` with no
 duration when it is `None`. Today the head can compute it from delta timestamps,

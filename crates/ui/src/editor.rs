@@ -782,7 +782,10 @@ impl Editor {
             } else {
                 " ".repeat(width::width(prompt))
             };
-            let body = &self.text[r.clone()];
+            // The newline that ended this row belongs to the row's *range* — the
+            // ranges have to tile — but never to the row's *text*: a terminal
+            // acts on a `\n` in a line it is given.
+            let body = self.text[r.clone()].trim_end_matches(['\n', '\r']);
             // A placeholder is inverted so it reads as one object rather than as
             // text somebody typed. opencode uses the theme's warning colour
             // inverted for the same reason.
