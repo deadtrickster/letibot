@@ -106,6 +106,16 @@ pub fn cells(s: &str) -> Vec<Cell<'_>> {
             }
             // Extend the cluster with anything that does not stand alone.
             if w == 0 {
+                // …but a **control character is not a combining mark**. It
+                // measures zero columns for the same reason a combining mark
+                // does, and that is the whole of the resemblance: absorbing a
+                // `\n` into the cluster before it hides the row break inside a
+                // cell, and a break inside a cell is not a break at all. That is
+                // exactly how a two-line composer wrapped to one row with a
+                // literal newline in it.
+                if is_control(c) {
+                    break;
+                }
                 // A combining mark, a variation selector, or a ZWJ. A ZWJ also
                 // pulls in whatever follows it, which is handled by the loop
                 // simply continuing.
@@ -189,6 +199,12 @@ pub fn char_width(c: char) -> usize {
         return 0;
     }
     if is_wide(u) { 2 } else { 1 }
+}
+
+/// C0, C1 and DEL. Zero columns, and never part of the cluster beside them.
+fn is_control(c: char) -> bool {
+    let u = c as u32;
+    u < 0x20 || (0x7f..0xa0).contains(&u)
 }
 
 fn is_regional_indicator(c: char) -> bool {
@@ -378,8 +394,9 @@ pub fn wrap(s: &str, cols: usize) -> Vec<String> {
         }
         // Trailing space at a break is invisible, and leaving it in means a
         // painter that erases to end of line paints the row's background one
-        // column further than the text goes.
-        while line.ends_with(' ') {
+        // column further than the text goes. A trailing newline is worse: the
+        // terminal acts on it.
+        while line.ends_with(' ') || line.ends_with('\n') || line.ends_with('\r') {
             line.pop();
         }
         if sgr.is_open() {
@@ -410,6 +427,26 @@ fn break_cells(cs: &[Cell], cols: usize) -> Vec<(usize, usize)> {
     for (i, c) in cs.iter().enumerate() {
         if c.text.is_empty() {
             continue; // escape-only cell: it styles, it does not occupy
+        }
+        // A newline is a **hard break**, and it has to be one here rather than in
+        // a caller. `char_width` measures a C0 byte as zero columns, so without
+        // this a two-line composer wrapped to a single row with a literal `\n`
+        // inside it — which the terminal then obeys, putting a row on the screen
+        // the head did not count and scrolling the frame it had just painted.
+        // The break belongs to the row it *ends*, so the ranges still tile the
+        // input; [`wrap`] strips it, as does anything else rendering a row.
+        if c.text == "\n" {
+            if let Some(ws) = word_start.take() {
+                if used > 0 && used + word_cols > cols {
+                    rows.push((row_start, ws));
+                    row_start = ws;
+                }
+                word_cols = 0;
+            }
+            rows.push((row_start, i + 1));
+            row_start = i + 1;
+            used = 0;
+            continue;
         }
         let space = c.text == " " || c.text == "\t";
         let wide = c.cols == 2;
@@ -542,9 +579,12 @@ pub fn offset_at(s: &str, row: usize, col: usize, cols: usize) -> usize {
         at += c.esc.len() + c.text.len();
         used += c.cols;
     }
-    // Do not park the cursor past a trailing break space.
+    // Do not park the cursor past a trailing break space, or past the newline
+    // that ended the row — the end of row *n* and the start of row *n+1* are two
+    // different places and only one of them is where the person can see the
+    // caret.
     let mut end = r.end;
-    while end > r.start && s.as_bytes()[end - 1] == b' ' {
+    while end > r.start && matches!(s.as_bytes()[end - 1], b' ' | b'\n' | b'\r') {
         end -= 1;
     }
     end.max(r.start)
@@ -555,6 +595,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_newline_is_a_row_break_and_never_reaches_the_terminal() {
+        // `char_width` measures a C0 byte as zero columns, so a newline used to
+        // wrap to nothing: a two-line composer was one row with a `\n` in it, and
+        // the terminal obeyed the `\n`.
+        let s = "first line\nsecond line";
+        assert_eq!(wrap(s, 40), vec!["first line", "second line"]);
+        assert_eq!(wrap_ranges(s, 40), vec![0..11, 11..22]);
+        // The break belongs to the row it ended, so the ranges still tile.
+        assert_eq!(locate(s, 11, 40), (1, 0));
+        assert_eq!(locate(s, 10, 40), (0, 10));
+        // A trailing newline is a real empty row: it is where the caret is.
+        assert_eq!(wrap("a\n", 40), vec!["a", ""]);
+        assert_eq!(locate("a\n", 2, 40), (1, 0));
+        // And the caret cannot be parked on the newline itself.
+        assert_eq!(offset_at(s, 0, 99, 40), 10);
+        for l in wrap("a very long first line that wraps\nand a second", 12) {
+            assert!(!l.contains('\n'), "{l:?}");
+            assert!(width(&l) <= 12, "{l:?}");
+        }
+    }
+
+    #[test]
     fn wrap_ranges_tile_the_input_and_agree_with_wrap() {
         let inputs = [
             "the quick brown fox jumps over the lazy dog",
@@ -563,6 +625,9 @@ mod tests {
             "",
             &"x".repeat(120),
             "a bb ccc dddd eeeee ffffff ggggggg",
+            "two\nlines",
+            "trailing\n",
+            "\n\n",
         ];
         for s in inputs {
             for w in [5usize, 8, 13, 40] {

@@ -9,6 +9,10 @@ repository.workspace = true
 [dependencies]
 letibot-sessionlog.workspace = true
 letibot-transcript.workspace = true
+# Rendering primitives: columns, wrapping, syntax colouring, the prefill bar, the
+# tool card, and the composer's model half. See `crates/ui/DESIGN.md` — this head
+# is the seam that crate was written against.
+letibot-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Raw mode and the window size. The only C this crate needs, and `libc` is already

@@ -22,7 +22,24 @@
 //! title, a count of what was elided, and its last N lines — which is what a reader
 //! of a streaming model actually wants, because the interesting end is the end.
 
+use letibot_ui::highlight::StreamingCode;
+use letibot_ui::style::Palette;
+
 use crate::markdown::{Block, IncrementalMarkdown};
+
+/// Columns, wrapping and truncation come from `letibot-ui`.
+///
+/// These were three functions here, and all three counted a `char` as one column.
+/// The comment on the old `visible_width` called that *"the accepted cost of not
+/// vendoring a width table"*, and the cost is not accepted anywhere a person can
+/// see it: a status line one column too long is wrapped by the terminal, which
+/// puts a row on the screen the head did not count, which scrolls the frame it
+/// just painted. [`letibot_ui::width`] measures grapheme clusters and knows the
+/// wide ranges, never splits a cluster or an escape, breaks between wide clusters
+/// so CJK wraps at all, and carries SGR state across a break — which matters here
+/// because [`crate::term::paint`] emits `\x1b[K` per row and erase-to-end-of-line
+/// uses the *current* attributes.
+pub use letibot_ui::width::{truncate as trim_to, width as visible_width, wrap};
 
 /// ANSI, kept as constants rather than a dependency.
 pub mod sgr {
@@ -75,6 +92,19 @@ impl Default for RenderConfig {
 }
 
 impl RenderConfig {
+    /// The `letibot-ui` palette this config implies.
+    ///
+    /// One place, because `color: false` is not a monochrome theme — it is the
+    /// `--replay`, pipe-to-a-file and CI case, and it has to produce
+    /// byte-identical output on every machine.
+    pub fn palette(&self) -> Palette {
+        if self.color {
+            Palette::Colour
+        } else {
+            Palette::None
+        }
+    }
+
     fn c(&self, code: &str, s: &str) -> String {
         if self.color {
             format!("{code}{s}{}", sgr::RESET)
@@ -84,8 +114,59 @@ impl RenderConfig {
     }
 }
 
+/// A code block's streaming highlighter, and how much of its source it has seen.
+///
+/// The pair is the whole of §2.5's "do not reintroduce a full re-parse per delta".
+/// `pushed` is a byte offset into `lines.join("\n")`, which grows only at the end
+/// while a fence is open, so the delta handed to the lexer each frame is the new
+/// bytes and nothing else.
+#[derive(Debug)]
+struct CodePaint {
+    sc: StreamingCode,
+    pushed: usize,
+}
+
+impl CodePaint {
+    fn new(lang: &str, palette: Palette) -> CodePaint {
+        CodePaint {
+            sc: StreamingCode::new(lang, palette),
+            pushed: 0,
+        }
+    }
+
+    /// Hand over whatever is new. A complete line is highlighted exactly once,
+    /// ever; only the incomplete tail is repainted, and that is bounded by the
+    /// line, not by the block.
+    fn feed(&mut self, lines: &[String], closed: bool) {
+        let mut src = lines.join("\n");
+        if closed {
+            src.push('\n');
+        }
+        if src.len() > self.pushed {
+            // `src` only ever grows at its end while the fence is open, so this
+            // is always a character boundary.
+            self.sc.push(&src[self.pushed..]);
+            self.pushed = src.len();
+        }
+    }
+}
+
 /// Render one block to lines, unbounded.
+///
+/// One-shot: a fresh highlighter per call, which is right for a block that is
+/// rendered once (a transcript row, a frozen prefix) and wrong for one that is
+/// rendered every frame. [`BlockCache`] is the second case and keeps the
+/// highlighter between frames; the output of the two paths is identical, because
+/// it is the same lexer fed the same bytes in the same order.
 pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
+    let mut paint = match b {
+        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.palette())),
+        _ => None,
+    };
+    render_block_with(b, cfg, paint.as_mut())
+}
+
+fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>) -> Vec<String> {
     let w = cfg.width.max(20);
     match b {
         Block::Heading { level, text } => {
@@ -101,15 +182,28 @@ pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
             lines,
             closed,
         } => {
-            let mut out = Vec::with_capacity(lines.len() + 2);
-            let head = if lang.is_empty() {
-                "┌─ code".to_string()
-            } else {
-                format!("┌─ {lang}")
+            let mut owned;
+            let paint = match code {
+                Some(p) => p,
+                None => {
+                    owned = CodePaint::new(lang, cfg.palette());
+                    &mut owned
+                }
+            };
+            paint.feed(lines, *closed);
+            let painted = paint.sc.lines();
+            let mut out = Vec::with_capacity(painted.len() + 2);
+            // The fence's own info string when the highlighter did not recognise
+            // it: naming a language we are not colouring is honest, and inventing
+            // one we are is not.
+            let head = match (paint.sc.language(), lang.is_empty()) {
+                (Some(name), _) => format!("┌─ {name}"),
+                (None, false) => format!("┌─ {lang}"),
+                (None, true) => "┌─ code".to_string(),
             };
             out.push(cfg.c(sgr::GREY, &head));
-            for l in lines {
-                out.push(cfg.c(sgr::GREEN, &format!("│ {l}")));
+            for l in painted {
+                out.push(format!("{}{l}", cfg.c(sgr::GREY, "│ ")));
             }
             out.push(cfg.c(
                 sgr::GREY,
@@ -160,7 +254,20 @@ pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
 /// The shape is title, elision count, tail. Never a silent truncation: the count
 /// is the disclosure, the same rule the log applies to `dropped`.
 pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String> {
-    let full = render_block(b, cfg);
+    let mut paint = match b {
+        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.palette())),
+        _ => None,
+    };
+    render_bounded_with(b, cfg, limit, paint.as_mut())
+}
+
+fn render_bounded_with(
+    b: &Block,
+    cfg: &RenderConfig,
+    limit: usize,
+    code: Option<&mut CodePaint>,
+) -> Vec<String> {
+    let full = render_block_with(b, cfg, code);
     if full.len() <= limit || limit < 3 {
         return full;
     }
@@ -173,11 +280,58 @@ pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String
     out
 }
 
+/// A per-line decoration applied to everything a [`BlockCache`] produces.
+///
+/// It exists so the reasoning pane can carry `card::REASONING_RAIL_WIDTH`'s `┃`
+/// rail **without** copying its frozen prefix into every frame. The rail has to
+/// be on every line — that is the point of it, it is the signal that survives a
+/// copy-paste when the colour does not — and the only place it can be applied
+/// once per line rather than once per line per frame is at the moment the line
+/// enters the cache.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Decor {
+    /// Prepended to every line, already painted. Its *visible* width must be
+    /// subtracted from the width the caller wraps at, or the block renders one
+    /// row taller than the space reserved for it.
+    pub prefix: String,
+    /// Opened before the line body and reset after it.
+    pub open: String,
+}
+
+impl Decor {
+    /// Decorate one line. Public because a head that draws a single line beside a
+    /// cached block — the live tail of a folded reasoning pane — has to decorate
+    /// it the same way, and the only way to guarantee that is for there to be one
+    /// function.
+    pub fn apply(&self, l: &str) -> String {
+        match (self.prefix.is_empty(), self.open.is_empty()) {
+            (true, true) => l.to_string(),
+            (false, true) => format!("{}{l}", self.prefix),
+            (true, false) => format!("{}{l}{}", self.open, sgr::RESET),
+            (false, false) => format!("{}{}{l}{}", self.prefix, self.open, sgr::RESET),
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        self.prefix.is_empty() && self.open.is_empty()
+    }
+}
+
 /// Rendered lines for a growing document, with the frozen prefix cached.
 #[derive(Debug, Default)]
 pub struct BlockCache {
     width: usize,
     color: bool,
+    decor: Decor,
+    /// One streaming highlighter per open code block, keyed by the block's
+    /// **absolute** index in the document.
+    ///
+    /// Absolute rather than tail-relative because the tail is re-lexed from the
+    /// frozen frontier on every push, so a tail block's position moves as blocks
+    /// freeze while `stable_count() + tail_index` does not. An entry is dropped
+    /// the moment its block freezes: the block is then in `stable_lines` and will
+    /// never be rendered again.
+    codes: std::collections::HashMap<usize, CodePaint>,
     /// The per-block line bound the prefix was rendered under. Part of the cache
     /// key: collapsing reasoning changes it, and a prefix rendered under the old
     /// bound is as stale as one rendered at the old width.
@@ -193,6 +347,27 @@ pub struct BlockCache {
 impl BlockCache {
     pub fn new() -> Self {
         BlockCache::default()
+    }
+
+    /// A cache whose every line carries `decor`. See [`Decor`].
+    pub fn decorated(decor: Decor) -> Self {
+        BlockCache {
+            decor,
+            ..BlockCache::default()
+        }
+    }
+
+    /// Set the decoration, throwing the cache away if it changed.
+    ///
+    /// It changes when `color` does, and a prefix rendered under the old palette
+    /// is stale in exactly the way a prefix rendered at the old width is.
+    pub fn set_decor(&mut self, decor: Decor) {
+        if self.decor != decor {
+            self.decor = decor;
+            self.stable_lines.clear();
+            self.rendered_blocks = 0;
+            self.codes.clear();
+        }
     }
 
     /// Total lines for the document: the cached prefix plus a freshly rendered
@@ -238,18 +413,40 @@ impl BlockCache {
             self.limit = limit;
             self.stable_lines.clear();
             self.rendered_blocks = 0;
+            // The highlighters go too: they hold painted lines at the old
+            // palette, and a `color` flip is exactly the case that must not
+            // leave half a code block coloured.
+            self.codes.clear();
         }
         let stable = md.stable();
-        for b in &stable[self.rendered_blocks..] {
-            self.stable_lines.extend(render_bounded(b, cfg, limit));
+        for (i, b) in stable.iter().enumerate().skip(self.rendered_blocks) {
+            let mut paint = self.codes.remove(&i);
+            let lines = render_bounded_with(b, cfg, limit, paint.as_mut());
+            self.stable_lines
+                .extend(lines.into_iter().map(|l| self.decor.apply(&l)));
             self.stable_lines.push(String::new());
             self.blocks_rendered += 1;
         }
         self.rendered_blocks = stable.len();
 
         let mut tail = Vec::new();
-        for b in md.tail() {
-            tail.extend(render_bounded(b, cfg, limit));
+        for (j, b) in md.tail().iter().enumerate() {
+            let abs = stable.len() + j;
+            let mut paint = self.codes.remove(&abs);
+            if paint.is_none()
+                && let Block::Code { lang, .. } = b
+            {
+                paint = Some(CodePaint::new(lang, cfg.palette()));
+            }
+            let lines = render_bounded_with(b, cfg, limit, paint.as_mut());
+            if let Some(p) = paint {
+                self.codes.insert(abs, p);
+            }
+            if self.decor.is_none() {
+                tail.extend(lines);
+            } else {
+                tail.extend(lines.iter().map(|l| self.decor.apply(l)));
+            }
             tail.push(String::new());
             self.blocks_rendered += 1;
         }
@@ -261,6 +458,14 @@ impl BlockCache {
 
     pub fn blocks_rendered(&self) -> u64 {
         self.blocks_rendered
+    }
+
+    /// Bytes handed to the syntax lexer over this cache's life, summed over every
+    /// live code block. The §13.3 instrument one layer down from
+    /// `IncrementalMarkdown::bytes_lexed`: a full re-highlight per delta makes it
+    /// quadratic, and nothing else about the screen would look different.
+    pub fn bytes_highlighted(&self) -> u64 {
+        self.codes.values().map(|c| c.sc.bytes_highlighted()).sum()
     }
 }
 
@@ -321,74 +526,6 @@ fn utf8_len(b: u8) -> usize {
     }
 }
 
-/// Word-wrap, counting *visible* columns so an SGR escape does not consume width.
-///
-/// A word wider than the whole line is **hard-broken** rather than emitted long.
-/// Not a nicety: a model answering a question about this tree writes absolute
-/// paths, and a 90-column path in an 80-column terminal used to be wrapped by the
-/// terminal itself — which put a line on the screen the head had not counted, so
-/// the bottom of the frame scrolled away under the status line and every
-/// subsequent frame fought it. A head that decides the line count has to mean it.
-pub fn wrap(s: &str, width: usize) -> Vec<String> {
-    let width = width.max(8);
-    let mut out = Vec::new();
-    let mut line = String::new();
-    let mut col = 0usize;
-    for word in s.split(' ') {
-        let mut word = word;
-        let mut wlen = visible_width(word);
-        // Break the oversized word across as many full lines as it needs, then let
-        // the remainder flow normally.
-        while wlen > width {
-            if col > 0 {
-                out.push(std::mem::take(&mut line));
-                col = 0;
-            }
-            let (head, rest) = split_at_visible(word, width);
-            out.push(head);
-            word = rest;
-            wlen = visible_width(word);
-        }
-        if col > 0 && col + 1 + wlen > width {
-            out.push(std::mem::take(&mut line));
-            col = 0;
-        }
-        if col > 0 {
-            line.push(' ');
-            col += 1;
-        }
-        line.push_str(word);
-        col += wlen;
-    }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line);
-    }
-    out
-}
-
-/// Split at `width` visible columns, keeping escapes with the half they opened in.
-fn split_at_visible(s: &str, width: usize) -> (String, &str) {
-    let mut n = 0;
-    let mut in_esc = false;
-    for (i, c) in s.char_indices() {
-        if in_esc {
-            if c == 'm' {
-                in_esc = false;
-            }
-            continue;
-        }
-        if c == '\x1b' {
-            in_esc = true;
-            continue;
-        }
-        if n == width {
-            return (s[..i].to_string(), &s[i..]);
-        }
-        n += 1;
-    }
-    (s.to_string(), "")
-}
-
 /// A byte count a person can read. `8192` is a number to decode; `8.0 KB` is not.
 pub fn bytes_human(n: u64) -> String {
     const K: u64 = 1024;
@@ -409,78 +546,6 @@ pub fn dur_human(ms: u64) -> String {
     } else {
         format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
     }
-}
-
-/// A proportional bar `width` columns wide. Used for prefill, which is the one
-/// thing in this harness that has a real denominator.
-pub fn bar(done: u64, total: u64, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let filled = if total == 0 {
-        0
-    } else {
-        ((done.min(total) as f64 / total as f64) * width as f64).round() as usize
-    };
-    let mut s = String::with_capacity(width * 3);
-    for i in 0..width {
-        s.push(if i < filled { '█' } else { '░' });
-    }
-    s
-}
-
-/// Columns a string occupies, ignoring SGR sequences. Counts a char as one column,
-/// which is wrong for CJK and emoji and is the accepted cost of not vendoring a
-/// width table for a terminal head.
-pub fn visible_width(s: &str) -> usize {
-    let mut n = 0;
-    let mut in_esc = false;
-    for c in s.chars() {
-        if in_esc {
-            if c == 'm' {
-                in_esc = false;
-            }
-            continue;
-        }
-        if c == '\x1b' {
-            in_esc = true;
-            continue;
-        }
-        n += 1;
-    }
-    n
-}
-
-/// Cut to `width` visible columns, keeping any escape sequences intact.
-pub fn trim_to(s: &str, width: usize) -> String {
-    if visible_width(s) <= width {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut n = 0;
-    let mut in_esc = false;
-    for c in s.chars() {
-        if in_esc {
-            out.push(c);
-            if c == 'm' {
-                in_esc = false;
-            }
-            continue;
-        }
-        if c == '\x1b' {
-            in_esc = true;
-            out.push(c);
-            continue;
-        }
-        if n + 1 > width.saturating_sub(1) {
-            out.push('…');
-            break;
-        }
-        out.push(c);
-        n += 1;
-    }
-    out.push_str(sgr::RESET);
-    out
 }
 
 #[cfg(test)]
@@ -578,6 +643,142 @@ mod tests {
         assert_eq!(visible_width(&coloured), "a code b".len());
         let lines = wrap(&coloured, 20);
         assert_eq!(lines.len(), 1, "escapes must not consume width: {lines:?}");
+    }
+
+    #[test]
+    fn a_streamed_code_block_is_highlighted_once_per_line_not_once_per_frame() {
+        // §13.3 one layer down, and the reason `BlockCache` keeps a highlighter
+        // rather than calling a one-shot painter per frame. A full repaint per
+        // delta would make the bytes handed to the lexer quadratic in the block,
+        // and nothing on the screen would look different — which is exactly the
+        // kind of regression an instrument has to exist for.
+        let src: String = (0..300)
+            .map(|i| format!("    let x{i} = \"value {i}\"; // comment {i}\n"))
+            .collect();
+        let doc = format!("```rust\n{src}```\n");
+        let mut md = IncrementalMarkdown::new();
+        let mut cache = BlockCache::new();
+        let cfg = RenderConfig {
+            width: 100,
+            color: true,
+            budget: Budget::default(),
+        };
+        let mut buf = String::new();
+        let mut frames = 0u64;
+        for ch in doc.chars() {
+            buf.push(ch);
+            if buf.chars().count() >= 16 {
+                md.push(&buf);
+                buf.clear();
+                cache.split(&md, &cfg, 40);
+                frames += 1;
+            }
+        }
+        md.push(&buf);
+        cache.split(&md, &cfg, 40);
+
+        // What a repaint-per-frame would cost: the whole block, every frame.
+        let naive = src.len() as u64 * frames;
+        let actual = cache.bytes_highlighted();
+        assert!(
+            actual < naive / 8,
+            "highlighted {actual} bytes over {frames} frames for a {}-byte block; \
+             a full repaint per delta would be {naive}",
+            src.len()
+        );
+    }
+
+    #[test]
+    fn painting_a_code_block_never_changes_the_text_in_it() {
+        // The invariant that makes a highlighter safe to put underneath a
+        // wrapper: strip the escapes and the source comes back.
+        let block = Block::Code {
+            lang: "rust".into(),
+            lines: vec![
+                "fn main() {".into(),
+                "    let s = \"a string\"; // and a comment".into(),
+                "}".into(),
+            ],
+            closed: true,
+        };
+        let cfg = RenderConfig {
+            width: 100,
+            color: true,
+            budget: Budget::default(),
+        };
+        let lines = render_block(&block, &cfg);
+        let plain: Vec<String> = lines
+            .iter()
+            .map(|l| strip(l))
+            .filter(|l| l.starts_with("│ "))
+            .map(|l| l[4..].to_string())
+            .collect();
+        assert_eq!(
+            plain,
+            vec![
+                "fn main() {",
+                "    let s = \"a string\"; // and a comment",
+                "}"
+            ]
+        );
+        // …and it is actually painted.
+        assert!(lines.iter().any(|l| l.contains("\x1b[38;5;")), "{lines:?}");
+    }
+
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            if esc {
+                if c.is_ascii_alphabetic() {
+                    esc = false;
+                }
+                continue;
+            }
+            if c == '\x1b' {
+                esc = true;
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    #[test]
+    fn a_wide_character_measures_two_columns_and_wraps() {
+        // The bug the whole width swap was for. The old measure counted a char as
+        // one column, so a line of CJK was rendered at half its real width and the
+        // terminal wrapped it — putting a row on the screen the head had not
+        // counted.
+        assert_eq!(visible_width("你好"), 4);
+        assert_eq!(visible_width("héllo"), 5);
+        for l in wrap("你好世界这是一个测试用的句子没有空格", 10) {
+            assert!(visible_width(&l) <= 10, "{l:?}");
+        }
+        assert!(wrap("你好世界这是一个测试用的句子没有空格", 10).len() > 1);
+        // …and a truncation never splits a cluster.
+        assert_eq!(visible_width(&trim_to("你好世界", 5)), 5);
+    }
+
+    #[test]
+    fn a_decorated_cache_puts_the_rail_on_every_line_including_the_frozen_ones() {
+        let d = Decor {
+            prefix: "┃ ".into(),
+            open: String::new(),
+        };
+        let mut md = IncrementalMarkdown::new();
+        md.push("one paragraph\n\nanother paragraph\n\nand a third that is still open");
+        let mut cache = BlockCache::decorated(d);
+        let cfg = RenderConfig {
+            width: 40,
+            color: false,
+            budget: Budget::default(),
+        };
+        let lines = cache.lines(&md, &cfg, 40);
+        assert!(md.stable_count() > 0, "some of it must be frozen");
+        for l in lines.iter().filter(|l| !l.is_empty()) {
+            assert!(l.starts_with("┃ "), "{l:?}");
+        }
     }
 
     #[test]
