@@ -65,13 +65,19 @@
 //!   answers to one question start disagreeing.
 //! - **No firecode backend.** One `Box<dyn ExecBackend>`, by construction: no tool
 //!   in this crate calls `std::fs`.
-//! - **No MCP client.** [`builtins::retrieval::Retrieval`] is the seam; see that
-//!   module for why a client written blind would be worse than none.
+//! - **No MCP client, no HTTP client, no search provider and no forge credential.**
+//!   [`builtins::retrieval::Retrieval`] and the four seams in
+//!   [`builtins::external`] are where they attach; see those modules for why a
+//!   transport written blind, against a server nobody here can reach, would be
+//!   worse than none. The *tools* ship — with their real schemas, declaring
+//!   [`Access::Network`], refusing with `NotRun` — because a tool schema is stable
+//!   prefix and adding one later re-prefills every conversation.
 //! - **No async runtime and no HTTP.** The same argument the turn engine makes:
 //!   the whole thing is a synchronous function of a call and a filesystem.
 
 pub mod adjudicate;
 pub mod args;
+pub mod attach;
 pub mod backend;
 pub mod builtins;
 pub mod edit;
@@ -92,7 +98,9 @@ pub use adjudicate::{
     permission_options,
 };
 pub use args::{Repair, SalvageError, Salvaged, salvage};
+pub use attach::NotAttached;
 pub use backend::{BackendError, Command, DirEntry, ExecBackend, HostBackend, Output};
+pub use builtins::external::{ExternalBackends, ExternalDisclosure, ExternalWiring};
 pub use edit::{ChangedSpan, FileEdit, FileText, Relax};
 pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use files::{FileLedger, Seen};
@@ -128,6 +136,30 @@ pub fn read_only_tools(
     reg.register(Box::new(Ask::code(retrieval.clone())))?;
     reg.register(Box::new(Ask::corpus(retrieval)))?;
     reg.register(Box::new(builtins::read_spill::ReadSpill))?;
+    Ok(reg)
+}
+
+/// Add the tools that need infrastructure this box does not run.
+///
+/// `web_search`, `web_fetch` and `github`, over whatever [`ExternalBackends`] the
+/// session was given — which is [`ExternalBackends::unattached`] here, so all three
+/// refuse. They are **registered, not seated**: the registry is a superset and
+/// [`Registry::resolve_role`] decides what a session's prompt actually carries,
+/// because §8.4's ceiling is eight and these three plus the read-only seven are
+/// ten.
+///
+/// MCP tools are not registered here. Their schemas are the server's, so they are
+/// mounted from a catalog at open time — [`builtins::external::mcp::mount`], which
+/// is also where §8.4's *"refused with its tool list, not silently truncated"*
+/// lives.
+pub fn external_tools(
+    mut reg: Registry,
+    backends: &ExternalBackends,
+) -> Result<Registry, RegisterError> {
+    use builtins::external::{github::Github, web::{WebFetch, WebSearch}};
+    reg.register(Box::new(WebSearch::new(backends.search.clone())))?;
+    reg.register(Box::new(WebFetch::new(backends.fetch.clone())))?;
+    reg.register(Box::new(Github::new(backends.github.clone())))?;
     Ok(reg)
 }
 

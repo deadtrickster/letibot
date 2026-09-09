@@ -33,9 +33,9 @@
 //! it returns `NotRun`: *nothing ran*, which is a different fact from *the corpus
 //! does not cover it*, and both are different from an answer.
 
-use letibot_transcript::ToolOutcome;
 use serde_json::Value;
 
+use crate::attach::NotAttached;
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -81,8 +81,12 @@ pub struct RetrievalAnswer {
 
 #[derive(Debug)]
 pub enum RetrievalError {
-    /// Nothing is attached. Distinguished from "no coverage" on purpose.
-    NotAttached(String),
+    /// Nothing is attached. Distinguished from "no coverage" on purpose, and
+    /// carried in [`NotAttached`] rather than as a sentence: this tool was the
+    /// first thing in the tree with nothing behind it and it wrote its own
+    /// wording, which is how the second one would have got a different wording.
+    /// See [`crate::attach`].
+    NotAttached(NotAttached),
     Transport(String),
 }
 
@@ -118,11 +122,16 @@ impl Retrieval for Unavailable {
         kind: RetrievalKind,
         _query: &RetrievalQuery,
     ) -> Result<RetrievalAnswer, RetrievalError> {
-        Err(RetrievalError::NotAttached(format!(
-            "no retrieval backend is attached to this session, so `{}` did not run. \
-             Use `grep` and `read` on the tree instead.",
-            kind.tool_name()
-        )))
+        Err(RetrievalError::NotAttached(
+            NotAttached::new(
+                kind.tool_name(),
+                "no retrieval backend",
+                "no corpus was queried and no index was opened",
+                "attach a retrieval backend to the session; none is running on this \
+                 fleet, which was checked rather than assumed (T16.6)",
+            )
+            .instead("`grep` and `read` over this tree"),
+        ))
     }
 
     fn describe(&self) -> String {
@@ -211,14 +220,10 @@ impl Tool for Ask {
         ctx.progress(format!("asking {}", self.kind.tool_name()));
 
         match self.backend.ask(self.kind, &query) {
-            Err(RetrievalError::NotAttached(why)) => Invocation {
-                // Nothing ran. Not an abstention, because nothing formed an
-                // opinion, and not a failure of the corpus.
-                outcome: ToolOutcome::NotRun { why: why.clone() },
-                payload: why,
-                notes: vec![],
-                edit: None,
-            },
+            // Nothing ran. Not an abstention, because nothing formed an opinion,
+            // and not a failure of the corpus. One shape for that, shared with
+            // every other tool whose infrastructure is absent.
+            Err(RetrievalError::NotAttached(na)) => na.invocation(),
             Err(e @ RetrievalError::Transport(_)) => Invocation::failed(
                 e.to_string(),
                 "the retrieval backend could not be reached. `grep` and `read` still \
@@ -290,6 +295,7 @@ fn answer(kind: RetrievalKind, query: &RetrievalQuery, a: RetrievalAnswer) -> In
 mod tests {
     use super::*;
     use crate::result::{Envelope, Propagation, propagate};
+    use letibot_transcript::ToolOutcome;
     use crate::testing::{Scripted, harness_with_retrieval};
 
     #[test]

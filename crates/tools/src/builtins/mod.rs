@@ -21,6 +21,7 @@
 //! | [`retrieval`] | a corpus that does not cover the question abstains, in the `NO_RESULT` envelope, and says what it searched |
 //! | [`edit`] | a miss reports **the text that is actually there**, at which lines, and whether the difference is whitespace, indentation or case; more than one match reports every line number |
 //! | [`mod@write`] | an overwrite of an unread or changed file is refused **with the file**, and the refusal records it so the retry proceeds |
+//! | [`external`] | a tool whose infrastructure is not attached names what is missing, what would attach it, and what still works here — and returns `NotRun`, because nothing ran |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
@@ -29,6 +30,7 @@
 //! is about to change.
 
 pub mod edit;
+pub mod external;
 pub mod glob;
 pub mod grep;
 pub mod outline;
