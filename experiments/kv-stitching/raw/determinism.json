@@ -1,0 +1,11 @@
+{
+ "n_pred_cold": 200,
+ "A_repeat_same_construction": 43,
+ "B_restored_vs_cold": 43,
+ "C_noop_relabel_vs_plain": 79,
+ "n_pred": [
+  200,
+  200,
+  200
+ ]
+}
