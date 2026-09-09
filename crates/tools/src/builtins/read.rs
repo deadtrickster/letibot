@@ -73,6 +73,12 @@ impl Tool for Read {
         }
 
         let (text, lossy) = text_of(&bytes);
+        // Read-before-write's other half. Recorded here, at the moment the bytes
+        // are read, rather than at the moment they are rendered: the digest is
+        // about the file, and an `offset`/`limit` window changes what is shown and
+        // not what is there. See `crate::files`.
+        let whole_file = args.get("offset").is_none() && args.get("limit").is_none();
+        ctx.files.record(path, &bytes, whole_file);
         let lines: Vec<&str> = text.lines().collect();
         let total = lines.len();
 

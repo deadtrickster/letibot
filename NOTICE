@@ -68,6 +68,20 @@ Material adapted, by letibot file:
       is plain data and one function. The inline/full byte-count disclosure and
       the abstention outcome are letibot's and have no grok-build counterpart.
 
+  crates/tools/src/builtins/edit.rs
+      Design read, no code taken:
+      crates/codegen/xai-grok-tools/src/implementations/grok_build/search_replace/
+      — exact `match_indices` matching with the one relaxation off by default;
+      `build_nearest_match_hint` (the longest whitespace-delimited token of the
+      search string's first line, reported with a line number) is the shape of
+      letibot's `anchor_lines`, re-implemented from the behaviour rather than
+      copied; and the discipline of stripping a description sentence when the
+      behaviour it describes is switched off, so the model is never told a rule
+      that is not running. Their `search_replace/mod.rs:803` comment — that
+      read-before-edit is *"encouraged via description and RL grading, not
+      runtime-enforced"* — is quoted as the gap `crates/tools/src/files.rs`
+      closes.
+
   crates/ui/src/progress.rs
       Adapted from crates/codegen/xai-grok-pager/src/views/progress_bar.rs —
       eighth-of-a-cell bar resolution using the LEFT BLOCK glyphs, and the
@@ -155,6 +169,22 @@ Material adapted, by letibot file:
       byte-offset conversion over grapheme clusters. letibot's `locate` and
       `offset_at` do the same job; no code was copied (theirs is Intl.Segmenter
       plus Bun.stringWidth, neither of which exists in Rust).
+
+  crates/tools/src/edit.rs, crates/tools/src/builtins/edit.rs
+      Design read, no code taken: packages/opencode/src/tool/edit.ts (the nine
+      replacers and their 0.65 Levenshtein similarity floor) and
+      packages/core/src/tool/edit.ts (the exact-only rewrite, its deferral TODO
+      at line 84, and the `writeIfUnchanged` compare-and-swap). letibot's
+      relaxation ladder covers the same ground — trailing whitespace,
+      indentation, inner whitespace, case, first/last-line anchors — and
+      **inverts the decision**: a relaxed match is reported to the model with
+      the exact bytes that are there, never applied. Their error strings are
+      quoted in the module headers as the thing being improved on, not as text
+      to reuse. The allow/ask/deny permission ladder in
+      crates/tools/src/adjudicate.rs is opencode's permission *model*, which
+      `docs/implementation-plan.md` §11.9 identifies as the part worth
+      vendoring; the async ask path is not theirs — `permission.ask` is declared
+      at plugin/index.ts:261 with zero trigger sites repo-wide.
 
 Note for anyone repeating this survey: opencode's terminal *rendering* is not in
 opencode. Markdown parsing, wrapping, unicode width, syntax highlighting, diff

@@ -14,16 +14,25 @@
 //! this trait and through nothing else — no `std::fs` calls in the tools — which
 //! is what makes the M2 swap one `Box<dyn ExecBackend>`.
 //!
-//! # What is deliberately unimplemented, and why that is not a gap
+//! # What is implemented, and what is still refused
 //!
-//! [`HostBackend`] implements the **read** half. `write` and `run` return
-//! [`BackendError::Unsupported`] naming the adjudication boundary (§11.4) that
-//! does not exist yet. The methods are on the trait because a seam with a hole in
-//! it is not a seam; the host implementation refuses them because shipping an
-//! ungated exec path on the host is exactly what M2's boundary is for. A firecode
-//! backend implements all four, and nothing above this line changes.
+//! [`HostBackend`] implements read, list, stat and — since W10 — **write**, but
+//! only when it was opened with [`HostBackend::writable`]. [`HostBackend::new`]
+//! still refuses, and that asymmetry is the second of the two gates a write must
+//! pass; see the type's own docs.
+//!
+//! `run` is still refused outright. Exec needs §11.4's boundary — *the guest sees
+//! a copy of one project and nothing else of the host* — and a boundary is a
+//! substrate, not a policy: no adjudicator on this side of it can make an
+//! unsandboxed `bash` on the operator's box into something the plan describes. It
+//! arrives with the firecode backend, which implements all four methods with
+//! nothing above this line changing.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+
+/// Distinguishes the temp files two concurrent writes create in one directory.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A command to run. `run(cmd, cwd, env)` in the shape the plan names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +101,39 @@ pub trait ExecBackend: Send + Sync {
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
+    /// Replace a file's contents.
+    ///
+    /// **Required to be atomic**, and that is part of the interface rather than an
+    /// implementation note: a half-written file is worse than a refused edit,
+    /// because it is a file whose contents nobody — not the model, not the
+    /// operator, not the next tool call — can predict. An implementation that
+    /// cannot write atomically must fail rather than write partially.
+    ///
+    /// Missing parent directories are created. A tool that had to call `mkdir`
+    /// first would either need a `mkdir` in this trait or a shell, and both are
+    /// larger holes than this is a convenience.
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError>;
+
+    /// Whether [`ExecBackend::write`] can do anything.
+    ///
+    /// Defaults to `false` — a backend that has not said it is writable is not
+    /// writable, which is the same fail-closed default the gate keeps one layer
+    /// up. A tool asks so that its refusal can name *which* of the two gates
+    /// stopped it, because "permission denied" that does not say by whom is the
+    /// refusal that costs an hour.
+    fn is_writable(&self) -> bool {
+        false
+    }
+
+    /// The backend's root as a path a caller may compare an argument against.
+    ///
+    /// `None` by default: a tar channel, or a firecode guest seen from the host,
+    /// has no host path that means anything here, and inventing one would make
+    /// [`crate::runtime::GateCall::path_is_inside`] answer confidently about a
+    /// filesystem it is not looking at.
+    fn root_path(&self) -> Option<String> {
+        None
+    }
 
     /// One directory, not recursive. Recursion belongs to the tools, which then
     /// works identically over a tar channel that has no `walkdir`.
@@ -111,18 +152,44 @@ pub trait ExecBackend: Send + Sync {
 /// is the sandbox. It is the smallest thing that makes clause 4's "a read-only
 /// tool never prompts" safe to ship before that boundary exists: a read tool that
 /// can reach `~/.ssh` is a tool that should have prompted.
+///
+/// # Writable is a constructor, not a flag
+///
+/// [`HostBackend::new`] gives a **read-only** backend and [`HostBackend::writable`]
+/// gives one that can write. That asymmetry is the point: every caller that
+/// existed before write tools did keeps a backend that physically cannot write,
+/// so a write tool registered into an old session refuses at the backend even if
+/// something went wrong at the gate. Two independent mechanisms, because a safety
+/// property with one mechanism behind it is a safety property that ships broken
+/// the first time somebody refactors the mechanism.
 #[derive(Debug, Clone)]
 pub struct HostBackend {
     root: PathBuf,
+    writable: bool,
 }
 
 impl HostBackend {
+    /// A read-only backend. `write` refuses.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         let root = root
             .as_ref()
             .canonicalize()
             .map_err(|e| BackendError::Io(e.to_string()))?;
-        Ok(HostBackend { root })
+        Ok(HostBackend {
+            root,
+            writable: false,
+        })
+    }
+
+    /// A backend that can change the operator's tree.
+    ///
+    /// Spelled as its own constructor so that `grep -rn 'HostBackend::writable'`
+    /// finds every place in the tree where that became possible.
+    pub fn writable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
+        Ok(HostBackend {
+            writable: true,
+            ..Self::new(root)?
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -199,10 +266,109 @@ impl ExecBackend for HostBackend {
         })
     }
 
-    fn write(&self, _path: &str, _bytes: &[u8]) -> Result<(), BackendError> {
-        Err(BackendError::Unsupported(
-            "write tools arrive with the adjudication boundary in M2 (§11.4)",
-        ))
+    /// Atomic by construction: a temp file beside the target, then `rename`.
+    ///
+    /// The order matters and each step is a failure somebody has met:
+    ///
+    /// 1. the temp file is created in the **same directory**, because `rename` is
+    ///    only atomic within a filesystem and `/tmp` is routinely a different one;
+    /// 2. the original's mode is copied onto the temp file before the rename, or
+    ///    an edit to an executable script silently disarms it;
+    /// 3. the data is `sync_all`'d before the rename, so a crash between the two
+    ///    leaves either the old file or the new one and never a rename that
+    ///    published an empty inode;
+    /// 4. the *directory* is synced after, so the rename itself survives;
+    /// 5. a symlink is followed to its target rather than replaced, because
+    ///    replacing it is a different edit from the one that was asked for. The
+    ///    target has already been checked to be inside the root by
+    ///    [`HostBackend::resolve`].
+    ///
+    /// The temp file is removed on every failure path, so a refused write leaves
+    /// no litter to be mistaken for a partial one.
+    fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+        use std::io::Write;
+
+        if !self.writable {
+            return Err(BackendError::Unsupported(
+                "this session's backend was opened read-only (HostBackend::new); \
+                 a session that may change files opens it with HostBackend::writable",
+            ));
+        }
+        let resolved = self.resolve(path)?;
+        // (5) follow a symlink to its target; `resolve` already refused one that
+        // points out of the root.
+        let target = resolved.canonicalize().unwrap_or(resolved);
+        if target.is_dir() {
+            return Err(BackendError::IsADirectory(path.to_string()));
+        }
+        let Some(dir) = target.parent() else {
+            return Err(BackendError::Io(format!("{path} has no parent directory")));
+        };
+        std::fs::create_dir_all(dir).map_err(|e| BackendError::Io(e.to_string()))?;
+
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "out".into());
+        // (1) same directory, and a name nothing else will pick.
+        let tmp = dir.join(format!(
+            ".{name}.letibot-{}-{}.tmp",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let write_it = || -> std::io::Result<()> {
+            let mut f = opts.open(&tmp)?;
+            f.write_all(bytes)?;
+            // (3) the data reaches the disk before the rename publishes it.
+            f.sync_all()?;
+            drop(f);
+            // (2) inherit the original's mode. A **new** file gets 0644 rather
+            // than keeping the 0600 it was created with: a source file the
+            // operator's editor, build or web server cannot read is a surprise
+            // that shows up somewhere else entirely, and the confidentiality it
+            // would buy inside a project tree is nil. Fixed rather than
+            // umask-derived because `std` does not expose the umask, and a
+            // predictable mode beats one that depends on how the daemon was
+            // started.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&target)
+                    .map(|m| m.permissions().mode())
+                    .unwrap_or(0o644);
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+            }
+            std::fs::rename(&tmp, &target)?;
+            // (4) best effort: a filesystem that will not let us open a directory
+            // is not a reason to report a write that succeeded as failed.
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+            Ok(())
+        };
+        match write_it() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(BackendError::Io(e.to_string()))
+            }
+        }
+    }
+
+    fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    fn root_path(&self) -> Option<String> {
+        Some(self.root.to_string_lossy().to_string())
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
@@ -332,7 +498,7 @@ mod tests {
     fn write_and_run_are_named_and_refused_rather_than_missing() {
         let (_d, b) = fixture();
         let e = b.write("a", b"x").unwrap_err();
-        assert!(format!("{e}").contains("M2"), "{e}");
+        assert!(format!("{e}").contains("read-only"), "{e}");
         let e = b
             .run(&Command {
                 argv: vec!["ls".into()],
