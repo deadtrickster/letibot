@@ -476,7 +476,10 @@ fn run_query(
                     age(now - s.last_activity_ms),
                     s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
                 );
-                println!("{:<wid$}  {:>19}{}", "", "", s.workspace_root);
+                // The same prefix width as the row above it — `wid + 2 + 5 + 2 + 7 + 2`
+                // — so the workspace lines up under the title rather than three
+                // columns past it.
+                println!("{:<wid$}  {:>16}{}", "", "", s.workspace_root);
             }
             Ok(0)
         }
