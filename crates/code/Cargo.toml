@@ -1,0 +1,26 @@
+[package]
+name = "letibot-code"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The structural half of search, kept out of `letibot-tools` on purpose.
+#
+# Every grammar below is C and pulls a `cc` build. `letibot-tools`' own manifest
+# says it has no `build.rs`, and the reason it gives -- a tool runtime that
+# needed a native build to grep a file would be a layering mistake -- did not
+# stop being true when the tool set grew a parser. So the parser is a crate, and
+# `letibot-tools` depends on it the way it depends on `sha2`.
+#
+# Nothing else in the workspace has to. `letibot-code` knows about source text
+# and line numbers; it does not know what a tool, a turn or a transcript is.
+[dependencies]
+tree-sitter = "0.27"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-bash = "0.25"
+tree-sitter-json = "0.24"

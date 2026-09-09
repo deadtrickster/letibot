@@ -21,7 +21,7 @@ use crate::backend::{DirEntry, default_skip, walk};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-use super::pattern::{Pattern, bare_identifier, glob_match};
+use super::pattern::{Pattern, PatternError, bare_identifier, glob_match};
 use super::text_of;
 
 pub struct Grep;
@@ -53,7 +53,7 @@ impl Tool for Grep {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Pattern to search for. Literals, ., *, +, ?, [...], (...), |, ^, $, \\b, \\w, \\d, \\s."},
+                    "pattern": {"type": "string", "description": "Regular expression, in Rust `regex` syntax: literals, ., *, +, ?, {n,m}, [...], (...), |, ^, $, \\b, \\w, \\d, \\s, \\p{...}, and inline flags like (?i). Matched against one LINE at a time. No backreferences and no lookaround, a question that needs those is structural, and `outline` answers it."},
                     "path": {"type": "string", "description": "Directory to search under. Defaults to the session root."},
                     "glob": {"type": "string", "description": "Only read files whose path matches this glob."},
                     "case_insensitive": {"type": "boolean"},
@@ -110,52 +110,71 @@ impl Tool for Grep {
             ));
         }
 
-        let mut ladder: Vec<Attempt> = Vec::new();
-        ladder.push(Attempt {
-            pattern: Pattern::compile(source, ci),
+        // A pattern that does not compile is a REPORTED ERROR. The engine that
+        // used to sit here treated an unsupported construct as a literal string
+        // and attached a note saying so -- which is still a search for something
+        // other than what was asked, merely an annotated one, and the model has
+        // no way to tell an annotated approximation from an answer. What comes
+        // back now is `regex`'s own message, which names the position in the
+        // pattern, plus the one sentence about what to do next.
+        let asked = match Pattern::compile(source, ci) {
+            Ok(p) => p,
+            Err(e) => return compile_failed(&e),
+        };
+
+        let mut ladder: Vec<Attempt> = vec![Attempt {
+            pattern: asked,
             scope: scope.clone(),
             relaxation: None,
-        });
+        }];
         let bare = bare_identifier(source);
         if let Some(b) = &bare {
-            ladder.push(Attempt {
-                pattern: Pattern::compile(b, ci),
-                scope: scope.clone(),
-                relaxation: Some(format!(
+            push_rung(
+                &mut ladder,
+                b,
+                ci,
+                &scope,
+                format!(
                     "the pattern `{source}` matched nothing, so it was relaxed to its bare \
                      identifier `{b}`"
-                )),
-            });
+                ),
+            );
         }
         if !ci {
             let p = bare.clone().unwrap_or_else(|| source.to_string());
-            ladder.push(Attempt {
-                pattern: Pattern::compile(&p, true),
-                scope: scope.clone(),
-                relaxation: Some(format!("`{p}` was retried without case sensitivity")),
-            });
+            let note = format!("`{p}` was retried without case sensitivity");
+            push_rung(&mut ladder, &p, true, &scope, note);
         }
         if scope != "." {
             let p = bare.clone().unwrap_or_else(|| source.to_string());
-            ladder.push(Attempt {
-                pattern: Pattern::compile(&p, ci),
-                scope: ".".to_string(),
-                relaxation: Some(format!(
-                    "nothing under `{scope}` matched, so `{p}` was searched across the \
-                     whole session root"
-                )),
-            });
+            let note = format!(
+                "nothing under `{scope}` matched, so `{p}` was searched across the \
+                 whole session root"
+            );
+            push_rung(&mut ladder, &p, ci, ".", note);
         }
 
         let mut tried: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
-        let mut unsupported: Vec<String> = ladder[0].pattern.unsupported.clone();
-        unsupported.dedup();
+        let mut parseable: Vec<&'static str> = Vec::new();
 
         for attempt in &ladder {
-            let (hits, scanned, truncated) =
-                search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
-            files_scanned = files_scanned.max(scanned);
+            let scan = search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
+            files_scanned = files_scanned.max(scan.scanned);
+            // Only from the scope the model ASKED about. The widened rung reads
+            // the whole session root, and letting its languages count would
+            // produce "the files searched here are rust" about a `path: docs`
+            // holding nothing but markdown -- and then `outline` on that path
+            // would refuse. A suggestion that costs a round to save a round is
+            // worse than none.
+            if attempt.scope == scope {
+                for l in &scan.languages {
+                    if !parseable.contains(l) {
+                        parseable.push(l);
+                    }
+                }
+            }
+            let (hits, truncated) = (scan.hits, scan.truncated);
             if hits.is_empty() {
                 if let Some(r) = &attempt.relaxation {
                     tried.push(r.clone());
@@ -164,13 +183,6 @@ impl Tool for Grep {
             }
 
             let mut inv = Invocation::ok(render_hits(&hits, &attempt.scope));
-            if !unsupported.is_empty() {
-                inv = inv.with_note(format!(
-                    "this grep understands a subset of regular expressions and treated \
-                     the rest literally: {}",
-                    unsupported.join("; ")
-                ));
-            }
             // The relaxation, and every rung below it, in the result the model
             // reads. A silent relaxation is a rewritten query.
             for t in &tried {
@@ -183,6 +195,14 @@ impl Tool for Grep {
                 ));
                 if attempt.scope != scope {
                     inv = inv.with_note(where_it_occurs(&hits, &scope));
+                }
+                // MATCHED POORLY: the pattern the model wrote found nothing and a
+                // relaxation rescued the call. If the pattern was structural, the
+                // relaxation is not the fix -- it is the second-best lexical
+                // approximation of a question that has an exact answer one tool
+                // over.
+                if let Some(n) = outline_suggestion(source, &scope, &parseable) {
+                    inv = inv.with_note(n);
                 }
             }
             if truncated {
@@ -208,12 +228,16 @@ impl Tool for Grep {
             let mut why = String::new();
             if let Some(g) = file_glob {
                 why.push_str(&format!(
-                    "`glob` is matched against each file's PATH from the session root,                      not its name, so `{g}` selects nothing under a subdirectory. Try                      `**/{}` or drop `glob` and narrow with `path`.\n",
+                    "`glob` is matched against each file's PATH from the session \
+                     root, not its name, so `{g}` selects nothing under a \
+                     subdirectory. Try `**/{}` or drop `glob` and narrow with \
+                     `path`.\n",
                     g.trim_start_matches("*/").trim_start_matches('*')
                 ));
             }
             why.push_str(&format!(
-                "nothing under `{scope}` was opened, so this call says NOTHING about                  whether `{source}` occurs. Fix the scope and ask again."
+                "nothing under `{scope}` was opened, so this call says NOTHING \
+                 about whether `{source}` occurs. Fix the scope and ask again."
             ));
             return Invocation::failed(
                 format!("0 files matched the scope, so `{source}` was never searched for"),
@@ -238,13 +262,132 @@ impl Tool for Grep {
             "\nthe string is not in the searched tree. `glob` searches file *names*, \
              and `ask_code` answers questions the text does not spell out.\n",
         );
-        Invocation::abstained(
+        let suggestion = outline_suggestion(source, &scope, &parseable);
+        let mut inv = Invocation::abstained(
             format!(
                 "`{source}` does not occur in the {files_scanned} file(s) searched"
             ),
             body,
-        )
+        );
+        if let Some(n) = suggestion {
+            inv = inv.with_note(n);
+        }
+        inv
     }
+}
+
+/// The definition keywords that make a pattern structural rather than lexical.
+///
+/// Not "words that appear in code" — words that name a KIND OF DEFINITION, which
+/// is what `outline` indexes. `pub`, `return` and `let` are deliberately absent:
+/// a search for `pub` is a search for text.
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "fn", "func", "def", "struct", "enum", "impl", "trait", "mod", "class", "interface",
+    "type", "macro_rules", "package",
+];
+
+/// Does this pattern ask a STRUCTURAL question in a lexical language?
+///
+/// The test is deliberately narrow — a LINE ANCHOR plus a definition keyword —
+/// because a suggestion that fires on every search that mentions `fn` is noise,
+/// and noise in the notes is how the notes stop being read. The anchor is what
+/// makes it structural: `^fn` is not looking for the text `fn`, it is looking
+/// for a definition and guessing at the column it starts in.
+fn is_structural(source: &str) -> bool {
+    if !source.contains('^') {
+        return false;
+    }
+    let mut word = String::new();
+    let mut hit = false;
+    for c in source.chars().chain([' ']) {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            continue;
+        }
+        if DEFINITION_KEYWORDS.contains(&word.as_str()) {
+            hit = true;
+        }
+        word.clear();
+    }
+    hit
+}
+
+/// Name `outline` when it would actually have answered, and stay quiet otherwise.
+///
+/// Two conditions, and the second is the one that keeps it honest: the pattern
+/// has to be structural, AND the files that were actually opened have to be in a
+/// language this build can parse. Suggesting `outline` for a tree of `.tf` files
+/// would be handing the model a tool that will refuse it — a second wasted round
+/// to save a first one.
+///
+/// It suggests and does not run. §9.4: the harness must not silently improve a
+/// tool's query, and running a different tool is a larger rewrite than relaxing
+/// a pattern, not a smaller one. The model decides.
+fn outline_suggestion(source: &str, scope: &str, parseable: &[&'static str]) -> Option<String> {
+    if !is_structural(source) || parseable.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "`{source}` is a STRUCTURAL question asked lexically, and relaxing it cannot \
+         fix that: keep the `^` and a definition indented under an `impl` or a `class` \
+         is invisible, drop it and the keyword matches inside comments and strings. \
+         `outline` with `path: \"{scope}\"` answers it from a parse — definitions with \
+         line numbers, kinds and their containing symbol. The files searched here are \
+         {} and it can parse those.",
+        parseable.join(", ")
+    ))
+}
+
+/// Add a rung, or leave it off if its pattern will not compile.
+///
+/// A rung is a RELAXATION, so it is allowed to be unavailable: the bare
+/// identifier and the widened scope are both derived from a pattern that already
+/// compiled, so this is close to unreachable — but a rung that silently searched
+/// for something else would be the exact failure the compile error exists to
+/// prevent, one level down.
+fn push_rung(
+    ladder: &mut Vec<Attempt>,
+    source: &str,
+    ci: bool,
+    scope: &str,
+    relaxation: String,
+) {
+    if let Ok(pattern) = Pattern::compile(source, ci) {
+        ladder.push(Attempt {
+            pattern,
+            scope: scope.to_string(),
+            relaxation: Some(relaxation),
+        });
+    }
+}
+
+/// The engine's own words about the pattern, and what to do about it.
+///
+/// `failed`, not `abstained`: an abstention is a claim that the content was
+/// looked at and did not contain the term, and this call opened no files at all.
+/// Same rule as the zero-files case below.
+fn compile_failed(e: &PatternError) -> Invocation {
+    Invocation::failed(
+        format!("`{}` did not compile, so nothing was searched", e.source),
+        format!("{}\n\n{}", e.message, e.remedy()),
+    )
+    .with_note(
+        "the pattern was NOT approximated and NOT searched for literally: this call \
+         says nothing about whether it occurs.",
+    )
+}
+
+/// What one rung of the ladder found, and over what.
+struct Scan {
+    hits: Vec<Hit>,
+    /// Files actually OPENED. The denominator; zero is a failed scope.
+    scanned: usize,
+    truncated: bool,
+    /// The languages among the files opened that `outline` has a grammar for.
+    /// Collected here because it is the only place that knows which files were
+    /// really read, and a suggestion to use `outline` is only honest if it would
+    /// have worked.
+    languages: Vec<&'static str>,
 }
 
 fn search(
@@ -253,7 +396,7 @@ fn search(
     scope: &str,
     file_glob: Option<&str>,
     max: usize,
-) -> (Vec<Hit>, usize, bool) {
+) -> Scan {
     // `scope` may name a single file; `walk` would list it, fail, and return
     // nothing. See the `single_file` note above.
     let one: Vec<DirEntry>;
@@ -281,6 +424,7 @@ fn search(
 
     let mut hits = Vec::new();
     let mut scanned = 0usize;
+    let mut languages: Vec<&'static str> = Vec::new();
     for (i, e) in files.iter().enumerate() {
         if i > 0 && i % 500 == 0 {
             // §8.5: progress is liveness. A walk over a large tree must produce it.
@@ -294,21 +438,40 @@ fn search(
             continue;
         }
         scanned += 1;
+        if let Ok(l) = letibot_code::Language::of_path(&e.path)
+            && !languages.contains(&l.name())
+        {
+            languages.push(l.name());
+        }
         let (text, _) = text_of(&bytes);
-        for (n, line) in text.lines().enumerate() {
-            if pattern.is_match(line) {
-                hits.push(Hit {
-                    path: e.path.clone(),
-                    line_no: n + 1,
-                    line: line.to_string(),
-                });
-                if hits.len() >= max {
-                    return (hits, scanned, true);
-                }
-            }
+        // One scan of the whole buffer rather than one engine call per line. The
+        // semantics are identical -- `line_hits` confirms every candidate against
+        // the line-scoped program -- and the measurement is the whole reason the
+        // matcher was replaced.
+        let remaining = max - hits.len();
+        let path = e.path.clone();
+        let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
+            hits.push(Hit {
+                path: path.clone(),
+                line_no,
+                line: line.to_string(),
+            });
+        });
+        if truncated {
+            return Scan {
+                hits,
+                scanned,
+                truncated: true,
+                languages,
+            };
         }
     }
-    (hits, scanned, false)
+    Scan {
+        hits,
+        scanned,
+        truncated: false,
+        languages,
+    }
 }
 
 fn render_hits(hits: &[Hit], scope: &str) -> String {
@@ -395,7 +558,6 @@ mod tests {
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
     }
 
-    #[test]
     /// The rano session, 2026-09-09. `grep` was asked for `#\[cfg\(test\)\]`
     /// with `glob: "*.rs"` under `src` and answered *"does not occur in the
     /// searched tree"* — about a tree holding nine of them. `glob` is matched
@@ -444,6 +606,50 @@ mod tests {
         );
     }
 
+    /// The survey found ~20-space runs inside two guidance strings -- a `\`
+    /// continuation lost when the code was pasted, so the literal spaces shipped
+    /// to the model. Source-level scanning for this is unreliable: a correct
+    /// continuation looks the same to a naive scan, and it cost three wrong
+    /// attempts. So assert the FACT -- what is actually rendered -- and scope it
+    /// to the defect's shape, a run of spaces BETWEEN WORDS. The regex engine's
+    /// error diagnostic aligns a caret with leading spaces and must keep them;
+    /// a first cut of this test forbade that too.
+    #[test]
+    fn no_guidance_string_ships_a_run_of_spaces() {
+        let mut h = harness();
+        let calls = [
+            r#"{"pattern":"fn ","path":"src","glob":"*.rs"}"#,
+            r#"{"pattern":"quokka_sentinel"}"#,
+            r#"{"pattern":"x","path":"srcc"}"#,
+            r#"{"pattern":"TokenLedger"}"#,
+            r#"{"pattern":"^(pub )?(fn|struct)","path":"src"}"#,
+        ];
+        for c in calls {
+            let rendered = h.call("grep", c).render();
+            let bad: Vec<&str> = rendered
+                .lines()
+                .filter(|l| {
+                    let b = l.as_bytes();
+                    (0..b.len()).any(|i| {
+                        b[i] == b' '
+                            && i > 0
+                            && b[i - 1].is_ascii_alphanumeric()
+                            && b[i..].iter().take_while(|c| **c == b' ').count() >= 4
+                            && b[i..]
+                                .iter()
+                                .find(|c| **c != b' ')
+                                .is_some_and(|c| c.is_ascii_alphanumeric())
+                    })
+                })
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "a lost `\\` continuation reaches the model for {c}:\n{}",
+                bad.join("\n")
+            );
+        }
+    }
+
     #[test]
     fn a_term_that_is_nowhere_abstains_and_says_what_it_searched() {
         let mut h = harness();
@@ -456,6 +662,104 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("searched"), "{rendered}");
+    }
+
+    /// Phase 1's clause 3. The engine that used to sit here would have searched
+    /// for the LITERAL text `(?<=fn )\w+` — found nothing, said so, and attached
+    /// a note about an unsupported construct. A model reading that has been told
+    /// two true things and one false one: that the pattern does not occur.
+    #[test]
+    fn a_pattern_that_does_not_compile_is_reported_and_nothing_is_searched() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"(?<=fn )\\w+"}"#);
+        assert!(!r.is_grounded(), "{:?}", r.outcome);
+        let seen = r.render();
+        // The engine's own words, with the position.
+        assert!(seen.contains("look-around") || seen.contains("lookaround"), "{seen}");
+        // And the fact that separates this from an abstention: no file was opened,
+        // so the call makes NO claim about whether the pattern occurs.
+        assert!(seen.contains("says nothing about whether it occurs"), "{seen}");
+        assert_ne!(
+            crate::result::Envelope::classify(&seen),
+            Some("NO_RESULT"),
+            "a pattern that never compiled cannot abstain about content:\n{seen}"
+        );
+    }
+
+    /// The other half of the same clause: the syntax the old subset refused now
+    /// works, and is not reported as an approximation.
+    #[test]
+    fn counted_repetition_is_matched_rather_than_apologised_for() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"a{1,3}rgs"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+        let notes = r.notes.join(" ");
+        assert!(!notes.contains("literally"), "no approximation note: {notes}");
+    }
+
+    /// A pattern big enough to be a denial of service is refused, in the same
+    /// shape as a syntax error, rather than compiled while a turn waits.
+    #[test]
+    fn a_pattern_over_the_size_limit_is_refused_with_a_remedy() {
+        let mut h = harness();
+        let r = h.call(
+            "grep",
+            r#"{"pattern":"((((a{100}){100}){100}){100})"}"#,
+        );
+        assert!(!r.is_grounded());
+        let seen = r.render();
+        assert!(seen.contains("KiB"), "{seen}");
+    }
+
+    /// Phase 2's escalation. The rano session wrote
+    /// `^(pub )?(mod|fn|struct|enum|impl|const|static)\s` and got a relaxation,
+    /// which is the best `grep` can do and is still the wrong answer: relaxing a
+    /// structural query lexically can only miss. The RESULT must name the tool
+    /// that answers it.
+    #[test]
+    fn a_structural_pattern_that_matches_poorly_names_outline() {
+        let mut h = harness();
+        // `src/lib.rs` has `pub fn parse_args`, so the anchored form misses and
+        // the ladder rescues the call with the bare identifier.
+        let r = h.call("grep", r#"{"pattern":"^\\s*fn parse_args\\("}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("outline"), "{notes}");
+        assert!(notes.contains("STRUCTURAL"), "{notes}");
+        // Suggested, not run: the payload is still grep's hits.
+        assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+    }
+
+    #[test]
+    fn a_structural_pattern_that_matches_nothing_at_all_names_outline() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"^impl QuokkaSentinel"}"#);
+        assert!(!r.is_grounded());
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("outline"), "{notes}");
+    }
+
+    /// Honesty is the whole value of the suggestion. A lexical search gets no
+    /// suggestion however badly it misses, and neither does a structural one
+    /// over files nothing here can parse — pointing a model at a tool that will
+    /// refuse it spends a round to save a round.
+    #[test]
+    fn the_suggestion_stays_quiet_when_it_would_not_have_helped() {
+        let mut h = harness();
+
+        // Lexical: no anchor, no definition keyword, so no suggestion.
+        let r = h.call("grep", r#"{"pattern":"quokka_sentinel"}"#);
+        assert!(!r.notes.join(" ").contains("outline"), "{:?}", r.notes);
+
+        // Structural, but every file in scope is markdown and there is no
+        // grammar for it.
+        let r = h.call("grep", r#"{"pattern":"^impl Widget","path":"docs"}"#);
+        assert!(
+            !r.notes.join(" ").contains("outline"),
+            "docs/ is markdown: {:?}",
+            r.notes
+        );
     }
 
     #[test]

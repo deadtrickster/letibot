@@ -124,6 +124,7 @@ pub fn read_only_tools(
     reg.register(Box::new(builtins::read::Read))?;
     reg.register(Box::new(builtins::grep::Grep))?;
     reg.register(Box::new(builtins::glob::Glob))?;
+    reg.register(Box::new(builtins::outline::OutlineTool))?;
     reg.register(Box::new(Ask::code(retrieval.clone())))?;
     reg.register(Box::new(Ask::corpus(retrieval)))?;
     reg.register(Box::new(builtins::read_spill::ReadSpill))?;

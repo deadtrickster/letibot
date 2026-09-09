@@ -14,14 +14,33 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 # The spill locator is a content hash, and it is the same SHA-256 the ledger uses.
 sha2 = "0.10"
-
-# No `libc`, no HTTP client, no async runtime, and deliberately no `regex`. See
-# `src/builtins/pattern.rs` for what the pattern subset is, and why an unsupported
-# construct is reported to the model rather than silently approximated.
+# `regex` and `regex-syntax` REPLACED a hand-rolled matcher, and the note that
+# used to stand here said "deliberately no `regex`". The reason it gave was that
+# clause 1's relaxation is a property of the pattern's SYNTAX TREE and a full
+# engine would not help with that. The reasoning was right; the conclusion was
+# wrong, and the thing that separated them was a measurement: `--example
+# greptime` over `crates/` spent 23.7 ms of a 25.0 ms search inside the
+# hand-rolled matcher, for a search ripgrep answers in 9-10 ms. `regex_syntax`
+# turns out to hand us the same syntax tree, and a correct one, as a by-product
+# — see `bare_identifier` in `src/builtins/pattern.rs`.
+#
+# What did NOT change, and is the part worth guarding: a construct the engine
+# cannot compile is REPORTED to the model, never silently approximated. The old
+# code matched it literally and attached a note, which is the same bug wearing a
+# label; `Pattern::compile` now returns an error and `grep` shows it.
+regex = "1.13"
+regex-syntax = "0.8"
+# The structural half of search: `outline` over a tree-sitter parse. It is a
+# separate crate because the grammars are C and pull a `cc` build, and this
+# crate deliberately has no `build.rs` — see below.
+letibot-code.workspace = true
+# No `libc`, no HTTP client, no async runtime.
 #
 # No `build.rs` either: nothing here links `libllama` (T10.5's rpath problem is
 # for crates that do), because a tool runtime that needed a vocab to grep a file
-# would be a layering mistake, not a build one.
+# would be a layering mistake, not a build one. That is also why the tree-sitter
+# grammars are behind `letibot-code` rather than here: a `cc` build in the tool
+# runtime's own manifest is the same layering mistake by another route.
 
 [features]
 # The fixture tree and the scripted retrieval backend, for `tests/`.
