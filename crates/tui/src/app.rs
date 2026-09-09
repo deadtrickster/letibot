@@ -706,9 +706,12 @@ impl App {
                 timings,
             }) = &t.state
             {
+                // `f_sim`, not `f_keep`: `usage` cannot compute `f_keep` (it has
+                // no previous turn), and "% of this prompt cached" is what a
+                // per-turn line wants anyway. The wording says which one it is.
                 let keep = usage
-                    .f_keep()
-                    .map(|f| format!("{:.0}% cached", f * 100.0))
+                    .f_sim()
+                    .map(|f| format!("{:.0}% of prompt cached", f * 100.0))
                     .unwrap_or_else(|| "no prompt".into());
                 out.push(dim(
                     &cfg,

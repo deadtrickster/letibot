@@ -16,6 +16,21 @@
 //!
 //! **`cost.micros_usd` is `None` under `WallClock`, never zero.** Zero is a number
 //! somebody will sum into a total.
+//!
+//! # Two hit ratios, two names, and they are not interchangeable
+//!
+//! llama.cpp computes both and this struct exposes both, under the server's own
+//! names (`server-task.cpp:2603,2614`):
+//!
+//! | | denominator | here |
+//! |---|---|---|
+//! | `f_keep` | the **cached entry** — what we left behind last turn | [`TurnMetrics::f_keep`] |
+//! | `f_sim` | the **new prompt** — what we are submitting now | [`TurnMetrics::f_sim`] |
+//!
+//! Only `f_keep` is indifferent to how much the conversation grew, and only
+//! `f_keep` is §18.2's C4 (D11). §18.2 originally defined C4 with `f_sim`'s
+//! arithmetic under `f_keep`'s name and then applied a threshold measured on
+//! `f_keep` to it — see T22. Read the doc comment before using either.
 
 use letibot_backend::{Meter, TurnCost};
 
@@ -80,11 +95,88 @@ pub struct TurnMetrics {
 }
 
 impl TurnMetrics {
-    /// `f_keep` — the fraction of the prompt that did not have to be prefilled.
+    /// **`f_keep` — `lcp / cached_entry`.** How much of the entry we left in the
+    /// server's cache last turn came back to us this turn.
     ///
-    /// `None` for an empty prompt rather than 0.0 or 1.0: neither is true, and both
-    /// would be averaged into a session figure.
+    /// ```text
+    /// f_keep(N+1) = cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))
+    /// ```
+    ///
+    /// This is llama.cpp's own `f_keep` (`server-task.cpp:2603`), and it is D11's
+    /// settled form of §18.2's C4. Its denominator is **what was cached**, so it is
+    /// indifferent to how much the conversation grew — which is the property that
+    /// made the 0.999 measurement meaningful, and the property [`Self::f_sim`] does
+    /// not have.
+    ///
+    /// It needs no server change. `lcp` is absent from the OpenAI-shaped `usage`,
+    /// but the denominator is a quantity we already own — the entry we left behind,
+    /// straight off the ledger — and the numerator is `timings.cache_n`, which the
+    /// server already returns.
+    ///
+    /// **It reads its denominator from [`PrefixCheck::Held`], not from a second
+    /// copy of the arithmetic.** C3 asserts `cached(N+1) ≥ prompt(N) +
+    /// generated(N)`; C4 is that same inequality's margin over the same two
+    /// numbers. One measurement, two readings — so the two cannot disagree, and
+    /// `committed_generated` (not `predicted`: a trailing stop token is stripped
+    /// before commit, T11) is counted once, in `PrefixWitness`.
+    ///
+    /// `None` when there is no cached entry to measure against — a first turn, a
+    /// divergence, or a backend where the check was skipped. Not 0.0 and not 1.0:
+    /// neither is true, and both get averaged into a session figure.
+    ///
+    /// # It can exceed 1, and that is not a bug to clamp away
+    ///
+    /// llama's own `f_keep` is `lcp / cached_entry` with `lcp ≤ cached_entry` by
+    /// construction, so it never passes 1. Ours cannot make that guarantee, because
+    /// the denominator is **our lower bound on** the entry the server kept, not the
+    /// entry itself. Measured over 264 submissions of the M1 script, 67% came back
+    /// above 1.0. Two mechanisms, and they are different sizes:
+    ///
+    /// * **+0 to +5 tokens, on most turns.** The boundary tokens the renderer owns —
+    ///   the stripped stop token and the generation-prompt lead — are not in
+    ///   `committed_generated`, but the next prompt re-renders them identically, so
+    ///   the server's entry runs a few tokens past our witness. Median +2, which at
+    ///   these prompt lengths is `f_keep` 1.0001.
+    /// * **Hundreds of tokens, after a turn that failed mid-stream.** The prompt was
+    ///   prefilled and warmed the slot, but the turn produced no witness, so the next
+    ///   turn is measured against the last *successful* turn. Observed at +745.
+    ///
+    /// So this is an **over-estimate of the true `f_keep`, by a couple of tokens in
+    /// the ordinary case**. It is reported unclamped: a value above 1 says the
+    /// denominator is conservative, and clamping would erase the only signal that
+    /// says so. It never masks a C3 shortfall, which is hundreds of tokens in the
+    /// other direction.
     pub fn f_keep(&self) -> Option<f64> {
+        match &self.prefix_check {
+            PrefixCheck::Held {
+                expected_cached_min: 0,
+                ..
+            } => None,
+            PrefixCheck::Held {
+                expected_cached_min,
+                cached,
+                ..
+            } => Some(*cached as f64 / *expected_cached_min as f64),
+            PrefixCheck::FirstTurn | PrefixCheck::Violated { .. } | PrefixCheck::Skipped { .. } => {
+                None
+            }
+        }
+    }
+
+    /// **`f_sim` — `lcp / new_prompt`.** The fraction of *this* prompt that did not
+    /// have to be prefilled.
+    ///
+    /// A real quantity, and the one a per-turn "N% cached" display wants. It is
+    /// **not** `f_keep` and no `f_keep` threshold may be applied to it: its
+    /// denominator is the new prompt, so it falls purely as a function of how much
+    /// the conversation grew. A perfect turn — whole cached entry reused, nothing
+    /// recomputed — that appends a 1,093-token tool result to a 9,000-token prompt
+    /// scores 0.892 here and 1.000 on [`Self::f_keep`]. Confusing the two is T22,
+    /// and it cost a whole M1 measurement.
+    ///
+    /// `None` for an empty prompt, for the same reason `f_keep` is `None` with no
+    /// entry to measure against.
+    pub fn f_sim(&self) -> Option<f64> {
         if self.prompt_tokens == 0 {
             None
         } else {
@@ -172,9 +264,73 @@ mod tests {
     }
 
     #[test]
-    fn f_keep_is_absent_rather_than_invented_for_an_empty_prompt() {
-        assert_eq!(metrics(0, 0).f_keep(), None);
-        assert_eq!(metrics(100, 90).f_keep(), Some(0.9));
+    fn f_sim_is_absent_rather_than_invented_for_an_empty_prompt() {
+        assert_eq!(metrics(0, 0).f_sim(), None);
+        assert_eq!(metrics(100, 90).f_sim(), Some(0.9));
+    }
+
+    /// D11: `f_keep`'s denominator is the entry we left in the cache, so it does
+    /// not move when the conversation grows. T22's worked example, both ways.
+    #[test]
+    fn f_keep_is_indifferent_to_growth_and_f_sim_is_not() {
+        // A perfect turn: the whole 9,000-token entry came back, and the prompt
+        // grew by a 1,093-token tool result.
+        let mut m = metrics(10_093, 9_000);
+        m.prefix_check = PrefixCheck::Held {
+            expected_cached_min: 9_000,
+            cached: 9_000,
+            shortfall: 0,
+        };
+        assert_eq!(m.f_keep(), Some(1.0));
+        assert!((m.f_sim().unwrap() - 0.892).abs() < 0.001);
+    }
+
+    /// `f_keep` has no denominator on a turn with nothing cached to measure
+    /// against, and says so rather than inventing 0.0 or 1.0.
+    #[test]
+    fn f_keep_is_absent_when_there_is_no_cached_entry_to_measure_against() {
+        let mut m = metrics(100, 0);
+        assert_eq!(m.prefix_check, PrefixCheck::FirstTurn);
+        assert_eq!(m.f_keep(), None, "a first turn cached nothing on purpose");
+        m.prefix_check = PrefixCheck::Skipped {
+            reason: "no".into(),
+        };
+        assert_eq!(m.f_keep(), None, "a skip is not a 1.0");
+        m.prefix_check = PrefixCheck::Violated {
+            detail: "no".into(),
+        };
+        assert_eq!(m.f_keep(), None, "a divergence has no meaningful margin");
+    }
+
+    /// The denominator is a lower bound on the entry the server kept, so `f_keep`
+    /// can exceed 1 and is reported unclamped. Measured at +2 tokens on most turns
+    /// and +745 after a turn that failed after prefilling.
+    #[test]
+    fn f_keep_above_one_is_reported_rather_than_clamped() {
+        let mut m = metrics(1_002, 1_002);
+        m.prefix_check = PrefixCheck::Held {
+            expected_cached_min: 1_000,
+            cached: 1_002,
+            shortfall: 0,
+        };
+        assert_eq!(m.f_keep(), Some(1.002));
+    }
+
+    /// C3 and C4 are one measurement read two ways, so the shortfall and the
+    /// ratio cannot disagree: `f_keep < 1` exactly when C3 reports a shortfall.
+    #[test]
+    fn f_keep_is_the_ratio_form_of_c3s_shortfall() {
+        let mut m = metrics(1_000, 940);
+        m.prefix_check = PrefixCheck::Held {
+            expected_cached_min: 1_000,
+            cached: 940,
+            shortfall: 60,
+        };
+        assert_eq!(m.f_keep(), Some(0.94));
+        let PrefixCheck::Held { shortfall, .. } = m.prefix_check else {
+            unreachable!()
+        };
+        assert_eq!(shortfall > 0, m.f_keep().unwrap() < 1.0);
     }
 
     #[test]

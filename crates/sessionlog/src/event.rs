@@ -95,11 +95,20 @@ pub struct Usage {
 }
 
 impl Usage {
-    /// The fraction of the prompt that did not have to be prefilled.
+    /// **`f_sim`** — the fraction of *this* prompt that did not have to be
+    /// prefilled. Deliberately **not** called `f_keep`.
     ///
-    /// `None` for an empty prompt, for the same reason `TurnMetrics::f_keep` is:
+    /// `usage` carries this turn's three numbers and nothing about the previous
+    /// turn, so `f_keep` — `cached(N+1) / (prompt(N) + committed_generated(N))`,
+    /// D11's settled C4 — is **not computable from this struct at all**. Naming
+    /// this one `f_keep` is exactly the confusion T22 records: a head would then
+    /// display a number that falls whenever the conversation grows and call it the
+    /// cache metric with the 0.99 bar on it. `letibot_turn::TurnMetrics` has both,
+    /// because it has the witness this struct does not.
+    ///
+    /// `None` for an empty prompt, for the same reason `TurnMetrics::f_sim` is:
     /// neither 0.0 nor 1.0 is true and both get averaged into a session figure.
-    pub fn f_keep(&self) -> Option<f64> {
+    pub fn f_sim(&self) -> Option<f64> {
         if self.prompt_tokens == 0 {
             None
         } else {
@@ -399,13 +408,13 @@ mod tests {
     }
 
     #[test]
-    fn f_keep_is_absent_rather_than_invented_for_an_empty_prompt() {
-        assert_eq!(Usage::default().f_keep(), None);
+    fn f_sim_is_absent_rather_than_invented_for_an_empty_prompt() {
+        assert_eq!(Usage::default().f_sim(), None);
         let u = Usage {
             prompt_tokens: 100,
             cached_tokens: 90,
             predicted_tokens: 5,
         };
-        assert_eq!(u.f_keep(), Some(0.9));
+        assert_eq!(u.f_sim(), Some(0.9));
     }
 }
