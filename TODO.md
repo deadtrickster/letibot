@@ -206,6 +206,73 @@ to write.
 
 ---
 
+## T9 — Compaction economics invert with the meter — **analysis, feeds T8 and T7**
+
+The open question left by D10 ("does compaction read `Meter` directly or take a
+policy") has a sharper answer than it looked: **the tradeoff does not merely change
+size between the two modes, it changes sign.**
+
+### Local / own compute — compaction COSTS time and saves nothing in the steady state
+
+With a warm prompt cache, turn N+1 carrying the full history is a **prefix hit**:
+the server prefills only the new tokens. Keeping everything is close to free.
+
+Compacting replaces that history with a summary, which is a **different prefix**, so
+the cache entry no longer applies and the next turn is a cold prefill. Measured on
+this box with opencode: 144,436 tokens, cache hit 0, ~13 minutes to first token.
+
+So locally, compaction has no cost benefit at all. Its only justifications are:
+
+1. the context window is a hard wall,
+2. KV memory pressure (`--cache-ram`, and the ladder that evicts under it),
+3. **quality degrading with depth — which is exactly what T7 measures and nobody
+   has measured yet.**
+
+If T7 comes back saying quality holds to the window, then the local trigger policy
+is "compact when you must, as late as possible", and §10's leveled design is doing
+work that only pays off at the wall.
+
+### Metered API — compaction saves money on every subsequent turn
+
+Every input token is billed on every request. Cached input is discounted rather than
+free, and writing a cache entry typically costs *more* than a plain input token, so
+there is an optimum rather than a monotone answer — the exact multipliers are
+provider-specific and must be read from the provider's own pricing, not assumed.
+
+The shape, though, is unambiguous: history you carry is rent, paid per turn, forever.
+Compaction is a one-off cost that lowers the rent. **Compact early and often** is
+correct here and wrong locally.
+
+### The other asymmetry: what evicts the cache
+
+| | local | metered API |
+|---|---|---|
+| cache bounded by | **memory** (`--cache-ram`, entry count, the eviction ladder) | **time** (a TTL measured in minutes) |
+| an idle conversation | keeps its entry until something else needs the RAM | loses it on a timer and pays full price on return |
+| we control eviction | yes — it is our ladder | no |
+
+This one has a consequence the plan does not currently carry: on a metered backend,
+**wall-clock idleness is itself expensive**, so a conversation resumed after a pause
+should expect a cold price. A "keep the session warm" heartbeat is a rational move
+there and a pointless one locally — the reverse of what the local design assumes.
+
+### What follows
+
+- The **mechanism** is shared: segments, levels, the warm summarizer.
+- The **trigger policy** is per-meter and must not be a constant. It reads
+  `BackendCaps.meter` plus the window and the memory budget.
+- `TurnCost` already carries both units so a policy can be written against either
+  without the caller conflating them.
+- This is the third instance of the same lesson (D6 spill threshold, D10 backend
+  seam, this): **the decision is an interface, not a number.** Worth stating once in
+  §10 rather than rediscovering a fourth time.
+
+Depends on nothing; blocks nothing today. It should be settled before W13 is written,
+because a compaction scheduler built around the local assumption will need reworking
+rather than configuring.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
