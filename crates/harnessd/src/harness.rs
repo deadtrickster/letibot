@@ -654,6 +654,21 @@ impl<'a> Harness<'a> {
         self.session.ledger.prefix_tokens()
     }
 
+    /// The ledger row ids, in order.
+    ///
+    /// What pairs an announcement with its body: `TranscriptAppended` carries an id
+    /// and `Hub::record_item` fills the row it names, and a second minting rule
+    /// anywhere would go stale against `Session::append_items`. A caller checking
+    /// that pairing needs to read the ids rather than recompute them.
+    pub fn row_ids(&self) -> Vec<&str> {
+        self.session
+            .ledger
+            .rows()
+            .iter()
+            .map(|r| r.item_id.as_str())
+            .collect()
+    }
+
     /// How many tokens item `i` owns. Zero would mean an item that renders to
     /// nothing, which for an assistant turn is the `content: null` defect one layer
     /// down (C6).
