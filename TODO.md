@@ -493,10 +493,19 @@ From the tool runtime, in descending order of consequence.
 5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
    spill — so for that role the omission notice is advisory, which §8.3 says it must
    not be. W9 shipped `read_spill` in its place.
-6. **Retrieval is inert.** `ask_code`/`ask_corpus` exist and abstain correctly, but the
-   oracle MCP endpoint (`192.168.1.55:9755`, SSE) **is not reachable from this box**,
-   so no client was written against something that could be tested. "Read-only tools
-   including ask_code/ask_corpus" is half-true today.
+6. **Retrieval is inert, and the address W9 tried was stale.** `ask_code`/`ask_corpus`
+   exist and abstain correctly, but nothing is behind them.
+   - `192.168.1.55:9755` is the **flowy node**, not oracle. Wrong address.
+   - **RAGFlow and oracle moved to lubuntu3 (192.168.1.82).**
+   - **`ask_code` is meant to run against a LOCAL codebase MCP** — per-box, indexing
+     that box's own `~/Projects`. **No MCP server is listening on this box at all**
+     (checked: nothing but qwen/bge/postgres), so it fails because nothing is running,
+     not because it is misconfigured.
+   - Asked lubuntu3 for the endpoint, transport, whether it serves both verbs or only
+     `ask_corpus`, and what starts the local one. Also asked whether its abstention is
+     **machine-readable or prose** — §8.1 clause 3 requires abstention to be
+     structurally distinguishable, and if the upstream only says it in words then our
+     tool must not pretend to detect it.
 7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
    mark repeats across turns. Fine now, wrong once a head correlates across a session.
 
@@ -529,6 +538,46 @@ records four previous occurrences; this was the fifth.
 Mitigation used, and worth generalising: the sweep harness refuses to start a condition
 below 40 GiB `MemAvailable`. Any future experiment that prefills many distinct prompts
 needs the same guard.
+
+---
+
+## T19 — Rewrite or not, on the KV representation — **the angle UNVERIFIED-16 should be read from**
+
+The operator's framing, and it is the right one: llama.cpp's data structures are not
+the question. The question is **what would require a rewrite, and whether that rewrite
+pays.** Separating the two changes what T14's negative actually settles.
+
+### llama.cpp's choices — changeable
+
+- recurrent cells *are* sequence ids, so a save is one 111.4 MiB blob per sequence
+- attention KV and recurrent state are saved as a single unit, all-or-nothing
+- rewind has **three fixed re-entry points**: free to `d ≤ 3`, one checkpoint to
+  `d ≤ 516`, then **the entire prefix from token 0**
+
+### Mathematics — survives any rewrite
+
+A recurrent state is a **fold**: the state at position *n* encodes all *n* tokens, so
+there is no "block B's contribution" independent of what preceded it. It is not stored
+badly; it does not exist as a separable quantity.
+
+This is also why CacheBlend works on attention-only models and cannot here. Attention
+has cross-block dependence too, but it is **diffuse** — a weighted average whose
+distribution barely shifts under a different prefix, so recomputing the ~15% that
+deviate most corrects the rest. A fold has no diffuseness to exploit: there is no
+subset whose recomputation repairs the remainder.
+
+### The split
+
+| | verdict | why |
+|---|---|---|
+| composition across a divergence | **do not rewrite** | mathematically blocked, not an implementation limit |
+| splitting attention from recurrent in the save format | **do not rewrite** | after a divergence every layer differs anyway, so there is nothing to reuse |
+| **checkpoint density / rewind granularity** | **worth doing** | pure implementation; the `d > 516` cliff is checkpoint placement and nothing else |
+
+**The third row is the actionable one and it was measured by accident.** Rewind is what
+fork (§5.5), backtracking and eviction all actually need, and today it falls off a
+cliff at 516 tokens. Storing recurrent state at more positions makes rewind cheap. That
+is a parameter and a representation choice, not a redesign.
 
 ---
 
