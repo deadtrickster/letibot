@@ -1,0 +1,49 @@
+[seed 11] a=0 b=2290 c=86 |P|=2376 |Q|=44 ks=[0, 4, 16, 32, 86, 2375]
+  ref prompt_n=2420/2420  answer='62632 and its owner is Ilya Sokolov.\n\nQuestion: In'  truth=62632 / Ilya Sokolov
+  validity: ref_B='23610, owner Kenji Watanabe.' stitched_B='57578, owner Wei Zhang.\nQuestion: In LIS' truth=23610 (stitched must be wrong)
+  k=0      n=2376    pn=44   /44   (exp 44   ) div_stitch_vs_ctrl=6    div_ctrl_vs_ref=15   KL(c||s)=0.00555  KL(r||c)=0.00092  ansC=True/True
+  k=4      n=2372    pn=48   /48   (exp 48   ) div_stitch_vs_ctrl=6    div_ctrl_vs_ref=15   KL(c||s)=0.00338  KL(r||c)=0.00418  ansC=True/True
+  k=16     n=2360    pn=60   /60   (exp 60   ) div_stitch_vs_ctrl=5    div_ctrl_vs_ref=5    KL(c||s)=0.00246  KL(r||c)=0.00500  ansC=True/True
+  k=32     n=2344    pn=76   /76   (exp 76   ) div_stitch_vs_ctrl=13   div_ctrl_vs_ref=6    KL(c||s)=0.00395  KL(r||c)=0.00157  ansC=True/True
+  k=86     n=2290    pn=130  /130  (exp 130  ) div_stitch_vs_ctrl=6    div_ctrl_vs_ref=6    KL(c||s)=0.00553  KL(r||c)=0.00134  ansC=True/True
+  k=2375   n=1       pn=2419 /2419 (exp 2419 ) div_stitch_vs_ctrl=80   div_ctrl_vs_ref=6    KL(c||s)=0.00060  KL(r||c)=0.01384  ansC=True/True
+  [seed 11 done in 59s]
+[seed 12] a=0 b=2312 c=80 |P|=2392 |Q|=44 ks=[0, 4, 16, 32, 80, 2391]
+  ref prompt_n=2436/2436  answer='66844 and owner Lena Fischer.\nQuestion: In LIST TH'  truth=66844 / Lena Fischer
+  validity: ref_B='47358, owner=Priya Nair.\n\n\nQuestion: In ' stitched_B='77578, owner Rafael Fern\n\nQuestion: In L' truth=47358 (stitched must be wrong)
+Traceback (most recent call last):
+  File "/home/dead/Projects/letibot/.claude/worktrees/agent-a8e2db02c7b03ba25/experiments/kv-stitching/stitch2.py", line 164, in <module>
+    main()
+    ~~~~^^
+  File "/home/dead/Projects/letibot/.claude/worktrees/agent-a8e2db02c7b03ba25/experiments/kv-stitching/stitch2.py", line 115, in main
+    rc = srv.complete(P + Q, args.npred, args.slot, cache_prompt=True, n_probs=20, ignore_eos=True)
+  File "/home/dead/Projects/letibot/.claude/worktrees/agent-a8e2db02c7b03ba25/experiments/kv-stitching/srv.py", line 51, in complete
+    return post("/completion", body)
+  File "/home/dead/Projects/letibot/.claude/worktrees/agent-a8e2db02c7b03ba25/experiments/kv-stitching/srv.py", line 10, in post
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 487, in open
+    response = self._open(req, data)
+  File "/usr/lib/python3.14/urllib/request.py", line 504, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 1350, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 1325, in do_open
+    r = h.getresponse()
+  File "/usr/lib/python3.14/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
