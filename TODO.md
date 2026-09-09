@@ -133,6 +133,76 @@ compaction design in §10 survives contact with measurement.
 
 ---
 
+## T8 — Cloud-hosted models — **new requirement 2026-09-09, and it cuts across the central bet**
+
+Stated by the operator: letibot, flowy and firecode must keep working with
+cloud-hosted models. With the sharp observation that there are **two different
+clouds**, not one:
+
+> "if it my own cloud compute the tokens still do not matter much since i pay for
+> hardware time. but if it is a token-metered setting - then the usuals."
+
+So there are three modes, and the middle one is nearly free:
+
+| mode | who renders | submit shape | what a token costs |
+|---|---|---|---|
+| **1. local** | us | token ids to `/completion` | wall clock |
+| **2. own cloud compute** | us | token ids to `/completion` | wall clock (hardware time) |
+| **3. token-metered API** | **the provider** | `messages` | **money** |
+
+**Mode 2 is architecturally mode 1.** We still run the server, so self-rendering,
+the token ledger and the structural prefix invariant all survive. What changes is
+latency, and possibly the engine (vLLM rather than llama.cpp) — that is a backend
+detail, not a design change.
+
+**Mode 3 breaks §3.1 and §7, and it is worth being blunt about which parts die.**
+
+- **We cannot render.** The provider owns the template. Everything in
+  `docs/chat-templates.md` — provenance, the Text/Control split, fidelity gates —
+  is inapplicable, because we never produce tokens.
+- **The prefix invariant stops being structural.** §4.3's whole claim is that a
+  violation is *inexpressible* because request N+1 is the same memfd region read to
+  a longer length. Against a `messages` API we can only *assert* prefix stability
+  after the fact, which is what every other harness does and what the plan set out
+  to improve on.
+- **`parse` survives.** Providers return structured content and tool calls, so the
+  transcript model (§4.2) is unaffected. `TranscriptItem` was the right shape either
+  way.
+- **Cost accounting becomes a first-class metric.** In modes 1 and 2 the opencode
+  config's comment holds — "input tokens are free, wall clock is not". In mode 3 it
+  inverts, and compaction stops being a latency optimisation and becomes a spend
+  control. Two different policies, same mechanism.
+- **`EXPLAIN` goes shallow.** Per-stage cache/compute attribution needs the server's
+  own counters. A provider gives us `cached_tokens` at best.
+
+**The decision this forces, and it should be made before W6 not after.** The turn
+engine needs a backend seam:
+
+```
+trait Backend {
+    fn submit(&self, ...) -> TurnStream;   // token ids OR messages
+    fn caps(&self) -> BackendCaps;         // renders_locally, accepts_token_ids,
+}                                          // reports_cache_stats, meters_tokens
+```
+
+Named now, mode 3 is an implementation. Retrofitted, it means touching the turn
+engine, compaction, EXPLAIN and every metric — this is exactly what D6 taught about
+`max_inline_bytes`, one week earlier and one level larger.
+
+**What is genuinely undecided:**
+
+1. Is mode 3 a first-class target for M1, or a later milestone with the seam
+   reserved now? Reserving the seam is cheap; building two backends in M1 is not.
+2. Which providers. "Apple ecosystem, I don't care about other providers" was the
+   local stance; mode 3 needs at least one concrete API to build against.
+3. Does the harness *degrade* to mode 3 (same features, weaker guarantees) or
+   *refuse* the guarantees it cannot keep? A silently weaker prefix invariant is the
+   failure this project exists to avoid, so my instinct is that `BackendCaps` must
+   be surfaced in `EXPLAIN` and the invariant tests must skip loudly rather than
+   pass vacuously.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
