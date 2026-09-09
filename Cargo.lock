@@ -205,6 +205,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-turn"
+version = "0.1.0"
+dependencies = [
+ "letibot-backend",
+ "letibot-dialect",
+ "letibot-dialect-glm",
+ "letibot-tokencore",
+ "letibot-transcript",
+ "letibot-turn",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
