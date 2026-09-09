@@ -708,6 +708,45 @@ we inherited.
 
 ---
 
+## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **do NOT relax the guard**
+
+`crates/turn/src/stream.rs:172` refuses a turn when a frame's `ids.len()` does not equal
+its advance in `tokens_predicted`. It fired in **3 of 6 M1 runs on 2026-09-09** (once
+twice in one run) and in **neither** of the two runs recorded before that. It costs a
+whole turn when it fires and it is upstream of everything C4 measures.
+
+**First reading, mine, and wrong to act on:** the server runs `--spec-type draft-mtp
+--spec-draft-n-max 5`, and a frame advancing the counter by 2 while carrying one id is
+the shape of speculative acceptance — so the guard assumes one frame is one token and
+is too strict for MTP.
+
+**Measured instead of assumed, and it does not hold up.** A 400-token request against
+the live server: 39 frames, 35 advancing, **advance histogram `{1: 35}`** — every
+advancing frame carried exactly its own ids, and the ids on advancing frames reconciled
+exactly with final `tokens_predicted`. The mismatch did not reproduce. What *did*
+reproduce is the other trap: **4 non-advancing progress frames carrying 3 fabricated
+ids**, which the guard's `n_decoded <= self.n_decoded` early return correctly discards.
+
+**So the guard may be right and the server may be dropping an id.** That inverts the
+fix. If an id is genuinely absent then the turn's token identity is unknown, and
+refusing it is *correct* — the ledger's whole claim is that it holds the exact ids the
+model produced. **Relaxing the check to make the failure go away would trade a loud
+turn failure for a silent ledger corruption**, which is the one outcome this design
+exists to prevent.
+
+**Recommendation: instrument, do not relax.** On `FrameMismatch`, capture and log the
+raw frame — its `tokens`, `tokens_predicted`, `timings`, and the frames either side.
+The next occurrence then says whether the id arrives late, arrives elsewhere, or never
+arrives, and *that* decides the fix. Until then the guard is doing its job.
+
+Conditions worth noting for whoever chases it: it is intermittent, it appeared only
+after the server was OOM-killed and restarted at 14:35 (same unit, same flags, cache
+lost), and the same runs show slot migration mid-session — run 1's turn 19 moved from
+slot 2 to slot 0 and got a cold slot. Concurrency across five slots with other agents
+using the server is the obvious variable nobody has controlled for.
+
+---
+
 ## T5 — Operator decisions still open
 
 W6 parses tool calls; W9's runtime executes them; W7 logs; W8 renders. **No crate ties
@@ -853,6 +892,45 @@ Until it is decided, **M1 remains formally unexited** and the run stands as reco
 This is the seventh instance in one day of a number whose meaning was not checked
 before use, and unlike the others it is **ours** — it is in the plan, not in something
 we inherited.
+
+---
+
+## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **do NOT relax the guard**
+
+`crates/turn/src/stream.rs:172` refuses a turn when a frame's `ids.len()` does not equal
+its advance in `tokens_predicted`. It fired in **3 of 6 M1 runs on 2026-09-09** (once
+twice in one run) and in **neither** of the two runs recorded before that. It costs a
+whole turn when it fires and it is upstream of everything C4 measures.
+
+**First reading, mine, and wrong to act on:** the server runs `--spec-type draft-mtp
+--spec-draft-n-max 5`, and a frame advancing the counter by 2 while carrying one id is
+the shape of speculative acceptance — so the guard assumes one frame is one token and
+is too strict for MTP.
+
+**Measured instead of assumed, and it does not hold up.** A 400-token request against
+the live server: 39 frames, 35 advancing, **advance histogram `{1: 35}`** — every
+advancing frame carried exactly its own ids, and the ids on advancing frames reconciled
+exactly with final `tokens_predicted`. The mismatch did not reproduce. What *did*
+reproduce is the other trap: **4 non-advancing progress frames carrying 3 fabricated
+ids**, which the guard's `n_decoded <= self.n_decoded` early return correctly discards.
+
+**So the guard may be right and the server may be dropping an id.** That inverts the
+fix. If an id is genuinely absent then the turn's token identity is unknown, and
+refusing it is *correct* — the ledger's whole claim is that it holds the exact ids the
+model produced. **Relaxing the check to make the failure go away would trade a loud
+turn failure for a silent ledger corruption**, which is the one outcome this design
+exists to prevent.
+
+**Recommendation: instrument, do not relax.** On `FrameMismatch`, capture and log the
+raw frame — its `tokens`, `tokens_predicted`, `timings`, and the frames either side.
+The next occurrence then says whether the id arrives late, arrives elsewhere, or never
+arrives, and *that* decides the fix. Until then the guard is doing its job.
+
+Conditions worth noting for whoever chases it: it is intermittent, it appeared only
+after the server was OOM-killed and restarted at 14:35 (same unit, same flags, cache
+lost), and the same runs show slot migration mid-session — run 1's turn 19 moved from
+slot 2 to slot 0 and got a cold slot. Concurrency across five slots with other agents
+using the server is the obvious variable nobody has controlled for.
 
 ---
 
