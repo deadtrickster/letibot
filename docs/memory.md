@@ -94,9 +94,17 @@ work to get:
 ### This decouples active memory from composable KV
 
 Composition stops being a prerequisite and becomes an optimisation of the **pull**.
-Today `recall` returns text and costs an ordinary tool result. Later it composes a
-block and costs almost nothing. **UNVERIFIED-16 no longer gates the feature, only its
-efficiency** — which is a much better place for a hard open question to sit.
+`recall` returns text and costs an ordinary tool result.
+
+**And that optimisation turned out not to exist.** UNVERIFIED-16 was run on
+2026-09-09 and settles negative: a recurrent memory's cells are sequence ids, so a
+block's contribution to 36 of 48 layers is a single fixed 111.4 MiB accumulator with
+no per-token structure to stitch. See `docs/compaction.md` §5.
+
+**So this decoupling is the reason active memory survives at all.** Had the design
+kept it gated on composable KV, the negative would have killed the feature. Because a
+suggestion appends rather than injects, `recall`-as-text is not a stopgap — it is the
+mechanism.
 
 ### The cost, accepted deliberately
 

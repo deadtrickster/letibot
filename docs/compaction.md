@@ -121,44 +121,52 @@ mechanism as `docs/memory.md` §4's suggestions, doing double duty.
 It also gives `SegmentMark` its missing producer: **the map builder is the thing that
 writes segments**, and its nodes are what the suggester nominates.
 
-## 5. With composable KV, zoom becomes paging
+## 5. Zoom is recall-as-text, permanently — composable KV is dead on this stack
 
-If a node's KV is a cached **block**, zooming does not re-read text — it composes the
-block back in.
+This section previously described zoom-as-paging: place a cached block at the tail,
+prefix untouched, near-free. **UNVERIFIED-16 was run on 2026-09-09 and settles
+negative.** `experiments/kv-stitching/RESULTS.md`.
 
-**Zoom by append is the cheap form.** Place the block at the *tail*: the prefix is
-untouched, and the tokens were already computed, so there is no prefill either. And
-the symmetry matters — **zoom-out is equally cheap**, because dropping a block from
-the tail leaves everything before it valid.
+The reason is stronger than the plan anticipated. It is not that recurrent layers
+resist a partial correction — **there is nothing to correct**. `llama_memory_recurrent`'s
+cells *are* sequence ids, so a per-sequence save writes **one** cell whose payload is
+the entire accumulator: 36 layers, **111.4 MiB, fixed and independent of length**
+(measured at 114.6 MiB after a *64-token* prompt). The attention half is 24 KiB/token
+across the other 12 layers.
 
-So nodes page in and out at the end indefinitely, bounded only by resident KV budget.
-The prefix becomes a stable index; the tail becomes a window of zoomed detail. That is
-a memory hierarchy with its missing pieces filled in: the map is the page table, the
-tail is the resident set, `recall` is a page fault.
+**A block's contribution to three quarters of the model is not extractable.** So
+"recompute a fraction of C to reconcile it" is not a poor approximation. It is not an
+operation.
 
-### The hybrid tax — and this is what UNVERIFIED-16 prices
+Measured, against a determinism floor established first because the metric is
+worthless without one — 36 consecutive bit-identical repeats over 200 greedy tokens:
 
-Composing a block at a new position needs two things:
+- every stitch short of the divergence diverges at token **5–172**, with no trend
+- **recomputing 98% of the prompt still breaks at token 5**
+- at or before the divergence: bit-identical, KL exactly zero
+- **the recompute fraction is 1.0 of everything after the divergence**
 
-- **Position.** RoPE re-application. Solvable — arXiv 2608.03893 does exactly this,
-  and llama.cpp's `--cache-reuse` already shifts cells (with a hazard documented as
-  model-specific and dangerous on GLM).
-- **Recurrent state.** A block's recurrent state was computed in the context that
-  preceded it *originally*. Transplanted to the tail it is wrong, because in a
-  recurrent layer position *n* depends on all *n* tokens.
+Confirmed without any doctoring by asking a slot for an honest prefix of itself and
+counting what it re-runs: **three fixed re-entry points, not a sliding window** —
+`d ≤ 3` free, `4 ≤ d ≤ 516` rewinds to a single checkpoint, `d > 516` costs the entire
+prefix from token 0. Identical at 3.8k and 12.3k.
 
-So on a hybrid model the attention layers' KV can be reused and **the recurrent layers
-must be recomputed**. GLM is 12 MLA attention blocks and 34 KDA recurrent ones, so the
-saving is roughly the attention share — order 26%, not the ~180× that prefix caching
-gives. Real, but a different prize.
+### What survives, and why the design was built this way
 
-**That is why UNVERIFIED-16 is measured per layer class**: it does not merely answer
-"does stitching work", it gives **the price of a zoom** on this stack directly. Two
-outcomes, and the design above is unchanged by either — only the cost of a page fault
-moves:
+**All of §4.** Zoom-in is `recall(node_id)` returning text, appended as a tool result.
+That was chosen because appending leaves the prefix intact, not because composition
+was unavailable — and it is now the permanent mechanism rather than a stopgap.
 
-- attention layers converge, recurrent ones step ⇒ zoom costs the recurrent share
-- both converge ⇒ zoom is nearly free and the paging design lands as drawn
+This is the payoff from decoupling active memory from composable KV
+(`docs/memory.md` §4). Had the design kept them coupled, this result would have killed
+it. Because they were separated, only the *optimisation* died.
+
+### What it settles elsewhere
+
+- §19.3's recommendation against model swapping becomes **permanent**, not provisional.
+- §3.10-B's handle protocol is untouched — it never sold prefill compute.
+- arXiv 2608.03893's RoPE-stripping solves obstacle 1, and `get_can_shift()`'s own
+  comment already says that obstacle does not bind here. **Position was never the wall.**
 
 ## 6. Open, and honestly
 

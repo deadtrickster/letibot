@@ -312,7 +312,25 @@ do not forget" goal, not as a schema nicety.
 
 ---
 
-## T14 — Composable KV is a GOAL, not background — **operator requirement, stated twice**
+## T14 — Composable KV — **SETTLED NEGATIVE 2026-09-09. Prefix reuse is the ceiling.**
+
+`experiments/kv-stitching/RESULTS.md`. Not achievable beyond prefix reuse on this
+stack, and not for the reason expected: a recurrent memory's cells *are* sequence ids,
+so 36 of 48 layers hold one fixed 111.4 MiB accumulator per sequence with no per-token
+structure. A block's contribution there is not extractable, so partial recompute is not
+an operation. Recompute fraction 1.0 of everything after the divergence; recomputing
+98% of a prompt still diverges at token 5.
+
+**Active memory survives** because it was decoupled first — see `docs/memory.md` §4 and
+`docs/compaction.md` §5. What died is the optimisation, not the feature.
+
+The original analysis is kept below because its framing of the two obstacles is what
+made the experiment answerable, and because obstacle 1 turned out never to bind.
+
+---
+
+### Original entry
+
 
 The plan analyses this well (§3.10-C, UNVERIFIED-16) but files it as an open question.
 The operator has asked for it twice and it is a **design goal**: a request should be
@@ -493,6 +511,24 @@ does not exist.
 
 That loop *is* M1: submit, stream, parse a tool call, execute it, append the result,
 resubmit. Everything it needs is built and merged.
+
+---
+
+## T18 — The prompt cache costs ~120 KiB/token on recurrent models — **operational, caused a fifth OOM**
+
+Found while running UNVERIFIED-16, which **OOM-killed `qwen-flash-next` at 14:35 on
+2026-09-09** (158.1 GiB peak; systemd restarted it, `qwen-slots-restore` put the slots
+back, ~40 s down, in-flight requests from two other agents lost).
+
+Cause, and it generalises: **every distinct prompt prefilled becomes a prompt-cache
+entry at ~120 KiB/token, because 111 MiB of each entry is the recurrent accumulator** —
+fixed per sequence, independent of length. A sweep over many short distinct prompts is
+therefore far more expensive than its token count suggests. `server-context.cpp:4549`
+records four previous occurrences; this was the fifth.
+
+Mitigation used, and worth generalising: the sweep harness refuses to start a condition
+below 40 GiB `MemAvailable`. Any future experiment that prefills many distinct prompts
+needs the same guard.
 
 ---
 
