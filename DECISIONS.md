@@ -91,10 +91,18 @@ in the flowy delivery survey). Attribution retained.
 Contrast `oh-my-openagent`, which is under a Sustainable Use Licence: **no code from
 it, ported or adapted.** Its ideas may inform a design; its source may not be copied.
 
-## D5 — Falsifier B scoring rubric — **OPEN, question restated**
+## D5 — Falsifier B scoring rubric — **SETTLED 2026-09-09, and the experiment is run**
 
-The original phrasing was too compressed to answer. See `TODO.md` T7 for the plain
-version.
+Rubric: the repo's own kind of work as the task, scored **objectively** — does it
+compile, do the supplied tests pass, first attempt, no retries. Tests written by us,
+not by the model, so the measurement does not conflate two abilities.
+
+It worked. 160 samples separated cleanly and the result is unambiguous: **no quality
+degradation from 20k to 150k** (Fisher p = 1.000), and the only significant contrast
+runs *backwards* — an empty context scored worst. See `TODO.md` T7.
+
+The rubric's virtue is that it is re-runnable by someone who was not there, which a
+hand-scored rating would not have been.
 
 ## D6 — `max_inline_bytes` — **ANSWERED 2026-09-09: it is not a number**
 

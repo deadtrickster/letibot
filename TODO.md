@@ -135,174 +135,66 @@ divergence after the `interleaved` fix is one mechanism or two.
 
 ---
 
-## T7 — Falsifier B: what we are actually asking — **needs the operator, question restated**
+## T7 — Falsifier B — **RUN 2026-09-09. The lazy-compaction assumption SURVIVES.**
 
-The compressed version was unanswerable. Plainly:
+Full write-up `experiments/falsifier-b/RESULTS.md`, raw per-sample data in
+`raw/samples.jsonl`. 160 samples, 40 per depth, scored objectively on
+compiles-and-tests-pass, first attempt, no retries.
 
-**The assumption on trial.** The plan assumes a long conversation stays usable right
-up to the context window, so compaction can be lazy and mostly-soft. If that is
-false — if quality collapses at, say, 60k when the window is 262k — then compaction
-must be aggressive and early *whatever it costs in prefill*, and a whole section of
-the plan is wrong. Nobody has measured it. It is milestone M3.5, not a footnote.
-
-**The experiment.** Run the same task three times, with 20k / 60k / 150k of unrelated
-preceding conversation already in context. Same task, same model, same everything
-else. Then see whether the answers get worse as the preamble grows.
-
-**The open part is only: what does "worse" mean.** A human rating is subjective and
-does not survive being re-run months later. My proposal:
-
-> Use this repo's own work as the task — "implement this small, fully specified
-> function and its tests" — and score it **objectively**: does it compile, do the
-> tests pass, on the first attempt. Three depths, several tasks each, one number per
-> depth.
-
-That is reproducible by someone who was not there, and it is the workload we actually
-care about rather than a proxy for it. The alternative is a rubric someone scores by
-hand, which is more sensitive but not repeatable.
-
-**What a decision changes:** nothing until M3.5, and then it decides whether the
-compaction design in §10 survives contact with measurement.
-
----
-
-## T8 — Cloud-hosted models — **new requirement 2026-09-09, and it cuts across the central bet**
-
-Stated by the operator: letibot, flowy and firecode must keep working with
-cloud-hosted models. With the sharp observation that there are **two different
-clouds**, not one:
-
-> "if it my own cloud compute the tokens still do not matter much since i pay for
-> hardware time. but if it is a token-metered setting - then the usuals."
-
-So there are three modes, and the middle one is nearly free:
-
-| mode | who renders | submit shape | what a token costs |
+| depth | measured tokens | pass rate | 95% CI |
 |---|---|---|---|
-| **1. local** | us | token ids to `/completion` | wall clock |
-| **2. own cloud compute** | us | token ids to `/completion` | wall clock (hardware time) |
-| **3. token-metered API** | **the provider** | `messages` | **money** |
+| 0k (control) | 0 | **0.829** | [0.67, 0.92] |
+| 20k | 19,190 | 0.875 | [0.74, 0.95] |
+| 60k | 60,046 | **1.000** | [0.91, 1.00] |
+| 150k | 149,713 | 0.900 | [0.77, 0.96] |
 
-**Mode 2 is architecturally mode 1.** We still run the server, so self-rendering,
-the token ledger and the structural prefix invariant all survive. What changes is
-latency, and possibly the engine (vLLM rather than llama.cpp) — that is a backend
-detail, not a design change.
+**20k vs 150k: Fisher exact two-sided p = 1.000.** No monotone trend, no cliff. The
+only significant pair is 0k vs 60k (p = 0.008) **and its sign is backwards** — the
+deeper condition did better. No task degrades, no position effect, no drift across
+reps.
 
-**Mode 3 breaks §3.1 and §7, and it is worth being blunt about which parts die.**
+Cache evidence, which is what makes this a quality measurement rather than a prefill
+one: at 150k the first request prefilled 149,968 tokens in 144.6 s and every later
+one reused 149,715 cached against 391 new in **0.8 s**, ~180× faster.
 
-- **We cannot render.** The provider owns the template. Everything in
-  `docs/chat-templates.md` — provenance, the Text/Control split, fidelity gates —
-  is inapplicable, because we never produce tokens.
-- **The prefix invariant stops being structural.** §4.3's whole claim is that a
-  violation is *inexpressible* because request N+1 is the same memfd region read to
-  a longer length. Against a `messages` API we can only *assert* prefix stability
-  after the fact, which is what every other harness does and what the plan set out
-  to improve on.
-- **`parse` survives.** Providers return structured content and tool calls, so the
-  transcript model (§4.2) is unaffected. `TranscriptItem` was the right shape either
-  way.
-- **Cost accounting becomes a first-class metric.** In modes 1 and 2 the opencode
-  config's comment holds — "input tokens are free, wall clock is not". In mode 3 it
-  inverts, and compaction stops being a latency optimisation and becomes a spend
-  control. Two different policies, same mechanism.
-- **`EXPLAIN` goes shallow.** Per-stage cache/compute attribution needs the server's
-  own counters. A provider gives us `cached_tokens` at best.
+### The two findings nobody predicted
 
-**The decision this forces, and it should be made before W6 not after.** The turn
-engine needs a backend seam:
+1. **The 0k control is the worst cell, not the best.** Depth did not hurt; the
+   *absence* of a conversation did.
+2. **An empty context makes this model reason ~4× longer** — median 6,468 generated
+   tokens at 0k against ~1,400 at every real depth, on identical tasks. A long prior
+   conversation *anchors* it rather than distracting it. All 5 of 160 runs lost to
+   `finish_reason: length` were at 0k; zero at every real depth.
 
-```
-trait Backend {
-    fn submit(&self, ...) -> TurnStream;   // token ids OR messages
-    fn caps(&self) -> BackendCaps;         // renders_locally, accepts_token_ids,
-}                                          // reports_cache_stats, meters_tokens
-```
+Finding 2 is an argument against aggressive compaction that the plan does not
+currently make: **compaction risks paying a cold prefill *and* re-entering the
+free-running regime.** It does not merely cost time, it may cost tokens on the far
+side too.
 
-Named now, mode 3 is an implementation. Retrofitted, it means touching the turn
-engine, compaction, EXPLAIN and every metric — this is exactly what D6 taught about
-`max_inline_bytes`, one week earlier and one level larger.
+### What this settles
 
-**DECIDED 2026-09-09 (D10): mode 3 later, seam reserved now.** `crates/backend`
-exists with `BackendCaps`, `PrefixGuarantee`, `Meter` and `TurnCost`, and no
-implementation behind it. Suites must skip loudly rather than pass vacuously;
-`skip_reason()` returns a message, not a bool, so the silent skip is the harder one
-to write.
+§9.1 clause 4 stands. Locally the trigger policy is "compact when you must, as late
+as possible", and **§10's leveled design earns its keep only at the context wall and
+under KV pressure — not on quality.** That materially reduces what W13 must do for
+M1. The metered branch of T9 is untouched: that trade-off is money, not quality.
 
-**Still open, deferred with the milestone:**
+### Limits — stated because this will be quoted
 
-1. Which provider to build against first. "Apple ecosystem, I don't care about other
-   providers" was the local stance; mode 3 needs one concrete API.
-2. Whether `EXPLAIN` renders `BackendCaps` inline on every plan or only on a
-   capability change. Inline is honest and noisy.
-3. Whether compaction reads `Meter` directly or is handed a policy — the same
-   interface-versus-constant question D6 settled for spill.
+Tasks are self-contained and the filler deliberately irrelevant, so this measures
+whether depth degrades **fresh reasoning**. It does **not** measure whether the model
+can still use something stated at turn 3 when it is at turn 200. **That failure mode
+is untested and needs its own falsifier.** n=40 per depth can see a collapse but
+cannot resolve a 5-point slide. 150k–262k is unmeasured. One model.
 
----
+### Deviations from the brief, both deliberate and both flagged
 
-## T9 — Compaction economics invert with the meter — **analysis, feeds T8 and T7**
-
-The open question left by D10 ("does compaction read `Meter` directly or take a
-policy") has a sharper answer than it looked: **the tradeoff does not merely change
-size between the two modes, it changes sign.**
-
-### Local / own compute — compaction COSTS time and saves nothing in the steady state
-
-With a warm prompt cache, turn N+1 carrying the full history is a **prefix hit**:
-the server prefills only the new tokens. Keeping everything is close to free.
-
-Compacting replaces that history with a summary, which is a **different prefix**, so
-the cache entry no longer applies and the next turn is a cold prefill. Measured on
-this box with opencode: 144,436 tokens, cache hit 0, ~13 minutes to first token.
-
-So locally, compaction has no cost benefit at all. Its only justifications are:
-
-1. the context window is a hard wall,
-2. KV memory pressure (`--cache-ram`, and the ladder that evicts under it),
-3. **quality degrading with depth — which is exactly what T7 measures and nobody
-   has measured yet.**
-
-If T7 comes back saying quality holds to the window, then the local trigger policy
-is "compact when you must, as late as possible", and §10's leveled design is doing
-work that only pays off at the wall.
-
-### Metered API — compaction saves money on every subsequent turn
-
-Every input token is billed on every request. Cached input is discounted rather than
-free, and writing a cache entry typically costs *more* than a plain input token, so
-there is an optimum rather than a monotone answer — the exact multipliers are
-provider-specific and must be read from the provider's own pricing, not assumed.
-
-The shape, though, is unambiguous: history you carry is rent, paid per turn, forever.
-Compaction is a one-off cost that lowers the rent. **Compact early and often** is
-correct here and wrong locally.
-
-### The other asymmetry: what evicts the cache
-
-| | local | metered API |
-|---|---|---|
-| cache bounded by | **memory** (`--cache-ram`, entry count, the eviction ladder) | **time** (a TTL measured in minutes) |
-| an idle conversation | keeps its entry until something else needs the RAM | loses it on a timer and pays full price on return |
-| we control eviction | yes — it is our ladder | no |
-
-This one has a consequence the plan does not currently carry: on a metered backend,
-**wall-clock idleness is itself expensive**, so a conversation resumed after a pause
-should expect a cold price. A "keep the session warm" heartbeat is a rational move
-there and a pointless one locally — the reverse of what the local design assumes.
-
-### What follows
-
-- The **mechanism** is shared: segments, levels, the warm summarizer.
-- The **trigger policy** is per-meter and must not be a constant. It reads
-  `BackendCaps.meter` plus the window and the memory budget.
-- `TurnCost` already carries both units so a policy can be written against either
-  without the caller conflating them.
-- This is the third instance of the same lesson (D6 spill threshold, D10 backend
-  seam, this): **the decision is an interface, not a number.** Worth stating once in
-  §10 rather than rediscovering a fourth time.
-
-Depends on nothing; blocks nothing today. It should be settled before W13 is written,
-because a compaction scheduler built around the local assumption will need reworking
-rather than configuring.
+- `max_tokens` 16,000 rather than 6,000 — at 6,000 the model truncated far too often.
+- One worker per depth on its own pinned slot (concurrency 4) rather than fully
+  sequential, which projected to ~4 hours. Running all depths over the same
+  wall-clock window *eliminates* the server-drift confound rather than merely
+  interleaving against it. Cost: timings are not per-request throughput, and the 0k
+  worker finished last and ran largely alone, so its 97 tok/s against ~32 is GPU
+  availability, not depth.
 
 ---
 
