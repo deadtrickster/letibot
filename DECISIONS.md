@@ -11,15 +11,16 @@ log, because the workstreams document is written against them.
 
 ## D1 — where the code lives — **SETTLED 2026-09-09**
 
-`~/Projects/letibot`, a public GitHub project, separate from the llama.cpp fork.
+`~/Projects/letibot`, on GitHub as `git@github.com:deadtrickster/letibot`, separate
+from the llama.cpp fork. Visibility in D9.
 
 Unblocks: the first commit, and every strand's file layout.
 
 Note this is *not* a retreat from "harness and server fused to the 11" (design brief
 §3). Fusion is about the seam being a private binary control channel and one release
 train — not about one git repository. The server track is off M1's critical path
-anyway (see below), so a separate repo costs nothing today and the coupling that
-matters is enforced by the contract tests, not by directory adjacency.
+anyway, so a separate repo costs nothing today, and the coupling that matters is
+enforced by the contract tests rather than by directory adjacency.
 
 ## D2 — which flowy reader harnessd may hold — **SETTLED 2026-09-09**
 
@@ -34,8 +35,6 @@ the consequence in fleet terms: two processes listening under one name means the
 roster shows that seat attached while the real one hears nothing, "a lie the whole
 fleet then acts on".
 
-So:
-
 | operation | shareable? |
 |---|---|
 | writing as `claude-lab2x1` (`flowy say`) | yes — token-based, no exclusivity |
@@ -49,68 +48,87 @@ The two must not overlap. A test harness that starts harnessd without stopping t
 Monitor gets `LISTENER REFUSED`, which is the correct outcome and should be asserted
 rather than worked around.
 
+## D3 — firecode's two asks — **ANSWERED 2026-09-09, and the answer replaces both**
+
+The operator picked neither yes nor no. Both asks are met by mechanisms that already
+exist, which is a better answer than either branch I offered.
+
+### Ask 2 (persistent shell) — **withdrawn. Use byobu.**
+
+Do not ask firecode for `shell --attach`. A byobu/tmux session already provides
+everything the ask wanted — a cwd that sticks, exported variables that persist,
+background jobs that keep running — and it is a session that attaches to a cgroup, so
+its lifetime is expressible in the same terms firecode already uses.
+
+This converges with §13 rather than adding to it: the design brief already requires
+multi-head attach over byobu/tmux. The tool runtime's shell and an operator's
+attached head become **one mechanism instead of two**.
+
+### Ask 1 (parent cgroup) — **reframed: cgroup membership is use-dependent**
+
+Not one policy. It depends on what the VM is for:
+
+| the VM is | its cgroup |
+|---|---|
+| temporary — one task, dies with the work | the **session** cgroup, so ending the session reaps it |
+| persistent — outlives the session that made it | **not** the session cgroup |
+
+**In both cases it must be clearly reapable.** A persistent VM sitting outside the
+session cgroup is not licence to leak it: something must still name it and be able to
+kill it, and that owner has to be discoverable rather than implied.
+
+**What this means for W10.** The execution backend takes a lifetime *argument*, not a
+lifetime assumption — the caller states whether a run is session-scoped and the
+harness places it accordingly. Reapability is then a property to test rather than a
+consequence to hope for: for each kind, assert that ending the owner actually removes
+it.
+
 ## D4 — flowy's licence — **SETTLED 2026-09-09**
 
-MIT. flowy's delivery tests may be ported (`docs/workstreams.md` W2/W12, and the
-list in the flowy delivery survey). Attribution retained.
+MIT. flowy's delivery tests may be ported (`docs/workstreams.md` W2/W12, and the list
+in the flowy delivery survey). Attribution retained.
 
 Contrast `oh-my-openagent`, which is under a Sustainable Use Licence: **no code from
 it, ported or adapted.** Its ideas may inform a design; its source may not be copied.
 
-## D3 — firecode's two asks — **OPEN**
+## D5 — Falsifier B scoring rubric — **OPEN, question restated**
 
-Restated in plain terms, because the original phrasing was too compressed. Both are
-requests against the operator's own firecode repo, so the question is "will these be
-added", and **a written "no" is a complete answer** — it is not a blocker, it decides
-which of two tool runtimes gets built.
+The original phrasing was too compressed to answer. See `TODO.md` T7 for the plain
+version.
 
-### Ask 1 — a parent cgroup for a host-side caller
+## D6 — `max_inline_bytes` — **ANSWERED 2026-09-09: it is not a number**
 
-firecode's central invariant is that a run's lifetime is a **cgroup subtree**, not a
-process tree: `cgroup.kill` ends a run and every VM started on its behalf,
-transitively, and liveness is "is the cgroup populated".
+The operator's answer: *configurable, with the ability to plug in a prediction
+model.*
 
-That works when a run is spawned from inside a guest. `harnessd` runs on the **host**,
-and a run spawned by a host caller has no parent cgroup — so killing a harnessd
-session does *not* reap the runs it started. Orphaned microVMs survive their session.
+So the threshold is not a constant chosen once. The spill policy takes a **decider**,
+and a fixed byte count is merely its simplest implementation:
 
-- **If yes** (`--parent-cgroup <path>` on the spawn/`up` paths, or a cgroup firecode
-  accepts as a parent): harnessd inherits the invariant for free. Session teardown is
-  one `cgroup.kill`.
-- **If no**: harnessd tracks every run it started and reaps them itself — which means
-  reimplementing transitive teardown, including runs that started further runs, and
-  getting it wrong leaves VMs holding memory after a crash.
+| implementation | when |
+|---|---|
+| fixed threshold | the default, and what M1 ships |
+| per-tool threshold | a `find` and a `read` do not deserve the same budget |
+| predicted | a model estimates whether the full output will be needed and spills on that |
 
-### Ask 2 — a persistent shell channel
+`max_inline_bytes` keeps **no default**, so unset remains a genuine no-op rather than
+a silent guess. What changes is that §8's contract must express the decision as an
+*interface* rather than a comparison against a constant — otherwise the predictor has
+nowhere to plug in later, and retrofitting it means touching every tool.
 
-`firecode in` is one command, its output, its exit status. That is the right
-primitive and it is not what an agent's `bash` tool needs. A tool call expects a
-**session**: `cd` persists to the next call, `export` persists, `&` background jobs
-keep running.
+## D7 — the 27B preset — **ANSWERED 2026-09-09: derive it, do not choose it**
 
-- **If yes** (`firecode shell --attach` with a session id): the tool runtime is thin —
-  pass the call through to a real shell.
-- **If no**: harnessd synthesises the session itself — tracks cwd and environment,
-  prefixes every command, and documents that background jobs do not survive a call.
-  That is a real component with its own failure modes, and the worst of them is quiet:
-  a `cd` that does not stick produces a tool that works in every test and fails on the
-  second command of a real task.
+Measure rather than pick, the way Qwen Flash was sized on 2026-09-09: load it, get
+KV bytes per token from two points that share `n_ctx_slot`, solve for the fixed
+footprint, then choose `-c` and `--parallel` from the result. Record the numbers
+beside the preset so the next person can check them rather than inherit them.
 
-**Why these are two tool runtimes and not two settings:** the yes-branch is a thin
-adapter over firecode; the no-branch is a shell-session emulator plus a lifetime
-manager. They share an interface and almost no code. Deciding late means building one
-and discarding it.
+## D8 — harness licence — **SETTLED 2026-09-09**
 
-## D5 — Falsifier B scoring rubric — **OPEN**
+Apache-2.0. Confirms what the workspace already declared. The patent grant is the
+reason to prefer it over MIT for something that may be published.
 
-Depths are specified; the rubric is not, and §9's position rests on it.
+## D9 — repository visibility — **SETTLED 2026-09-09**
 
-## D6 — `max_inline_bytes` — **OPEN**
-
-Deliberately has no default in the plan.
-
-## D7 — the 27B preset — **OPEN**
-
-## D8 — harness licence — **OPEN**
-
-Blocks nothing today, but the repo is public, so it should not stay open long.
+**Private for now.** `git@github.com:deadtrickster/letibot.git`, ssh remote per the
+standing rule against https remotes. Public later is a one-line change; the reverse
+is not, which is why it starts closed.

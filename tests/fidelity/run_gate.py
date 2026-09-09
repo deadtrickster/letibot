@@ -1,33 +1,51 @@
 #!/usr/bin/env python3
-"""The W3 renderer-fidelity gate.
+"""The renderer-fidelity gate.
 
-    ours = spans_to_string(D.render(F))          via `letibot-render`
-    theirs = POST /apply-template(F).prompt
-    assert ours == theirs                        exact string equality
+    AUTHORITY (gates)       our `faithful` render  ==  CPython Jinja2 + transformers
+    PROVENANCE (gates)      no RenderSpan::Control originates in substituted DATA
+    PROFILES (gates)        `server-bug-compatible` differs from the training
+                            runtime exactly on the fixtures that declare a divergence
+    INTEROP (reports only)  how llama.cpp's own renderer would differ
 
-Run it:
+WHY THE AUTHORITY MOVED
+=======================
 
-    tests/fidelity/serve_oracle.sh start          # or point --addr at a real server
-    tests/fidelity/run_gate.py --addr http://127.0.0.1:8137
+This gate used to diff our renderer against llama.cpp's `POST /apply-template`.
+That endpoint runs **minja**, a from-scratch C++ reimplementation of Jinja. The
+model was trained on text produced by **CPython Jinja2** driven by HuggingFace
+`transformers`. The two disagree, and we have a measured case where the
+disagreement changes what the model is told (`oracle_hf.py`, "THE DIVERGENCE
+THAT MOTIVATED THIS FILE").
 
-It runs the whole corpus **twice**, and that is the interesting part.
+Two facts decide which one is the authority:
 
-  * profile `server-bug-compatible` — our renderer with every known oracle quirk
-    switched on. This must match byte-for-byte on every fixture and every prefix,
-    with no exceptions at all. Passing it is the claim "we have a complete model of
-    what the server's renderer does".
+  * The harness tokenizes `RenderSpan`s itself and submits **token ids** to
+    `/completion`. minja is not in our runtime path at any point. Conformance to
+    it measures agreement with a bug we already route around.
+  * The model's idea of a correctly formatted conversation was fixed during
+    training, by CPython Jinja2.
 
-  * profile `faithful` — what the harness actually emits. Here a fixture may declare
-    a divergence, and the check is **two-sided**: an undeclared mismatch fails, and a
-    declared divergence that no longer reproduces fails just as hard, because a
-    stale exception is how a gate rots into decoration.
+So `oracle_hf.py` gates and `/apply-template` reports. Demoting the server diff
+is not discarding it: "how would llama.cpp render this" is real interop
+information, and the day someone points this harness at a stock llama.cpp
+chat-completions endpoint it becomes load-bearing again. It just is not
+correctness.
 
-Exit status is 0 only if both profiles come out as expected.
+WHAT IT COSTS TO RUN
+====================
+
+Nothing. The authority needs the template text and jinja2: no GPU, no model
+weights, no server, no port. Run it on a laptop, in CI, next to a busy box
+without touching it.
+
+    tests/fidelity/run_gate.py                # the whole gate, nothing else alive
+    tests/fidelity/run_gate.py --interop      # adds the (non-gating) server diff
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -38,10 +56,20 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 
-# llama.cpp swaps media parts for <__media_NONCE__> before the template runs, with a
-# nonce regenerated per server process. Both sides are folded onto the same token
-# triplet so the rest of an image fixture is still compared exactly.
+import oracle_hf  # noqa: E402  (must follow the sys.path fix-up)
+
+# Which shipped jinja each dialect is rendered from. Qwen3.8-Flash-Next and
+# Qwen3.8-27B ship a byte-identical template, so a dialect name maps to a
+# template file and several models map to one dialect.
+TEMPLATES = {
+    "glm-5.3-flash": "crates/dialect-glm/template/glm-5.3-flash.jinja",
+}
+
+# llama.cpp swaps media parts for <__media_NONCE__> before minja runs, with a
+# nonce regenerated per server process. Only the INTEROP phase ever sees this:
+# the HF oracle renders the template's own `emit_image()` and needs no rewriting.
 MEDIA_MARKER = re.compile(r"<__media_[A-Za-z0-9]+__>")
 MEDIA_CANON = "<|begin_of_image|><|image|><|end_of_image|>"
 
@@ -63,28 +91,8 @@ def render_cases(fixtures: list[str], profile: str, dialect: str) -> list[dict]:
     return json.loads(out.stdout)
 
 
-def apply_template(addr: str, body: dict) -> str:
-    req = urllib.request.Request(
-        addr.rstrip("/") + "/apply-template",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)["prompt"]
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:400]
-        raise SystemExit(
-            f"/apply-template returned {e.code}: {detail}\n"
-            "  A 4xx here is usually the request body, not the renderer."
-        )
-    except urllib.error.URLError as e:
-        raise SystemExit(
-            f"cannot reach {addr}: {e.reason}\n"
-            "  The gate needs a DIRECTLY LAUNCHED single-model server, not the router:\n"
-            "  /apply-template is proxied in router mode (server.cpp:239).\n"
-            "  tests/fidelity/serve_oracle.sh start"
-        )
+def label_of(c: dict) -> str:
+    return f'{c["fixture"]}[{c["prefix_len"]}]{"+gen" if c["add_generation_prompt"] else ""}'
 
 
 def diff_head(a: str, b: str, width: int = 90) -> str:
@@ -99,66 +107,258 @@ def diff_head(a: str, b: str, width: int = 90) -> str:
     )
 
 
-def run_profile(addr: str, cases: list[dict], profile: str, verbose: bool) -> tuple[int, int, list[str], set[str]]:
-    ok = 0
-    failures: list[str] = []
-    fired: set[str] = set()
-    for c in cases:
-        divergences = set(c["divergences"])
-        rules = set(c.get("normalise", []))
-        ours_raw = c["rendered"]
-        theirs_raw = apply_template(addr, c["request"])
-        label = (
-            f'{c["fixture"]}[{c["prefix_len"]}]'
-            f'{"+gen" if c["add_generation_prompt"] else ""}'
+# --------------------------------------------------------------------------
+# Phase 1 - the authority, and the provenance check that rides along with it
+# --------------------------------------------------------------------------
+
+
+def check_span_kinds(case: dict, prov: oracle_hf.Provenance) -> list[str]:
+    """No `RenderSpan::Control` may originate in a DATA region.
+
+    This is the injection property, made checkable end to end. `crates/dialect`
+    tokenizes `Text` with special-token parsing OFF, so a control token can only
+    enter the prompt through a `Control` span. If a `Control` span covers bytes
+    the oracle says came from message or tool payload, then something a user, a
+    tool result or an MCP server wrote has been promoted into a turn boundary.
+
+    The check has teeth precisely because the rendered *string* cannot tell you
+    this. In the `adversarial-control-literals` fixture the bytes `<|assistant|>`
+    appear four times: twice because the user typed them and twice because the
+    template emitted them. Byte equality is blind to the difference; provenance
+    is not.
+
+    Only `Control` spans are checked. A `Text` span may hold template literals -
+    "# Tools" is template text that is correctly text - and that direction is
+    harmless: text is never promoted to a special token.
+    """
+    problems: list[str] = []
+    off = 0
+    for span in case["spans"]:
+        literal = span.get("control")
+        is_control = literal is not None
+        if literal is None:
+            literal = span["text"]
+        end = off + len(literal)
+        if is_control:
+            kinds = prov.kinds_over(off, end)
+            if oracle_hf.DATA in kinds:
+                problems.append(
+                    f"    RenderSpan::Control({literal!r}) at byte {off} covers bytes the\n"
+                    f"    oracle attributes to SUBSTITUTED DATA. Something from the\n"
+                    f"    conversation has been promoted into a control token."
+                )
+        off = end
+    if off != len(prov.text):
+        problems.append(
+            f"    spans concatenate to {off} bytes but the render is {len(prov.text)}: "
+            f"the span list is not a partition of the prompt."
         )
+    return problems
 
-        if ours_raw == theirs_raw:
-            # Exact, with no rewriting of either side. This is the only outcome that
-            # needs no explanation, which is why it is tested before the rules apply.
-            ok += 1
-            if verbose:
-                print(f"  ok   {label}")
+
+def phase_authority(cases: list[dict], template: str, verbose: bool) -> tuple[list[str], int, int]:
+    """`faithful` must equal the training runtime, and its spans must agree with it."""
+    failures: list[str] = []
+    exact = 0
+    checked_spans = 0
+    for c in cases:
+        lab = label_of(c)
+        try:
+            prov = oracle_hf.render_request(template, c["request"])
+        except oracle_hf.ProvenanceError as e:
+            failures.append(
+                f"  FAIL {lab}\n"
+                f"    the provenance map could not be established, so neither the\n"
+                f"    origin check nor its guarantee is available for this case.\n"
+                + "\n".join("    " + line for line in str(e).splitlines())
+            )
+            continue
+        except Exception as e:  # a template that raises is a fixture we cannot serve
+            failures.append(f"  FAIL {lab}\n    the template raised: {e!r}")
             continue
 
-        ours = normalise(ours_raw, rules)
-        theirs = normalise(theirs_raw, rules)
-        if rules and ours == theirs:
-            fired |= rules
-            ok += 1
-            print(f"  NORMALISED ({', '.join(sorted(rules))}) {label}")
+        if c["rendered"] != prov.text:
+            failures.append(
+                f"  FAIL {lab}\n"
+                f"    our `faithful` render differs from the training runtime.\n"
+                f"    This is the authority: what CPython Jinja2 produces is the format\n"
+                f"    the model was trained to recognise. A difference here is ours.\n"
+                f"{diff_head(c['rendered'], prov.text)}"
+            )
             continue
+        exact += 1
 
-        if profile == "server-bug-compatible":
-            failures.append(
-                f"  FAIL {label}\n"
-                f"    the quirked profile must match the oracle exactly, with no exceptions:\n"
-                f"    it is the evidence that our renderer models the oracle completely,\n"
-                f"    and it is what earns the faithful profile the right to declare a difference.\n"
-                f"{diff_head(ours, theirs)}"
+        problems = check_span_kinds(c, prov)
+        checked_spans += sum(1 for s in c["spans"] if "control" in s)
+        if problems:
+            failures.append(f"  FAIL {lab}\n" + "\n".join(problems))
+        elif verbose:
+            print(f"  ok   {lab}  ({prov.pairs} data regions)")
+    return failures, exact, checked_spans
+
+
+# --------------------------------------------------------------------------
+# Phase 2 - the two profiles must disagree, and only where we said they would
+# --------------------------------------------------------------------------
+
+
+def phase_profiles(bug_cases: list[dict], template: str, verbose: bool) -> list[str]:
+    """`server-bug-compatible` models minja; it must differ, and only as declared.
+
+    Both profiles have to survive. One is the training format, the other is our
+    model of llama.cpp's bug, and the pair is only a measurement while they
+    disagree in a place we can name:
+
+      * a fixture that DECLARES a divergence and no longer produces one means
+        either the quirk stopped being modelled or the fixture stopped reaching
+        it. Either way the declaration has become decoration.
+      * a fixture that declares nothing and diverges anyway means the quirk
+        leaked into cases we never characterised.
+
+    Note this runs with no server. The old version of this check needed
+    llama.cpp to observe the bug; now the bug is a property of our own quirk
+    switch, measured against the training runtime.
+    """
+    diverged: collections.Counter = collections.Counter()
+    declaring: dict[str, set[str]] = {}
+    for c in bug_cases:
+        fx = c["fixture"]
+        declaring.setdefault(fx, set()).update(c["divergences"])
+        try:
+            oracle = oracle_hf.render_request(template, c["request"]).text
+        except oracle_hf.ProvenanceError:
+            # Phase 1 already reported it; the clean render is still comparable.
+            r = oracle_hf._adapt_request(c["request"])
+            msgs = r.pop("messages", [])
+            oracle = oracle_hf.render(
+                template, msgs, r.pop("tools", None), r.pop("documents", None),
+                r.pop("add_generation_prompt", False), **r,
             )
-        elif divergences:
-            fired |= divergences
-            print(f"  DIVERGES (declared: {', '.join(sorted(divergences))}) {label}")
+        if c["rendered"] != oracle:
+            diverged[fx] += 1
             if verbose:
-                print(diff_head(ours, theirs))
-        else:
+                print(f"  quirk fires: {label_of(c)}")
+
+    failures = []
+    for fx, ids in sorted(declaring.items()):
+        if ids and not diverged[fx]:
             failures.append(
-                f"  FAIL {label}\n"
-                f"    undeclared divergence from the shipped template.\n"
-                f"{diff_head(ours, theirs)}"
+                f"  FAIL {fx}\n"
+                f"    declares {sorted(ids)} but the quirked profile now renders exactly\n"
+                f"    what the training runtime does. Either GlmQuirks stopped modelling\n"
+                f"    the bug or this fixture stopped reaching it. A stale exception is\n"
+                f"    how a gate rots into decoration - remove it or find out why."
             )
-    return ok, len(cases), failures, fired
+        if not ids and diverged[fx]:
+            failures.append(
+                f"  FAIL {fx}\n"
+                f"    declares no divergence but the quirked profile differs from the\n"
+                f"    training runtime in {diverged[fx]} case(s). An unnamed quirk is a\n"
+                f"    quirk nobody decided to keep."
+            )
+    return failures
+
+
+# --------------------------------------------------------------------------
+# Phase 3 - interop. Reports, never gates.
+# --------------------------------------------------------------------------
+
+
+def apply_template(addr: str, body: dict) -> str:
+    req = urllib.request.Request(
+        addr.rstrip("/") + "/apply-template",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)["prompt"]
+
+
+def phase_interop(addr: str, cases: list[dict], template: str, verbose: bool) -> None:
+    """What llama.cpp's own renderer would have produced.
+
+    Nothing here can fail the gate. It answers "if we sent this conversation to a
+    stock llama.cpp chat-completions endpoint, where would it land differently",
+    which is worth knowing and is not a statement about whether our renderer is
+    right.
+
+    The comparison is oracle-vs-server, not ours-vs-server, because our render
+    has already been proved equal to the oracle in phase 1 and because that
+    framing puts the finding where it belongs: the difference is between two
+    Jinja engines, not between us and anybody.
+    """
+    agree = 0
+    diffs: collections.Counter = collections.Counter()
+    declared_norm: set[str] = set()
+    fired_norm: set[str] = set()
+    for c in cases:
+        rules = set(c.get("normalise", []))
+        declared_norm |= rules
+        try:
+            theirs = apply_template(addr, c["request"])
+        except urllib.error.HTTPError as e:
+            print(f"  interop unavailable: /apply-template returned {e.code}: "
+                  f"{e.read().decode('utf-8', 'replace')[:200]}")
+            return
+        except urllib.error.URLError as e:
+            print(
+                f"  interop unavailable: cannot reach {addr}: {e.reason}\n"
+                "    It needs a DIRECTLY LAUNCHED single-model server, not the router:\n"
+                "    /apply-template is proxied in router mode (server.cpp:239).\n"
+                "    tests/fidelity/serve_oracle.sh start   (and stop it when done)"
+            )
+            return
+        ours = c["rendered"]
+        if ours == theirs:
+            # Tried raw first, deliberately: a normalisation that was never needed
+            # is a place a real difference could hide, and the only way to notice
+            # is to see whether the rule ever fires.
+            agree += 1
+            continue
+        if rules and normalise(ours, rules) == normalise(theirs, rules):
+            fired_norm |= rules
+            agree += 1
+            continue
+        diffs[c["fixture"]] += 1
+        if verbose:
+            print(f"  minja differs: {label_of(c)}\n{diff_head(ours, theirs)}")
+
+    print(f"  {agree}/{len(cases)} identical to llama.cpp's renderer")
+    if diffs:
+        print("  minja differs on: " + ", ".join(f"{k} ({v})" for k, v in sorted(diffs.items())))
+        print("  This is interop information. See oracle_hf.py for why it does not gate.")
+    stale = declared_norm - fired_norm
+    if stale:
+        print(f"  note: normalisation rules declared but never needed: {sorted(stale)}")
+        print("  An unnecessary rewrite is a place a real difference could hide. Either the")
+        print("  server stopped emitting the unreproducible thing, or no fixture reaches it.")
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--addr", default=os.environ.get("LETIBOT_ORACLE", "http://127.0.0.1:8137"))
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--dialect", default="glm-5.3-flash")
+    ap.add_argument("--template", default=None, help="override the shipped jinja path")
     ap.add_argument("--fixtures", default=os.path.join(HERE, "fixtures"))
     ap.add_argument("--only", default=None, help="substring match on fixture name")
+    ap.add_argument("--interop", action="store_true",
+                    help="also diff against llama.cpp /apply-template (never gates)")
+    ap.add_argument("--addr", default=os.environ.get("LETIBOT_ORACLE", "http://127.0.0.1:8137"))
+    ap.add_argument("--skip-self-test", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+
+    tpath = args.template or TEMPLATES.get(args.dialect)
+    if tpath is None:
+        sys.exit(f"no template registered for dialect {args.dialect!r}; pass --template")
+    if not os.path.isabs(tpath):
+        tpath = os.path.join(REPO, tpath)
+    with open(tpath, encoding="utf-8") as fh:
+        template = fh.read()
 
     files = sorted(
         os.path.join(args.fixtures, f)
@@ -168,35 +368,46 @@ def main() -> int:
     if not files:
         sys.exit(f"no fixtures in {args.fixtures}")
 
-    declared: set[str] = set()
-    for f in files:
-        with open(f) as fh:
-            fx = json.load(fh)
-            for d in fx.get("divergences", []) + fx.get("normalise", []):
-                declared.add(d["id"])
-
-    print(f"corpus: {len(files)} fixtures, oracle: {args.addr}")
     rc = 0
-    all_fired: set[str] = set()
-    for profile in ("server-bug-compatible", "faithful"):
-        cases = render_cases(files, profile, args.dialect)
-        print(f"\n=== profile {profile}: {len(cases)} cases ===")
-        ok, total, failures, fired = run_profile(args.addr, cases, profile, args.verbose)
-        all_fired |= fired
-        for f in failures:
-            print(f)
-        print(f"  {ok}/{total} exact" + (f", {len(failures)} FAILED" if failures else ""))
-        if failures:
-            rc = 1
 
-    # The other half of the two-sided check. A declared divergence that stopped
-    # reproducing means either the server was fixed or the fixture no longer reaches
-    # the code path; either way the exception is now a lie and must be removed.
-    stale = declared - all_fired
-    if stale:
-        print(f"\nSTALE EXCEPTIONS (declared but no longer reproducing): {sorted(stale)}")
-        print("  Remove them from the fixture, or find out why the fixture stopped reaching them.")
+    if not args.skip_self_test:
+        # The oracle checks the renderer; this checks the oracle. Running it first
+        # means a broken oracle reports itself instead of blaming the renderer.
+        st = subprocess.run([sys.executable, os.path.join(HERE, "test_oracle_hf.py")],
+                            capture_output=True, text=True)
+        print(f"=== oracle self-test ===\n{st.stdout.strip()}")
+        if st.returncode != 0:
+            print(st.stderr.strip())
+            print("\nGATE FAIL (the oracle is broken; nothing it said about the renderer counts)")
+            return 1
+
+    print(f"\ncorpus: {len(files)} fixtures, template: {os.path.relpath(tpath, REPO)}")
+    print(f"authority: CPython Jinja2 as transformers {oracle_hf.TRANSFORMERS_REFERENCE} drives it "
+          f"(no server, no model, no GPU)")
+
+    faithful = render_cases(files, "faithful", args.dialect)
+    print(f"\n=== AUTHORITY + PROVENANCE: {len(faithful)} cases ===")
+    failures, exact, spans = phase_authority(faithful, template, args.verbose)
+    for f in failures:
+        print(f)
+    print(f"  {exact}/{len(faithful)} byte-identical to the training runtime; "
+          f"{spans} control spans checked against the provenance map")
+    if failures:
         rc = 1
+
+    bug = render_cases(files, "server-bug-compatible", args.dialect)
+    print(f"\n=== PROFILES: {len(bug)} cases ===")
+    pf = phase_profiles(bug, template, args.verbose)
+    for f in pf:
+        print(f)
+    if pf:
+        rc = 1
+    else:
+        print("  the quirked profile diverges from the training runtime exactly where declared")
+
+    if args.interop:
+        print(f"\n=== INTEROP (reports only): {args.addr} ===")
+        phase_interop(args.addr, faithful, template, args.verbose)
 
     print("\nGATE PASS" if rc == 0 else "\nGATE FAIL")
     return rc

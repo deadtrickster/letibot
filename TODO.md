@@ -102,6 +102,37 @@ divergence after the `interleaved` fix is one mechanism or two.
 
 ---
 
+## T7 — Falsifier B: what we are actually asking — **needs the operator, question restated**
+
+The compressed version was unanswerable. Plainly:
+
+**The assumption on trial.** The plan assumes a long conversation stays usable right
+up to the context window, so compaction can be lazy and mostly-soft. If that is
+false — if quality collapses at, say, 60k when the window is 262k — then compaction
+must be aggressive and early *whatever it costs in prefill*, and a whole section of
+the plan is wrong. Nobody has measured it. It is milestone M3.5, not a footnote.
+
+**The experiment.** Run the same task three times, with 20k / 60k / 150k of unrelated
+preceding conversation already in context. Same task, same model, same everything
+else. Then see whether the answers get worse as the preamble grows.
+
+**The open part is only: what does "worse" mean.** A human rating is subjective and
+does not survive being re-run months later. My proposal:
+
+> Use this repo's own work as the task — "implement this small, fully specified
+> function and its tests" — and score it **objectively**: does it compile, do the
+> tests pass, on the first attempt. Three depths, several tasks each, one number per
+> depth.
+
+That is reproducible by someone who was not there, and it is the workload we actually
+care about rather than a proxy for it. The alternative is a rubric someone scores by
+hand, which is more sensitive but not repeatable.
+
+**What a decision changes:** nothing until M3.5, and then it decides whether the
+compaction design in §10 survives contact with measurement.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
