@@ -96,11 +96,14 @@ template uses `namespace()` seven times (`ns`, `ns_tool`, `ns_blk`, `ns_chk`,
 Bare `set` where they wanted per-iteration, `namespace` where they wanted
 carry-over. The intent is unambiguous and minja is wrong.
 
-Our renderer has two profiles, and both must survive:
-  * `faithful`               — models the training format. Must equal this file.
-  * `server-bug-compatible`  — models minja's bug. Must differ from this file
-                               exactly on the leaking cases, and nowhere else.
-A profile pair that agreed everywhere would mean we had stopped measuring.
+There is one profile, `faithful`, and it must equal this file. There used to be
+a second, `server-bug-compatible`, which modelled minja's bug and had to differ
+here exactly on the leaking cases. T2 removed it: prompts are now rendered by
+running this same template through a correct Jinja engine, so reproducing a
+wrong one bought nothing that a differential against CPython does not already
+buy — and it meant maintaining someone else's bug on purpose. `--interop` still
+measures the leak, against the server that has it rather than against our model
+of it.
 
 
 PROVENANCE: THE PART THAT DOES REAL WORK

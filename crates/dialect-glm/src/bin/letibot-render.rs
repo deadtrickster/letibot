@@ -12,6 +12,13 @@
 //! letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json [FIXTURE.json …]
 //! ```
 //!
+//! `--profile` has one value left. It used to select between `faithful` and
+//! `server-bug-compatible`, a render that reproduced minja's cross-iteration
+//! `set`-inside-`for` leak; T2 removed that profile, because a template-driven renderer
+//! cannot produce it without reintroducing someone else's bug on purpose. The flag
+//! stays, and stays strict, so an old command line is told the profile was removed
+//! rather than having it quietly treated as a filename.
+//!
 //! stdout is a JSON array of **cases**, one per (fixture, prefix length, generation
 //! prompt on/off). See `tests/fidelity/README.md` for the fixture and case formats.
 //!
@@ -19,9 +26,9 @@
 //! When a second dialect lands it should move to a crate of its own; `--dialect` is
 //! already the switch that will select between them.
 
-use letibot_dialect::{Dialect, RenderSpan, StablePrefix, spans_to_string};
+use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
-    GlmDialect, GlmQuirks, ReasoningEffort, generation_prompt, glm_tool_json, outcome_envelope,
+    GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json, outcome_envelope,
 };
 use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
 use serde::Deserialize;
@@ -87,7 +94,7 @@ fn main() {
             "--profile" => profile = args.next().unwrap_or_default(),
             "-h" | "--help" => {
                 eprintln!(
-                    "letibot-render --dialect <name> --profile <faithful|server-bug-compatible> \
+                    "letibot-render --dialect <name> --profile faithful \
                      FIXTURE.json..."
                 );
                 return;
@@ -100,16 +107,19 @@ fn main() {
         eprintln!("unknown dialect {dialect_name:?}; this binary currently carries glm-5.3-flash");
         std::process::exit(2);
     }
-    let quirks = match profile.as_str() {
-        "faithful" => GlmQuirks::default(),
-        "server-bug-compatible" => GlmQuirks {
-            reasoning_leak: true,
-        },
-        other => {
-            eprintln!("unknown profile {other:?}");
-            std::process::exit(2);
-        }
-    };
+    if profile == "server-bug-compatible" {
+        eprintln!(
+            "the server-bug-compatible profile was removed (T2). It modelled minja's \
+             cross-iteration set-inside-for leak; a template-driven renderer cannot produce \
+             it without reintroducing the bug deliberately, and run_gate.py --interop still \
+             reports how llama.cpp differs."
+        );
+        std::process::exit(2);
+    }
+    if profile != "faithful" {
+        eprintln!("unknown profile {profile:?}; the only profile is \"faithful\"");
+        std::process::exit(2);
+    }
 
     let mut cases = Vec::new();
     for path in &paths {
@@ -117,7 +127,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
         let fx: Fixture = serde_json::from_str(&src)
             .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
-        cases.extend(expand(&fx, quirks));
+        cases.extend(expand(&fx));
     }
 
     println!(
@@ -131,7 +141,7 @@ fn main() {
 /// §7.2 asks for "the same fixture truncated at every prefix boundary", and it is the
 /// most valuable thing the corpus does: a renderer that is right about a whole
 /// conversation and wrong about its third prefix is a renderer whose cache never hits.
-fn expand(fx: &Fixture, quirks: GlmQuirks) -> Vec<Value> {
+fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = match fx.reasoning_effort.as_deref() {
         Some("low") => ReasoningEffort::Low,
         Some("high") => ReasoningEffort::High,
@@ -142,7 +152,7 @@ fn expand(fx: &Fixture, quirks: GlmQuirks) -> Vec<Value> {
         system: fx.prefix.system.clone(),
         tools_json,
     };
-    let dialect = GlmDialect::new().with_quirks(quirks).with_effort(effort);
+    let renderer = GlmRenderer::new().with_effort(effort);
     let divergences: Vec<&str> = fx.divergences.iter().map(|d| d.id.as_str()).collect();
     let normalise: Vec<&str> = fx.normalise.iter().map(|d| d.id.as_str()).collect();
     let why: Map<String, Value> = fx
@@ -155,8 +165,8 @@ fn expand(fx: &Fixture, quirks: GlmQuirks) -> Vec<Value> {
     let mut out = Vec::new();
     for k in 0..=fx.items.len() {
         let items = &fx.items[..k];
-        let spans = dialect.render(&prefix, items);
-        let mid_turn = dialect.ends_mid_turn(items);
+        let spans = renderer.render(&prefix, items);
+        let mid_turn = ends_mid_turn(items);
 
         out.push(case(fx, k, false, &spans, items, &prefix, effort, &divergences, &normalise, &why));
 

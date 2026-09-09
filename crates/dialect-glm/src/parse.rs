@@ -1,36 +1,43 @@
 //! Token ids in, spans out.
 //!
-//! CONTRACT-GAP-3: the trait's `parse(&[u32]) -> Vec<ParsedSpan>` asks a crate with
-//! no vocab to produce `Content(String)`. It cannot. The caller supplies a
-//! [`TokenDecoder`] instead — the token core already owns that map, and handing it in
-//! keeps the FFI out of this crate, which was the point of taking `u32` in the first
-//! place.
+//! # Why the decoder is an argument
 //!
-//! Boundaries are decided **by token id**, not by scanning text: a control token is
-//! one id, so a decoded chunk is a boundary if and only if the whole chunk is that
-//! literal. Text that merely spells `</think>` cannot be one, which is the same
-//! guarantee `RenderSpan`'s Text/Control split gives on the way out.
+//! `parse(&[u32]) -> Vec<ParsedSpan>` asked a crate with no vocab to produce
+//! `Content(String)`. It could not, and the workaround was a builder that stashed a
+//! decoder and a panic for callers who forgot. Under T2 the decoder is in the
+//! contract ([`TokenDecoder`]) and is passed in, so the type says what parsing needs
+//! and there is no way to call it wrong.
+//!
+//! # Boundaries are decided by token id, never by scanning text
+//!
+//! A control token is **one** vocab entry, so the decoder answers `control_role` for
+//! exactly the ids that are boundaries. Text that merely spells `</think>` is several
+//! ids and cannot be one — the same guarantee `RenderSpan`'s Text/Control split gives
+//! on the way out, restated on the way back in.
+//!
+//! Runs of ordinary tokens are decoded **as runs**, not one id at a time: on a BPE
+//! vocabulary, detokenizing a sequence and concatenating per-token pieces are
+//! different operations, and only the first is right.
+//!
+//! # What roles buy here
+//!
+//! This parser used to compare decoded control text against `GLM_TOKENS` literals,
+//! because eight of GLM's tokens had no `ControlRole` to match on. They have one now,
+//! so the match below is on roles: it is a `match` the compiler checks rather than a
+//! chain of string comparisons, and a second dialect that spells `<arg_key>`
+//! differently would need no new code path.
 
-use crate::GLM_TOKENS;
-use letibot_dialect::{ControlToken, ParsedSpan};
+use letibot_dialect::{ControlRole, ControlToken, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};
 
-/// id → text. Implemented by the token core; a trivial map is enough for tests.
-pub trait TokenDecoder {
-    fn decode(&self, id: u32) -> Option<&str>;
-}
+/// GLM's parser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GlmParser;
 
-impl<F> TokenDecoder for F
-where
-    F: Fn(u32) -> Option<&'static str>,
-{
-    fn decode(&self, id: u32) -> Option<&str> {
-        self(id)
+impl GlmParser {
+    pub fn new() -> Self {
+        GlmParser
     }
-}
-
-fn control_for(s: &str) -> Option<ControlToken> {
-    GLM_TOKENS.iter().copied().find(|t| t.literal == s)
 }
 
 #[derive(Debug, PartialEq)]
@@ -42,104 +49,104 @@ enum Mode {
     ArgValue,
 }
 
-pub(crate) fn parse(decoder: &(dyn TokenDecoder + Send + Sync), tokens: &[u32]) -> Vec<ParsedSpan> {
-    use crate::tokens as tk;
+impl Parser for GlmParser {
+    fn parse(&self, tokens: &[u32], decoder: &dyn TokenDecoder) -> Vec<ParsedSpan> {
+        let mut out: Vec<ParsedSpan> = Vec::new();
+        let mut mode = Mode::Content;
+        let mut buf = String::new();
+        let mut run: Vec<u32> = Vec::new();
+        let mut call_name = String::new();
+        let mut arg_key = String::new();
+        let mut args: Map<String, Value> = Map::new();
 
-    let mut out: Vec<ParsedSpan> = Vec::new();
-    let mut mode = Mode::Content;
-    let mut buf = String::new();
-    let mut call_name = String::new();
-    let mut arg_key = String::new();
-    let mut args: Map<String, Value> = Map::new();
-
-    let flush_content = |buf: &mut String, out: &mut Vec<ParsedSpan>| {
-        if !buf.is_empty() {
-            out.push(ParsedSpan::Content(std::mem::take(buf)));
-        }
-    };
-
-    for &id in tokens {
-        let Some(txt) = decoder.decode(id) else {
-            // An id the decoder does not know is not silently dropped: it would
-            // become invisible content, which is the failure class this whole design
-            // exists to abolish.
-            buf.push_str(&format!("\u{fffd}<{id}>"));
-            continue;
+        let flush_content = |buf: &mut String, out: &mut Vec<ParsedSpan>| {
+            if !buf.is_empty() {
+                out.push(ParsedSpan::Content(std::mem::take(buf)));
+            }
         };
 
-        let ctl = control_for(txt);
-        let Some(ctl) = ctl else {
-            buf.push_str(txt);
-            continue;
-        };
+        for &id in tokens {
+            let Some(role) = decoder.control_role(id) else {
+                run.push(id);
+                continue;
+            };
+            if !run.is_empty() {
+                buf.push_str(&decoder.decode(&run));
+                run.clear();
+            }
 
-        match ctl.literal {
-            l if l == tk::THINK_OPEN.literal => {
-                flush_content(&mut buf, &mut out);
-                mode = Mode::Reasoning;
-            }
-            l if l == tk::THINK_CLOSE.literal => {
-                // An empty think block is what an assistant turn with no reasoning
-                // renders as, so it is not recoverable as a distinct item. Documented
-                // as outside "the round-trippable parts".
-                if !buf.is_empty() {
-                    out.push(ParsedSpan::Reasoning(std::mem::take(&mut buf)));
+            match role {
+                ControlRole::ThinkOpen => {
+                    flush_content(&mut buf, &mut out);
+                    mode = Mode::Reasoning;
                 }
-                buf.clear();
-                mode = Mode::Content;
-            }
-            l if l == tk::TOOL_CALL_OPEN.literal => {
-                flush_content(&mut buf, &mut out);
-                call_name.clear();
-                args = Map::new();
-                mode = Mode::ToolName;
-            }
-            l if l == tk::TOOL_CALL_CLOSE.literal => {
-                if mode == Mode::ToolName {
-                    call_name = std::mem::take(&mut buf);
+                ControlRole::ThinkClose => {
+                    // An empty think block is what an assistant turn with no reasoning
+                    // renders as, so it is not recoverable as a distinct item.
+                    // Documented as outside "the round-trippable parts".
+                    if !buf.is_empty() {
+                        out.push(ParsedSpan::Reasoning(std::mem::take(&mut buf)));
+                    }
+                    buf.clear();
+                    mode = Mode::Content;
                 }
-                buf.clear();
-                out.push(ParsedSpan::ToolCall {
-                    // GLM's wire format carries no call id. It is assigned by the
-                    // harness, so it is not round-trippable and must not be invented.
-                    id: None,
-                    name: std::mem::take(&mut call_name),
-                    arguments: serde_json::to_string(&Value::Object(std::mem::take(&mut args)))
-                        .expect("a JSON object always serialises"),
-                });
-                mode = Mode::Content;
-            }
-            l if l == tk::ARG_KEY_OPEN.literal => {
-                if mode == Mode::ToolName {
-                    call_name = std::mem::take(&mut buf);
+                ControlRole::ToolCallOpen => {
+                    flush_content(&mut buf, &mut out);
+                    call_name.clear();
+                    args = Map::new();
+                    mode = Mode::ToolName;
                 }
-                buf.clear();
-                mode = Mode::ArgKey;
-            }
-            l if l == tk::ARG_KEY_CLOSE.literal => {
-                arg_key = std::mem::take(&mut buf);
-                mode = Mode::Content;
-            }
-            l if l == tk::ARG_VALUE_OPEN.literal => {
-                buf.clear();
-                mode = Mode::ArgValue;
-            }
-            l if l == tk::ARG_VALUE_CLOSE.literal => {
-                args.insert(
-                    std::mem::take(&mut arg_key),
-                    reconstruct_arg(std::mem::take(&mut buf)),
-                );
-                mode = Mode::Content;
-            }
-            _ => {
-                flush_content(&mut buf, &mut out);
-                out.push(ParsedSpan::Control(ctl.role));
-                mode = Mode::Content;
+                ControlRole::ToolCallClose => {
+                    if mode == Mode::ToolName {
+                        call_name = std::mem::take(&mut buf);
+                    }
+                    buf.clear();
+                    out.push(ParsedSpan::ToolCall {
+                        // GLM's wire format carries no call id. It is assigned by the
+                        // harness, so it is not round-trippable and must not be
+                        // invented.
+                        id: None,
+                        name: std::mem::take(&mut call_name),
+                        arguments: serde_json::to_string(&Value::Object(std::mem::take(&mut args)))
+                            .expect("a JSON object always serialises"),
+                    });
+                    mode = Mode::Content;
+                }
+                ControlRole::ArgKeyOpen => {
+                    if mode == Mode::ToolName {
+                        call_name = std::mem::take(&mut buf);
+                    }
+                    buf.clear();
+                    mode = Mode::ArgKey;
+                }
+                ControlRole::ArgKeyClose => {
+                    arg_key = std::mem::take(&mut buf);
+                    mode = Mode::Content;
+                }
+                ControlRole::ArgValueOpen => {
+                    buf.clear();
+                    mode = Mode::ArgValue;
+                }
+                ControlRole::ArgValueClose => {
+                    args.insert(
+                        std::mem::take(&mut arg_key),
+                        reconstruct_arg(std::mem::take(&mut buf)),
+                    );
+                    mode = Mode::Content;
+                }
+                other => {
+                    flush_content(&mut buf, &mut out);
+                    out.push(ParsedSpan::Control(other));
+                    mode = Mode::Content;
+                }
             }
         }
+        if !run.is_empty() {
+            buf.push_str(&decoder.decode(&run));
+        }
+        flush_content(&mut buf, &mut out);
+        out
     }
-    flush_content(&mut buf, &mut out);
-    out
 }
 
 /// Recover an argument value from its `<arg_value>` body.
@@ -158,23 +165,51 @@ fn reconstruct_arg(text: String) -> Value {
 }
 
 /// A decoder over a fixed table, for tests and for anyone who has literal→id already.
+///
+/// The real one is `letibot_tokencore::VocabDecoder`, which has a vocabulary. This one
+/// exists so the round-trip property can be checked with no GGUF, no FFI and no GPU —
+/// which is the whole reason `RenderSpan` is text plus control tokens rather than ids.
 #[derive(Debug, Clone, Default)]
 pub struct TableDecoder {
-    table: std::collections::HashMap<u32, String>,
+    text: std::collections::HashMap<u32, String>,
+    roles: std::collections::HashMap<u32, ControlRole>,
 }
 
 impl TableDecoder {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with(mut self, id: u32, text: &str) -> Self {
-        self.table.insert(id, text.to_string());
+
+    /// An ordinary token: text, no role, never a boundary.
+    pub fn with_text(mut self, id: u32, text: &str) -> Self {
+        self.text.insert(id, text.to_string());
+        self
+    }
+
+    /// A control token: text *and* the role that makes it a boundary.
+    pub fn with_control(mut self, id: u32, token: &ControlToken) -> Self {
+        self.text.insert(id, token.literal.clone().into_owned());
+        self.roles.insert(id, token.role);
         self
     }
 }
 
 impl TokenDecoder for TableDecoder {
-    fn decode(&self, id: u32) -> Option<&str> {
-        self.table.get(&id).map(String::as_str)
+    fn decode(&self, tokens: &[u32]) -> String {
+        let mut s = String::new();
+        for id in tokens {
+            match self.text.get(id) {
+                Some(t) => s.push_str(t),
+                // An id the decoder does not know is not silently dropped: it would
+                // become invisible content, which is the failure class this whole
+                // design exists to abolish.
+                None => s.push_str(&format!("\u{fffd}<{id}>")),
+            }
+        }
+        s
+    }
+
+    fn control_role(&self, token: u32) -> Option<ControlRole> {
+        self.roles.get(&token).copied()
     }
 }

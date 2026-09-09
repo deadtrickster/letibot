@@ -6,5 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# No dependencies, and that is the point: a dialect spec is a template string and
+# some tables. `TranscriptItem` left with `render` (T1/D11) — the template engine
+# maps a transcript to template arguments, and it is not this crate.
 [dependencies]
-letibot-transcript.workspace = true

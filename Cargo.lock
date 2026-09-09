@@ -171,9 +171,6 @@ dependencies = [
 [[package]]
 name = "letibot-dialect"
 version = "0.1.0"
-dependencies = [
- "letibot-transcript",
-]
 
 [[package]]
 name = "letibot-dialect-glm"
