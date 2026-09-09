@@ -1,0 +1,38 @@
+[package]
+name = "letibot-harnessd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+letibot-transcript.workspace = true
+letibot-dialect.workspace = true
+letibot-dialect-glm.workspace = true
+letibot-dialect-qwen.workspace = true
+letibot-tokencore.workspace = true
+letibot-backend.workspace = true
+letibot-turn.workspace = true
+letibot-tools.workspace = true
+letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
+serde.workspace = true
+# preserve_order for the reason every crate in this tree needs it: a tool call's
+# argument key order becomes prompt bytes on the next turn.
+serde_json = { workspace = true, features = ["preserve_order"] }
+# Only for `sigaction` and the self-pipe that carries a signal to the shutdown
+# thread. No async runtime, no HTTP client: the turn engine is a synchronous state
+# machine and the log is threads and a condvar.
+libc = "0.2"
+
+[[bin]]
+name = "harnessd"
+path = "src/bin/harnessd.rs"
+
+[[bin]]
+name = "letibot-m1"
+path = "src/bin/letibot-m1.rs"
+
+[dev-dependencies]
+letibot-tools = { workspace = true, features = ["testing"] }

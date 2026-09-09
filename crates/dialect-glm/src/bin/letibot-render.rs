@@ -28,7 +28,7 @@
 
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
-    GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json, outcome_envelope,
+    GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json,
 };
 use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
 use serde::Deserialize;
@@ -292,18 +292,18 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 t.2.extend(tool_calls.iter().cloned());
             }
             TranscriptItem::ToolResult {
-                call_id,
-                outcome,
-                payload,
-                ..
+                call_id, payload, ..
             } => {
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    // The same envelope the renderer uses. There is no oracle for our
-                    // outcome wording, so the gate must not be testing it.
-                    "content": outcome_envelope(outcome, payload),
+                    // The payload verbatim, which is what the renderer emits. Under
+                    // the harness these bytes are already `ToolResult::render`'s
+                    // envelope; a fixture supplies them directly. Either way the two
+                    // sides are given the same string, so the gate tests the render
+                    // and not our wording.
+                    "content": payload,
                 }));
             }
         }

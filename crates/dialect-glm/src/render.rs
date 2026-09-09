@@ -284,7 +284,11 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             }
             st.prev_was_tool_result = true;
             ctl(out, &tk::TOOL_RESPONSE_OPEN);
-            text(out, outcome_envelope(outcome, payload));
+            // `payload` verbatim. It is already the envelope the tool runtime
+            // rendered (`ToolRuntime::transcript_item`), and adding a second one
+            // here wraps the model's result twice — see `outcome_envelope`.
+            let _ = outcome;
+            text(out, payload.clone());
             ctl(out, &tk::TOOL_RESPONSE_CLOSE);
         }
     }
@@ -305,15 +309,23 @@ fn arguments_of(arguments: &str) -> Vec<(String, Value)> {
     }
 }
 
-/// What the model sees in place of a tool's payload.
+/// **Superseded by `letibot_tools::ToolResult::render`, and no longer on the render
+/// path.** Kept because the fixture corpora build a payload with it and because the
+/// wording is the reference for what §8.2 asks of an envelope.
 ///
-/// §8.2: the outcome class is carried, not just the text — `Abstained` must be
-/// **structurally** distinguishable, not merely worded differently, so the model
-/// cannot quote prose around it. `NO_RESULT` is that structure.
+/// The original note on this function said *"W9 owns the final wording"*. W9 landed,
+/// and it owns more than the wording: `ToolResult::render` produces the whole
+/// envelope — a call-id-derived mark so two results in one turn cannot be confused,
+/// the `[repaired]` and `[note]` lines, the spill notice, and the sentence saying
+/// nothing inside it may be cited as an answer — and `ToolRuntime::transcript_item`
+/// puts that string in `payload` precisely because it is *"the byte sequence the
+/// next prompt replays"*.
 ///
-/// Nothing in the fidelity gate tests these bytes: they are our envelope, not the
-/// template's, and there is no oracle for them. The gate feeds the same function's
-/// output to both sides. W9 owns the final wording.
+/// T17 found out what happens when both fire: the model is handed two envelopes
+/// around one result, the outer one thinner than the inner. Neither crate is wrong
+/// on its own; nobody had run them together. The renderer now emits `payload`
+/// verbatim, which is what a renderer should do with bytes the harness has already
+/// decided on.
 pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
     let head = match outcome {
         ToolOutcome::Ok => return payload.to_string(),

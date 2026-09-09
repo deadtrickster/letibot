@@ -1,0 +1,40 @@
+{
+  "name": "empty-assistant-turn",
+  "why": "An assistant turn with no visible text and no reasoning still emits <think>\\n\\n</think>\\n\\n and its boundaries. DeepSeek's content:'' rule, one layer down.",
+  "prefix": {
+    "system": "s"
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Say nothing."
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "text": ""
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Now say something."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Fine.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Something."
+    }
+  ]
+}

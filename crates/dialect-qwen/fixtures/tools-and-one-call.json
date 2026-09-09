@@ -1,0 +1,106 @@
+{
+  "name": "tools-and-one-call",
+  "why": "The shape the harness actually produces: a tool block, one XML-form call, one result, then a reply. The tool block comes BEFORE the system text, which is the opposite of GLM.",
+  "prefix": {
+    "system": "You are a coding assistant.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "Read a file from disk. Give it a path relative to the workspace root.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "Search the tree — «поиск» 🔍.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "glob": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "What is in a.txt?"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Read it.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "name": "read",
+          "arguments": "{\"path\": \"a.txt\"}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "call_0",
+      "name": "read",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "alpha\nbeta\n"
+    },
+    {
+      "type": "reasoning",
+      "text": "Two lines.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "alpha and beta."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Good."
+        }
+      ]
+    }
+  ]
+}

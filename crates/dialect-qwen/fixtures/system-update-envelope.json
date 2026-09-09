@@ -1,0 +1,45 @@
+{
+  "name": "system-update-envelope",
+  "why": "§5.3 on Qwen: the template RAISES on a mid-history system message, so a system change is a user item with a fixed envelope. C9 measured on this model measures this shape.",
+  "prefix": {
+    "system": "Answer in English."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Hello."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Hi."
+    },
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "<system-update seq=1>\nAnswer in Russian from now on.\n</system-update>"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Language changed.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Хорошо."
+    }
+  ]
+}
