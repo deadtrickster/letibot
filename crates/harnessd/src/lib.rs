@@ -65,19 +65,25 @@
 //! are now structural rather than incidental — see [`sessions`]'s header for which
 //! of them is per session and why it cannot be otherwise.
 //!
-//! # Two known gaps it works around rather than hides
+//! # One known gap it works around rather than hides
 //!
 //! * **T13.1** — `TranscriptAppended` carries no content and `EventSink` has no
 //!   channel for one, so a head cannot rebuild a conversation from the log alone.
 //!   `Hub::record_item` is the out-of-band path and [`harness`] wires it, reading
 //!   the item id off the event rather than recomputing it. The event is not
 //!   widened here: that is a contract change and not this strand's call.
-//! * **T13.5** — `DeltaTarget` has no channel for tool-call argument text, so
-//!   arguments stream to a head as `Text` while the committed row puts them in a
-//!   `ToolCall`. A head therefore shows the raw `<function=…>` block scrolling past
-//!   and then a tidy row. Unfixed and visible; not papered over by filtering the
-//!   deltas, which would make the live view and the stored view disagree in the
-//!   other direction — the exact thing T12 fixed.
+//!
+//! **T13.5 was the second of these and is now closed.** `DeltaTarget` had no channel for
+//! tool-call argument text, so the arguments streamed to a head as `Text` while
+//! the committed row put them in a `ToolCall` — a head showed the raw
+//! `<function=…>` block scrolling past and then a tidy row. The note here used to
+//! say it was "unfixed and visible", and that it would not be papered over by
+//! filtering the deltas, which would make the live view and the stored view
+//! disagree in the other direction. Both halves stand: it was not fixed by
+//! filtering, it was fixed by giving the third channel a name
+//! (`DeltaTarget::ToolCall`, `PROTOCOL_VERSION` 3), decided in the engine by
+//! vocabulary id where the boundary still exists. The live view and the stored
+//! view carry the same bytes, on channels that agree.
 
 pub mod config;
 pub mod daemon;

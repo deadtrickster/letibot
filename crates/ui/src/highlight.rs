@@ -81,8 +81,7 @@
 //! parser, and a parser is the point where this file should be deleted in favour
 //! of `syntect` or a tree-sitter grammar rather than extended.
 
-use crate::style::{Palette, Role};
-use crate::width::RESET;
+use crate::style::{Painter, Palette, Role};
 
 /// A language's lexical surface: the minimum needed to colour it.
 #[derive(Debug, Clone, Copy)]
@@ -287,7 +286,7 @@ pub struct State {
 /// Returns the painted line and the state for the next. Pure: the same
 /// `(state, line)` always gives the same output, which is what lets a cache key
 /// on line number alone.
-pub fn line(syn: &Syntax, st: State, src: &str, p: Palette) -> (String, State) {
+pub fn line(syn: &Syntax, st: State, src: &str, p: Painter) -> (String, State) {
     let mut out = String::with_capacity(src.len() + 32);
     let mut st = st;
     let b = src.as_bytes();
@@ -439,7 +438,7 @@ pub fn line(syn: &Syntax, st: State, src: &str, p: Palette) -> (String, State) {
     (out, st)
 }
 
-fn push(out: &mut String, p: Palette, r: Role, s: &str) {
+fn push(out: &mut String, p: Painter, r: Role, s: &str) {
     if s.is_empty() {
         return;
     }
@@ -449,7 +448,10 @@ fn push(out: &mut String, p: Palette, r: Role, s: &str) {
     } else {
         out.push_str(o);
         out.push_str(s);
-        out.push_str(RESET);
+        // Not `RESET`. A fenced block inside the model's reasoning is painted
+        // inside a themed block, and a keyword that closed to the terminal
+        // default took the rest of the line with it.
+        out.push_str(&p.close());
     }
 }
 
@@ -483,7 +485,7 @@ fn string_end(rest: &str, q: char) -> usize {
 #[derive(Debug)]
 pub struct StreamingCode {
     syn: Option<&'static Syntax>,
-    palette: Palette,
+    painter: Painter,
     state: State,
     /// Complete lines, already painted. Never revisited.
     done: Vec<String>,
@@ -496,9 +498,16 @@ impl StreamingCode {
     /// `lang` is the fence's info string; an unknown one gives an uncoloured
     /// block rather than a guessed one.
     pub fn new(lang: &str, palette: Palette) -> StreamingCode {
+        StreamingCode::inside(lang, Painter::new(palette))
+    }
+
+    /// The same, for a block that is itself inside a themed block — the model's
+    /// reasoning being the one that exists. Every span the highlighter closes
+    /// then restores that theme instead of the terminal default.
+    pub fn inside(lang: &str, painter: Painter) -> StreamingCode {
         StreamingCode {
             syn: syntax_for(lang),
-            palette,
+            painter,
             state: State::default(),
             done: Vec::new(),
             partial: String::new(),
@@ -527,7 +536,7 @@ impl StreamingCode {
         self.bytes_highlighted += l.len() as u64;
         match self.syn {
             Some(s) => {
-                let (painted, st) = line(s, self.state, l, self.palette);
+                let (painted, st) = line(s, self.state, l, self.painter);
                 self.state = st;
                 self.done.push(painted);
             }
@@ -544,7 +553,7 @@ impl StreamingCode {
             self.bytes_highlighted += self.partial.len() as u64;
             match self.syn {
                 Some(s) => {
-                    let (painted, _) = line(s, self.state, &self.partial, self.palette);
+                    let (painted, _) = line(s, self.state, &self.partial, self.painter);
                     out.push(painted);
                 }
                 None => out.push(self.partial.clone()),

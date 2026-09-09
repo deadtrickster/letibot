@@ -68,6 +68,7 @@ fn endpoint() -> Endpoint {
 struct Seen {
     text: String,
     reasoning: String,
+    raw_calls: String,
 }
 
 impl Seen {
@@ -76,6 +77,7 @@ impl Seen {
             match target {
                 DeltaTarget::Text => self.text.push_str(text),
                 DeltaTarget::Reasoning => self.reasoning.push_str(text),
+                DeltaTarget::ToolCall => self.raw_calls.push_str(text),
             }
         }
     }
@@ -202,6 +204,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     let mut b_seen = Seen {
         text: snap_turn.text,
         reasoning: snap_turn.reasoning,
+        raw_calls: snap_turn.raw_calls,
     };
     let b_from = snap.seq;
 

@@ -35,17 +35,24 @@ use crate::view::Snapshot;
 /// as the control channel: a silent version skew that looks like a bug in the other
 /// half.
 ///
-/// **2** since the daemon grew more than one session.
+/// **3** since a tool call's body got a channel of its own.
 ///
-/// What changed, and why it is a bump rather than an addition: `Hello` now carries
-/// what the head is attached *to* (§4.4) and the list of sessions a picker is drawn
-/// from, `Attach`'s `session_id` now names one of several rather than being checked
-/// against the only one, and `ToolCallProposed` carries a display target (§4.1). A
-/// version-1 head talking to a version-2 daemon would attach, be seated in a
-/// session it did not choose, and render every tool call without its argument —
-/// which is three quiet wrongnesses rather than one loud one. Both sides refuse a
-/// mismatch by name, so the failure is one line in a terminal instead.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// `DeltaTarget` gained `ToolCall` and `TurnView` gained `raw_calls`, closing
+/// T13.5: the raw `<function=…>` markup a model writes inside `<tool_call>` used
+/// to be announced as `Text`, so every head rendered it as prose until the closing
+/// tag arrived and it was replaced by a card. That is a *protocol* fault — the
+/// boundary exists in the engine, which is walking vocabulary ids, and is gone by
+/// the time the markup is a string — so it is fixed here rather than guessed at in
+/// a head. A version-2 head talking to a version-3 daemon would fail to parse the
+/// new `target` value; a version-3 head talking to a version-2 daemon would show
+/// the markup again. Both sides refuse a mismatch by name, so the failure is one
+/// line in a terminal instead.
+///
+/// **2** was the daemon growing more than one session: `Hello` carrying what the
+/// head is attached *to* (§4.4) and the session list a picker is drawn from,
+/// `Attach`'s `session_id` naming one of several rather than being checked against
+/// the only one, and `ToolCallProposed` carrying a display target (§4.1).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// What a head can do and what it wants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
