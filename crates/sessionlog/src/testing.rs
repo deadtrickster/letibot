@@ -105,6 +105,7 @@ pub fn answered(req_id: &str, option_id: &str) -> SessionEvent {
 
 pub fn tool_progress(call_id: &str, note: &str) -> SessionEvent {
     SessionEvent::ToolProgress {
+        turn_id: "t1".into(),
         call_id: call_id.into(),
         note: note.into(),
     }
@@ -145,15 +146,21 @@ pub fn one_of_each() -> Vec<SessionEvent> {
         requested("r1", "do it"),
         answered("r1", "allow"),
         SessionEvent::ToolStarted {
+            turn_id: "t1".into(),
             call_id: "c1".into(),
             name: "read".into(),
+            access: "read".into(),
         },
         tool_progress("c1", "half"),
         SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
             call_id: "c1".into(),
             outcome: ToolOutcome::Ok,
             payload_digest: "fnv1a:1".into(),
-            bytes: 12,
+            inline_bytes: 12,
+            full_bytes: 12,
+            spill: None,
+            repairs: 0,
         },
         turn_finished("t1"),
         SessionEvent::TurnInterrupted {
@@ -207,15 +214,21 @@ pub fn recorded_session() -> Vec<SessionEvent> {
     out.push(requested("d1", "read /home/dead/Projects/letibot/TODO.md"));
     out.push(answered("d1", "allow"));
     out.push(SessionEvent::ToolStarted {
+        turn_id: "s#1".into(),
         call_id: "c1".into(),
         name: "read".into(),
+        access: "read".into(),
     });
     out.push(tool_progress("c1", "40 of 276 lines"));
     out.push(SessionEvent::ToolFinished {
+        turn_id: "s#1".into(),
         call_id: "c1".into(),
         outcome: ToolOutcome::Ok,
         payload_digest: "fnv1a:deadbeefdeadbeef".into(),
-        bytes: 8_412,
+        inline_bytes: 8_412,
+        full_bytes: 8_412,
+        spill: None,
+        repairs: 0,
     });
     out.push(appended("s.2", "tool_result"));
     for w in chunks(MARKDOWN) {

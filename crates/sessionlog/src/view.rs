@@ -102,7 +102,13 @@ pub enum CallState {
     Finished {
         outcome: ToolOutcome,
         payload_digest: String,
-        bytes: u64,
+        /// What the model received. Under §8.3's spill policy this is smaller than
+        /// `full_bytes`, and a head that shows only one of the two is showing the
+        /// wrong one half the time.
+        inline_bytes: u64,
+        full_bytes: u64,
+        /// The spill locator, when the output spilled: a head can offer the rest.
+        spill: Option<String>,
     },
 }
 
@@ -338,7 +344,7 @@ impl SessionView {
                     .saturating_sub(self.bounds.settled_decisions);
                 self.settled.drain(..over);
             }
-            SessionEvent::ToolStarted { call_id, name } => {
+            SessionEvent::ToolStarted { call_id, name, .. } => {
                 if let Some(c) = self.call_mut(call_id) {
                     c.state = CallState::Running;
                 } else if let Some(t) = self.turn.as_mut() {
@@ -358,13 +364,18 @@ impl SessionView {
                 call_id,
                 outcome,
                 payload_digest,
-                bytes,
+                inline_bytes,
+                full_bytes,
+                spill,
+                ..
             } => {
                 if let Some(c) = self.call_mut(call_id) {
                     c.state = CallState::Finished {
                         outcome: outcome.clone(),
                         payload_digest: payload_digest.clone(),
-                        bytes: *bytes,
+                        inline_bytes: *inline_bytes,
+                        full_bytes: *full_bytes,
+                        spill: spill.clone(),
                     };
                 }
             }
@@ -536,8 +547,10 @@ mod tests {
         log.append(turn_started("t1"));
         log.append(proposed("t1", "c1", "read"));
         log.append(SessionEvent::ToolStarted {
+            turn_id: "t1".into(),
             call_id: "c1".into(),
             name: "read".into(),
+            access: "read".into(),
         });
         log.append(tool_progress("c1", "…400 lines so far…"));
         let snap = fold(&log).snapshot(4, 0);

@@ -190,6 +190,7 @@ dependencies = [
  "letibot-dialect",
  "letibot-sessionlog",
  "letibot-tokencore",
+ "letibot-tools",
  "letibot-transcript",
  "letibot-turn",
  "serde",
@@ -205,6 +206,17 @@ dependencies = [
  "letibot-transcript",
  "libc",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "letibot-tools"
+version = "0.1.0"
+dependencies = [
+ "letibot-tools",
+ "letibot-transcript",
  "serde",
  "serde_json",
  "sha2",

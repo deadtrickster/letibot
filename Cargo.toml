@@ -9,6 +9,7 @@ members = [
     "crates/turn",
     "crates/sessionlog",
     "crates/tui",
+    "crates/tools",
 ]
 
 [workspace.package]
@@ -28,3 +29,4 @@ letibot-backend = { path = "crates/backend" }
 letibot-turn = { path = "crates/turn" }
 letibot-sessionlog = { path = "crates/sessionlog" }
 letibot-tui = { path = "crates/tui" }
+letibot-tools = { path = "crates/tools" }

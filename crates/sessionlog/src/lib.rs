@@ -59,6 +59,9 @@ pub mod wire;
 #[cfg(feature = "turn")]
 pub mod lift;
 
+#[cfg(feature = "tools")]
+pub mod lift_tools;
+
 pub use cursor::{Batch, ReadMark};
 pub use event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason, OnTimeout,
@@ -75,3 +78,6 @@ pub use view::{
 
 #[cfg(feature = "turn")]
 pub use lift::{LogSink, from_turn_event};
+
+#[cfg(feature = "tools")]
+pub use lift_tools::{ToolLogSink, from_tool_event};

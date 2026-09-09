@@ -19,8 +19,13 @@
 //! Three notes on where this is *not* a transcription, and why.
 //!
 //! 1. **`ToolStarted` / `ToolProgress` are given by name only** in §4.5 (the `…`
-//!    covers their fields). Their shapes below are this crate's, and W9 is the
-//!    strand that will find out whether they are right.
+//!    covers their fields). Their shapes were this crate's invention and W9 was
+//!    the strand that would find out whether they were right. It has, by building
+//!    the runtime that emits them, and the answer was: two of the three were
+//!    short. `ToolStarted` gained `turn_id` and `access`; `ToolFinished` gained
+//!    `turn_id`, the `inline`/`full` byte split, the spill locator and the repair
+//!    count; `ToolProgress`'s free-text `note` was right as it stood. See
+//!    `letibot_tools::events` for the argument in full.
 //! 2. **`Explain{plan}` is a `serde_json::Value`.** W14 owes `ExplainPlan` as a
 //!    type (§6.2 gives a rendered example and no field list). Typing it here would
 //!    be inventing W14's contract from a screenshot.
@@ -208,23 +213,49 @@ pub enum SessionEvent {
         /// are different facts.
         late: bool,
     },
+    /// **Shape revised by W9**, which is what T13.4 said would settle it: `turn_id`
+    /// because every other turn-scoped event carries one and a head cannot
+    /// attribute a call without it once §8.4's subagents run concurrently, and
+    /// `access` because §8.1 clause 4 declares it in the schema and it is the fact
+    /// that explains why a call did or did not stop for a decision.
     ToolStarted {
+        turn_id: String,
         call_id: String,
         name: String,
+        /// `read | write | exec | network`, from the tool's schema.
+        access: String,
     },
     /// Interactive. Partial tool output, which a late head must never be replayed —
     /// see [`crate::scrub`].
+    ///
+    /// `note` survived contact with W9 unchanged: `grep` and `glob` do not know a
+    /// total until they have finished walking, so a `done/total` pair would be a
+    /// denominator invented for the display.
     ToolProgress {
+        turn_id: String,
         call_id: String,
         note: String,
     },
+    /// **Shape revised by W9.** `bytes` alone could not answer the question a
+    /// spilling runtime raises — how much the model got versus how much there was —
+    /// and the locator has to reach a head or "there is more" is a dead end.
     ToolFinished {
+        turn_id: String,
         call_id: String,
         outcome: letibot_transcript::ToolOutcome,
         /// A digest, for the same reason `ToolCallProposed` carries one: the payload
         /// is in the transcript, and an event fans out to every head.
         payload_digest: String,
-        bytes: u64,
+        /// What the model received.
+        inline_bytes: u64,
+        /// What the tool produced. Larger than `inline_bytes` exactly when the
+        /// output spilled (§8.3).
+        full_bytes: u64,
+        /// The spill locator, when there is one: a head can offer the rest.
+        spill: Option<String>,
+        /// How many of §8.1 clause 2's repairs the call needed. A head that cannot
+        /// see this cannot see a model steadily emitting malformed calls.
+        repairs: u32,
     },
     TurnFinished {
         turn_id: String,
