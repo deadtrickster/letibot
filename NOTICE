@@ -1,0 +1,171 @@
+letibot
+Copyright 2026 the letibot authors
+Licensed under the Apache License, Version 2.0.
+
+================================================================================
+Third-party material incorporated into this work
+================================================================================
+
+`crates/ui` contains code and design that was ported or closely adapted from two
+upstream projects. Both licences permit it; both require attribution, and
+Apache-2.0 §4(b) additionally requires that modified files carry prominent
+notices **stating that they were changed**. Every file in `crates/ui` that owes
+anything to either project carries a `# Provenance` section in its module header
+naming the upstream project, the upstream file, and what was changed. This
+NOTICE is the index of those, not a substitute for them.
+
+--------------------------------------------------------------------------------
+1. grok-build — https://github.com/xai-org/grok-build
+--------------------------------------------------------------------------------
+
+    Copyright 2023-2026 SpaceXAI
+    Licensed under the Apache License, Version 2.0
+    Source revision read: eb4a894da8fb7bcd8d8f398a9d909a7868a4fcf1
+
+Material adapted, by letibot file:
+
+  crates/ui/src/highlight.rs
+      Adapted from crates/codegen/xai-grok-markdown/src/open_code_highlighter.rs
+      — the resumable-lexer-state mechanism for highlighting a code fence that
+      is still streaming: persist the state after the last newline-terminated
+      line, keep the already-painted lines, repaint only the incomplete tail.
+      Their measurements of the pre-fix quadratic behaviour are quoted in the
+      module header.
+      CHANGED: their state is syntect's ParseState + HighlightState and a theme
+      file; letibot's is a hand-written line lexer whose state is two Copy
+      fields. Their second strategy — a (fence_info, body) memo capped at
+      256 KiB, needed because pulldown-cmark cannot checkpoint inside a list —
+      is not ported, because letibot's markdown lexer hands a code body to the
+      highlighter directly and the case does not arise. Language table, token
+      classes and palette are letibot's.
+
+  crates/ui/src/diff.rs
+      Adapted from crates/codegen/xai-grok-pager-diff/src/lib.rs and
+      crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs — the
+      hunk model, MAX_CONTEXT = 3, overlapping-hunk stitching, the
+      unified-only rendering decision, and the empty-to-empty edge case
+      ("must not produce a fabricated one-line insertion").
+      CHANGED: they use the `similar` crate; letibot has a hand-written Myers
+      with a `max_d` cap and an explicit `degraded` flag, because a letibot head
+      is single-threaded over the same loop that services its socket. Word-level
+      intra-line highlighting is added — grok-build has none. Their progressive
+      per-hunk-then-whole-file syntax highlighting (EditHighlightPhase) is not
+      ported; it requires a worker thread.
+
+  crates/ui/src/card.rs
+      Adapted from crates/codegen/xai-grok-pager/src/scrollback/ — the
+      three-state DisplayMode { Collapsed, Truncated, Expanded } (types.rs:52);
+      the running/finished verb tense flip (blocks/tool/mod.rs:107); the head/
+      tail truncation budgets 5/3, 10/3 and 2/3 (blocks/tool/read.rs:16,
+      use_tool.rs:15, appearance/config.rs:613); the "… +N lines" elided marker
+      as a separator row (blocks/tool/execute.rs:549); and from blocks/
+      thinking.rs the "Thinking…" → "Thought for 4.2s" header, the ┃ rail, the
+      decision to de-emphasise a reasoning body by *attribute* rather than by
+      colour, and the rule that a replayed session must not render a fabricated
+      "Thought for 0.0s".
+      CHANGED: grok-build's block renderers are 750-3,000 lines each and are
+      coupled to BlockContext / Theme / Selectable / AppearanceConfig; letibot's
+      is plain data and one function. The inline/full byte-count disclosure and
+      the abstention outcome are letibot's and have no grok-build counterpart.
+
+  crates/ui/src/progress.rs
+      Adapted from crates/codegen/xai-grok-pager/src/views/progress_bar.rs —
+      eighth-of-a-cell bar resolution using the LEFT BLOCK glyphs, and the
+      whole-cells-plus-remainder split.
+      CHANGED: their bar is two-valued; letibot's is three-valued
+      (cache-reused / computed-now / remaining), so the sub-cell remainder is
+      applied only to the moving edge. The spinner is driven by elapsed
+      milliseconds rather than by a frame tick, since a letibot head has no
+      fixed frame rate.
+
+  crates/ui/src/editor.rs
+      Adapted from crates/codegen/xai-ratatui-textarea/src/editor.rs — the
+      plan/apply split, WordStyle { Small, WhitespaceDelimited }, the undo
+      batching rule (a cursor jump or a whitespace/non-whitespace transition
+      breaks the batch), the rule that undo does not restore the kill buffer,
+      and the sticky preferred column for vertical motion.
+      CHANGED: rewritten against a plain String buffer with no ratatui, no
+      selection model, no mouse and no elements; snapshots carry text and cursor
+      only.
+
+Design read and deliberately NOT ported, recorded so the decision is legible:
+crates/codegen/xai-ratatui-inline (an inline viewport that renders below the
+terminal's own scrollback rather than on the alternate screen). See
+crates/ui/DESIGN.md.
+
+--------------------------------------------------------------------------------
+2. opencode — https://github.com/anomalyco/opencode
+--------------------------------------------------------------------------------
+
+    Copyright (c) 2025 opencode
+    Licensed under the MIT License
+
+Read through the Kilo Code fork (https://github.com/Kilo-Org/kilocode, MIT,
+Copyright (c) 2026 Kilo Code and Copyright (c) 2025 opencode), which is where
+the source was available. Where a mechanism is a Kilo Code addition rather than
+opencode's it is marked below.
+
+    MIT License
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Material adapted, by letibot file:
+
+  crates/ui/src/editor.rs
+      Adapted from packages/tui/src/component/prompt/index.tsx and
+      packages/tui/src/prompt/history.tsx —
+        * the two-counter interrupt model: Esc twice within 5 s interrupts,
+          Ctrl+C twice within 1 s quits and only from an empty composer, with
+          the hint text changing after the first press (index.tsx:424-455,
+          887-906);
+        * a large paste collapsing to a "[Pasted ~N lines]" placeholder at
+          >= 5 lines or > 800 characters, expanded on submit (index.tsx:1307-1355;
+          the 800-character threshold is a Kilo Code change, marked #7252);
+        * CRLF and bare-CR normalisation on paste, for Windows ConPTY
+          (index.tsx:1555-1579);
+        * the composer never exceeding a third of the screen, floor 6 rows
+          (index.tsx:1494);
+        * history as a capped ring of 50 with consecutive duplicates dropped,
+          and navigation refusing to move once a recalled entry has been edited
+          (history.tsx).
+      CHANGED: opencode tracks paste placeholders with extmarks — ranges that
+      survive arbitrary editing. letibot keys the ledger on the placeholder text
+      itself, so a deleted placeholder drops its paste and an edited one is
+      submitted literally. This is a behavioural difference, chosen because it
+      fails visibly rather than needing a range-tracking structure.
+
+  crates/ui/src/width.rs
+      Design read: packages/tui/src/prompt/display.ts — display-column to
+      byte-offset conversion over grapheme clusters. letibot's `locate` and
+      `offset_at` do the same job; no code was copied (theirs is Intl.Segmenter
+      plus Bun.stringWidth, neither of which exists in Rust).
+
+Note for anyone repeating this survey: opencode's terminal *rendering* is not in
+opencode. Markdown parsing, wrapping, unicode width, syntax highlighting, diff
+layout and cell diffing all live in the third-party @opentui/core package, which
+ships as a native binary. What is opencode's own, and what is credited above, is
+policy: thresholds, key semantics, and truncation budgets.
+
+--------------------------------------------------------------------------------
+Not read
+--------------------------------------------------------------------------------
+
+Two other projects sit beside these in the survey tree and were deliberately not
+read for code: `crush` (Functional Source License 1.1) and `omo` (mixed, "portions
+licensed as follows"). Neither contributed anything to this repository.
