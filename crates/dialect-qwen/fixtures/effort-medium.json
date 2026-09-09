@@ -1,0 +1,28 @@
+{
+  "name": "effort-medium",
+  "why": "medium is the one value that emits NO instruction at all, so the blank line before the system text must not be emitted either.",
+  "reasoning_effort": "medium",
+  "prefix": {
+    "system": "Be terse."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Name a colour."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Blue.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Blue."
+    }
+  ]
+}

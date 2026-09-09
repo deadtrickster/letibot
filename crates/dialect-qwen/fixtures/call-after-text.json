@@ -1,0 +1,66 @@
+{
+  "name": "call-after-text",
+  "why": "loop.first plus a non-empty content puts a blank line before <tool_call>; an empty content does not. Two branches, one byte apart, and the one that is wrong never caches.",
+  "prefix": {
+    "system": "s",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "Read a file from disk. Give it a path relative to the workspace root.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Read a.txt."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Say so first.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Reading it now.",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "name": "read",
+          "arguments": "{\"path\": \"a.txt\", \"limit\": 40}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "call_0",
+      "name": "read",
+      "outcome": {
+        "outcome": "ok"
+      },
+      "payload": "alpha\n"
+    }
+  ]
+}

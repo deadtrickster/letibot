@@ -884,6 +884,10 @@ impl TurnEngine<'_> {
             prompt_tokens,
             cached_tokens: t.cache_n,
             predicted_tokens: outcome.ids.len() as u64,
+            // The server's own two numbers, kept so C10 is a comparison rather
+            // than a tautology. See `TurnMetrics::prompt_tokens_server`.
+            prompt_tokens_server: outcome.final_chunk.n_prompt_tokens,
+            prompt_processed: t.prompt_n,
             finish_reason,
             prompt_ms: t.prompt_ms,
             predicted_ms: t.predicted_ms,
@@ -953,6 +957,8 @@ mod tests {
             prompt_tokens: 1,
             cached_tokens: 0,
             predicted_tokens: 0,
+            prompt_tokens_server: 1,
+            prompt_processed: 1,
             finish_reason: FinishReason::Length,
             prompt_ms: 0.0,
             predicted_ms: 0.0,

@@ -1,0 +1,27 @@
+{
+  "name": "whitespace",
+  "why": "The template applies |trim to every rendered content. A renderer that keeps the caller's leading newline diverges on turn 1 and never caches again.",
+  "prefix": {
+    "system": "  Be terse.\n"
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "\n  What is 2+2?  \n"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "\n\nTrivial.\n",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "  4.  "
+    }
+  ]
+}

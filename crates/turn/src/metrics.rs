@@ -39,6 +39,24 @@ pub struct TurnMetrics {
     pub cached_tokens: u64,
     pub predicted_tokens: u64,
 
+    /// How many prompt tokens the **server** says it received, and how many of them
+    /// it actually processed (`n_prompt_tokens` and `timings.prompt_n`).
+    ///
+    /// Added by T17, because §14.3's C10 — deepseek's disjointness invariant,
+    /// *"reported new input tokens equal `prompt_tokens − cached_tokens`"* — was not
+    /// checkable from this struct: `prompt_tokens` above is **our** count of what we
+    /// submitted, and with only that and `cached_tokens` the identity is a tautology
+    /// rather than a measurement. It becomes a measurement when the server's own two
+    /// numbers are here to disagree with ours.
+    ///
+    /// `prompt_tokens_server != prompt_tokens` means the server counted a different
+    /// prompt than the one we built, which is the shape a truncated or rewritten
+    /// prompt has and is worth failing loudly on.
+    pub prompt_tokens_server: u64,
+    /// Prompt tokens the server prefilled this turn — the complement of
+    /// `cached_tokens`, from the server rather than from subtraction.
+    pub prompt_processed: u64,
+
     pub finish_reason: FinishReason,
     pub prompt_ms: f64,
     pub predicted_ms: f64,
@@ -130,6 +148,8 @@ mod tests {
             prompt_tokens: prompt,
             cached_tokens: cached,
             predicted_tokens: 4,
+            prompt_tokens_server: prompt,
+            prompt_processed: prompt - cached,
             finish_reason: FinishReason::Eos,
             prompt_ms: 100.0,
             predicted_ms: 50.0,

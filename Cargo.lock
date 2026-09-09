@@ -183,6 +183,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-dialect-qwen"
+version = "0.1.0"
+dependencies = [
+ "letibot-dialect",
+ "letibot-transcript",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "letibot-harnessd"
+version = "0.1.0"
+dependencies = [
+ "letibot-backend",
+ "letibot-dialect",
+ "letibot-dialect-glm",
+ "letibot-dialect-qwen",
+ "letibot-sessionlog",
+ "letibot-tokencore",
+ "letibot-tools",
+ "letibot-transcript",
+ "letibot-turn",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-sessionlog"
 version = "0.1.0"
 dependencies = [

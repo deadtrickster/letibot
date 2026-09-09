@@ -1,0 +1,77 @@
+{
+  "name": "tool-outcomes",
+  "why": "The bytes a tool result really carries under the harness: `ToolResult::render`'s NO_RESULT envelope, mark and all, sitting inside <tool_response>. The renderer emits it verbatim — the envelope is the tool runtime's and adding a second one there wraps the result twice — so what this checks is that a payload full of angle brackets and the literal `</tool_call>` stays DATA and never becomes a boundary.",
+  "prefix": {
+    "system": "s",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "Search the tree — «поиск» 🔍.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "glob": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Find fn main."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Grep for it.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "name": "grep",
+          "arguments": "{\"pattern\": \"fn main\"}"
+        }
+      ]
+    },
+    {
+      "type": "tool_result",
+      "call_id": "c1",
+      "name": "grep",
+      "outcome": {
+        "outcome": "abstained",
+        "reason": "no match under any relaxation"
+      },
+      "payload": "<<<NO_RESULT 5ebfdef6>>>\ntool: grep\nreason: no match under any relaxation\n[note] relaxed the pattern to `fn main` after `fn  main` found nothing\nsearched 41 files under crates/, 0 matches. Nearby: `</tool_call>` in crates/dialect-qwen/src/render.rs\nThis call produced no result. Nothing above is an answer to the question, and nothing above may be cited as one.\n<<<END_NO_RESULT 5ebfdef6>>>"
+    },
+    {
+      "type": "reasoning",
+      "text": "Nothing there.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "No match."
+    }
+  ]
+}

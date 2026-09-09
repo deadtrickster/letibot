@@ -1,0 +1,23 @@
+[package]
+name = "letibot-dialect-qwen"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+letibot-transcript.workspace = true
+letibot-dialect.workspace = true
+# preserve_order for the same reason dialect-glm needs it: a tool call's argument
+# key order becomes prompt bytes on the next turn, and reordering re-prefills.
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde.workspace = true
+# `dialect-glm` vendors its own SHA-256 to keep the dialect dependency-free. That
+# argument was already spent: `sha2` is in the workspace tree via `letibot-tools`,
+# and a second hand-written hash is a second thing to get wrong.
+sha2 = "0.10"
+
+[[bin]]
+name = "letibot-render-qwen"
+path = "src/bin/letibot-render-qwen.rs"

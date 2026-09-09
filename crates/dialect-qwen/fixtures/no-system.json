@@ -1,0 +1,27 @@
+{
+  "name": "no-system",
+  "why": "With no system text the template still emits a system turn, because the reasoning-effort instruction has to go somewhere. A renderer that skips the turn entirely diverges on byte 0.",
+  "prefix": {
+    "system": ""
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Hi."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Hello."
+    }
+  ]
+}

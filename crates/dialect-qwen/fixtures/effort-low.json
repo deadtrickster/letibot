@@ -1,0 +1,28 @@
+{
+  "name": "effort-low",
+  "why": "The effort sentence is prompt bytes near the head of the prefix. Switching it re-prefills everything, so the exact wording is cache-relevant.",
+  "reasoning_effort": "low",
+  "prefix": {
+    "system": "Be terse."
+  },
+  "items": [
+    {
+      "type": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Name a colour."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "text": "Blue.",
+      "field": "inline"
+    },
+    {
+      "type": "assistant",
+      "text": "Blue."
+    }
+  ]
+}
