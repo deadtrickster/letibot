@@ -140,9 +140,21 @@ pub struct Reply {
 }
 
 impl Reply {
-    /// The prefix-cache hit fraction of every submission this reply cost.
+    /// D11's `f_keep` — `cached / what the previous turn left in the cache` — for
+    /// every submission this reply cost.
+    ///
+    /// Shorter than `metrics` when a submission had no cached entry to measure
+    /// against (a first turn, or a backend that skipped the check); those are
+    /// dropped rather than reported as 0.0 or 1.0.
     pub fn f_keep(&self) -> Vec<f64> {
         self.metrics.iter().filter_map(|m| m.f_keep()).collect()
+    }
+
+    /// `f_sim` — cached over *this* prompt, per submission. Falls as the
+    /// conversation grows; see `TurnMetrics::f_sim`. Never compare it to a
+    /// `f_keep` threshold.
+    pub fn f_sim(&self) -> Vec<f64> {
+        self.metrics.iter().filter_map(|m| m.f_sim()).collect()
     }
 }
 

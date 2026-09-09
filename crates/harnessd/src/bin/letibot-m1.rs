@@ -22,7 +22,7 @@
 //! | C1 | the submitted token vector at turn N is an **exact prefix** of turn N+1's. Read off the ledger, not inferred from cache numbers. |
 //! | C2 | NOT RUN — it is the fidelity gate, which needs no model. GLM 139/139, Qwen 56/56. |
 //! | C3 | the engine's own `PrefixCheck`, which is §18.1-I1: turn N+1's prompt begins with turn N's plus what the model generated. Read off, never recomputed. |
-//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session. |
+//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in D11's settled form — `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from **one** `PrefixCheck`. |
 //! | C5 | `f_keep` does not collapse on the submission that follows an assistant turn carrying reasoning. |
 //! | C6 | every assistant item with tool calls and empty text still owns a non-empty ledger row. |
 //! | C7 | NOT RUN live — see below. |
@@ -37,6 +37,15 @@
 //! `letibot_turn::length`, which is where a *decision* belongs; what is measured
 //! here is the half that is a server behaviour, namely that `finish_reason` arrives
 //! and is carried.
+//!
+//! # `f_keep` here is D11's, and `f_sim` is printed beside it
+//!
+//! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is
+//! the *new* prompt — llama's `f_sim`, which falls purely as a function of how much
+//! the conversation grew and cannot reach 0.99 on any session that returns tool
+//! output. T22 records the defect; D11 settles C4 as `lcp / cached_entry`. Both
+//! numbers are printed, under their own names, because the old one is real and only
+//! its name was wrong.
 
 use std::path::PathBuf;
 
@@ -180,6 +189,7 @@ fn main() {
                 "prompt_processed": r.m.prompt_processed,
                 "predicted_tokens": r.m.predicted_tokens,
                 "f_keep": r.m.f_keep(),
+                "f_sim": r.m.f_sim(),
                 "reprefill": r.m.reprefill(),
                 "finish_reason": r.m.finish_reason.as_str(),
                 "id_slot": r.m.id_slot,
@@ -279,6 +289,13 @@ fn first_line(s: &str) -> String {
     }
 }
 
+/// The percentile convention every figure in this file uses, stated once.
+///
+/// **Nearest-rank on `(n-1)·p`, rounded half away from zero, over the ascending
+/// sample** — so p10 of 52 values is index `round(51 × 0.10) = 5`, the 6th smallest,
+/// and no interpolation ever invents a value the session did not produce. The
+/// convention matters: with 52 samples it takes **6** low values, not 5, to move
+/// p10, so a result that turns on 3 of 52 turns must be read with this in hand.
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
@@ -411,33 +428,104 @@ fn judge(
     });
 
     // ---- C4: the f_keep distribution --------------------------------------
+    //
+    // D11: `f_keep = lcp / cached_entry`, computed as
+    // `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`.
+    //
+    // Read off `TurnMetrics::f_keep`, which reads its denominator off the same
+    // `PrefixCheck::Held` that C3 above reports its shortfall from. That is
+    // deliberate and it is the whole point of D11: C3 is the inequality
+    // `cached(N+1) >= prompt(N) + generated(N)` and C4 is its margin, over the same
+    // two numbers. Recomputing the denominator here would be a second
+    // implementation of one quantity, which is how the harness ends up trusting the
+    // wrong one — the mistake this file already documents for C3.
+    //
+    // The old C4 — `cached_tokens / prompt_tokens` — is llama's `f_sim` and is
+    // printed underneath, under its own name. It is a real number; it is just not
+    // the one with the 0.99 bar on it (T22).
     let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
     keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
     repre.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p10 = percentile(&keeps, 0.10);
     out.push(format!(
-        "C4  {}  f_keep p10 {:.4} p50 {:.4} p99 {:.4} over {} submissions; \
-         re-prefill p50 {:.0} p99 {:.0} tokens  [exit criterion: p10 >= 0.99]",
+        "C4  {}  f_keep (D11: cached / the entry we left behind) p10 {:.4} p50 {:.4} \
+         p99 {:.4} min {:.4} over {} comparable submissions; re-prefill p50 {:.0} \
+         p99 {:.0} tokens  [exit criterion: p10 >= 0.99]",
         if p10 >= 0.99 { "PASS" } else { "FAIL" },
         p10,
         percentile(&keeps, 0.50),
         percentile(&keeps, 0.99),
+        keeps.first().copied().unwrap_or(f64::NAN),
         keeps.len(),
         percentile(&repre, 0.50),
         percentile(&repre, 0.99),
     ));
+    let below: Vec<String> = rows
+        .iter()
+        .filter(|r| r.m.f_keep().is_some_and(|f| f < 0.99))
+        .map(|r| {
+            format!(
+                "turn {}: f_keep {:.4}",
+                r.turn,
+                r.m.f_keep().unwrap_or(f64::NAN)
+            )
+        })
+        .collect();
+    out.push(if below.is_empty() {
+        format!(
+            "        every one of the {} comparable submissions reused the whole entry \
+             (f_keep = 1.0000 exactly)",
+            keeps.len()
+        )
+    } else {
+        format!(
+            "        {} of {} below 0.99, and they are exactly C3's shortfall turns: {}",
+            below.len(),
+            keeps.len(),
+            below.join("; ")
+        )
+    });
 
-    // What f_keep could have been, and what it was as a fraction of that.
-    //
-    // f_keep's denominator is the WHOLE prompt, so its ceiling on any submission is
-    // `1 - new_tokens/prompt`. A turn that appends a 1,400-token tool result to a
-    // 5,000-token prompt cannot exceed 0.72 however perfect the cache is. So a p10
-    // over a session that starts at ~1,400 tokens measures the SCRIPT as much as the
-    // harness, and reporting it alone would be reporting the wrong thing.
-    //
-    // The harness-only number is underneath: cached / expected_cached_min. That is
-    // 1.0 exactly when the server reused everything our prompt entitled it to.
+    // `f_keep` above 1 is a fact about our denominator, not about the cache, and a
+    // p50 printed as 1.0001 with no explanation is exactly the kind of number
+    // somebody reads wrong. See `TurnMetrics::f_keep`.
+    let over: Vec<i64> = rows
+        .iter()
+        .filter_map(|r| match &r.m.prefix_check {
+            letibot_turn::PrefixCheck::Held {
+                expected_cached_min,
+                cached,
+                ..
+            } => Some(*cached as i64 - *expected_cached_min as i64),
+            _ => None,
+        })
+        .filter(|d| *d > 0)
+        .collect();
+    if !over.is_empty() {
+        let mut o = over.clone();
+        o.sort_unstable();
+        out.push(format!(
+            "        {} of {} came back ABOVE 1.0, by a median of {} and at most {} \
+             token(s). Our denominator is a lower bound on the entry the server kept \
+             — the boundary tokens the renderer strips before commit are re-rendered \
+             identically next turn, and a turn that fails after prefilling warms the \
+             slot while leaving no witness. Reported unclamped on purpose.",
+            o.len(),
+            keeps.len(),
+            o[o.len() / 2],
+            o[o.len() - 1],
+        ));
+    }
+
+    // `f_sim` — the OLD C4 — reported beside it so the two numbers can be told
+    // apart rather than confused. Its denominator is the whole new prompt, so its
+    // ceiling on any submission is `1 - new_tokens/prompt`: a turn that appends a
+    // 1,400-token tool result to a 5,000-token prompt cannot exceed 0.72 however
+    // perfect the cache is. A p10 over it measures the SCRIPT as much as the
+    // harness, which is why it is not the exit criterion.
+    let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
+    sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let ceilings: Vec<f64> = rows
         .iter()
         .filter_map(|r| match &r.m.prefix_check {
@@ -450,70 +538,48 @@ fn judge(
             _ => None,
         })
         .collect();
-    let efficiency: Vec<f64> = rows
-        .iter()
-        .filter_map(|r| match &r.m.prefix_check {
-            letibot_turn::PrefixCheck::Held {
-                expected_cached_min,
-                cached,
-                ..
-            } if *expected_cached_min > 0 => Some(*cached as f64 / *expected_cached_min as f64),
-            _ => None,
-        })
-        .collect();
     let mut c = ceilings.clone();
     c.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mut e = efficiency.clone();
-    e.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let total_prompt: u64 = rows.iter().map(|r| r.m.prompt_tokens).sum();
+    let total_repre: u64 = rows.iter().map(|r| r.m.reprefill()).sum();
     out.push(format!(
-        "        ceiling: the highest f_keep these prompts allow is p10 {:.4} p50 {:.4} \
-         (f_keep's denominator is the whole prompt, so a turn that appends a large tool \
-         result caps it regardless of the cache)",
+        "f_sim   (NOT C4 — cached / this prompt, the metric T22 records as \
+         mis-specified) p10 {:.4} p50 {:.4} p99 {:.4}; the ceiling these prompts \
+         allow is p10 {:.4} p50 {:.4}, since appending a tool result caps it \
+         regardless of the cache. Session-wide {} of {} prompt tokens were prefilled.",
+        percentile(&sims, 0.10),
+        percentile(&sims, 0.50),
+        percentile(&sims, 0.99),
         percentile(&c, 0.10),
-        percentile(&c, 0.50)
-    ));
-    out.push(format!(
-        "C4b {}  cache efficiency (cached / what the prefix entitled us to) p10 {:.4} \
-         p50 {:.4} min {:.4} over {} submissions. This is the number that is about the \
-         harness rather than about the script.",
-        if percentile(&e, 0.10) >= 0.99 { "PASS" } else { "FAIL" },
-        percentile(&e, 0.10),
-        percentile(&e, 0.50),
-        e.first().copied().unwrap_or(f64::NAN),
-        e.len()
+        percentile(&c, 0.50),
+        total_repre,
+        total_prompt,
     ));
 
     // ---- C5: reasoning replay does not collapse the cache ------------------
     //
-    // Measured as cache **efficiency**, not as raw `f_keep`. omp's #3528 is a
-    // *collapse* — reasoning that is not replayed makes the prompt diverge and
-    // `cached_tokens` falls off a cliff. A turn whose f_keep is 0.69 because it
-    // appended a 1,400-token tool result has not collapsed; using f_keep here would
-    // report the script's shape as a cache failure, which is the same category
-    // error as reporting a tok/s number without its concurrency.
+    // Measured on `f_keep`, which since D11 is the right metric for it. omp's
+    // #3528 is a *collapse* — reasoning that is not replayed makes the prompt
+    // diverge and `cached_tokens` falls off a cliff. A turn whose `f_sim` is 0.69
+    // because it appended a 1,400-token tool result has not collapsed; using
+    // `f_sim` here would report the script's shape as a cache failure, which is the
+    // same category error as reporting a tok/s number without its concurrency.
     let after: Vec<&Row> = rows.iter().skip(1).filter(|r| r.after_reasoning).collect();
     let worst = after
         .iter()
-        .filter_map(|r| match &r.m.prefix_check {
-            letibot_turn::PrefixCheck::Held {
-                expected_cached_min,
-                cached,
-                ..
-            } if *expected_cached_min > 0 => Some(*cached as f64 / *expected_cached_min as f64),
-            _ => None,
-        })
+        .filter_map(|r| r.m.f_keep())
         .fold(f64::INFINITY, f64::min);
     out.push(if after.is_empty() || !worst.is_finite() {
         "C5  NOT RUN  no submission followed an assistant turn carrying reasoning".to_string()
     } else if worst >= 0.90 {
         format!(
-            "C5  PASS  {} submissions followed a reasoning-bearing turn; the worst reused \
-             {worst:.4} of what its prefix entitled it to. Reasoning is in the token vector, \
-             so there is no field to forget and nothing to collapse.",
+            "C5  PASS  {} submissions followed a reasoning-bearing turn; the worst f_keep \
+             among them is {worst:.4}. Reasoning is in the token vector, so there is no \
+             field to forget and nothing to collapse.",
             after.len()
         )
     } else {
-        format!("C5  FAIL  worst cache efficiency after a reasoning-bearing turn is {worst:.4}")
+        format!("C5  FAIL  worst f_keep after a reasoning-bearing turn is {worst:.4}")
     });
 
     // ---- C6: an empty assistant turn still owns its boundary tokens --------

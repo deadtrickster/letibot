@@ -331,7 +331,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     assert_eq!(usage.prompt_tokens, prompt_tokens);
     assert_eq!(usage.cached_tokens, cached_tokens);
     assert_eq!(usage.predicted_tokens, predicted_tokens);
-    assert!(usage.f_keep().is_some());
+    assert!(usage.f_sim().is_some());
 
     // A third head, attaching after everything: the *replayed* stream is scrubbed,
     // and the progress frames the live heads saw are not in it.
