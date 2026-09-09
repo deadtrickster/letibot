@@ -10,6 +10,7 @@ members = [
     "crates/turn",
     "crates/sessionlog",
     "crates/tui",
+    "crates/ui",
     "crates/tools",
     "crates/harnessd",
 ]
@@ -32,5 +33,6 @@ letibot-backend = { path = "crates/backend" }
 letibot-turn = { path = "crates/turn" }
 letibot-sessionlog = { path = "crates/sessionlog" }
 letibot-tui = { path = "crates/tui" }
+letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-harnessd = { path = "crates/harnessd" }
