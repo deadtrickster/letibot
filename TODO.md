@@ -250,6 +250,55 @@ Both need fixing in `docs/implementation-plan.md` §18.1. The code is already ri
 
 ---
 
+## T12 — The live view and the stored view disagree about channels — **real defect in `crates/turn`, found by a real head**
+
+Measured against Qwen3-Next by W8's live end-to-end test. **Not corruption** — the
+ledger is token ids and the parser is authoritative — but for the length of every
+turn a head shows the model's *reasoning* as its answer, and then the transcript row
+replaces it. That is exactly the class of defect §13.2b exists to prevent.
+
+Two causes, both in the engine:
+
+1. **`in_reasoning` starts `false`** (`crates/turn/src/engine.rs`) and is only set by
+   a **generated** `ThinkOpen`. But the generation prompt *ends inside* `<think>` —
+   the engine's own module diagram says so — so the model is reasoning from token one
+   and every head is told it is assistant text.
+2. **`Chunk::Token{text}` is emitted as a `Delta` before the ids in that chunk have
+   their roles inspected**, so `</think>` reaches every head as visible characters.
+
+W8 did not fix this, correctly — it is W6's semantics. `crates/sessionlog/tests/live_e2e.rs`
+asserts the weakest form that passes today **plus a tripwire that fires when the
+engine is fixed**, so it cannot be fixed quietly and the test tightened afterwards.
+
+Fix in the engine: seed `in_reasoning` from the dialect's generation prompt rather
+than from a generated token, and inspect roles before emitting the `Delta`.
+
+---
+
+## T13 — §4.5's event enum is insufficient for a real head — **four gaps, one structural**
+
+Found by building one. Listed with what W8 did about each.
+
+1. **`TranscriptAppended{item_id, kind, ledger_head}` carries no content**, and
+   `EventSink` has no channel for it — so **a head cannot reconstruct a conversation
+   from the log at all**. The daemon must reconcile items into the view out of band
+   (`Hub::record_item`). W8 kept the event exactly as specified and made the gap
+   explicit rather than widening it unilaterally. This is the structural one and it
+   needs a decision: either the event carries content, or the log is formally not a
+   sufficient record of a session.
+2. **`TurnFinished{usage, timings}` is lossy against `turn_metrics`.** Not carried:
+   `prefix_check`, `id_slot`, `n_busy_slots`, `cost`, `dialect_template_sha` — and
+   §18.2 says **`id_slot` is exactly what distinguishes a scheduling fact from a
+   prefix divergence**, so a head cannot today tell those apart. W8 widened `usage`
+   to carry `cached_tokens` on the argument that a harness whose point is cache reuse
+   must be able to display it.
+3. **No event announces who issued a command**, which §13.2 requires twice. Added as
+   `CommandIssued`, labelled as an addition rather than smuggled into `Warning`.
+4. `ToolStarted` / `ToolProgress` are given by name only in §4.5; their shapes are
+   W8's invention and **W9 will find out whether they are right**.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
