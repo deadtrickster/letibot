@@ -521,7 +521,113 @@ From the tool runtime, in descending order of consequence.
 
 ---
 
-## T17 — Nothing assembles the daemon — **the last gap between here and M1**
+## T17 — harnessd — **BUILT 2026-09-09. The loop runs; M1's exit criterion is NOT met as written.**
+
+`crates/harnessd`. Scripted 30-turn session against `qwen-3.8-flash-next`: 53
+submissions, 25 tool calls, 161 persisted rows, 22,201 final prompt tokens, 85 s.
+
+| check | result |
+|---|---|
+| C1 exact prefix extension | **PASS**, off the ledger's token vectors |
+| C3 generation-inclusive prefix | never violated; 3/52 server-side shortfalls |
+| **C4 `f_keep` p10** | **0.8771 — FAILS ≥0.99** |
+| C4b cache efficiency p10 | **1.0000** |
+| C5 reasoning replay | PASS (worst 0.9859) |
+| C9 mid-session system change | PASS — stable prefix byte-identical |
+| C10 disjoint cache accounting | PASS on all 53 |
+| C6 / C7 / C8 | not run — see below |
+
+**On the failure, and why I do not think it is the harness.** `f_keep`'s denominator
+is the *whole* prompt, so a submission appending a 1,093-token tool result to a
+9,000-token prompt cannot exceed 0.88 however perfect the cache is. 19 of 52
+submissions add more than 1% of their own prompt. The **ceiling the script allows is
+p10 0.8813, and we got 0.8771 of it**. Session-wide, 14,901 of 640,076 prompt tokens
+were prefilled — **97.7% avoided**.
+
+So **§17's exit criterion measures the script's shape as much as the harness**, and
+≥0.99 is unreachable for *any* tool-using session. The harness-only number is C4b, at
+p10 1.0000. **The criterion needs rewriting; the plan is wrong here, not the code** —
+but it is recorded as a failure because that is what it is against the stated bar.
+
+C6/C7/C8 could not run: C6 needs a tool-call-only assistant turn, which did not occur;
+C7/C8 need a `length` finish, which requires either the `n_predict` cap §5.7 removed or
+a 262k context on a production box.
+
+**C3's shortfalls have an exact signature** — every one equalled `previous generation +
+3`: the server reused to the end of the last committed item and discarded the 4-token
+generation prompt *and* the whole generation. It is intermittent (14/55 on an earlier
+run of the same script), so it is a server-side cache event, not structural. Settling it
+needs `-lv 4` and `glm-why-no-cache` — a server-log question the harness cannot answer
+from its own metrics.
+
+---
+
+## T20 — Where the assembled parts did not fit — **integration findings, several serious**
+
+1. **Double envelope.** `ToolRuntime::transcript_item` renders §8.2's `NO_RESULT`
+   envelope into `payload`, and **both** dialect renderers wrapped it again — the model
+   received two. Fixed: renderers emit `payload` verbatim.
+2. **`Registry::tools_json()` is not prompt-ready** and this one was nearly invisible.
+   It emits `,`/`:`; both templates use HF `tojson`'s `, `/`: `. Using it directly for
+   `StablePrefix::tools_json` differs in **the first bytes of the stable prefix** — a
+   cold prefill every single turn, with nothing in the tree to catch it. Now routed
+   through the dialect's own tool-JSON function, with a test asserting the two differ.
+3. **C10 was unmeasurable as specified** — `prompt_tokens − cached_tokens` from
+   `TurnMetrics` alone is a tautology. Needed the server's own frame numbers.
+4. **`ToolRuntime` is not `Send`** — `Gate` lacks `Send + Sync`, alone among the
+   runtime's traits. Blocks §13.2's multi-head worker. Left for W11 to absorb (T16.3).
+5. **`Session::append_items` renders one item at a time**, so Qwen's consecutive tool
+   results cannot merge into one user turn without a fourth trait method. Declared as a
+   gate divergence.
+6. **Qwen's `SystemUpdateMode` is `Envelope`, not `InHistory`** — its template *raises*
+   on a mid-history system message, so §5.3's conservative default is the only
+   renderable form. The model can and did argue with it.
+7. **`ask_code`/`ask_corpus` return `NotRun`, not `Abstained`** — nothing ran, which is
+   a different fact. The daemon's startup disclosure says so.
+8. The `/apply-template` oracle caught a renderer bug **no unit test would have**: an
+   `Assistant` following a `Reasoning` opened a second message.
+
+---
+
+## T21 — Three failure modes the operator wants solved — **stated requirement**
+
+All three are instances of F5 — *never let a component's "I did not do this" be
+reported upward as success* — applied where nobody applies it.
+
+**1 and 2 are the same bug: a process predicate that matches the process evaluating
+it.** `pkill -f X` where the pattern matches the shell running it. `until pgrep -f
+model; do sleep; done` where the condition matches the waiter — so it never fires, or
+fires at once.
+
+Harness-solvable because the harness **owns the bash tool** and knows what the model
+cannot see: its own pid, its command line, the parent chain, and the pids of the
+servers it manages. Before running, test the pattern against `/proc/self/cmdline`;
+refuse with the diagnosis and what it currently matches, per §8.1 clause 1 — a hazard
+that is self-correcting in the same call.
+
+The waiter form gets a second check the model cannot do: **is this predicate matching
+the model server that is serving you.** Waiting on your own backend is a deadlock the
+harness can see.
+
+*(The author of this entry committed failure mode 1 twice in one day, and it was
+already in memory as a lesson learned.)*
+
+**3 — announced, then not done.** The model says "I'll start X" and the turn ends with
+nothing started. Not a process bug: an **intent-versus-action gap**, solvable because
+the harness sees the whole turn while the model sees only its own output.
+
+Mechanism: a post-flight assertion, the same shape as the prefix check and the length
+policy — the turn ends with a future-tense commitment and no corresponding tool call.
+The response is **steering, not failure**: §5.8 already injects at a step boundary, so
+append *"you said you would X — do it or say why not"* and continue.
+
+Honest limit: detecting intent is a judgement, not a parse, so there will be false
+positives. The harness does not need certainty — it needs the gap **visible rather than
+silent**, and a wrong steer costs a few tokens. Same trade as the recall suggestion.
+
+---
+
+## T5 — Operator decisions still open
 
 W6 parses tool calls; W9's runtime executes them; W7 logs; W8 renders. **No crate ties
 them together.** There is no `harnessd`. `ToolRuntime::transcript_item` and
