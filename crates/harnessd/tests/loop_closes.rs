@@ -225,18 +225,24 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     use letibot_sessionlog::client::{HeadClient, pump};
     use letibot_sessionlog::event::SessionEvent;
     use letibot_sessionlog::protocol::{Caps, ServerFrame};
-    use letibot_harnessd::Daemon;
+    use letibot_harnessd::{Daemon, Sessions};
+    use letibot_sessionlog::registry::Registry;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
     let _lock = serial();
-    let cfg = config();
+    let mut cfg = config();
     let socket = cfg.socket.clone();
     let session = "socket-test".to_string();
+    cfg.session_id = session.clone();
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
-    let hub = Hub::new(session.clone());
-    let daemon = Daemon::serve(hub.clone(), &socket).expect("the socket binds");
-    let mut harness = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
+    let registry = Registry::new();
+    registry
+        .create(session.clone(), "", Sessions::wiring(&cfg))
+        .expect("a fresh registry has no session by that name");
+    let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg, registry.clone()).expect("the session opens");
 
     let (mut client, hello, reader) =
         HeadClient::attach(&socket, &session, 0, "tui", "test", Caps::default())
@@ -253,7 +259,7 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     // the main thread), and §13.2's multi-head daemon will. Recorded here rather than
     // fixed, because `Gate` is the seam W11 is supposed to absorb and constraining it
     // from a test is not this strand's call.
-    let hub_for_head = hub.clone();
+    let registry_for_head = registry.clone();
     let head = std::thread::spawn(move || {
         client
             .prompt(0, "Reply with exactly the word: pong")
@@ -274,13 +280,15 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
                 }
             }
         }
-        // Closing the hub is what ends `Daemon::run`, which is exactly what a
-        // SIGINT does in the real daemon.
-        hub_for_head.close();
+        // Closing the registry is what ends `Daemon::run`, which is exactly what a
+        // SIGINT does in the real daemon. Closing one *hub* no longer would: the
+        // worker waits on the cross-session bell, and a daemon that stopped because
+        // one of its sessions did would take the others down with it.
+        registry_for_head.close();
         (text, finished)
     });
 
-    daemon.run(&mut harness, |_, _| {});
+    daemon.run(&mut sessions, |_, _, _| {});
     let (text, finished) = head.join().expect("the head thread");
     daemon.shutdown();
     let _ = pump_thread.join();

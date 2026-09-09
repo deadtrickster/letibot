@@ -1,10 +1,26 @@
-//! The process: one session, one socket, one worker, and a clean shutdown.
+//! The process: a socket, a registry of sessions, one worker, and a clean shutdown.
 //!
 //! ```text
-//!   head ──unix socket──> serve ──> Hub ──take_command──> worker ──> Harness::submit
-//!                                    │                                    │
-//!                                    └────────── events ──────────────────┘
+//!   head ──unix socket──> serve ──> Registry ──next_command──> worker ──> Harness::submit
+//!                                    │  Hub per session                        │
+//!                                    └────────────── events ───────────────────┘
 //! ```
+//!
+//! # One worker over many sessions
+//!
+//! Still **one**, and still §13.2's "one authoritative reader". What changed is
+//! what it waits on: [`Registry::next_command`] blocks on the cross-session bell
+//! and hands back *which* session woke it. So two heads prompting two different
+//! sessions are served in the order they pressed enter, and a long turn in one
+//! session queues the other — which is honest about a box with one GPU, and is
+//! what the operator would otherwise discover by watching two sessions both claim
+//! to be generating.
+//!
+//! One worker rather than a thread per session is not a stopgap. `TurnEngine`
+//! borrows the vocabulary and the dialect's renderer, and a second thread would
+//! need both to be `Sync`; more to the point, the thing being serialised is a
+//! shared llama.cpp server with a fixed number of slots, and a daemon that ran two
+//! turns at once would be arbitrating a resource it does not own.
 //!
 //! # Why there is no async runtime and no timer
 //!
@@ -24,10 +40,12 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use letibot_sessionlog::hub::{CommandKind, Hub, QueuedCommand};
-use letibot_sessionlog::server::{ServerHandle, serve};
+use letibot_sessionlog::hub::{Hub, QueuedCommand};
+use letibot_sessionlog::registry::Registry;
+use letibot_sessionlog::server::{ServerHandle, serve_registry};
 
-use crate::harness::{Harness, HarnessError};
+use crate::harness::HarnessError;
+use crate::sessions::{Outcome, Sessions};
 
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
 /// that is what a handler may touch; `-1` means no handler is installed.
@@ -55,32 +73,39 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Bind the socket and start serving `hub`.
-    pub fn serve(hub: Arc<Hub>, socket: &std::path::Path) -> io::Result<Daemon> {
+    /// Bind the socket and start serving every session in `registry`.
+    pub fn serve(registry: Arc<Registry>, socket: &std::path::Path) -> io::Result<Daemon> {
         if let Some(parent) = socket.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let server = serve(hub, socket)?;
+        let server = serve_registry(registry, socket)?;
         Ok(Daemon {
             server,
             _pipe: None,
         })
     }
 
+    /// Bind the socket for a daemon with exactly one session, which is what
+    /// `letibot-m1` and the loop test have.
+    pub fn serve_one(hub: Arc<Hub>, socket: &std::path::Path) -> io::Result<Daemon> {
+        Daemon::serve(Registry::of(hub), socket)
+    }
+
     pub fn socket(&self) -> &std::path::Path {
         self.server.path()
     }
 
-    pub fn hub(&self) -> &Arc<Hub> {
-        self.server.hub()
+    pub fn registry(&self) -> &Arc<Registry> {
+        self.server.registry()
     }
 
-    /// Install SIGINT/SIGTERM handlers that close the hub.
+    /// Install SIGINT/SIGTERM handlers that close every session.
     ///
-    /// Closing the hub is what ends everything else: `take_command` returns `None`,
-    /// every attached head wakes with `Closed`, and the worker loop falls out. A
-    /// second signal is not special-cased — the first one already started an
-    /// orderly stop, and a "force" path is a way to lose the last turn's rows.
+    /// Closing the registry is what ends everything else: every hub closes, the
+    /// bell closes, `next_command` returns `None`, every attached head wakes with
+    /// `Closed`, and the worker loop falls out. A second signal is not
+    /// special-cased — the first one already started an orderly stop, and a "force"
+    /// path is a way to lose the last turn's rows.
     pub fn catch_signals(&mut self) -> io::Result<()> {
         let mut fds = [0 as libc::c_int; 2];
         // SAFETY: `pipe` writes two fds into a two-element array.
@@ -98,7 +123,7 @@ impl Daemon {
             }
         }
 
-        let hub = self.hub().clone();
+        let registry = self.registry().clone();
         let rfd = read.as_raw_fd();
         std::thread::Builder::new()
             .name("harnessd-signal".into())
@@ -109,62 +134,27 @@ impl Daemon {
                     libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1)
                 };
                 if n > 0 {
-                    hub.close();
+                    registry.close();
                 }
             })?;
         self._pipe = Some((read, write));
         Ok(())
     }
 
-    /// Run the session's single command worker until the hub closes.
+    /// Run the single command worker until the registry closes.
     ///
     /// One worker, by construction: §13.2's "one authoritative reader, shared by
-    /// many heads". Two heads may prompt at once and the second is queued, which is
-    /// what a human expects from a shared session — it is not a race the daemon has
-    /// to arbitrate.
-    pub fn run(&self, harness: &mut Harness<'_>, mut on_reply: impl FnMut(&QueuedCommand, Outcome)) {
-        while let Some(cmd) = self.hub().take_command() {
-            let outcome = match &cmd.kind {
-                CommandKind::Prompt { text } => match harness.submit(text) {
-                    Ok(reply) => Outcome::Replied(Box::new(reply)),
-                    Err(e) => {
-                        // A failed turn is announced on the log, because a head that
-                        // is told nothing is a head showing a session that hung.
-                        self.hub()
-                            .publish(letibot_sessionlog::SessionEvent::Warning {
-                                code: "turn_failed".into(),
-                                detail: e.to_string(),
-                            });
-                        Outcome::Failed(e.to_string())
-                    }
-                },
-                // Between turns there is nothing to interrupt. Announced rather
-                // than dropped: "I pressed the key and nothing happened" is the
-                // report this avoids.
-                CommandKind::Interrupt { reason } => {
-                    self.hub()
-                        .publish(letibot_sessionlog::SessionEvent::Warning {
-                            code: "interrupt_idle".into(),
-                            detail: format!(
-                                "interrupt ({reason}) arrived between turns; nothing was \
-                                 generating"
-                            ),
-                        });
-                    Outcome::Ignored
-                }
-                CommandKind::Answer { req_id, .. } => {
-                    self.hub()
-                        .publish(letibot_sessionlog::SessionEvent::Warning {
-                            code: "no_adjudication".into(),
-                            detail: format!(
-                                "an answer to {req_id} arrived, but M1 has no adjudication: \
-                                 read-only tools never ask (clause 4)"
-                            ),
-                        });
-                    Outcome::Ignored
-                }
-            };
-            on_reply(&cmd, outcome);
+    /// many heads", now shared by many *sessions* as well. Two heads may prompt at
+    /// once and the second is queued, which is what a human expects from a shared
+    /// session — it is not a race the daemon has to arbitrate.
+    pub fn run(
+        &self,
+        sessions: &mut Sessions<'_>,
+        mut on_reply: impl FnMut(&str, &QueuedCommand, Outcome),
+    ) {
+        while let Some((session_id, cmd)) = self.registry().next_command() {
+            let outcome = sessions.dispatch(&session_id, &cmd);
+            on_reply(&session_id, &cmd, outcome);
         }
     }
 
@@ -172,13 +162,6 @@ impl Daemon {
     pub fn shutdown(self) {
         self.server.shutdown();
     }
-}
-
-/// What the worker did with one command.
-pub enum Outcome {
-    Replied(Box<crate::harness::Reply>),
-    Failed(String),
-    Ignored,
 }
 
 /// SAFETY wrapper: turn a raw fd from `pipe(2)` into something `OwnedFd` accepts.

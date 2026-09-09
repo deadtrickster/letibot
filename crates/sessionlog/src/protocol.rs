@@ -26,6 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::event::Envelope;
+use crate::registry::{SessionBrief, SessionWiring};
 use crate::scrub::ScrubReport;
 use crate::view::Snapshot;
 
@@ -33,7 +34,18 @@ use crate::view::Snapshot;
 /// §17-S6's rule, applied here because the head protocol has the same failure mode
 /// as the control channel: a silent version skew that looks like a bug in the other
 /// half.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// **2** since the daemon grew more than one session.
+///
+/// What changed, and why it is a bump rather than an addition: `Hello` now carries
+/// what the head is attached *to* (§4.4) and the list of sessions a picker is drawn
+/// from, `Attach`'s `session_id` now names one of several rather than being checked
+/// against the only one, and `ToolCallProposed` carries a display target (§4.1). A
+/// version-1 head talking to a version-2 daemon would attach, be seated in a
+/// session it did not choose, and render every tool call without its argument —
+/// which is three quiet wrongnesses rather than one loud one. Both sides refuse a
+/// mismatch by name, so the failure is one line in a terminal instead.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// What a head can do and what it wants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +117,38 @@ pub enum ClientFrame {
         req_id: String,
         option_id: String,
     },
+    /// What sessions does this daemon hold? Answered with [`ServerFrame::Sessions`].
+    ///
+    /// Read-only and unserialised: it does not go through the command queue,
+    /// because a list is a question about the daemon rather than an act on a
+    /// session, and making it wait behind a running turn would mean a head could
+    /// not open the picker while the model was talking.
+    ListSessions,
+    /// Make a new session in this daemon.
+    ///
+    /// It does **not** switch to it — the head does that with [`ClientFrame::Switch`]
+    /// once it has seen the id in the `Sessions` reply. Two frames rather than one
+    /// because "create" and "go there" are separately useful: a head that wants a
+    /// session ready for later should not have to leave the one it is in.
+    NewSession {
+        client_request_id: String,
+        /// A human name, or empty. Never derived from a prompt here: a title
+        /// guessed from content is a title that changes under you.
+        title: String,
+    },
+    /// Move this connection to another session.
+    ///
+    /// The head detaches from the session it is in and attaches to the named one,
+    /// **on the same socket**, and is answered with a second `Hello`. Reconnecting
+    /// would do as well and is what a first cut does; it costs the head its
+    /// `client_request_id` sequence and, on a busy box, a window in which it is
+    /// attached to neither — which is the window a mid-turn attach exists to close.
+    Switch {
+        session_id: String,
+        /// As `Attach`: `0` takes a snapshot, anything else resumes. A head that
+        /// is coming *back* to a session it was watching sends the seq it had.
+        since_seq: u64,
+    },
     /// A clean goodbye. **Not** required: TCP close is detach too, and detach is
     /// never abort (§13.2).
     Detach,
@@ -132,7 +176,14 @@ pub struct Ack {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
 pub enum ServerFrame {
-    /// The answer to ATTACH. Always first, always exactly once.
+    /// The answer to ATTACH. Always first, and **once per attachment**.
+    ///
+    /// It used to be "exactly once", which was true while a connection could only
+    /// ever be in one session. [`ClientFrame::Switch`] makes a connection able to
+    /// leave one and join another, and the frame that says *"you are now in this
+    /// session, here is its state as of seq N"* is exactly this one — inventing a
+    /// second frame that said the same thing would leave two attach paths to keep
+    /// in step, which is how a resync path rots.
     Hello {
         protocol_version: u32,
         session_id: String,
@@ -154,6 +205,36 @@ pub enum ServerFrame {
         /// "report what was filtered": zero here on a live-only attach, nonzero
         /// whenever a decision had already settled.
         scrubbed: ScrubReport,
+        /// **What this session is talking to** — `crates/ui/DESIGN.md` §4.4.
+        ///
+        /// `TurnStarted { model }` was the only one of these that ever reached a
+        /// head, and only when a turn started, so a freshly attached head with no
+        /// turn yet could say nothing at all and rendered `no turn yet`. The daemon
+        /// has known all four since its own command line was parsed. Two daemons on
+        /// one box serving two models on two ports is the normal case here, and a
+        /// head that cannot say which one it is attached to is a head you have to
+        /// guess about.
+        ///
+        /// Empty strings when the daemon's owner supplied none — never a plausible
+        /// default, which would be a guess a head then quotes as a fact.
+        wiring: SessionWiring,
+        /// Every session this daemon holds, so a picker is populated by the attach
+        /// itself and not by a second round trip. Includes the one just joined.
+        sessions: Vec<SessionBrief>,
+    },
+    /// The answer to [`ClientFrame::ListSessions`] and to
+    /// [`ClientFrame::NewSession`].
+    ///
+    /// `NewSession` is answered with the whole list rather than with the new id
+    /// alone, because a head that has just created a session is a head about to
+    /// draw a picker, and the list it would then ask for is this one.
+    Sessions {
+        sessions: Vec<SessionBrief>,
+        /// The session this connection is in right now.
+        current: String,
+        /// The id `NewSession` created, when that is what this is answering.
+        /// `None` for a plain list — present and null, not omitted.
+        created: Option<String>,
     },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),
@@ -196,6 +277,12 @@ pub const REJECT_STALE_SEQ: &str = "stale expected_seq";
 pub const NOTE_PROMPT_QUEUED: &str = "queued as a user item";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
+/// A `Switch` or an `Attach` named a session this daemon does not hold.
+///
+/// Refused by name rather than answered with the default session: a typo that
+/// seats you in somebody else's conversation looks exactly like a working attach
+/// to an empty one, and you find out by prompting into it.
+pub const REJECT_UNKNOWN_SESSION: &str = "no such session";
 
 #[cfg(test)]
 mod tests {
@@ -214,10 +301,18 @@ mod tests {
             )),
             resumed_from: None,
             scrubbed: ScrubReport::default(),
+            wiring: SessionWiring::default(),
+            sessions: Vec::new(),
         };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""dropped":0"#), "{json}");
         assert!(json.contains(r#""prompt_progress":0"#), "{json}");
+        // The §4.4 fields are present and empty rather than absent, for the same
+        // reason `dropped` is present and zero: "this daemon does not know what it
+        // is talking to" and "this build does not report it" must not be the same
+        // bytes.
+        assert!(json.contains(r#""endpoint":"""#), "{json}");
+        assert!(json.contains(r#""sessions":[]"#), "{json}");
     }
 
     #[test]
@@ -271,10 +366,34 @@ mod tests {
                 req_id: "d1".into(),
                 option_id: "allow_once".into(),
             },
+            ClientFrame::ListSessions,
+            ClientFrame::NewSession {
+                client_request_id: "r4".into(),
+                title: "the cache question".into(),
+            },
+            ClientFrame::Switch {
+                session_id: "s-2".into(),
+                since_seq: 0,
+            },
             ClientFrame::Detach,
         ] {
             let s = serde_json::to_string(&f).unwrap();
             assert_eq!(f, serde_json::from_str::<ClientFrame>(&s).unwrap(), "{s}");
         }
+    }
+
+    #[test]
+    fn a_sessions_frame_says_which_one_you_are_in() {
+        // A list with no "you are here" is a list you cannot act on: every row
+        // looks equally switchable and one of them is a no-op.
+        let f = ServerFrame::Sessions {
+            sessions: Vec::new(),
+            current: "s-1".into(),
+            created: None,
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""current":"s-1""#), "{json}");
+        assert!(json.contains(r#""created":null"#), "{json}");
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 }

@@ -23,7 +23,7 @@
 //! of a streaming model actually wants, because the interesting end is the end.
 
 use letibot_ui::highlight::StreamingCode;
-use letibot_ui::style::Palette;
+use letibot_ui::style::{Palette, Role};
 
 use crate::markdown::{Block, IncrementalMarkdown};
 
@@ -169,9 +169,29 @@ pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
 fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>) -> Vec<String> {
     let w = cfg.width.max(20);
     match b {
+        // Coloured by level, with the hashes kept and de-emphasised.
+        //
+        // Both surveyed heads drop the hashes and colour the text; that is right
+        // while there is colour and wrong without it, because the level is then
+        // unrecoverable — and `color: false` here is `--replay`, a pipe and CI,
+        // not a theme. So the hashes stay, faint, and carry the level for the
+        // monochrome reader; the colour carries it for everyone else.
         Block::Heading { level, text } => {
-            let prefix = "#".repeat(*level as usize);
-            vec![cfg.c(sgr::BOLD, &format!("{prefix} {}", inline(text, cfg.color)))]
+            let p = cfg.palette();
+            let role = match level {
+                1 => Role::Heading,
+                2 => Role::Subheading,
+                _ => Role::Strong,
+            };
+            let hashes = "#".repeat(*level as usize);
+            vec![trim_to(
+                &format!(
+                    "{} {}",
+                    p.paint(Role::Faint, &hashes),
+                    p.paint(role, &inline(text, cfg.color))
+                ),
+                w,
+            )]
         }
         Block::Paragraph { lines } => {
             let joined = lines.join(" ");
@@ -216,21 +236,28 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             out
         }
         Block::List { ordered, items } => {
+            let p = cfg.palette();
             let mut out = Vec::new();
             for (i, it) in items.iter().enumerate() {
-                let marker = if *ordered {
-                    format!("{}. ", i + 1)
+                // `·` rather than `•`, from grok-build: a bullet the same weight as
+                // the prose competes with it down a long list, and what the marker
+                // has to do is mark the indent, not be seen.
+                // An ordered list's number is content — it is what the prose
+                // refers back to — so it is not de-emphasised. A bullet is pure
+                // structure and is.
+                let (marker, marker_role) = if *ordered {
+                    (format!("{}. ", i + 1), Role::Plain)
                 } else {
-                    "• ".to_string()
+                    ("· ".to_string(), Role::Faint)
                 };
-                // Columns, not bytes. `"• "` is two columns and four bytes, and
+                // Columns, not bytes. `"· "` is two columns and three bytes, and
                 // indenting a wrapped bullet by its byte length put every
-                // continuation line two columns too far right.
+                // continuation line a column too far right.
                 let pad = visible_width(&marker);
                 let body = wrap(&inline(it, cfg.color), w.saturating_sub(pad));
                 for (j, line) in body.into_iter().enumerate() {
                     if j == 0 {
-                        out.push(format!("{marker}{line}"));
+                        out.push(format!("{}{line}", p.paint(marker_role, &marker)));
                     } else {
                         out.push(format!("{:width$}{line}", "", width = pad));
                     }

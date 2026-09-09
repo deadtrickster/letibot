@@ -117,6 +117,38 @@ struct Inner {
     next_head: u64,
     commands: VecDeque<QueuedCommand>,
     closed: bool,
+    /// Rung when this hub takes a command, so **one** worker can wait on many
+    /// sessions without a timer. See [`crate::registry`].
+    ///
+    /// `None` for a hub nobody registered, which is the single-session case and
+    /// every test in this file: [`Hub::take_command`] blocks on this hub's own
+    /// condvar and needs no bell at all.
+    bell: Option<Arc<crate::registry::Bell>>,
+}
+
+/// What a session looks like from outside it: enough for a picker, and cheap
+/// enough to compute for every session on every list.
+///
+/// Cut under the hub's own lock in one pass, rather than assembled from four
+/// accessors, because four accessors are four different instants and a list in
+/// which one row is 30 ms older than the next is a list that can show a session as
+/// both running and finished.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionStatus {
+    pub session_id: String,
+    /// The head seq: how much has happened here.
+    pub seq: u64,
+    /// Transcript rows the view is holding.
+    pub items: usize,
+    /// Heads attached right now. Zero is normal and is **not** a reason to stop
+    /// anything: idle is quiet, not unwatched.
+    pub heads: usize,
+    /// A turn is generating in this session at this instant.
+    pub running: bool,
+    /// The model the last turn named, or empty before the first turn.
+    pub model: String,
+    /// `Envelope::ts` of the last event. Zero before anything has happened.
+    pub last_ms: u64,
 }
 
 /// One session's log, view, heads and command queue.
@@ -148,9 +180,20 @@ impl Hub {
                 next_head: 0,
                 commands: VecDeque::new(),
                 closed: false,
+                bell: None,
             }),
             cv: Condvar::new(),
         })
+    }
+
+    /// Register this hub with a cross-session wake, so a worker serving several
+    /// sessions can block on one condition instead of polling N.
+    ///
+    /// Called by [`crate::registry::Registry`] at creation, before any head can
+    /// reach the hub — so there is no window in which a command is queued and the
+    /// bell does not know.
+    pub fn set_bell(&self, bell: Arc<crate::registry::Bell>) {
+        self.lock().bell = Some(bell);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -411,6 +454,9 @@ impl Hub {
         kind: CommandKind,
     ) -> ServerFrame {
         let client_request_id = client_request_id.into();
+        // Declared, not initialised: every early return below leaves the function
+        // without ringing, and `None` here would be a value nothing ever reads.
+        let ring: Option<(Arc<crate::registry::Bell>, String)>;
         let frame = {
             let mut g = self.lock();
             let actual = g.log.head_seq();
@@ -455,6 +501,13 @@ impl Hub {
             };
 
             let verb = kind.verb();
+            // Taken here, rung *after* the lock is released: `Bell::ring` takes its
+            // own mutex, and taking a second lock inside this one is how a lock
+            // order gets invented by accident.
+            ring = g
+                .bell
+                .clone()
+                .map(|b| (b, g.log.session_id().to_string()));
             g.commands.push_back(QueuedCommand {
                 head_id: head_id.to_string(),
                 identity: identity.clone(),
@@ -478,7 +531,24 @@ impl Hub {
             }
         };
         self.cv.notify_all();
+        if let Some((bell, id)) = ring {
+            bell.ring(&id);
+        }
         frame
+    }
+
+    /// This session, as a row in a picker. One lock, one instant.
+    pub fn status(&self) -> SessionStatus {
+        let g = self.lock();
+        SessionStatus {
+            session_id: g.log.session_id().to_string(),
+            seq: g.log.head_seq(),
+            items: g.view.item_count(),
+            heads: g.heads.len(),
+            running: g.view.turn().is_some_and(|t| t.state.is_running()),
+            model: g.view.turn().map(|t| t.model.clone()).unwrap_or_default(),
+            last_ms: g.log.last_ts(),
+        }
     }
 
     /// Take the next command for the session's single worker. Blocks. `None` once
@@ -503,8 +573,18 @@ impl Hub {
 
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`].
     pub fn close(&self) {
-        self.lock().closed = true;
+        let ring = {
+            let mut g = self.lock();
+            g.closed = true;
+            g.bell.clone().map(|b| (b, g.log.session_id().to_string()))
+        };
         self.cv.notify_all();
+        // A closed hub is news for the cross-session worker too: it is blocked on
+        // the bell, not on this condvar, and would otherwise sleep through a
+        // shutdown that only concerns one of its sessions.
+        if let Some((bell, id)) = ring {
+            bell.ring(&id);
+        }
     }
 
     /// Settled decisions, for a head that wants to check before it answers.

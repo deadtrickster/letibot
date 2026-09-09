@@ -28,6 +28,28 @@ pub enum Role {
     Faint,
     /// A heading or anything that anchors a scan.
     Strong,
+    /// A top-level heading in rendered markdown.
+    ///
+    /// Both surveyed heads colour their headings and letibot painted every one of
+    /// them bold-and-nothing-else, which is why a long answer read as one slab: a
+    /// model writes `## Findings` and `### Why` constantly and bold alone does not
+    /// separate them from the emphasis inside a paragraph.
+    Heading,
+    /// A second-level heading. A *different* colour rather than a dimmer one — two
+    /// shades of the same hue are indistinguishable under half the terminal themes
+    /// on this box, and the level is the thing being encoded.
+    Subheading,
+    /// The bar down the left of a user's own message.
+    UserAccent,
+    /// The user's own words, on a raised block.
+    ///
+    /// **Foreground and background together, always.** The head's own argument
+    /// against a raised block (see `app::screen`) is that a dark block is invisible
+    /// or unreadable depending on which half of the pair the terminal's theme
+    /// supplies — which is true of a background set alone. Setting both makes the
+    /// pair self-consistent under any theme, and it is still nothing at all under
+    /// [`Palette::None`], where the accent glyph is what survives.
+    UserBlock,
     /// Something completed successfully.
     Success,
     /// Something in flight.
@@ -80,6 +102,10 @@ impl Palette {
             Role::Plain => "",
             Role::Faint => "\x1b[38;5;244m",
             Role::Strong => "\x1b[1m",
+            Role::Heading => "\x1b[1;38;5;79m",
+            Role::Subheading => "\x1b[1;38;5;111m",
+            Role::UserAccent => "\x1b[38;5;111m",
+            Role::UserBlock => "\x1b[48;5;236;38;5;253m",
             Role::Success => "\x1b[38;5;71m",
             Role::Pending => "\x1b[38;5;179m",
             Role::Failure => "\x1b[38;5;167m",
@@ -129,6 +155,10 @@ mod tests {
         for r in [
             Role::Faint,
             Role::Strong,
+            Role::Heading,
+            Role::Subheading,
+            Role::UserAccent,
+            Role::UserBlock,
             Role::Success,
             Role::Pending,
             Role::Failure,

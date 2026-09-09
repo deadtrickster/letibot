@@ -165,6 +165,14 @@ impl Reply {
 struct CapturingSink {
     inner: LogSink,
     ids: Vec<String>,
+    /// The last `turn_id` this sink saw start.
+    ///
+    /// Read for §4.5: when a turn fails, the daemon has to publish a terminal event
+    /// *for that turn*, and `HarnessError` does not carry an id — the failure is
+    /// raised in several places, one of them before a turn id exists at all. Taken
+    /// off the event on its way past, for the same reason the item ids are: the
+    /// minting rule lives in the engine and a second copy of it goes stale.
+    turn_id: Option<String>,
 }
 
 impl CapturingSink {
@@ -172,6 +180,7 @@ impl CapturingSink {
         CapturingSink {
             inner: LogSink::new(hub),
             ids: Vec::new(),
+            turn_id: None,
         }
     }
 
@@ -182,8 +191,10 @@ impl CapturingSink {
 
 impl EventSink for CapturingSink {
     fn emit(&mut self, event: TurnEvent) {
-        if let TurnEvent::TranscriptAppended { item_id, .. } = &event {
-            self.ids.push(item_id.clone());
+        match &event {
+            TurnEvent::TranscriptAppended { item_id, .. } => self.ids.push(item_id.clone()),
+            TurnEvent::TurnStarted { turn_id, .. } => self.turn_id = Some(turn_id.clone()),
+            _ => {}
         }
         self.inner.emit(event);
     }
@@ -234,6 +245,8 @@ pub struct Harness<'a> {
     /// How many ledger rows have reached the store.
     persisted: usize,
     system_updates: u64,
+    /// The turn this harness last started. §4.5: a failure has to name one.
+    last_turn_id: String,
 }
 
 impl<'a> Harness<'a> {
@@ -335,7 +348,7 @@ impl<'a> Harness<'a> {
                     .map_err(|e| HarnessError::Store(e.to_string()))?;
                 s.put_session(&SessionRecord {
                     id: cfg.session_id.clone(),
-                    title: None,
+                    title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
                     model_id: cfg.model.clone(),
                     dialect_sha,
                     workspace_root: cfg.workspace.display().to_string(),
@@ -359,7 +372,18 @@ impl<'a> Harness<'a> {
             transcript_id,
             persisted: 0,
             system_updates: 0,
+            last_turn_id: String::new(),
         })
+    }
+
+    /// The turn this harness last started, or empty before the first one.
+    ///
+    /// The daemon needs it to publish `TurnFailed` against the turn a head is
+    /// watching. Empty is a real answer — a turn that failed while being *set up*
+    /// never got an id — and the head treats an empty one as "the pane you are
+    /// looking at", which is the only pane that can be spinning at that point.
+    pub fn last_turn_id(&self) -> &str {
+        &self.last_turn_id
     }
 
     pub fn hub(&self) -> &Arc<Hub> {
@@ -448,10 +472,16 @@ impl<'a> Harness<'a> {
         for round in 0..self.cfg.max_tool_rounds {
             let mut sink = CapturingSink::new(self.hub.clone());
             let mut steering = HubSteering::new(self.hub.clone());
+            let outcome = self
+                .engine
+                .run_turn_steered(&mut self.session, &mut sink, &mut steering);
+            // Before the match, deliberately: three of the four arms below leave
+            // this function, and the one that matters most for §4.5 is the `Err(e)`
+            // that propagates — a failure whose turn id is only recorded on the
+            // success path is a failure the daemon cannot name.
+            self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
             let ok: TurnOk =
-                match self
-                    .engine
-                    .run_turn_steered(&mut self.session, &mut sink, &mut steering)
+                match outcome
                 {
                     Ok(ok) => ok,
                     // §5.7, and the notice goes where the model will read it.
