@@ -134,6 +134,15 @@ impl InvokeCtx<'_> {
     pub fn call_id(&self) -> &str {
         self.call_id
     }
+
+    /// The turn this call belongs to.
+    ///
+    /// Needed by any tool whose result is a fact *about the turn* rather than
+    /// about the tree — the intent ledger keys on it, because "declared this turn
+    /// and nothing ran this turn" is the whole of T21.3.
+    pub fn turn_id(&self) -> &str {
+        self.turn_id
+    }
 }
 
 /// One tool.
@@ -372,6 +381,27 @@ pub mod roles {
                 "ask_code",
                 "ask_corpus",
                 "read_spill",
+            ],
+        )
+    }
+
+    /// What a session in plan mode seats: nothing that can change the tree.
+    ///
+    /// Plan mode is a **capability boundary**, so this is a role and not a flag —
+    /// the write tools are absent from `tools_json` rather than refused at call
+    /// time. [`crate::builtins::intent::plan::seating`] derives the same answer
+    /// from an arbitrary base role; this is the named one.
+    pub fn planner() -> Role {
+        Role::new(
+            "planner",
+            &[
+                "read",
+                "grep",
+                "glob",
+                "outline",
+                "todo",
+                "goal",
+                "exit_plan_mode",
             ],
         )
     }

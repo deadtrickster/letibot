@@ -21,6 +21,7 @@
 //! | [`retrieval`] | a corpus that does not cover the question abstains, in the `NO_RESULT` envelope, and says what it searched |
 //! | [`edit`] | a miss reports **the text that is actually there**, at which lines, and whether the difference is whitespace, indentation or case; more than one match reports every line number |
 //! | [`mod@write`] | an overwrite of an unread or changed file is refused **with the file**, and the refusal records it so the retry proceeds |
+//! | [`intent`] | a completion with nothing measured behind it is reported as *claimed*, with the counts and what would settle it; an unmounted board, a headless `ask_user_question` and a lost row-claim each name what is missing rather than defaulting |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
@@ -31,6 +32,7 @@
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod intent;
 pub mod outline;
 pub mod pattern;
 pub mod read;

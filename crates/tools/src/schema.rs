@@ -26,6 +26,17 @@ pub enum Access {
     Write,
     Exec,
     Network,
+    /// Changes the **session's own** state and nothing the operator owns: the
+    /// intent board, the goal, plan mode, a question posted to a head.
+    ///
+    /// Declared rather than folded into `Read` because the survey found exactly
+    /// that hole in grok-build — `todo_write` and `update_goal` declare `Read`
+    /// while mutating session state (`docs/tool-survey.md` §1.4) — and a tool that
+    /// under-declares is a hole whether or not the thing it writes is a file.
+    /// `is_unattended` is still true: nobody needs to adjudicate the model writing
+    /// its own todo list. The tool that *widens* capability (`exit_plan_mode`)
+    /// declares `Write` for that reason and goes to the gate like any other write.
+    Session,
 }
 
 impl Access {
@@ -35,16 +46,23 @@ impl Access {
             Access::Write => "write",
             Access::Exec => "exec",
             Access::Network => "network",
+            Access::Session => "session",
         }
     }
 
     /// Whether a call of this class may proceed without anyone being asked.
     ///
-    /// Only `Read`. Everything else goes through the gate, and in M1 there is no
-    /// adjudicator behind it, so everything else is [`crate::runtime::Gate`]'s
-    /// problem and not a tool's.
+    /// `Read` and `Session`. Everything else goes through the gate, and in M1
+    /// there is no adjudicator behind it, so everything else is
+    /// [`crate::runtime::Gate`]'s problem and not a tool's.
+    ///
+    /// `Session` is unattended because nothing outside the session changes: the
+    /// model writing its own working list is not an act on the operator's machine,
+    /// and a session whose todo tool prompts is a session nobody uses. The moment a
+    /// session-state tool can *widen* what the session may do, it declares `Write`
+    /// instead — see `exit_plan_mode`.
     pub fn is_unattended(&self) -> bool {
-        matches!(self, Access::Read)
+        matches!(self, Access::Read | Access::Session)
     }
 }
 
