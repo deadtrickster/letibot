@@ -21,7 +21,7 @@ use crate::backend::{DirEntry, default_skip, walk};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-use super::pattern::{Pattern, bare_identifier, glob_match};
+use super::pattern::{Pattern, PatternError, bare_identifier, glob_match};
 use super::text_of;
 
 pub struct Grep;
@@ -53,7 +53,7 @@ impl Tool for Grep {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Pattern to search for. Literals, ., *, +, ?, [...], (...), |, ^, $, \\b, \\w, \\d, \\s."},
+                    "pattern": {"type": "string", "description": "Regular expression, in Rust `regex` syntax: literals, ., *, +, ?, {n,m}, [...], (...), |, ^, $, \\b, \\w, \\d, \\s, \\p{...}, and inline flags like (?i). Matched against one LINE at a time. No backreferences and no lookaround, a question that needs those is structural, and `outline` answers it."},
                     "path": {"type": "string", "description": "Directory to search under. Defaults to the session root."},
                     "glob": {"type": "string", "description": "Only read files whose path matches this glob."},
                     "case_insensitive": {"type": "boolean"},
@@ -110,47 +110,52 @@ impl Tool for Grep {
             ));
         }
 
-        let mut ladder: Vec<Attempt> = Vec::new();
-        ladder.push(Attempt {
-            pattern: Pattern::compile(source, ci),
+        // A pattern that does not compile is a REPORTED ERROR. The engine that
+        // used to sit here treated an unsupported construct as a literal string
+        // and attached a note saying so -- which is still a search for something
+        // other than what was asked, merely an annotated one, and the model has
+        // no way to tell an annotated approximation from an answer. What comes
+        // back now is `regex`'s own message, which names the position in the
+        // pattern, plus the one sentence about what to do next.
+        let asked = match Pattern::compile(source, ci) {
+            Ok(p) => p,
+            Err(e) => return compile_failed(&e),
+        };
+
+        let mut ladder: Vec<Attempt> = vec![Attempt {
+            pattern: asked,
             scope: scope.clone(),
             relaxation: None,
-        });
+        }];
         let bare = bare_identifier(source);
         if let Some(b) = &bare {
-            ladder.push(Attempt {
-                pattern: Pattern::compile(b, ci),
-                scope: scope.clone(),
-                relaxation: Some(format!(
+            push_rung(
+                &mut ladder,
+                b,
+                ci,
+                &scope,
+                format!(
                     "the pattern `{source}` matched nothing, so it was relaxed to its bare \
                      identifier `{b}`"
-                )),
-            });
+                ),
+            );
         }
         if !ci {
             let p = bare.clone().unwrap_or_else(|| source.to_string());
-            ladder.push(Attempt {
-                pattern: Pattern::compile(&p, true),
-                scope: scope.clone(),
-                relaxation: Some(format!("`{p}` was retried without case sensitivity")),
-            });
+            let note = format!("`{p}` was retried without case sensitivity");
+            push_rung(&mut ladder, &p, true, &scope, note);
         }
         if scope != "." {
             let p = bare.clone().unwrap_or_else(|| source.to_string());
-            ladder.push(Attempt {
-                pattern: Pattern::compile(&p, ci),
-                scope: ".".to_string(),
-                relaxation: Some(format!(
-                    "nothing under `{scope}` matched, so `{p}` was searched across the \
-                     whole session root"
-                )),
-            });
+            let note = format!(
+                "nothing under `{scope}` matched, so `{p}` was searched across the \
+                 whole session root"
+            );
+            push_rung(&mut ladder, &p, ci, ".", note);
         }
 
         let mut tried: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
-        let mut unsupported: Vec<String> = ladder[0].pattern.unsupported.clone();
-        unsupported.dedup();
 
         for attempt in &ladder {
             let (hits, scanned, truncated) =
@@ -164,13 +169,6 @@ impl Tool for Grep {
             }
 
             let mut inv = Invocation::ok(render_hits(&hits, &attempt.scope));
-            if !unsupported.is_empty() {
-                inv = inv.with_note(format!(
-                    "this grep understands a subset of regular expressions and treated \
-                     the rest literally: {}",
-                    unsupported.join("; ")
-                ));
-            }
             // The relaxation, and every rung below it, in the result the model
             // reads. A silent relaxation is a rewritten query.
             for t in &tried {
@@ -247,6 +245,45 @@ impl Tool for Grep {
     }
 }
 
+/// Add a rung, or leave it off if its pattern will not compile.
+///
+/// A rung is a RELAXATION, so it is allowed to be unavailable: the bare
+/// identifier and the widened scope are both derived from a pattern that already
+/// compiled, so this is close to unreachable — but a rung that silently searched
+/// for something else would be the exact failure the compile error exists to
+/// prevent, one level down.
+fn push_rung(
+    ladder: &mut Vec<Attempt>,
+    source: &str,
+    ci: bool,
+    scope: &str,
+    relaxation: String,
+) {
+    if let Ok(pattern) = Pattern::compile(source, ci) {
+        ladder.push(Attempt {
+            pattern,
+            scope: scope.to_string(),
+            relaxation: Some(relaxation),
+        });
+    }
+}
+
+/// The engine's own words about the pattern, and what to do about it.
+///
+/// `failed`, not `abstained`: an abstention is a claim that the content was
+/// looked at and did not contain the term, and this call opened no files at all.
+/// Same rule as the zero-files case below.
+fn compile_failed(e: &PatternError) -> Invocation {
+    Invocation::failed(
+        format!("`{}` did not compile, so nothing was searched", e.source),
+        format!("{}\n\n{}", e.message, e.remedy()),
+    )
+    .with_note(
+        "the pattern was NOT approximated and NOT searched for literally: this call \
+         says nothing about whether it occurs.",
+    )
+}
+
 fn search(
     ctx: &mut InvokeCtx<'_>,
     pattern: &Pattern,
@@ -295,17 +332,21 @@ fn search(
         }
         scanned += 1;
         let (text, _) = text_of(&bytes);
-        for (n, line) in text.lines().enumerate() {
-            if pattern.is_match(line) {
-                hits.push(Hit {
-                    path: e.path.clone(),
-                    line_no: n + 1,
-                    line: line.to_string(),
-                });
-                if hits.len() >= max {
-                    return (hits, scanned, true);
-                }
-            }
+        // One scan of the whole buffer rather than one engine call per line. The
+        // semantics are identical -- `line_hits` confirms every candidate against
+        // the line-scoped program -- and the measurement is the whole reason the
+        // matcher was replaced.
+        let remaining = max - hits.len();
+        let path = e.path.clone();
+        let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
+            hits.push(Hit {
+                path: path.clone(),
+                line_no,
+                line: line.to_string(),
+            });
+        });
+        if truncated {
+            return (hits, scanned, true);
         }
     }
     (hits, scanned, false)
@@ -395,7 +436,6 @@ mod tests {
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
     }
 
-    #[test]
     /// The rano session, 2026-09-09. `grep` was asked for `#\[cfg\(test\)\]`
     /// with `glob: "*.rs"` under `src` and answered *"does not occur in the
     /// searched tree"* — about a tree holding nine of them. `glob` is matched
@@ -456,6 +496,54 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("searched"), "{rendered}");
+    }
+
+    /// Phase 1's clause 3. The engine that used to sit here would have searched
+    /// for the LITERAL text `(?<=fn )\w+` — found nothing, said so, and attached
+    /// a note about an unsupported construct. A model reading that has been told
+    /// two true things and one false one: that the pattern does not occur.
+    #[test]
+    fn a_pattern_that_does_not_compile_is_reported_and_nothing_is_searched() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"(?<=fn )\\w+"}"#);
+        assert!(!r.is_grounded(), "{:?}", r.outcome);
+        let seen = r.render();
+        // The engine's own words, with the position.
+        assert!(seen.contains("look-around") || seen.contains("lookaround"), "{seen}");
+        // And the fact that separates this from an abstention: no file was opened,
+        // so the call makes NO claim about whether the pattern occurs.
+        assert!(seen.contains("says nothing about whether it occurs"), "{seen}");
+        assert_ne!(
+            crate::result::Envelope::classify(&seen),
+            Some("NO_RESULT"),
+            "a pattern that never compiled cannot abstain about content:\n{seen}"
+        );
+    }
+
+    /// The other half of the same clause: the syntax the old subset refused now
+    /// works, and is not reported as an approximation.
+    #[test]
+    fn counted_repetition_is_matched_rather_than_apologised_for() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"a{1,3}rgs"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+        let notes = r.notes.join(" ");
+        assert!(!notes.contains("literally"), "no approximation note: {notes}");
+    }
+
+    /// A pattern big enough to be a denial of service is refused, in the same
+    /// shape as a syntax error, rather than compiled while a turn waits.
+    #[test]
+    fn a_pattern_over_the_size_limit_is_refused_with_a_remedy() {
+        let mut h = harness();
+        let r = h.call(
+            "grep",
+            r#"{"pattern":"((((a{100}){100}){100}){100})"}"#,
+        );
+        assert!(!r.is_grounded());
+        let seen = r.render();
+        assert!(seen.contains("KiB"), "{seen}");
     }
 
     #[test]
