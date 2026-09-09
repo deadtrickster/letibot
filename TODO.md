@@ -7,49 +7,82 @@ Background for anything template-related: `docs/chat-templates.md`.
 
 ---
 
-## T1 — Decide how templates are rendered at runtime — **OPEN, needs the operator's judgement eventually**
+## T1 — How templates are rendered — **SETTLED 2026-09-09: template-driven, minijinja**
 
-**Status: parked deliberately.** The current arrangement is correct and tested; this
-decides whether it stays.
+Verdict and evidence: `experiments/minijinja-fidelity/RESULTS.md`. Decision recorded
+as D11.
 
-Today: `crates/dialect-glm` is a **hand-written** renderer, verified byte-exact
-against the training runtime (CPython Jinja2 + `transformers`' configuration). The
-oracle in `tests/fidelity/` is the authority.
+**Adopt the template-driven design** on `minijinja` 2.24 with `loop_controls`,
+`preserve_order` and the `pycompat` shim, and **keep the CPython differential as a
+permanent CI gate** — that last part is not belt-and-braces, see below.
 
-Proven alternative (2026-09-09, measured, see `docs/chat-templates.md` §4): run the
-**shipped template** with data wrapped in provenance sentinels. That recovers the
-`Text`/`Control` split mechanically, so no per-model renderer is needed at all — a
-new model costs a fixture corpus rather than an implementation, and the injection
-boundary is guaranteed by construction rather than by getting a renderer right.
+Measured: **4,132 byte-exact renders** across GLM and Qwen templates over the
+139-case fixture corpus, an 18-case Qwen-native corpus, edge cases and 2,200
+generated conversations; 588 cases where both engines refused identically; **zero**
+where one rendered and the other refused. Sentinel provenance works unchanged and
+its region maps are **identical to the authority's, 0 differences in 4,132
+comparisons**, with 3,617 payload-supplied control-token literals all classified
+DATA and none straddling a boundary.
 
-**Why it is not adopted yet.** It needs a Jinja engine *in the harness*, and that is
-an unresolved deployment question, not a correctness one:
+**minijinja does not have minja's scoping bug** — a bare `{% set %}` is per-iteration,
+matching CPython. That was the near-decisive check and it passed.
 
-| option | cost |
-|---|---|
-| CPython Jinja2 via pyo3 | exact by definition; puts a Python runtime in a Rust daemon |
-| a Rust engine (`minijinja`) | fast, no Python; is another reimplementation, so it must be validated against CPython on every template in CI — the same class of risk that produced the minja bug |
-| keep hand-written renderers | no new dependency; costs one renderer per template family, forever |
+**Why the differential gate stays forever.** Reaching byte-exact took eight
+configuration decisions, **four of which fail silently** and three of those were
+invisible without diffing the two engines: `serde_json` separators, `BTreeMap` key
+sorting without `preserve_order`, Rust's `Display` for `f64` never using exponent
+notation, and three Jinja `is` tests answering Python's way in Jinja2 and Rust's way
+in minijinja — of which `none is iterable` is reachable, because both templates
+branch on it.
 
-**What to check before choosing** (none of it done):
-- Does `minijinja` support `loopcontrols` (`{% break %}`)? GLM's template needs it.
-- Does it scope `{% set %}` per loop iteration the way CPython does? That is the
-  exact bug minja has. The fixture corpus tests it directly.
-- Does it allow a custom `tojson` accepting `ensure_ascii`?
-- Can it render GLM's and Qwen's templates at all, byte-exact against the oracle?
+The framing that explains all four: **minijinja implements Jinja the language
+correctly; `transformers` runs Jinja on top of the Python object model.** `.strip()`,
+`.startswith()`, `.items()` are Python, not Jinja. Every silent divergence lives in
+that seam. The risk is not that minijinja is wrong today — it is that a new template
+reaches an unexercised corner of the shim.
 
-That is a half-day experiment and it settles T1 outright. Until then two independent
-implementations agree, which is a stronger position than either alone.
+**Known, characterised, unfixed:** integers outside `i64`/`u64` render as floats.
+`minijinja::Value` has no bignum and `serde_json`'s `arbitrary_precision` does not
+fix it — precision is lost in the conversion into minijinja's own value type. Kept
+measured by `cases-edge`.
 
-**If adopted, it changes `crates/dialect` substantially** — `Dialect` becomes mostly
-data (template, control-token set, quirks) rather than an implementation. See T2.
+**Cost:** 7–15 µs to render a 51 KB prompt, 14–30 µs for the double render provenance
+needs, against prefill in hundreds of milliseconds. 18 crates, no C, no Python.
+
+**The biggest untested risk**, and the most likely way a third model breaks this:
+`{% generation %}`. `transformers` registers an `AssistantTracker` extension for it,
+and **minijinja 2.24 has no public custom-tag API**, so a template shipping that tag
+would fail to parse with no shim available. Neither of our two templates uses it.
 
 ---
 
-## T2 — Revise the `Dialect` contract — **blocked on T1**
+## T2 — Revise the `Dialect` contract — **UNBLOCKED by T1, re-scored**
 
-Two strands independently found the same defects. Deliberately not fixed yet:
-revising it for the hand-written design would be wasted if T1 goes the other way.
+Under the template-driven design, four of the eight defects stop existing or move.
+Re-scored by the T1 experiment:
+
+| # | defect | fate under T1 |
+|---|---|---|
+| 1 | `render_incremental` cannot be pure | **gone** — Jinja has no incremental mode, so there is no boundary state to carry |
+| 3 | no home for the generation prompt | **gone** — it is a template argument |
+| 5 | resolution must key on literal not role | **gone** — rendering no longer asks for roles |
+| 4 | `ControlRole` closed and too small | **moves** to `parse`'s problem |
+| 7 | `ControlTokens` forces `&'static str` | **now mandatory** — a runtime-loaded template makes `&'static` impossible |
+| 2 | `parse(&[u32])` unimplementable | survives, `parse` side |
+| 6 | `stop_tokens()` bare literals | survives, `parse` side |
+| 8 | `ControlRole` has no `Ord` | survives, trivial |
+
+So `Dialect` splits: **rendering becomes data** (template source, control-token set,
+quirks) and **parsing stays code**. The three survivors are all on the parsing side,
+which T1 does not touch.
+
+**One thing gets harder and needs deciding.** The `server-bug-compatible` profile
+cannot be produced by a template-driven renderer without deliberately reintroducing
+minja's bug, and minijinja has no knob for it. My call: **drop it.** Its purpose was
+to prove we understood the template well enough to reproduce minja exactly, which
+earned the `faithful` profile the right to declare divergences. Running the real
+template through a correct engine is stronger evidence than reproducing a wrong one,
+and the INTEROP phase against `/apply-template` still reports how the server differs.
 
 1. **`render_incremental(prev_end, new_items)` cannot be a pure function.** GLM needs
    boundary state — turn open, `<think>` open, previous item a tool result — none of
