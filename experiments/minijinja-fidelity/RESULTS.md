@@ -18,16 +18,17 @@ the authority's, region for region, in every case where both engines produced
 one**.
 
 It is not a drop-in. Getting from "renders the template" to "renders it
-byte-exact" took **eight** deliberate configuration decisions, of which three
-would have been silent in production and were found only by differential
-testing. That is the real result, and it is why the recommendation is
+byte-exact" took **eight** deliberate configuration decisions. **Four of them
+fail silently**, and **three of those four were found only by running the two
+engines side by side and diffing** — not by reading either engine's
+documentation. That is the real result, and it is why the recommendation is
 *template-driven with a differential gate* rather than *template-driven*.
 
 One divergence remains unfixed, and it is bounded and characterised: §5.
 
 ---
 
-## 1. The four questions T1 asks
+## 1. The questions T1 asks
 
 | # | question | answer |
 |---|---|---|
