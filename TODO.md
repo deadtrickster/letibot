@@ -275,9 +275,14 @@ than from a generated token, and inspect roles before emitting the `Delta`.
 
 ---
 
-## T13 — §4.5's event enum is insufficient for a real head — **four gaps, one structural**
+## T13 — §4.5's event enum is insufficient for a real head — **five gaps; gap 1 is a priority, see T14**
 
-Found by building one. Listed with what W8 did about each.
+Found by building one, then by fixing T12. Listed with what was done about each.
+
+**Gap 1 is not a footnote.** T14 argues that an addressable record is the fallback if
+composable KV proves impossible on hybrid models — and a log whose transcript events
+carry no content cannot be that record. Treat it as blocking for the "sessions that
+do not forget" goal, not as a schema nicety.
 
 1. **`TranscriptAppended{item_id, kind, ledger_head}` carries no content**, and
    `EventSink` has no channel for it — so **a head cannot reconstruct a conversation
@@ -296,6 +301,14 @@ Found by building one. Listed with what W8 did about each.
    `CommandIssued`, labelled as an addition rather than smuggled into `Warning`.
 4. `ToolStarted` / `ToolProgress` are given by name only in §4.5; their shapes are
    W8's invention and **W9 will find out whether they are right**.
+5. **`DeltaTarget` is `Text | Reasoning` — there is no channel for a tool call.**
+   Found while fixing T12. A tool call's argument text streams as `Text` while
+   `items::produce` puts it in `ToolCall{arguments}` and excludes it from the
+   Assistant row, so T12's new per-channel equality assertion **would fail on a
+   tool-calling turn — correctly**, as a real live/stored disagreement rather than a
+   test defect. No test exercises it yet because `live_e2e`'s prompt makes no calls.
+   This is T12's defect, unfixed, in a third channel. The enum was not widened
+   unilaterally.
 
 ---
 
@@ -306,6 +319,44 @@ The operator has asked for it twice and it is a **design goal**: a request shoul
 able to send a *composition* — `[block_hash, block_hash, text, block_hash]` — rather
 than a full prompt, and blocks should be reusable **across sessions and across
 agents**, not only as a prefix of one conversation.
+
+### What it is FOR — and why "infinite sessions" is the strong claim, not the weak one
+
+I first framed unbounded sessions as the weaker half, on the grounds that attention
+still costs per resident token so selection does not go away. That framing was wrong,
+and the operator's counter-example is **this session**.
+
+The PFN/stroppy work was done here, in this conversation, and was lost across
+compaction. Asked about it directly, I said it was not in context and not in the
+summary; the only reason it was recovered is that the operator **said it was in the
+transcript**. Without that, the answer would have been "we did not do that here" —
+about work this same session produced.
+
+**The asymmetry that makes composition different in kind, not merely cheaper:**
+
+| | compaction | composition |
+|---|---|---|
+| what it does to detail | **destroys** it | **omits** it |
+| can a later turn recover it | no, it is gone | yes, the block is still addressable |
+| a selection mistake is | permanent | a turn's choice, revisable next turn |
+
+That is the point. Selection does not disappear, but it stops being a one-way door.
+
+**And the current medium indicts itself.** The session transcript is 77 MB of
+append-only jsonl: greppable and nothing else. No index, no addressing, and — the
+actual failure — **no way to know what is in it without already knowing what to
+search for.** Recovering the PFN work required guessing that the word "stroppy" would
+appear; "pfn" alone returns 1,579 hits of noise.
+
+**`crates/sessionlog` currently repeats this mistake**, which is worth saying plainly
+about something we built today: it is an append-only log of text events, and T13
+records that `TranscriptAppended` carries no content at all, so it is not even a
+sufficient record of a session. See T13 — that gap is not a footnote, it is the same
+disease one layer up.
+
+So the fallback, if the recurrent layers say stitching cannot work, is **not**
+"compaction, oh well". It is that the *record* must be addressable even when the KV
+cannot be.
 
 ### Two obstacles, and only one of them has a known answer
 
