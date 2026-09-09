@@ -228,12 +228,16 @@ impl Tool for Grep {
             let mut why = String::new();
             if let Some(g) = file_glob {
                 why.push_str(&format!(
-                    "`glob` is matched against each file's PATH from the session root,                      not its name, so `{g}` selects nothing under a subdirectory. Try                      `**/{}` or drop `glob` and narrow with `path`.\n",
+                    "`glob` is matched against each file's PATH from the session \
+                     root, not its name, so `{g}` selects nothing under a \
+                     subdirectory. Try `**/{}` or drop `glob` and narrow with \
+                     `path`.\n",
                     g.trim_start_matches("*/").trim_start_matches('*')
                 ));
             }
             why.push_str(&format!(
-                "nothing under `{scope}` was opened, so this call says NOTHING about                  whether `{source}` occurs. Fix the scope and ask again."
+                "nothing under `{scope}` was opened, so this call says NOTHING \
+                 about whether `{source}` occurs. Fix the scope and ask again."
             ));
             return Invocation::failed(
                 format!("0 files matched the scope, so `{source}` was never searched for"),
@@ -600,6 +604,50 @@ mod tests {
             "the file scope must be searched directly, not rescued by the fallback \
              rung:\n{notes}"
         );
+    }
+
+    /// The survey found ~20-space runs inside two guidance strings -- a `\`
+    /// continuation lost when the code was pasted, so the literal spaces shipped
+    /// to the model. Source-level scanning for this is unreliable: a correct
+    /// continuation looks the same to a naive scan, and it cost three wrong
+    /// attempts. So assert the FACT -- what is actually rendered -- and scope it
+    /// to the defect's shape, a run of spaces BETWEEN WORDS. The regex engine's
+    /// error diagnostic aligns a caret with leading spaces and must keep them;
+    /// a first cut of this test forbade that too.
+    #[test]
+    fn no_guidance_string_ships_a_run_of_spaces() {
+        let mut h = harness();
+        let calls = [
+            r#"{"pattern":"fn ","path":"src","glob":"*.rs"}"#,
+            r#"{"pattern":"quokka_sentinel"}"#,
+            r#"{"pattern":"x","path":"srcc"}"#,
+            r#"{"pattern":"TokenLedger"}"#,
+            r#"{"pattern":"^(pub )?(fn|struct)","path":"src"}"#,
+        ];
+        for c in calls {
+            let rendered = h.call("grep", c).render();
+            let bad: Vec<&str> = rendered
+                .lines()
+                .filter(|l| {
+                    let b = l.as_bytes();
+                    (0..b.len()).any(|i| {
+                        b[i] == b' '
+                            && i > 0
+                            && b[i - 1].is_ascii_alphanumeric()
+                            && b[i..].iter().take_while(|c| **c == b' ').count() >= 4
+                            && b[i..]
+                                .iter()
+                                .find(|c| **c != b' ')
+                                .is_some_and(|c| c.is_ascii_alphanumeric())
+                    })
+                })
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "a lost `\\` continuation reaches the model for {c}:\n{}",
+                bad.join("\n")
+            );
+        }
     }
 
     #[test]
