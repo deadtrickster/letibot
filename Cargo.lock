@@ -183,6 +183,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-sessionlog"
+version = "0.1.0"
+dependencies = [
+ "letibot-backend",
+ "letibot-dialect",
+ "letibot-sessionlog",
+ "letibot-tokencore",
+ "letibot-transcript",
+ "letibot-turn",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-tokencore"
 version = "0.1.0"
 dependencies = [
@@ -200,6 +214,17 @@ dependencies = [
 name = "letibot-transcript"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "letibot-tui"
+version = "0.1.0"
+dependencies = [
+ "letibot-sessionlog",
+ "letibot-transcript",
+ "libc",
  "serde",
  "serde_json",
 ]

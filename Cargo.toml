@@ -7,6 +7,8 @@ members = [
     "crates/tokencore",
     "crates/backend",
     "crates/turn",
+    "crates/sessionlog",
+    "crates/tui",
 ]
 
 [workspace.package]
@@ -24,3 +26,5 @@ letibot-dialect-glm = { path = "crates/dialect-glm" }
 letibot-tokencore = { path = "crates/tokencore" }
 letibot-backend = { path = "crates/backend" }
 letibot-turn = { path = "crates/turn" }
+letibot-sessionlog = { path = "crates/sessionlog" }
+letibot-tui = { path = "crates/tui" }

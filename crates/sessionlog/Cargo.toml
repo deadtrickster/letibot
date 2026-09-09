@@ -1,0 +1,35 @@
+[package]
+name = "letibot-sessionlog"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+letibot-transcript.workspace = true
+serde.workspace = true
+# preserve_order so a tool call's argument JSON survives a round trip through a
+# frame with its key order intact. The same reason dialect-glm needs it: those
+# bytes become prompt bytes again on the next turn.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+# The turn engine, for the lift from `TurnEvent` into §4.5's full enum. Optional
+# and off by default so `cargo build -p letibot-sessionlog` proves the log, the
+# protocol and the scrub have no path into a model, an FFI or a running server —
+# which is what lets the TUI depend on this crate without linking libllama.
+letibot-turn = { workspace = true, optional = true }
+
+[features]
+default = []
+turn = ["dep:letibot-turn"]
+
+[dev-dependencies]
+letibot-sessionlog = { path = ".", features = ["turn"] }
+letibot-turn = { workspace = true, features = ["glm"] }
+# For the live end-to-end test, which drives a real turn engine against the
+# running server and attaches a head to it mid-turn.
+letibot-dialect.workspace = true
+letibot-tokencore.workspace = true
+letibot-backend.workspace = true
