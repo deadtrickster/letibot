@@ -1,0 +1,128 @@
+# TODO
+
+Open work, ordered by what blocks what. Each entry says what is undecided, what was
+already measured, and what a decision would change — so it can be picked up cold.
+
+Background for anything template-related: `docs/chat-templates.md`.
+
+---
+
+## T1 — Decide how templates are rendered at runtime — **OPEN, needs the operator's judgement eventually**
+
+**Status: parked deliberately.** The current arrangement is correct and tested; this
+decides whether it stays.
+
+Today: `crates/dialect-glm` is a **hand-written** renderer, verified byte-exact
+against the training runtime (CPython Jinja2 + `transformers`' configuration). The
+oracle in `tests/fidelity/` is the authority.
+
+Proven alternative (2026-09-09, measured, see `docs/chat-templates.md` §4): run the
+**shipped template** with data wrapped in provenance sentinels. That recovers the
+`Text`/`Control` split mechanically, so no per-model renderer is needed at all — a
+new model costs a fixture corpus rather than an implementation, and the injection
+boundary is guaranteed by construction rather than by getting a renderer right.
+
+**Why it is not adopted yet.** It needs a Jinja engine *in the harness*, and that is
+an unresolved deployment question, not a correctness one:
+
+| option | cost |
+|---|---|
+| CPython Jinja2 via pyo3 | exact by definition; puts a Python runtime in a Rust daemon |
+| a Rust engine (`minijinja`) | fast, no Python; is another reimplementation, so it must be validated against CPython on every template in CI — the same class of risk that produced the minja bug |
+| keep hand-written renderers | no new dependency; costs one renderer per template family, forever |
+
+**What to check before choosing** (none of it done):
+- Does `minijinja` support `loopcontrols` (`{% break %}`)? GLM's template needs it.
+- Does it scope `{% set %}` per loop iteration the way CPython does? That is the
+  exact bug minja has. The fixture corpus tests it directly.
+- Does it allow a custom `tojson` accepting `ensure_ascii`?
+- Can it render GLM's and Qwen's templates at all, byte-exact against the oracle?
+
+That is a half-day experiment and it settles T1 outright. Until then two independent
+implementations agree, which is a stronger position than either alone.
+
+**If adopted, it changes `crates/dialect` substantially** — `Dialect` becomes mostly
+data (template, control-token set, quirks) rather than an implementation. See T2.
+
+---
+
+## T2 — Revise the `Dialect` contract — **blocked on T1**
+
+Two strands independently found the same defects. Deliberately not fixed yet:
+revising it for the hand-written design would be wasted if T1 goes the other way.
+
+1. **`render_incremental(prev_end, new_items)` cannot be a pure function.** GLM needs
+   boundary state — turn open, `<think>` open, previous item a tool result — none of
+   it derivable from a `usize`. Worked around with `GlmDialect::for_conversation`;
+   `new()` panics rather than guessing. The signature must carry history or a state
+   token.
+2. **`parse(&[u32])` is unimplementable as specified** — no vocab, yet it must return
+   `Content(String)`. Currently takes a caller-supplied `TokenDecoder`.
+3. **No home for the generation prompt.** Folding `<|assistant|><think>` into
+   `render` breaks the stated invariant for any conversation whose next item is a
+   user message. Currently an inherent `generation_prompt()`.
+4. **`ControlRole` is closed and too small** — no `<arg_key>`, `<arg_value>`,
+   `<sop>`, or the image triplet, all single vocab entries, so all must be `Control`.
+   They currently sit under `TurnEnd` as a "no role" bucket.
+5. **Resolution must key on literal, not role.** One role with many literals is the
+   case that bites, and `ControlTokens::get(role)` silently returns whichever comes
+   first. `GLM_TOKENS` is ordered so the canonical entry wins — a convention, not a
+   guarantee.
+6. **`stop_tokens()` returns bare `&'static str`** with no role, so a failure cannot
+   be reported honestly. Correctness argument: a stop token that is silently a
+   *sequence* never fires, and the turn runs to `n_ctx`.
+7. **`ControlTokens` as `&'static [ControlToken]`** forces `&'static str` through
+   every error type. Fine while dialects are compile-time constants; impossible for
+   a dialect loaded from a config file or a downloaded template. `Cow<'static, str>`
+   costs nothing today.
+8. **`ControlRole` has no `Ord`**, so deterministic error listings must preserve
+   declaration order rather than sort. Trivial; a derive would do.
+
+---
+
+## T3 — Report the minja scoping bug upstream — **ready, not filed**
+
+`{% set %}` inside `{% for %}` is not scoped per iteration in llama.cpp's minja.
+Repro needs no GPU: a template, four messages, one `/apply-template` call.
+Full writeup and both engines' output in `docs/chat-templates.md` §2.
+
+Affects any llama.cpp user serving GLM with `messages` — the model is conditioned on
+reasoning it never produced. We are insulated because we submit token ids.
+
+---
+
+## T4 — Verify what opencode actually sends — **cheap, decides whether T3 affects it**
+
+`docs/chat-templates.md` §3 lists two ways a client causes prompt-cache divergence.
+The second — sending reasoning as its own message rather than fused onto the
+assistant message — applies only if opencode does that. Unverified.
+
+The W1 recording proxy answers it directly. Decides whether the residual
+divergence after the `interleaved` fix is one mechanism or two.
+
+---
+
+## T5 — Operator decisions still open
+
+Carried from `DECISIONS.md`; see there for the full statement of each.
+
+- **D3** — firecode's two asks (parent cgroup, persistent shell). A written "no" is a
+  complete answer and unblocks the work; it selects which of two tool runtimes gets
+  built.
+- **D5** — Falsifier B scoring rubric.
+- **D6** — `max_inline_bytes` (deliberately has no default).
+- **D7** — the 27B preset.
+- **D8** — the harness licence. The workspace currently declares Apache-2.0 and there
+  is no GitHub remote yet; the repo is intended to be public, so this should not stay
+  open.
+
+---
+
+## T6 — Not started, from `docs/workstreams.md`
+
+W1 measurement rig · W2 prefix-invariant suite (grok port, Apache-2.0) · W6 turn
+engine (**critical path**) · W7 session log and head protocol · W8 heads · W9 tool
+runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · W13
+segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
+
+`pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
