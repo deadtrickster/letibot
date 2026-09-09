@@ -349,7 +349,7 @@ impl App {
                 }
                 Disposition::Rendered
             }
-            SessionEvent::ToolStarted { call_id, name } => {
+            SessionEvent::ToolStarted { call_id, name, .. } => {
                 if let Some(t) = self.turn.as_mut() {
                     match t.calls.iter_mut().find(|c| c.0 == call_id) {
                         Some(c) => c.2 = CallState::Running,
@@ -366,7 +366,10 @@ impl App {
                 call_id,
                 outcome,
                 payload_digest,
-                bytes,
+                inline_bytes,
+                full_bytes,
+                spill,
+                ..
             } => {
                 if let Some(t) = self.turn.as_mut()
                     && let Some(c) = t.calls.iter_mut().find(|c| c.0 == call_id)
@@ -374,7 +377,9 @@ impl App {
                     c.2 = CallState::Finished {
                         outcome,
                         payload_digest,
-                        bytes,
+                        inline_bytes,
+                        full_bytes,
+                        spill,
                     };
                 }
                 Disposition::Rendered
@@ -858,9 +863,24 @@ fn call_line(call_id: &str, name: &str, state: &CallState, cfg: &RenderConfig) -
         CallState::Proposed => ("○", "proposed".to_string(), sgr::GREY),
         // No partial output. There is nowhere to put it, by design.
         CallState::Running => ("◐", "running".to_string(), sgr::YELLOW),
-        CallState::Finished { outcome, bytes, .. } => (
+        CallState::Finished {
+            outcome,
+            inline_bytes,
+            full_bytes,
+            spill,
+            ..
+        } => (
             "●",
-            format!("{} · {bytes} B", outcome_str(outcome)),
+            // Both byte counts when they differ: "8 KB" beside a 480 KB output is
+            // a number that misleads, and §8.3's whole point is that the rest is
+            // still there.
+            match spill {
+                Some(hash) => format!(
+                    "{} · {inline_bytes} B of {full_bytes} B · spill {hash}",
+                    outcome_str(outcome)
+                ),
+                None => format!("{} · {inline_bytes} B", outcome_str(outcome)),
+            },
             match outcome {
                 letibot_transcript::ToolOutcome::Ok => sgr::GREEN,
                 letibot_transcript::ToolOutcome::Abstained { .. } => sgr::YELLOW,

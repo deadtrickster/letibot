@@ -1,0 +1,31 @@
+[package]
+name = "letibot-tools"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+letibot-transcript.workspace = true
+serde.workspace = true
+# preserve_order for the same reason the engine needs it: a tool call's argument
+# key order becomes prompt bytes on the next turn, and reordering re-prefills.
+serde_json = { workspace = true, features = ["preserve_order"] }
+# The spill locator is a content hash, and it is the same SHA-256 the ledger uses.
+sha2 = "0.10"
+
+# No `libc`, no HTTP client, no async runtime, and deliberately no `regex`. See
+# `src/builtins/pattern.rs` for what the pattern subset is, and why an unsupported
+# construct is reported to the model rather than silently approximated.
+#
+# No `build.rs` either: nothing here links `libllama` (T10.5's rpath problem is
+# for crates that do), because a tool runtime that needed a vocab to grep a file
+# would be a layering mistake, not a build one.
+
+[features]
+# The fixture tree and the scripted retrieval backend, for `tests/`.
+testing = []
+
+[dev-dependencies]
+letibot-tools = { path = ".", features = ["testing"] }

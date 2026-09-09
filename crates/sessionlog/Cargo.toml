@@ -21,12 +21,19 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # which is what lets the TUI depend on this crate without linking libllama.
 letibot-turn = { workspace = true, optional = true }
 
+# The tool runtime, for the lift from `ToolEvent` into §4.5's three tool events.
+# Optional for the same reason `letibot-turn` is: the log, the protocol and the
+# scrub must be buildable with no path into a filesystem a tool can read.
+letibot-tools = { workspace = true, optional = true }
+
 [features]
 default = []
 turn = ["dep:letibot-turn"]
+tools = ["dep:letibot-tools"]
 
 [dev-dependencies]
-letibot-sessionlog = { path = ".", features = ["turn"] }
+letibot-sessionlog = { path = ".", features = ["turn", "tools"] }
+letibot-tools = { workspace = true, features = ["testing"] }
 letibot-turn = { workspace = true, features = ["glm"] }
 # For the live end-to-end test, which drives a real turn engine against the
 # running server and attaches a head to it mid-turn.
