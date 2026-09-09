@@ -958,3 +958,81 @@ runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · 
 segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
 
 `pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
+
+---
+
+## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner
+
+Operator, 2026-09-09: *"you guys like to accumulate monitors and shells"* — and, on
+being shown the measurement, *"you are fine, others nt"*. That correction is the
+requirement. The leak is not the top-level agent's own housekeeping; it is **everything
+its children spawn and do not clean up.**
+
+Measured on this box the same evening, mid-session:
+
+| | |
+|---|---|
+| git worktrees in `.claude/worktrees/` | **13**, most from agents that finished hours ago |
+| orphan tmux sessions | `nano_test`, **30 hours** old, from a finished agent |
+| the top-level agent's own leak | 1 listener, 1 poll loop — correct |
+
+`docs/tui-testing.md` already says *"Kill your sessions. An orphaned tmux session holds a
+`harnessd` and its socket, and the next run then attaches to a daemon it did not start."*
+Written here, loaded in context, and it did not bind. That is `docs/closed-loop.md` §1
+again and the fix is the same: not a better rule.
+
+### The mechanism was already chosen
+
+D4, answered by the operator earlier the same day: *"just do byobu, which connects to
+cgroups — use dependent. if a vm is temporary then it is a session cgroup otherwise not.
+still must be clearly reapable."*
+
+So: **every process a turn spawns lands in a cgroup owned by a scope.** Three scopes and
+no fourth — `turn`, `session`, and `explicit` (survives the session because somebody said
+so, and is listed as such). Reaping is `cgroup.kill`, and a subagent's cgroup is a child
+of its parent's, so a parent that ends reaps its children by construction rather than by
+remembering to.
+
+### The part that pays for itself immediately
+
+**Cgroups retire pattern matching for both reaping and liveness**, which is T21.1 and
+T21.2 dissolved rather than guarded:
+
+- `pkill -f X` becomes "kill this cgroup" — no pattern, so nothing to self-match.
+- `until pgrep -f X` becomes "is this cgroup non-empty" — no predicate that can match its
+  own waiter.
+
+The evidence that a guard is not enough: on 2026-09-09 a process check self-matched
+**five times in one session**, with `process-checks-that-self-match` loaded in memory and
+T21 open in this file. The fifth was `grep -E '[h]arnessd'` — the bracket trick defeats
+`pgrep`, but the shell wrapper echoes the expanded pattern back into its own command line,
+so the literal string was there to be found. A hazard with that many spellings is not
+one you check for; it is one you make unspellable.
+
+### Monitors, which are the same problem wearing a different hat
+
+Operator, same message: *"btw we need monitors in letibot"*. A monitor is a condition
+watched **between** turns that wakes the loop when it fires — the encoder running while
+the model is not, in `docs/closed-loop.md`'s terms, and the only correct shape for
+listening. The seat brief pays for that distinction: *a Stop hook fires when a session
+goes idle, and a seat that is rate limited, has crashed, or never started is not running
+a session, so no stop event ever fires and the silence looks exactly like a quiet room.*
+
+A monitor is also, structurally, a long-lived process. **Adding monitors before the
+lifetime work multiplies the leak this entry exists to stop**, so they land together:
+
+1. **Scoped at creation.** No monitor without an owner; the default is the session.
+2. **Listable and attributable.** The head can show what is watching and for whom, the
+   way it now shows sessions. An invisible watcher is an unreapable one.
+3. **Reports why it fired**, not just that it did.
+4. **One waiter per name**, enforced. The fleet already learned this: two processes under
+   one reader means the roster shows a seat attached while the real one hears nothing.
+5. **Bounded.** A TTL or an explicit renewal, so a monitor whose reason has passed dies
+   without anybody remembering it.
+
+### Blocks on
+
+Nothing. This is substrate for M6 subagents (S8) and it is **cheaper to build before them
+than after**: the leak measured above came from subagents the harness does not yet have,
+run by an agent that does. The requirement was discovered before the feature, which is the
+rare ordering.
