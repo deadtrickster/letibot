@@ -182,11 +182,28 @@ impl Hub {
         env
     }
 
-    /// Attach content to an already-appended transcript row.
+    /// Attach content to an already-appended transcript row, **and fan it out**.
     ///
-    /// §4.5's `TranscriptAppended` has no content field; see [`crate::view`].
+    /// §4.5's `TranscriptAppended` has no content field, so this is the route the
+    /// body takes. It publishes rather than only folding, because folding into the
+    /// view alone reaches exactly the heads that have not attached yet — every head
+    /// that *was* watching is left with a placeholder no later frame will fill.
+    /// See [`crate::event::SessionEvent::TranscriptContent`].
     pub fn record_item(&self, item_id: &str, item: TranscriptItem) {
-        self.lock().view.record_item(item_id, item);
+        self.publish(SessionEvent::TranscriptContent {
+            item_id: item_id.to_string(),
+            item: Box::new(item),
+        });
+    }
+
+    /// Every event still in the scrollback, in seq order.
+    ///
+    /// The session **as a record**, which is what T13.1 asks the log to be and what
+    /// `letibot-tui --replay` consumes. Cloned rather than lent, because the log
+    /// lives under the same lock the fan-out takes and a borrow held across a
+    /// render would stall a turn.
+    pub fn retained(&self) -> Vec<Envelope> {
+        self.lock().log.retained().cloned().collect()
     }
 
     /// A snapshot of the current state, for a head that is not attached (a test, a
@@ -432,7 +449,7 @@ impl Hub {
                 (CommandKind::Prompt { .. }, true) => {
                     format!("{REJECT_STALE_SEQ}: queued anyway as a follow-up user item")
                 }
-                (CommandKind::Prompt { .. }, false) => "queued as a user item".into(),
+                (CommandKind::Prompt { .. }, false) => crate::protocol::NOTE_PROMPT_QUEUED.into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::Answer { .. }, _) => "decision answered".into(),
             };
@@ -538,6 +555,38 @@ mod tests {
             },
             0,
         )
+    }
+
+    #[test]
+    fn a_head_that_was_already_attached_is_sent_the_body_it_was_promised() {
+        // The fault this variant exists for. Attaching first is the whole point:
+        // a head that attaches *later* was always fine, because the snapshot
+        // carried the content, and that is what hid this for so long.
+        let hub = Hub::new("s");
+        let a = attach(&hub, 64);
+        hub.publish(appended("s.0", "user"));
+        hub.record_item(
+            "s.0",
+            letibot_transcript::TranscriptItem::User {
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "the operator's own prompt".into(),
+                }],
+            },
+        );
+        let Delivery::Events(b) = hub.next_batch(&a.head_id, 64) else {
+            panic!("expected events");
+        };
+        let bodies: Vec<_> = b
+            .events()
+            .iter()
+            .filter(|e| matches!(e.event, SessionEvent::TranscriptContent { .. }))
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "the body never reached a head that was watching: {:?}",
+            b.events().iter().map(|e| e.event.kind()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

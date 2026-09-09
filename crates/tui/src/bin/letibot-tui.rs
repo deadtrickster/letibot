@@ -163,7 +163,11 @@ fn replay(args: &Args, cfg: RenderConfig) {
             for env in envelopes {
                 app.apply(ServerFrame::Event(env));
                 let (w, h) = term.size();
-                term.draw(&app.screen(w, h));
+                if app.take_redraw() {
+                    term.invalidate();
+                }
+                let frame = app.screen(w, h);
+                term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     if app.key(k).is_some() {
                         break;
@@ -181,7 +185,11 @@ fn replay(args: &Args, cfg: RenderConfig) {
             }
             loop {
                 let (w, h) = term.size();
-                term.draw(&app.screen(w, h));
+                if app.take_redraw() {
+                    term.invalidate();
+                }
+                let frame = app.screen(w, h);
+                term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     app.key(k);
                 }
@@ -217,7 +225,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         None => {
             // One frame to stdout. Useful in a pipeline and in CI, and it is what
             // makes "does it render" answerable without a pty.
-            let mut sink = |lines: &[String]| {
+            let mut sink = |lines: &[String], _cursor| {
                 for l in lines {
                     println!("{l}");
                 }
@@ -225,14 +233,14 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
             tick(&mut app, &rx, &mut client, (100, 40), &[], &mut sink)?;
         }
         Some(term) => {
-            let mut draw = |lines: &[String]| term.draw(lines);
+            let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
             while !app.should_quit() {
                 let keys = term.keys();
                 let size = term.size();
-                tick(&mut app, &rx, &mut client, size, &keys, &mut draw)?;
-                if !keys.is_empty() {
-                    app.clear_notice();
+                if app.take_redraw() {
+                    term.invalidate();
                 }
+                tick(&mut app, &rx, &mut client, size, &keys, &mut draw)?;
             }
         }
     }

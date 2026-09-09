@@ -27,15 +27,24 @@
 //! That is the difference between "we remember to strip it on the way out" and
 //! "there is nowhere for it to be".
 //!
-//! # `TranscriptAppended` carries no content
+//! # `TranscriptAppended` carries no content, and the snapshot was not enough
 //!
 //! §4.5's event is `{item_id, kind, ledger_head}`. A head cannot reconstruct a
-//! conversation from that, and the snapshot is what §13.2 promises it instead. The
-//! daemon therefore has to hand the view the item alongside the event
-//! ([`SessionView::record_item`]) — the event stays exactly §4.5's, and the
-//! content travels by the same route it already travels in `Session::items`. This
-//! is a real gap in §4.5 and it is written up in the W7 report, not papered over
-//! by widening the event.
+//! conversation from that, and the snapshot was what §13.2 promised it instead.
+//!
+//! That promise only covers a head that attaches *after* the row exists. A head
+//! already attached is told a row landed and is never sent its body, so its
+//! `item: None` is permanent — not a loading state, the final state. Measured on a
+//! live session: the operator's own prompt rendered as
+//! `[user … — content not loaded]` for the life of the head.
+//!
+//! So the body now travels on the log as
+//! [`crate::event::SessionEvent::TranscriptContent`], and this view folds it in the
+//! same place it folds everything else. [`SessionView::record_item`] survives as
+//! the in-process form of that fold; [`crate::hub::Hub::record_item`] is the one a
+//! daemon should call, because it publishes as well as folds. See the variant's
+//! own note for why the body belongs on `TranscriptAppended` itself and what has to
+//! change for it to get there.
 
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +149,14 @@ pub struct TurnView {
     pub text: String,
     pub reasoning: String,
     pub calls: Vec<CallView>,
+    /// The transcript rows this turn appended, in order.
+    ///
+    /// A head shows a running turn from `text`/`reasoning` and a finished one from
+    /// the transcript, and it needs to know *which* rows are the finished form or
+    /// it renders the answer twice — once live, once as history. That pairing is
+    /// only visible to whoever folded both event streams, which is this view.
+    #[serde(default)]
+    pub appended: Vec<String>,
     /// Live prefill state. `None` once the turn has ended — a progress frame is
     /// true only while it is happening.
     pub progress: Option<PromptProgress>,
@@ -250,6 +267,7 @@ impl SessionView {
                     text: String::new(),
                     reasoning: String::new(),
                     calls: Vec::new(),
+                    appended: Vec::new(),
                     progress: None,
                     state: TurnState::Running,
                 });
@@ -427,6 +445,21 @@ impl SessionView {
                     self.items.drain(..over);
                     self.items_dropped += over as u64;
                 }
+                // Which rows this turn produced. A head cannot work this out from
+                // the snapshot — the rows and the turn are separate lists — and it
+                // is the fact that decides whether the live pane is still the only
+                // copy of the answer or has been superseded by the transcript.
+                if let Some(t) = self.turn.as_mut() {
+                    t.appended.push(item_id.clone());
+                }
+            }
+            // The body for a row the log already announced. Idempotent, and a no-op
+            // for an id the view has trimmed or never saw — the same contract
+            // `record_item` has, because this is that call, arriving over the wire.
+            SessionEvent::TranscriptContent { item_id, item } => {
+                if let Some(row) = self.items.iter_mut().find(|r| &r.item_id == item_id) {
+                    row.item = Some((**item).clone());
+                }
             }
             SessionEvent::HeadAttached {
                 head_id,
@@ -600,5 +633,32 @@ mod tests {
             },
         );
         assert!(v.snapshot(1, 0).items[0].item.is_some());
+    }
+
+    #[test]
+    fn a_body_that_arrives_as_an_event_fills_the_row_it_names() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(appended("s.0", "user"));
+        log.append(content("s.0", "hi"));
+        let v = fold(&log);
+        assert_eq!(
+            v.snapshot(2, 0).items[0].item,
+            Some(TranscriptItem::User {
+                parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+            })
+        );
+    }
+
+    #[test]
+    fn the_turn_records_which_rows_it_appended() {
+        // Without this a head cannot tell "the answer, live" from "the answer, as
+        // history" and renders both.
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        log.append(appended("t1.0", "reasoning"));
+        log.append(appended("t1.1", "assistant"));
+        log.append(turn_finished("t1"));
+        let turn = fold(&log).snapshot(4, 0).turn.unwrap();
+        assert_eq!(turn.appended, vec!["t1.0".to_string(), "t1.1".to_string()]);
     }
 }

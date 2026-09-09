@@ -121,50 +121,111 @@ impl Config {
         }
     }
 
-    /// One line for the startup banner, naming the things that are off.
+    /// The things that are off, and why.
     ///
     /// A daemon that does not say "spill is unset" is a daemon whose operator finds
     /// out when a 40 MB grep result lands in the prompt.
-    pub fn disclosures(&self) -> Vec<String> {
+    pub fn disclosures(&self) -> Vec<Disclosure> {
         let mut out = Vec::new();
         match &self.spill {
-            SpillPolicy::Unset => out.push(
-                "spill: UNSET — no inline budget is configured, so no tool result will \
-                 ever spill and every payload reaches the model whole (D6: unset is a \
-                 genuine no-op). Pass --spill-inline BYTES to enable it."
-                    .into(),
-            ),
+            SpillPolicy::Unset => out.push(Disclosure::off(
+                "spill",
+                "UNSET",
+                "no inline budget is configured, so no tool result will ever spill and \
+                 every payload reaches the model whole (D6: unset is a genuine no-op). \
+                 Pass --spill-inline BYTES to enable it.",
+            )),
             SpillPolicy::Inline(n) => {
-                out.push(format!("spill: inline budget {n} bytes, all tools"));
+                out.push(Disclosure::on(
+                    "spill",
+                    format!("inline budget {n} bytes, all tools"),
+                ));
                 if self.spill_storage == SpillStorage::Memory {
-                    out.push(
-                        "spill store: MEMORY — a spilled payload does not survive a \
-                         restart, so `read_spill` fails after one. Pass --spill-dir."
-                            .into(),
-                    );
+                    out.push(Disclosure::off(
+                        "spill store",
+                        "MEMORY",
+                        "a spilled payload does not survive a restart, so `read_spill` \
+                         fails after one. Pass --spill-dir.",
+                    ));
                 }
             }
         }
         if self.store.is_none() {
-            out.push(
-                "store: MEMORY — the transcript is not persisted; the session ends with \
-                 the process. Pass --store PATH."
-                    .into(),
-            );
+            out.push(Disclosure::off(
+                "store",
+                "MEMORY",
+                "the transcript is not persisted; the session ends with the process. \
+                 Pass --store PATH.",
+            ));
         }
-        out.push(
-            "retrieval: INERT — ask_code and ask_corpus return NotRun, not Abstained. \
-             No MCP server is running anywhere (T16.6), so nothing was searched; \
-             saying `the corpus does not cover this` would be a claim about a corpus \
-             nobody queried."
-                .into(),
-        );
-        out.push(
-            "adjudication: NONE — M1 is read-only tools, which never prompt (clause 4). \
-             There is no boundary and no human in the loop."
-                .into(),
-        );
+        out.push(Disclosure::off(
+            "retrieval",
+            "INERT",
+            "ask_code and ask_corpus return NotRun, not Abstained. No MCP server is \
+             running anywhere (T16.6), so nothing was searched; saying `the corpus does \
+             not cover this` would be a claim about a corpus nobody queried.",
+        ));
+        out.push(Disclosure::off(
+            "adjudication",
+            "NONE",
+            "M1 is read-only tools, which never prompt (clause 4). There is no boundary \
+             and no human in the loop.",
+        ));
         out
+    }
+}
+
+/// One thing the operator has to know about this session before they trust an
+/// answer from it.
+///
+/// Structured rather than a sentence because the banner had become a wall: five
+/// paragraphs of correct prose, in which the two words that decide whether you can
+/// trust the answer — the subject, and whether it is on — were buried mid-line.
+/// The prose is not the problem and none of it is cut; what it needed was a shape
+/// that can be *scanned*, with the sentence still under it for whoever wants to
+/// know why. [`Display`](std::fmt::Display) still renders the original one-line
+/// form, which is what a log line and `letibot-m1`'s header want.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disclosure {
+    /// `spill`, `store`, `retrieval`, `adjudication`.
+    pub subject: String,
+    /// The state, in one word. `UNSET`, `MEMORY`, `INERT`, `NONE` — or empty when
+    /// the thing is configured and there is nothing alarming to name.
+    pub state: String,
+    /// What it means, in full. Never abbreviated for the banner.
+    pub detail: String,
+    /// Whether the subject is doing anything. `false` is the case that has to be
+    /// impossible to miss.
+    pub active: bool,
+}
+
+impl Disclosure {
+    fn off(subject: &str, state: &str, detail: &str) -> Disclosure {
+        Disclosure {
+            subject: subject.into(),
+            state: state.into(),
+            detail: detail.into(),
+            active: false,
+        }
+    }
+
+    fn on(subject: &str, detail: impl Into<String>) -> Disclosure {
+        Disclosure {
+            subject: subject.into(),
+            state: String::new(),
+            detail: detail.into(),
+            active: true,
+        }
+    }
+}
+
+impl std::fmt::Display for Disclosure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.state.is_empty() {
+            write!(f, "{}: {}", self.subject, self.detail)
+        } else {
+            write!(f, "{}: {} — {}", self.subject, self.state, self.detail)
+        }
     }
 }
 
@@ -184,7 +245,9 @@ mod tests {
         let c = Config::for_this_box("/tmp");
         assert_eq!(c.spill, SpillPolicy::Unset);
         assert!(
-            c.disclosures().iter().any(|d| d.contains("spill: UNSET")),
+            c.disclosures()
+                .iter()
+                .any(|d| d.to_string().contains("spill: UNSET")),
             "a daemon that does not disclose an unset budget is the defect"
         );
     }
@@ -192,7 +255,12 @@ mod tests {
     #[test]
     fn every_thing_that_is_off_is_disclosed() {
         let c = Config::for_this_box("/tmp");
-        let all = c.disclosures().join("\n");
+        let all = c
+            .disclosures()
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         for expected in ["spill", "store", "retrieval", "adjudication"] {
             assert!(all.contains(expected), "{expected} is not disclosed:\n{all}");
         }

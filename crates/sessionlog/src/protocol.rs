@@ -187,6 +187,13 @@ pub enum ServerFrame {
 
 /// Why a `Rejected` was sent, as a stable code a head can branch on.
 pub const REJECT_STALE_SEQ: &str = "stale expected_seq";
+/// The `note` on a prompt that was accepted with nothing unusual about it.
+///
+/// A constant rather than a literal in two places because a head has a reason to
+/// recognise it: telling the operator who just pressed enter that their prompt was
+/// queued is not news, while telling them that *another head's* prompt was queued
+/// is the whole point of §13.2's announcement.
+pub const NOTE_PROMPT_QUEUED: &str = "queued as a user item";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
 

@@ -21,6 +21,13 @@ use letibot_sessionlog::protocol::{Ack, ServerFrame};
 
 use crate::app::{Action, App, Disposition, Key};
 
+/// Where the terminal's caret belongs: `(row, column)`, zero-based, or nowhere.
+pub type Caret = Option<(usize, usize)>;
+
+/// What puts a frame on a screen. A closure, so the same loop serves a terminal
+/// and a test that renders to a `Vec<String>`.
+pub type Draw<'a> = dyn FnMut(&[String], Caret) + 'a;
+
 /// One pass: drain, draw, ack.
 ///
 /// `draw` is a closure so the same loop serves a terminal and a test that renders
@@ -31,8 +38,10 @@ pub fn tick(
     client: &mut HeadClient,
     size: (usize, usize),
     keys: &[Key],
-    draw: &mut dyn FnMut(&[String]),
+    draw: &mut Draw<'_>,
 ) -> Result<(), ClientError> {
+    app.clock(now_ms());
+
     // 1. Drain. Nothing is sent in this phase.
     let mut rendered = 0u64;
     let mut filtered = 0u64;
@@ -63,9 +72,11 @@ pub fn tick(
         }
     }
 
-    // 2. Draw.
+    // 2. Draw. Every frame is built; whether any of it reaches the terminal is
+    //    `Terminal::draw`'s business, and for an unchanged frame the answer is no
+    //    bytes at all.
     let screen = app.screen(size.0, size.1);
-    draw(&screen);
+    draw(&screen, app.cursor());
 
     // 3. Ack — after the frame is out.
     if last_seq > 0 {
@@ -97,4 +108,14 @@ pub fn tick(
         }
     }
     Ok(())
+}
+
+/// Wall clock in milliseconds. The head's own, not the daemon's: it is used only
+/// to notice that the daemon has gone quiet, and a clock taken from the party that
+/// has stopped talking cannot notice that.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

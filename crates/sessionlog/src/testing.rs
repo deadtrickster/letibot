@@ -136,6 +136,16 @@ pub fn appended(item_id: &str, kind: &str) -> SessionEvent {
     }
 }
 
+/// The body for a row `appended` announced.
+pub fn content(item_id: &str, text: &str) -> SessionEvent {
+    SessionEvent::TranscriptContent {
+        item_id: item_id.into(),
+        item: Box::new(letibot_transcript::TranscriptItem::User {
+            parts: vec![letibot_transcript::UserPart::Text { text: text.into() }],
+        }),
+    }
+}
+
 /// One of every variant, so an exhaustiveness assertion has something to walk.
 pub fn one_of_each() -> Vec<SessionEvent> {
     vec![
@@ -169,6 +179,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             partial_kept: true,
         },
         appended("s.0", "user"),
+        content("s.0", "hi"),
         SessionEvent::HeadAttached {
             head_id: "h1".into(),
             kind: "tui".into(),

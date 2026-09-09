@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use letibot_harnessd::config::{Config, SpillPolicy, SpillStorage};
+use letibot_harnessd::config::{Config, Disclosure, SpillPolicy, SpillStorage};
 use letibot_harnessd::{Daemon, Dialect, Harness, Outcome, Parts};
 use letibot_sessionlog::hub::Hub;
 use letibot_turn::Endpoint;
@@ -118,9 +118,11 @@ fn run() -> Result<i32, String> {
     eprintln!("  workspace {workspace}");
     eprintln!("  socket   {socket}");
     eprintln!("  prefix   {} tokens, head {}", harness.tokens().len(), harness.ledger_head());
-    for d in &disclosures {
-        eprintln!("  ! {d}");
+    eprintln!();
+    for line in banner(&disclosures, term_cols()) {
+        eprintln!("{line}");
     }
+    eprintln!();
 
     let mut failed = 0;
     if !prompts.is_empty() {
@@ -167,4 +169,66 @@ fn run() -> Result<i32, String> {
     });
     daemon.shutdown();
     Ok(0)
+}
+
+/// The startup disclosures, as something that can be scanned.
+///
+/// The content is `Config::disclosures()` unchanged and unabridged. What changes is
+/// the shape: a state word in a fixed column, the subject beside it, and the
+/// sentence wrapped under them — so an operator glancing at a terminal reads
+/// `OFF retrieval` in one saccade and can then choose to read why. The previous
+/// form was five correct paragraphs run together, in which the words that decide
+/// whether an answer can be trusted were mid-sentence.
+fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
+    let width = cols.clamp(48, 100);
+    let indent = 9usize;
+    let mut out = vec!["  this session".to_string()];
+    for d in ds {
+        let state = if d.active { "on " } else { "OFF" };
+        if d.state.is_empty() {
+            // Configured, and the detail is short. One line.
+            out.push(format!("  {state}  {} — {}", d.subject, d.detail));
+            continue;
+        }
+        // A headline that can be read at a glance, then the sentence under it.
+        // Not one padded column: `adjudication` is twelve characters and any
+        // column wide enough for it wastes a fifth of an eighty-column terminal
+        // on every other row.
+        out.push(format!("  {state}  {} ({})", d.subject, d.state));
+        for line in wrap(&d.detail, width.saturating_sub(indent)) {
+            out.push(format!("{:indent$}{line}", ""));
+        }
+    }
+    out
+}
+
+/// Word wrap. Twelve lines rather than a dependency, for one banner.
+fn wrap(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(24);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// The terminal width, when there is a terminal. Eighty when there is not — a log
+/// file has no width and eighty is the width a log file is read at.
+fn term_cols() -> usize {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
+        ws.ws_col as usize
+    } else {
+        80
+    }
 }
