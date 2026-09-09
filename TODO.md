@@ -493,19 +493,29 @@ From the tool runtime, in descending order of consequence.
 5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
    spill — so for that role the omission notice is advisory, which §8.3 says it must
    not be. W9 shipped `read_spill` in its place.
-6. **Retrieval is inert, and the address W9 tried was stale.** `ask_code`/`ask_corpus`
-   exist and abstain correctly, but nothing is behind them.
-   - `192.168.1.55:9755` is the **flowy node**, not oracle. Wrong address.
-   - **RAGFlow and oracle moved to lubuntu3 (192.168.1.82).**
-   - **`ask_code` is meant to run against a LOCAL codebase MCP** — per-box, indexing
-     that box's own `~/Projects`. **No MCP server is listening on this box at all**
-     (checked: nothing but qwen/bge/postgres), so it fails because nothing is running,
-     not because it is misconfigured.
-   - Asked lubuntu3 for the endpoint, transport, whether it serves both verbs or only
-     `ask_corpus`, and what starts the local one. Also asked whether its abstention is
-     **machine-readable or prose** — §8.1 clause 3 requires abstention to be
-     structurally distinguishable, and if the upstream only says it in words then our
-     tool must not pretend to detect it.
+6. **Retrieval is inert — no MCP server is running anywhere.** Confirmed by lubuntu3
+   on 2026-09-09, checked rather than recalled.
+   - `192.168.1.55:9755` is the **flowy node**, not oracle. Never was the address.
+   - **RAGFlow and oracle are on lubuntu3 (192.168.1.82)** — but its MCP server **is
+     not started by that deployment**. Docker publishes 9382-9384, so a **TCP connect
+     succeeds while nothing is behind it** (`curl` → HTTP 000, zero mcp processes in
+     the container). That is why a client reports "unable to connect to the url": the
+     connection is fine, the service is absent. Same shape as the embed wedge — a
+     check that succeeds without touching the thing it checks.
+   - `:8100/sse` **looks** like an SSE endpoint and is not — it is arxiv-search, whose
+     catch-all returns identical HTML for every path. Do not use it.
+   - **Use the REST API instead: `192.168.1.82:9380`, base `/api/v1`, bearer auth.**
+     Do not ask for an MCP listener to be started while ingestion is live.
+   - `ask_code` is a **separate problem**: per-box, against the local codebase, and
+     **nothing is running on this box** (checked — only qwen/bge/postgres listen).
+   - **Open and load-bearing:** does RAGFlow signal "the corpus does not cover this"
+     in a *field*, or only in prose? §8.1 clause 3 requires abstention to be
+     structurally distinguishable. If it is a field, it maps to `Abstained` and the
+     harness can never report it as grounded. **If it is only prose, we will not parse
+     the prose and pretend** — the tool returns `Ok` with the text and the hole stays
+     documented. Asked; awaiting an answer.
+   - Note from lubuntu3: `.82:11434` enforces **one request per backend and will hold
+     a call rather than refuse it**. Do not point volume at it unannounced.
 7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
    mark repeats across turns. Fine now, wrong once a head correlates across a session.
 
