@@ -537,6 +537,9 @@ submissions, 25 tool calls, 161 persisted rows, 22,201 final prompt tokens, 85 s
 | C10 disjoint cache accounting | PASS on all 53 |
 | C6 / C7 / C8 | not run — see below |
 
+**See T22 first — C4 is mis-specified, and the run measured what the plan asked for
+rather than what the plan meant.**
+
 **On the failure, and why I do not think it is the harness.** `f_keep`'s denominator
 is the *whole* prompt, so a submission appending a 1,093-token tool result to a
 9,000-token prompt cannot exceed 0.88 however perfect the cache is. 19 of 52
@@ -627,6 +630,74 @@ silent**, and a wrong steer costs a few tokens. Same trade as the recall suggest
 
 ---
 
+## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other
+
+Found while answering "how is `f_keep` computed". The answer is: **two ways, and the
+plan uses both under one name.**
+
+### The two
+
+`server-task.cpp:2603,2614` — a cache **selection** heuristic, with a hard floor
+refusing any entry under `f_keep < 0.25`:
+
+```
+f_keep = lcp / cached_entry.size()      denominator = the CACHED entry
+f_sim  = lcp / new_prompt.size()        denominator = the NEW prompt
+```
+
+`lcp` is the longest common prefix — how many leading tokens of the new prompt match
+the cached entry, token for token, via `server_tokens::get_common_prefix`.
+
+§18.2's **C4** defines it as `usage.prompt_tokens_details.cached_tokens /
+prompt_tokens`. **That is `f_sim`, under `f_keep`'s name.**
+
+### Why it matters — one turn of the M1 run
+
+```
+cached entry (turn N)     9,000 tokens
+new prompt  (turn N+1)   10,093 tokens   ← appended a 1,093-token tool result
+lcp                       9,000 tokens   ← the whole entry is a prefix; nothing rewritten
+```
+
+That is a **perfect** turn — full reuse, nothing recomputed.
+
+| | formula | value |
+|---|---|---|
+| llama's `f_keep` | lcp / cached | **1.000** |
+| llama's `f_sim` | lcp / new prompt | 0.892 |
+| **C4's `f_keep`** | cached_tokens / prompt_tokens | **0.892** |
+
+The gap is not a cache miss. **It is the tool result that was just appended.** C4's
+number falls purely as a function of how much the conversation grew.
+
+### The defect
+
+C4 says it is *"directly comparable to the 0.000 → 0.999 measurement"*. **It is not.**
+That 0.999 was read off the server's trace lines, so it was llama's `f_keep` —
+denominator the cached entry, and therefore **indifferent to growth**. The plan even
+notes at line 64 that the two are "a hit-ratio pair", then migrates a threshold from
+one to the other.
+
+So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable and was
+reached. On B it is arithmetically impossible for any session that returns tool
+output.
+
+### The choice — operator's
+
+1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
+   motivated it, indifferent to growth, and what the append-only invariant actually
+   claims. Needs the server's `lcp`, which is S1 or `-lv 4`.
+2. **Keep `cached_tokens / prompt_tokens`** and set a bar reachable for tool-using
+   sessions. The harness-only version of this is T17's C4b, which measured p10 1.0000.
+
+Until it is decided, **M1 remains formally unexited** and the run stands as recorded.
+
+This is the seventh instance in one day of a number whose meaning was not checked
+before use, and unlike the others it is **ours** — it is in the plan, not in something
+we inherited.
+
+---
+
 ## T5 — Operator decisions still open
 
 W6 parses tool calls; W9's runtime executes them; W7 logs; W8 renders. **No crate ties
@@ -694,6 +765,74 @@ subset whose recomputation repairs the remainder.
 fork (§5.5), backtracking and eviction all actually need, and today it falls off a
 cliff at 516 tokens. Storing recurrent state at more positions makes rewind cheap. That
 is a parameter and a representation choice, not a redesign.
+
+---
+
+## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other
+
+Found while answering "how is `f_keep` computed". The answer is: **two ways, and the
+plan uses both under one name.**
+
+### The two
+
+`server-task.cpp:2603,2614` — a cache **selection** heuristic, with a hard floor
+refusing any entry under `f_keep < 0.25`:
+
+```
+f_keep = lcp / cached_entry.size()      denominator = the CACHED entry
+f_sim  = lcp / new_prompt.size()        denominator = the NEW prompt
+```
+
+`lcp` is the longest common prefix — how many leading tokens of the new prompt match
+the cached entry, token for token, via `server_tokens::get_common_prefix`.
+
+§18.2's **C4** defines it as `usage.prompt_tokens_details.cached_tokens /
+prompt_tokens`. **That is `f_sim`, under `f_keep`'s name.**
+
+### Why it matters — one turn of the M1 run
+
+```
+cached entry (turn N)     9,000 tokens
+new prompt  (turn N+1)   10,093 tokens   ← appended a 1,093-token tool result
+lcp                       9,000 tokens   ← the whole entry is a prefix; nothing rewritten
+```
+
+That is a **perfect** turn — full reuse, nothing recomputed.
+
+| | formula | value |
+|---|---|---|
+| llama's `f_keep` | lcp / cached | **1.000** |
+| llama's `f_sim` | lcp / new prompt | 0.892 |
+| **C4's `f_keep`** | cached_tokens / prompt_tokens | **0.892** |
+
+The gap is not a cache miss. **It is the tool result that was just appended.** C4's
+number falls purely as a function of how much the conversation grew.
+
+### The defect
+
+C4 says it is *"directly comparable to the 0.000 → 0.999 measurement"*. **It is not.**
+That 0.999 was read off the server's trace lines, so it was llama's `f_keep` —
+denominator the cached entry, and therefore **indifferent to growth**. The plan even
+notes at line 64 that the two are "a hit-ratio pair", then migrates a threshold from
+one to the other.
+
+So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable and was
+reached. On B it is arithmetically impossible for any session that returns tool
+output.
+
+### The choice — operator's
+
+1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
+   motivated it, indifferent to growth, and what the append-only invariant actually
+   claims. Needs the server's `lcp`, which is S1 or `-lv 4`.
+2. **Keep `cached_tokens / prompt_tokens`** and set a bar reachable for tool-using
+   sessions. The harness-only version of this is T17's C4b, which measured p10 1.0000.
+
+Until it is decided, **M1 remains formally unexited** and the run stands as recorded.
+
+This is the seventh instance in one day of a number whose meaning was not checked
+before use, and unlike the others it is **ours** — it is in the plan, not in something
+we inherited.
 
 ---
 
