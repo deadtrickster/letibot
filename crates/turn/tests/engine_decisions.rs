@@ -786,12 +786,18 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
 
     let mut streamed_reasoning = String::new();
     let mut streamed_text = String::new();
+    let mut streamed_call = String::new();
     for (target, text) in deltas(&sink) {
         match target {
             DeltaTarget::Reasoning => streamed_reasoning.push_str(text),
             DeltaTarget::Text => streamed_text.push_str(text),
+            DeltaTarget::ToolCall => streamed_call.push_str(text),
         }
     }
+    assert!(
+        streamed_call.is_empty(),
+        "this turn writes no tool call: {streamed_call:?}"
+    );
     let committed_reasoning: String = ok
         .items
         .iter()
@@ -812,4 +818,83 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     assert!(!committed_reasoning.is_empty() && !committed_text.is_empty());
     assert_eq!(streamed_reasoning, committed_reasoning);
     assert_eq!(streamed_text, committed_text);
+}
+
+/// T13.5, closed: the body of a `<tool_call>` block reaches a head on a channel
+/// of its own and never as assistant text.
+///
+/// The defect this replaces was visible and documented and lived in the protocol,
+/// not in the head: `DeltaTarget` had two variants, so the engine announced
+/// `<function=read>…` as `Text`, and every head then had a choice between showing
+/// raw markup and guessing. Guessing is not available — a user message quoting
+/// `<function=` at the model is the same string — so the boundary had to be kept
+/// where it still exists, which is here, walking the ids.
+#[test]
+fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let mut frames = vec![Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    }];
+    frames.push(Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    let said = ids_of("Reading it now.");
+    frames.extend(spoken_frames(&said));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_OPEN,
+        // The server sends the literal with the token, which is the case that
+        // matters: the boundary's own text must not reach a head either.
+        text: "<tool_call>",
+    });
+    let body = ids_of("\n{\"name\": \"read\", \"arguments\": {\"path\": \"/tmp/a\"}}\n");
+    frames.extend(spoken_frames(&body));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "</tool_call>",
+    });
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (4 + said.len() + body.len()) as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "agree");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("read /tmp/a")], &mut sink)
+        .unwrap();
+    engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let mut text = String::new();
+    let mut call = String::new();
+    for (target, t) in deltas(&sink) {
+        match target {
+            DeltaTarget::Text => text.push_str(t),
+            DeltaTarget::ToolCall => call.push_str(t),
+            DeltaTarget::Reasoning => {}
+        }
+    }
+    assert_eq!(
+        text.trim(),
+        "Reading it now.",
+        "the markup leaked onto the text channel"
+    );
+    assert!(
+        !text.contains("\"name\""),
+        "a head reading Text would have rendered the call body: {text:?}"
+    );
+    assert!(
+        call.contains("\"path\": \"/tmp/a\""),
+        "the call body reached no channel at all: {call:?}"
+    );
+    assert!(
+        !call.contains("<tool_call>") && !call.contains("</tool_call>"),
+        "the boundary's own literal was streamed: {call:?}"
+    );
 }

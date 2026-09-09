@@ -35,7 +35,7 @@ use letibot_sessionlog::view::{
 use letibot_transcript::{TranscriptItem, UserPart};
 
 use letibot_ui::editor::{Editor, Reaction};
-use letibot_ui::style::Role;
+use letibot_ui::style::{Painter, Role};
 use letibot_ui::{card, progress, width};
 
 use crate::markdown::IncrementalMarkdown;
@@ -142,6 +142,8 @@ pub enum Key {
     CtrlR,
     /// Fold or unfold tool output.
     CtrlT,
+    /// Show or hide the raw, unparsed text of tool calls.
+    CtrlX,
     /// Repaint from scratch.
     CtrlL,
     /// Open or close the session picker.
@@ -178,7 +180,13 @@ impl Key {
             Key::Esc => E::Esc,
             Key::CtrlC => E::CtrlC,
             Key::Eof => E::Eof,
-            Key::CtrlR | Key::CtrlT | Key::CtrlL | Key::CtrlS | Key::PageUp | Key::PageDown => {
+            Key::CtrlR
+            | Key::CtrlT
+            | Key::CtrlX
+            | Key::CtrlL
+            | Key::CtrlS
+            | Key::PageUp
+            | Key::PageDown => {
                 return None;
             }
         })
@@ -252,6 +260,19 @@ struct TurnPane {
     text_cache: BlockCache,
     reasoning_cache: BlockCache,
     calls: Vec<CallRow>,
+    /// The raw `<function=…>` markup of this turn's tool calls, as it arrives on
+    /// `DeltaTarget::ToolCall`.
+    ///
+    /// Kept, never shown by default. The default view shows a pending affordance
+    /// while it is being written and the settled card afterwards; this is what the
+    /// raw chord reveals, and it is the reason the chord can tell the truth
+    /// instead of re-deriving markup the head never saw.
+    raw_call: String,
+    /// True between `<tool_call>` and the `ToolCallProposed` that settles it.
+    ///
+    /// A separate fact from `raw_call.is_empty()`: a turn that has written one call
+    /// and is now writing prose has a non-empty `raw_call` and is not in a call.
+    writing_call: bool,
     progress: Option<letibot_sessionlog::event::PromptProgress>,
     state: Option<TurnState>,
     /// Transcript rows appended while this turn ran.
@@ -347,6 +368,15 @@ pub struct App {
     /// Folds. Reasoning starts folded; tool output starts folded.
     pub reasoning: Fold,
     pub tools: Fold,
+    /// Show tool calls in the raw, unparsed form the model wrote them in.
+    ///
+    /// **Off, and it is not a fold.** A fold hides something the reader already
+    /// knows is there; this reveals markup that the default view is required never
+    /// to show. The operator asked for both halves in one sentence — *"I want to
+    /// save the ability to see raw tool calls but it should be behind some chord"*
+    /// — and they are two different obligations: the raw form must be reachable,
+    /// and it must not be what anybody sees by accident.
+    pub raw_calls: bool,
     notice: Option<String>,
     /// Frames the notice has left. A notice that never expires becomes furniture,
     /// and the old one replaced the input line for the rest of the session.
@@ -467,6 +497,7 @@ impl App {
             call_targets: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
+            raw_calls: false,
             notice: None,
             notice_ttl: 0,
             help: false,
@@ -734,6 +765,12 @@ impl App {
             // this is an increment. That is §13.3's wire half, arriving.
             pane.text.push(&t.text);
             pane.reasoning.push(&t.reasoning);
+            // A head joining mid-call gets the markup too, so the raw chord shows
+            // the same thing on a reattach as it does on the head that watched it.
+            // `writing_call` stays false: a snapshot cannot say whether the block
+            // is still open, and inventing a spinner that never stops is worse
+            // than not showing one.
+            pane.raw_call = t.raw_calls;
             pane
         });
         self.scroll = 0;
@@ -799,6 +836,14 @@ impl App {
                             Disposition::Filtered
                         }
                     }
+                    // Never `t.text`. This is the markup, and the whole point of
+                    // the channel is that the default view does not show it — see
+                    // `letibot_sessionlog::event::DeltaTarget`.
+                    DeltaTarget::ToolCall => {
+                        t.raw_call.push_str(&text);
+                        t.writing_call = true;
+                        Disposition::Rendered
+                    }
                 }
             }
             SessionEvent::ToolCallProposed {
@@ -817,6 +862,9 @@ impl App {
                     self.call_targets.insert(call_id.clone(), target.clone());
                 }
                 if let Some(t) = self.turn.as_mut() {
+                    // The proposal is the settled form of whatever was being
+                    // written, so the pending affordance stands down here.
+                    t.writing_call = false;
                     t.calls.push(CallRow {
                         call_id,
                         name,
@@ -1134,6 +1182,26 @@ impl App {
                 self.refold();
                 return None;
             }
+            // Ctrl+X, and the reason it is not one of the obvious letters is worth
+            // writing down. Ctrl+R is taken (thinking) and the operator ruled it
+            // out by name. Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+S and Ctrl+Q are the
+            // terminal's own — two of them are flow control that would freeze a
+            // pane. Ctrl+L, Ctrl+T and Ctrl+S are already this head's, and
+            // Ctrl+A/E/W/U/Y/K/B/F are the composer's readline keys, which are
+            // muscle memory and not available. Alt+R would read better in the hint
+            // bar and is not safe: a lone Esc followed by a typed `r` arrives in
+            // the same read as `ESC r`, and the composer's interrupt is Esc twice.
+            //
+            // What is left and is mnemonic: **x for the XML-ish markup** —
+            // `<function=…><parameter=…>` — which is exactly what the chord shows.
+            // 0x18 is unbound here, is not one of the tty's control characters, and
+            // readline uses it only as a prefix, so nothing is waiting for a second
+            // byte.
+            Key::CtrlX => {
+                self.raw_calls = !self.raw_calls;
+                self.refold();
+                return None;
+            }
             Key::CtrlL => {
                 self.redraw = true;
                 return None;
@@ -1264,9 +1332,10 @@ impl App {
         self.scroll = 0;
         self.redraw = true;
         self.say(&format!(
-            "thinking {} · tool output {}",
+            "thinking {} · tool output {} · raw tool calls {}",
             fold_word(self.reasoning),
-            fold_word(self.tools)
+            fold_word(self.tools),
+            if self.raw_calls { "shown" } else { "hidden" }
         ));
     }
 
@@ -1474,7 +1543,14 @@ impl App {
     /// jobs in one line, which is why it read as a status message and not as a
     /// place to type. Neither surveyed project puts anything inside the input.
     /// The affordance is the caret and the container.
-    pub fn screen(&mut self, w: usize, h: usize) -> Vec<String> {
+    pub fn screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
+        // The gutter, applied to the *whole* frame rather than to the transcript.
+        // The operator's report was "no margins for the main output — things are
+        // hard left with literally zero space"; inseting only the body would have
+        // fixed that sentence and left the header and the composer's box a
+        // different distance from the edge, which is the thing a reader notices.
+        let gutter = Self::gutter(term_w);
+        let w = term_w - 2 * gutter;
         self.cfg.width = w;
         let h = h.max(1);
         if self.notice_ttl > 0 {
@@ -1612,9 +1688,39 @@ impl App {
         // terminal draws it as a steady block because `term::enter` asked for one.
         self.cursor = Some((
             (body_rows + caret_at).min(out.len().saturating_sub(1)),
-            caret_col.min(w.saturating_sub(1)),
+            caret_col.min(w.saturating_sub(1)) + gutter,
         ));
-        out.into_iter().map(|l| trim_to(&l, w)).collect()
+        let pad = " ".repeat(gutter);
+        out.into_iter()
+            .map(|l| {
+                let l = trim_to(&l, w);
+                if gutter == 0 || l.is_empty() {
+                    l
+                } else {
+                    format!("{pad}{l}")
+                }
+            })
+            .collect()
+    }
+
+    /// Columns of empty space down each side of the frame.
+    ///
+    /// **Two**, matching the transcript container both surveyed heads use —
+    /// opencode's session view is one box with `paddingLeft={2} paddingRight={2}`
+    /// around the message list *and* the prompt, which is why its header, its
+    /// answers and its input all start in the same column.
+    ///
+    /// It also has to agree with [`card::REASONING_RAIL_WIDTH`], which is the one
+    /// indent already on the screen: the rail is two columns, so reasoning text
+    /// lands exactly one gutter further in than body text and the page reads as a
+    /// single two-column step rather than as two unrelated indents.
+    pub const GUTTER: usize = 2;
+
+    /// The gutter this terminal can afford. It is the first thing given up on a
+    /// very narrow screen, before any content is: four columns out of forty is a
+    /// tenth of the line, and out of twenty it is a fifth.
+    fn gutter(w: usize) -> usize {
+        if w >= 40 { Self::GUTTER } else { 0 }
     }
 
     /// Where the terminal's own caret belongs, from the last [`App::screen`].
@@ -1720,7 +1826,7 @@ impl App {
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-s sessions · ctrl-r thinking · ctrl-t tool output · /help"
+            "ctrl-s sessions · ctrl-r thinking · ctrl-t tool output · ctrl-x raw · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -1730,6 +1836,7 @@ impl App {
     fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
         let (think, tool) = (self.reasoning, self.tools);
+        let raw = self.raw_calls;
         if self.hist_width != cfg.width {
             self.hist_width = cfg.width;
             self.invalidate_history();
@@ -1783,6 +1890,7 @@ impl App {
                         &cfg,
                         think,
                         tool,
+                        raw,
                         call_targets,
                     ));
                     hist_lines.push(String::new());
@@ -1830,6 +1938,8 @@ impl App {
                 text_cache,
                 reasoning_cache,
                 calls,
+                raw_call,
+                writing_call,
                 state,
                 ..
             } = t;
@@ -1838,7 +1948,7 @@ impl App {
                 // Getting this wrong makes the block one row taller than the space
                 // reserved for it, which moves everything below it by a line every
                 // frame — which is one of the things being called flicker.
-                let mut rcfg = cfg.clone();
+                let mut rcfg = cfg.inside(Role::Reasoning);
                 rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
                 reasoning_cache.set_decor(reasoning_decor(&cfg));
                 segs.push(Seg::Owned(vec![thinking_header(
@@ -1876,6 +1986,16 @@ impl App {
                     let (stable, tail) = text_cache.split(text, &cfg, cfg.budget.body_lines);
                     segs.push(Seg::Borrowed(stable));
                     segs.push(Seg::Owned(tail));
+                }
+                // The call the model is writing right now. The markup itself is
+                // never here: what is on the screen is that a call is being
+                // written, which is the fact the raw text was accidentally
+                // conveying and the only part of it a reader wanted.
+                if *writing_call {
+                    segs.push(Seg::Owned(vec![writing_call_line(&cfg, now_ms)]));
+                }
+                if raw && !raw_call.is_empty() {
+                    segs.push(Seg::Owned(raw_call_lines(&cfg, raw_call)));
                 }
             }
             if let Some(s) = state {
@@ -2336,8 +2456,15 @@ fn fold_word(f: Fold) -> &'static str {
 /// the cache, not once per line per frame.
 fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     let p = cfg.palette();
+    // The rail is painted **inside** the block too, so that the row obeys one
+    // invariant end to end: every reset in a reasoning row either ends the row or
+    // hands the reasoning style straight back. That is what the test asserts, and
+    // an invariant with an exception at column 0 is an invariant nobody can check.
+    // The cost is the block's opening sequence twice at the head of each row,
+    // which a terminal collapses to nothing.
+    let rail = Painter::inside(p, Role::Reasoning);
     Decor {
-        prefix: format!("{} ", p.paint(Role::Faint, "┃")),
+        prefix: format!("{} ", rail.paint(Role::Faint, "┃")),
         open: p.open(Role::Reasoning).to_string(),
     }
 }
@@ -2533,6 +2660,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/switch WHAT", "go to a session by number, id or part of its name"),
         ("ctrl-r", "fold or unfold the model's thinking"),
         ("ctrl-t", "fold or unfold tool output"),
+        ("ctrl-x", "show the raw <function=…> text of tool calls, as the model wrote it"),
         ("ctrl-l", "repaint the screen"),
         ("/verbosity", "terse → normal → loud; the status line counts what is filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
@@ -2597,6 +2725,48 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
 /// reconciliation. See `crates/ui/DESIGN.md` §4.2 — it is a defensible design (an
 /// event fans out to every head; a 480 KB payload should not) and it is why
 /// `Phase` distinguishes running from settled at all.
+/// The affordance that stands in for a tool call while the model is writing it.
+///
+/// The defect this replaces: *"tool calls — i see `<function…` like strings first,
+/// then closing tag arrives and it becomes a toolcall."* The markup was being
+/// rendered as prose because it arrived as prose, which is fixed one layer down
+/// (`DeltaTarget::ToolCall`). What is left is the question that markup was
+/// accidentally answering — *is something happening?* — and this answers it
+/// without showing anybody a half-written `<parameter=`.
+///
+/// The spinner is driven off the log's own clock, like every other moving thing
+/// here, so a replayed session animates the same way the live one did.
+fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
+    let p = cfg.palette();
+    let spin = letibot_ui::progress::spinner(now_ms).to_string();
+    trim_to(
+        &format!(
+            "{} {}{}",
+            p.paint(Role::Pending, &spin),
+            p.paint(Role::Pending, "writing a tool call"),
+            p.paint(Role::Faint, " · ctrl-x for the raw form")
+        ),
+        cfg.width,
+    )
+}
+
+/// The raw, unparsed text of a tool call, behind `ctrl-x`.
+///
+/// Rendered as a labelled block rather than inline, because the whole point is
+/// that this is *not* the assistant speaking. Faint and fenced: it is evidence,
+/// and evidence that looks like prose is how the defect started.
+fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
+    let p = cfg.palette();
+    let mut out = vec![p.paint(Role::Faint, "┌─ raw tool call · ctrl-x")];
+    for l in raw.lines() {
+        for w in wrap(l, cfg.width.saturating_sub(2)) {
+            out.push(format!("{}{}", p.paint(Role::Faint, "│ "), p.paint(Role::Code, &w)));
+        }
+    }
+    out.push(p.paint(Role::Faint, "└─"));
+    out
+}
+
 fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<String> {
     let mut card = card::Card::new(&c.name, &c.call_id);
     // §4.1, fixed. `ToolCallProposed` now carries a bounded display target beside
@@ -2781,6 +2951,7 @@ fn item_lines(
     cfg: &RenderConfig,
     think: Fold,
     tools: Fold,
+    raw: bool,
     targets: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
     let Some(item) = &it.item else {
@@ -2816,7 +2987,7 @@ fn item_lines(
             // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
             let mut out = vec![thinking_header(cfg, text, think.is_open(), false, None)];
             if think.is_open() {
-                let mut rcfg = cfg.clone();
+                let mut rcfg = cfg.inside(Role::Reasoning);
                 rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
                 let mut md = IncrementalMarkdown::new();
                 md.push(text);
@@ -2861,6 +3032,18 @@ fn item_lines(
                     line.push_str(&target);
                 }
                 out.push(trim_to(&p.paint(Role::Faint, &line), cfg.width));
+                // The settled row's half of `ctrl-x`. A live turn shows the raw
+                // markup from the `ToolCall` deltas; once the row is committed the
+                // markup is gone and the arguments the parser read out of it are
+                // what remain, so that is what the chord shows here. Different
+                // bytes, same question — and saying which one you are looking at is
+                // the difference between evidence and a guess.
+                if raw && !c.arguments.is_empty() {
+                    out.extend(raw_call_lines(
+                        cfg,
+                        &format!("{} {}", c.name, c.arguments),
+                    ));
+                }
             }
             out
         }
@@ -3174,14 +3357,15 @@ mod tests {
             "no prose inside the field: {:?}",
             screen[row]
         );
-        // The caret sits just past the prompt glyph, in an otherwise empty field.
-        assert_eq!(col, 4, "{:?}", screen[row]);
+        // The caret sits just past the prompt glyph, in an otherwise empty field —
+        // and the field itself sits one gutter in from the terminal's edge.
+        assert_eq!(col, 4 + App::GUTTER, "{:?}", screen[row]);
 
         // And it moves with the text.
         typed(&mut a, "why did the cache miss");
         let screen = a.screen(80, 20);
         let (row2, col2) = a.cursor().unwrap();
-        assert_eq!(col2, 4 + "why did the cache miss".len());
+        assert_eq!(col2, 4 + App::GUTTER + "why did the cache miss".len());
         assert!(screen[row2].contains("why did the cache miss"));
     }
 
@@ -3373,7 +3557,7 @@ mod tests {
         let card: Vec<String> = a
             .screen(120, 24)
             .into_iter()
-            .filter(|l| l.starts_with('\u{25cf}'))
+            .filter(|l| l.trim_start().starts_with('\u{25cf}'))
             .collect();
         assert_eq!(card.len(), 1, "{card:?}");
         assert!(card[0].contains("Read"), "{card:?}");
@@ -3477,6 +3661,189 @@ mod tests {
         )));
         let screen = a.screen(120, 16).join("\n");
         assert!(screen.contains("CUT SHORT"), "{screen}");
+    }
+
+    /// A fixture with the two things the operator's screen had in it: a heading
+    /// and an inline code span, inside the model's reasoning.
+    const REASONING_WITH_MARKDOWN: &str = "## The plan\n\nFirst read `crates/tui/src/render.rs`, then look at the `Decor` type, because **that** is where the style has to be restored, and the rest of this sentence has to stay the reasoning colour even though it wraps onto another row.\n\n### Then\n\nOrdinary prose, still grey.\n\n";
+
+    /// The defect the operator found by looking: *"thinking color rendering has
+    /// something unclosed in escapes — it tries to be gray, then say goes green
+    /// and becomes white for several rows and then gray again."*
+    ///
+    /// It was not an unclosed escape and it was not a delta split mid-sequence. It
+    /// was a **closed** one: a styled span inside the reasoning block closed with
+    /// `\x1b[0m`, which restores the terminal default rather than the block. So
+    /// the check is not "is everything closed" — it is "does every close hand the
+    /// block's own style back".
+    ///
+    /// A screenshot would not have stopped this coming back; this does.
+    #[test]
+    fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::reasoning("t1", REASONING_WITH_MARKDOWN),
+        )));
+        a.key(Key::CtrlR);
+        let rows = a.screen(100, 40);
+
+        let reopen = letibot_ui::style::Palette::Colour.open(Role::Reasoning);
+        let reset = letibot_ui::width::RESET;
+        let rail: Vec<&String> = rows.iter().filter(|l| l.contains('┃')).collect();
+        assert!(
+            rail.len() >= 4,
+            "the fixture must reach the screen as several rail rows:\n{}",
+            rows.join("\n")
+        );
+        // The heading has to actually be styled, or this test would pass on a
+        // renderer that had simply stopped colouring anything.
+        assert!(
+            rail.iter().any(|l| l.contains(
+                letibot_ui::style::Palette::Colour.open(Role::Subheading)
+            )),
+            "no heading was styled inside the reasoning; the fixture is not exercising the bug"
+        );
+        for l in rail {
+            assert!(
+                l.ends_with(reset),
+                "a reasoning row ended with the block still open: {l:?}"
+            );
+            // The row's own close is a reset (and `wrap` may have added one of its
+            // own), so the trailing run of them is the end of the row, not a leak.
+            let body = l.trim_end_matches(reset);
+            let mut at = 0;
+            while let Some(hit) = body[at..].find(reset) {
+                let after = at + hit + reset.len();
+                assert!(
+                    body[after..].starts_with(reopen),
+                    "a reset inside the reasoning left the block: the text after \
+                     it is {:?}\nwhole row: {:?}",
+                    &body[after..body.len().min(after + 24)],
+                    l
+                );
+                at = after;
+            }
+        }
+    }
+
+    /// The third defect, from using it: *"tool calls — i see `<function…` like
+    /// strings first, then closing tag arrives and it becomes a toolcall."*
+    ///
+    /// The head's half of the fix. The engine's half — that the markup arrives on
+    /// a channel of its own at all — is
+    /// `letibot-turn`'s `the_body_of_a_tool_call_is_never_announced_as_assistant_text`.
+    #[test]
+    fn the_raw_markup_of_a_tool_call_is_never_on_the_screen_by_default() {
+        const MARKUP: &str = "\n<function=read>\n<parameter=path>\nsrc/main.rs\n</parameter>\n";
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", "Reading it now.\n\n"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::ToolCall,
+                text: MARKUP.into(),
+            },
+        )));
+        let default = a.screen(100, 30).join("\n");
+        assert!(
+            !default.contains("<function="),
+            "the raw markup reached the default view:\n{default}"
+        );
+        assert!(
+            default.contains("Reading it now."),
+            "the answer went missing with it:\n{default}"
+        );
+        // …and the reader is told something is happening, which is the only thing
+        // the markup was accidentally conveying.
+        assert!(
+            default.contains("writing a tool call"),
+            "nothing stood in for the call being written:\n{default}"
+        );
+
+        // The operator kept the raw form deliberately: "I want to save the ability
+        // to see raw tool calls but it should be behind some chord, different to
+        // C-r."
+        a.key(Key::CtrlX);
+        let raw = a.screen(100, 30).join("\n");
+        assert!(
+            raw.contains("<function=read>") && raw.contains("<parameter=path>"),
+            "ctrl-x revealed nothing:\n{raw}"
+        );
+        a.key(Key::CtrlX);
+        assert!(
+            !a.screen(100, 30).join("\n").contains("<function="),
+            "ctrl-x does not toggle back off"
+        );
+    }
+
+    /// The chord is not Ctrl+R — the operator ruled that out by name — and it is
+    /// not one the composer or the terminal already owns.
+    #[test]
+    fn the_raw_chord_is_its_own_key_and_reaches_nothing_else() {
+        let mut a = app();
+        typed(&mut a, "hello");
+        a.key(Key::CtrlX);
+        assert_eq!(a.input(), "hello", "ctrl-x typed into the composer");
+        assert!(a.raw_calls, "ctrl-x did not toggle the raw view");
+        assert_eq!(a.reasoning, Fold::Folded, "ctrl-x moved the thinking fold");
+        assert_eq!(a.tools, Fold::Folded, "ctrl-x moved the tool-output fold");
+    }
+
+    /// The second defect: *"no margins for the main output — things are hard left
+    /// with literally zero space."*
+    ///
+    /// Asserted on **every** row rather than on the transcript, because the failure
+    /// mode of fixing only the body is a header and a composer inset differently
+    /// from the answer, which reads worse than no margin at all.
+    #[test]
+    fn every_row_of_the_frame_starts_one_gutter_in() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", "a paragraph of answer that is long enough to wrap\n"),
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("s.0", "user"))));
+        a.apply(ServerFrame::Event(env(4, testing::content("s.0", "why"))));
+        for w in [60usize, 80, 100, 110, 120] {
+            let rows = a.screen(w, 24);
+            for l in rows.iter().filter(|l| !l.trim().is_empty()) {
+                assert!(
+                    l.starts_with(&" ".repeat(App::GUTTER)),
+                    "at {w} columns a row is hard left: {l:?}"
+                );
+                assert!(
+                    line_width(l) <= w - App::GUTTER,
+                    "at {w} columns a row overran the right gutter ({}): {l:?}",
+                    line_width(l)
+                );
+            }
+        }
+    }
+
+    /// A terminal too narrow to spare four columns gives the gutter up before it
+    /// gives up any content.
+    #[test]
+    fn a_very_narrow_terminal_keeps_its_content_and_drops_the_gutter() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::delta("t1", "answer\n"))));
+        let rows = a.screen(30, 20);
+        assert!(
+            rows.iter().any(|l| l.starts_with("answer")),
+            "the gutter survived a 30-column terminal: {rows:?}"
+        );
     }
 
     #[test]
@@ -3862,16 +4229,21 @@ mod tests {
             .expect("the prompt is on the screen");
         // The bar is the signal that survives with no colour and survives a
         // copy-paste, which is why it is a glyph and not only a colour.
-        assert!(row.starts_with('▌'), "{row:?}");
+        assert!(
+            row.starts_with(&format!("{}▌", " ".repeat(App::GUTTER))),
+            "{row:?}"
+        );
         // A wall-clock time, from the log's own clock. Which one depends on the
         // box's zone, so the assertion is on the shape.
         assert!(
             row.split_whitespace().last().is_some_and(|t| t.len() == 8 && t.contains(':')),
             "no timestamp on the row: {row:?}"
         );
-        // The block is padded to the full width, or the background stops mid-row
-        // and reads as damage.
-        assert_eq!(line_width(row), 80, "{row:?}");
+        // The block is padded to the full **content** width, or the background
+        // stops mid-row and reads as damage. Content width is the terminal less
+        // both gutters; the right one is empty by design, and `term::paint` erases
+        // it with the row.
+        assert_eq!(line_width(row), 80 - App::GUTTER, "{row:?}");
     }
 
     #[test]

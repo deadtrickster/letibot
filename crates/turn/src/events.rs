@@ -16,10 +16,32 @@ use crate::metrics::TurnMetrics;
 
 /// Which channel a delta belongs to. Reasoning is a sibling of assistant here for
 /// the same reason it is in `TranscriptItem`: one turn interleaves several of each.
+///
+/// # Why there are three and not two
+///
+/// There used to be two, and the third was a documented gap (T13.5): the body of a
+/// `<tool_call>` block is ordinary text to this engine, so it was announced on
+/// [`DeltaTarget::Text`] and a head had no way to know it was not the answer. What
+/// the operator saw, using it: *"tool calls — i see `<function…` like strings
+/// first, then closing tag arrives and it becomes a toolcall."*
+///
+/// That is not a head-side problem and no heuristic in a head is the right fix: by
+/// the time the markup is a string in a `Delta`, the one thing that could tell it
+/// apart from a user quoting `<function=` at the model has already been thrown
+/// away. The engine knows — it is walking the ids, and `<tool_call>` is a single
+/// vocab entry in both dialects — so the channel is decided here, by id, the same
+/// way [`DeltaTarget::Reasoning`] already was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaTarget {
     Text,
     Reasoning,
+    /// The body of a tool call, still being written.
+    ///
+    /// A head must never render this as prose. It is the raw
+    /// `<function=…><parameter=…>` markup the model writes between
+    /// `<tool_call>` and `</tool_call>`, and its settled form is the
+    /// `ToolCallProposed` that follows.
+    ToolCall,
 }
 
 #[derive(Debug, Clone, PartialEq)]

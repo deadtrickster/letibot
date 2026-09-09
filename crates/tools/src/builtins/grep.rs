@@ -89,6 +89,13 @@ impl Tool for Grep {
             .map(|n| n as usize)
             .unwrap_or(ctx.limits.max_matches);
 
+        // A `path` naming a FILE searched NOTHING and said so as if it were a fact
+        // about the tree. `walk` starts by listing its root; `list` on a file errors,
+        // the queue drains, and zero entries come back -- which the ladder then
+        // reported as "matched nothing". Measured 2026-09-09 in a real session:
+        // three rounds burned on `path: "src/main.rs"`, each answered with a
+        // confident absence. Scoping to one file is an obvious thing to ask for, so
+        // do it rather than diagnose it.
         // A scope that does not exist is its own miss, and `read`'s answer to it is
         // the right one here too.
         if ctx.backend.stat(&scope).is_none() && scope != "." {
@@ -187,6 +194,33 @@ impl Tool for Grep {
             return inv;
         }
 
+        // ZERO FILES SEARCHED IS NOT A FACT ABOUT THE TREE. This is the defect that
+        // sent a real session five rounds sideways: `glob: "*.rs"` matches against the
+        // whole relative path, so it selected none of `src/*.rs`, and grep answered
+        // "`#\[cfg\(test\)\]` does not occur in the searched tree" -- about a tree
+        // holding nine of them. An empty corpus and an empty result are different
+        // facts and they were reported identically.
+        //
+        // The general rule, and the one worth keeping: a count does not travel
+        // without its denominator. A denominator of zero is a failed scope, never
+        // an answer about content.
+        if files_scanned == 0 {
+            let mut why = String::new();
+            if let Some(g) = file_glob {
+                why.push_str(&format!(
+                    "`glob` is matched against each file's PATH from the session root,                      not its name, so `{g}` selects nothing under a subdirectory. Try                      `**/{}` or drop `glob` and narrow with `path`.\n",
+                    g.trim_start_matches("*/").trim_start_matches('*')
+                ));
+            }
+            why.push_str(&format!(
+                "nothing under `{scope}` was opened, so this call says NOTHING about                  whether `{source}` occurs. Fix the scope and ask again."
+            ));
+            return Invocation::failed(
+                format!("0 files matched the scope, so `{source}` was never searched for"),
+                why,
+            );
+        }
+
         // Nothing, anywhere, under any relaxation. That is not a result, and §8.2
         // says it must not be dressed as one — but the body still says what was
         // searched and what to do next.
@@ -205,7 +239,9 @@ impl Tool for Grep {
              and `ask_code` answers questions the text does not spell out.\n",
         );
         Invocation::abstained(
-            format!("`{source}` does not occur in the searched tree"),
+            format!(
+                "`{source}` does not occur in the {files_scanned} file(s) searched"
+            ),
             body,
         )
     }
@@ -218,12 +254,25 @@ fn search(
     file_glob: Option<&str>,
     max: usize,
 ) -> (Vec<Hit>, usize, bool) {
-    let (entries, _) = walk(
-        ctx.backend,
-        scope,
-        ctx.limits.max_walk_entries,
-        &default_skip,
-    );
+    // `scope` may name a single file; `walk` would list it, fail, and return
+    // nothing. See the `single_file` note above.
+    let one: Vec<DirEntry>;
+    let entries: &[DirEntry] = match ctx.backend.stat(scope) {
+        Some(e) if !e.is_dir => {
+            one = vec![e];
+            &one
+        }
+        _ => {
+            let (walked, _) = walk(
+                ctx.backend,
+                scope,
+                ctx.limits.max_walk_entries,
+                &default_skip,
+            );
+            one = walked;
+            &one
+        }
+    };
     let files: Vec<&DirEntry> = entries
         .iter()
         .filter(|e| !e.is_dir)
@@ -344,6 +393,55 @@ mod tests {
         assert!(notes.contains("bare identifier"), "{notes}");
         assert!(notes.contains("parse_args"), "{notes}");
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+    }
+
+    #[test]
+    /// The rano session, 2026-09-09. `grep` was asked for `#\[cfg\(test\)\]`
+    /// with `glob: "*.rs"` under `src` and answered *"does not occur in the
+    /// searched tree"* — about a tree holding nine of them. `glob` is matched
+    /// against the whole relative path, so it selected zero files, and an empty
+    /// CORPUS was reported as an empty RESULT.
+    ///
+    /// The assertion is not about wording. It is that a call which opened no
+    /// files must not come back as an abstention, because an abstention is a
+    /// claim about content and this call examined none.
+    #[test]
+    fn zero_files_searched_is_never_a_claim_about_the_tree() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"fn ","path":"src","glob":"*.rs"}"#);
+        let rendered = r.render();
+        assert_ne!(
+            crate::result::Envelope::classify(&rendered),
+            Some("NO_RESULT"),
+            "0 files opened must not abstain -- abstention claims the content was \
+             looked at:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("never searched") || rendered.contains("0 files"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("**/"), "must say how to fix the glob:\n{rendered}");
+    }
+
+    /// Same session: `path: "src/main.rs"` searched nothing three times, because
+    /// `walk` lists its root and listing a file fails, so the queue drained empty.
+    /// Scoping a search to one file is an ordinary request.
+    #[test]
+    fn a_path_naming_one_file_searches_that_file() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"TokenLedger","path":"src/lib.rs"}"#);
+        assert!(r.is_grounded(), "a file path must be searched:\n{}", r.render());
+        assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+        // The assertion that actually distinguishes the fix. Without it the scope
+        // yielded nothing and the LADDER rescued the call by re-searching the whole
+        // session root -- same hits, same payload, and a passing test that proves
+        // nothing. What the fix changes is that the file was searched DIRECTLY.
+        let notes = r.notes.join(" ");
+        assert!(
+            !notes.contains("whole session root"),
+            "the file scope must be searched directly, not rescued by the fallback \
+             rung:\n{notes}"
+        );
     }
 
     #[test]

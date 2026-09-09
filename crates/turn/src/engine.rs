@@ -736,6 +736,10 @@ impl TurnEngine<'_> {
         let mut acc = IdAccumulator::new();
         let mut guards = GuardSet::new(&self.spec.guards);
         let mut in_reasoning = opens_in_reasoning;
+        // The third channel, decided by id exactly as the second one is. A turn
+        // never opens inside a call: the generation prompt ends in `<think>` or in
+        // nothing, never in `<tool_call>`.
+        let mut in_call = false;
         let mut trip: Option<Trip> = None;
         let mut abort: Option<AbortCause> = None;
         let mut final_chunk = None;
@@ -794,12 +798,14 @@ impl TurnEngine<'_> {
                     // the *text* preceding the boundary also spells the boundary
                     // out would cut early; the pieces stay on the same channel and
                     // only the spelled-out copy is swallowed.
-                    emit_delta(sink, turn_id, in_reasoning, &rest[..at]);
+                    emit_delta(sink, turn_id, channel(in_reasoning, in_call), &rest[..at]);
                     rest = &rest[at + literal.len()..];
                 }
                 match role {
                     Some(ControlRole::ThinkOpen) => in_reasoning = true,
                     Some(ControlRole::ThinkClose) => in_reasoning = false,
+                    Some(ControlRole::ToolCallOpen) => in_call = true,
+                    Some(ControlRole::ToolCallClose) => in_call = false,
                     _ => {}
                 }
                 if let Some(t) = guards.observe(id, role) {
@@ -822,7 +828,7 @@ impl TurnEngine<'_> {
             // tail of an aborted turn is settled by `TurnInterrupted{partial_kept}`
             // and not by withholding deltas: a guard trip commits nothing and says
             // so, while a steering interrupt keeps its partial.
-            emit_delta(sink, turn_id, in_reasoning, rest);
+            emit_delta(sink, turn_id, channel(in_reasoning, in_call), rest);
             if halt {
                 return Ok(Flow::Stop);
             }
@@ -914,22 +920,31 @@ impl TurnEngine<'_> {
 
 /// One `Delta`, on a channel that has already been decided.
 ///
-/// Free-standing and taking the channel as a `bool` rather than reading it off the
+/// Free-standing and taking the channel as a value rather than reading it off the
 /// engine, because the whole of T12 was that this call used to happen *before* the
 /// value it needs had been computed.
-fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, in_reasoning: bool, text: &str) {
+fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text: &str) {
     if text.is_empty() {
         return;
     }
     sink.emit(TurnEvent::Delta {
         turn_id: turn_id.to_string(),
-        target: if in_reasoning {
-            DeltaTarget::Reasoning
-        } else {
-            DeltaTarget::Text
-        },
+        target,
         text: text.to_string(),
     });
+}
+
+/// The channel a delta belongs on, from the two boundary flags.
+///
+/// A call inside reasoning is still a call: the markup is never prose, wherever it
+/// was written. `GuardSet` has an opinion about whether that should have happened
+/// at all, and that is a separate question from what it is.
+fn channel(in_reasoning: bool, in_call: bool) -> DeltaTarget {
+    match (in_call, in_reasoning) {
+        (true, _) => DeltaTarget::ToolCall,
+        (false, true) => DeltaTarget::Reasoning,
+        (false, false) => DeltaTarget::Text,
+    }
 }
 
 fn hex32(bytes: &[u8; 32]) -> String {

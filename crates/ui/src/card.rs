@@ -70,7 +70,7 @@
 //!   [`Card::bytes`] carries letibot's `inline`/`full` split instead, which is a
 //!   §8.3 disclosure obligation and has no grok-build counterpart.
 
-use crate::style::{Palette, Role};
+use crate::style::{Painter, Palette, Role};
 use crate::width;
 
 /// How much of a block is shown.
@@ -550,9 +550,18 @@ pub fn reasoning(
         DisplayMode::Expanded => head_tail(body, cfg.budget.expanded_max, 0, p),
         _ => head_tail(body, cfg.budget.first_lines, cfg.budget.last_lines, p),
     };
+    // The body is painted **inside** the reasoning style: any escape the caller's
+    // line already carries closes back to the block, not to the terminal default.
+    // Without this a `code span` or a heading in the model's working-out takes the
+    // rest of its row white with it.
+    let inner = Painter::inside(p, Role::Reasoning);
     for l in shown {
         out.push(width::truncate(
-            &format!("{} {}", p.paint(Role::Faint, "┃"), p.paint(Role::Reasoning, &l)),
+            &format!(
+                "{} {}",
+                p.paint(Role::Faint, "┃"),
+                p.paint(Role::Reasoning, &inner.rebase_resets(&l))
+            ),
             cfg.width,
         ));
     }

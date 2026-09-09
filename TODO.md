@@ -958,3 +958,122 @@ runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · 
 segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
 
 `pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
+
+---
+
+## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner
+
+Operator, 2026-09-09: *"you guys like to accumulate monitors and shells"* — and, on
+being shown the measurement, *"you are fine, others nt"*. That correction is the
+requirement. The leak is not the top-level agent's own housekeeping; it is **everything
+its children spawn and do not clean up.**
+
+Measured on this box the same evening, mid-session:
+
+| | |
+|---|---|
+| git worktrees in `.claude/worktrees/` | **13**, most from agents that finished hours ago |
+| orphan tmux sessions | `nano_test`, **30 hours** old, from a finished agent |
+| the top-level agent's own leak | 1 listener, 1 poll loop — correct |
+
+`docs/tui-testing.md` already says *"Kill your sessions. An orphaned tmux session holds a
+`harnessd` and its socket, and the next run then attaches to a daemon it did not start."*
+Written here, loaded in context, and it did not bind. That is `docs/closed-loop.md` §1
+again and the fix is the same: not a better rule.
+
+### The mechanism was already chosen
+
+D4, answered by the operator earlier the same day: *"just do byobu, which connects to
+cgroups — use dependent. if a vm is temporary then it is a session cgroup otherwise not.
+still must be clearly reapable."*
+
+So: **every process a turn spawns lands in a cgroup owned by a scope.** Three scopes and
+no fourth — `turn`, `session`, and `explicit` (survives the session because somebody said
+so, and is listed as such). Reaping is `cgroup.kill`, and a subagent's cgroup is a child
+of its parent's, so a parent that ends reaps its children by construction rather than by
+remembering to.
+
+### The part that pays for itself immediately
+
+**Cgroups retire pattern matching for both reaping and liveness**, which is T21.1 and
+T21.2 dissolved rather than guarded:
+
+- `pkill -f X` becomes "kill this cgroup" — no pattern, so nothing to self-match.
+- `until pgrep -f X` becomes "is this cgroup non-empty" — no predicate that can match its
+  own waiter.
+
+The evidence that a guard is not enough: on 2026-09-09 a process check self-matched
+**five times in one session**, with `process-checks-that-self-match` loaded in memory and
+T21 open in this file. The fifth was `grep -E '[h]arnessd'` — the bracket trick defeats
+`pgrep`, but the shell wrapper echoes the expanded pattern back into its own command line,
+so the literal string was there to be found. A hazard with that many spellings is not
+one you check for; it is one you make unspellable.
+
+### Monitors, which are the same problem wearing a different hat
+
+Operator, same message: *"btw we need monitors in letibot"*. A monitor is a condition
+watched **between** turns that wakes the loop when it fires — the encoder running while
+the model is not, in `docs/closed-loop.md`'s terms, and the only correct shape for
+listening. The seat brief pays for that distinction: *a Stop hook fires when a session
+goes idle, and a seat that is rate limited, has crashed, or never started is not running
+a session, so no stop event ever fires and the silence looks exactly like a quiet room.*
+
+A monitor is also, structurally, a long-lived process. **Adding monitors before the
+lifetime work multiplies the leak this entry exists to stop**, so they land together:
+
+1. **Scoped at creation.** No monitor without an owner; the default is the session.
+2. **Listable and attributable.** The head can show what is watching and for whom, the
+   way it now shows sessions. An invisible watcher is an unreapable one.
+3. **Reports why it fired**, not just that it did.
+4. **One waiter per name**, enforced. The fleet already learned this: two processes under
+   one reader means the roster shows a seat attached while the real one hears nothing.
+5. **Bounded.** A TTL or an explicit renewal, so a monitor whose reason has passed dies
+   without anybody remembering it.
+
+### What the fleet answered, 2026-09-09 — and what it ruled out
+
+Asked in `Lab/#general` with the counts stated first so replies were comparable.
+
+| box | worktrees | orphan tmux | listeners |
+|---|---|---|---|
+| **.79 (here)** | **13**, from finished subagents | 1, 30 h | 1 + 1, correct |
+| .78 (lubuntu2) | 4, **deliberate** — four llama.cpp checkouts, 3 live | 1, **14 days** | 1 + 1, correct |
+| .76 (lubuntu1) | 0 | 0 (the one present is the operator's login) | 1 Monitor + 1 unit |
+
+**lubuntu1's reading is the finding, and it is better than the counts:**
+
+> *"the leak scales with children spawned, not with seat uptime. .76 has been up as long
+> as you and leaked nothing. Reaping belongs wherever subagents are created, not in a
+> periodic sweep on each box."*
+
+That **rules out a design this entry left open**: a per-box reaper on a timer. A sweeper
+cannot tell debris from a deliberate long-lived resource, and it runs on boxes with
+nothing to sweep while the box doing fan-out is the only one that needs it. Reaping is a
+property of the *creation site*, which is what the parent/child cgroup shape already
+gives — and it means the mechanism ships with subagents (S8/M6) rather than as fleet
+housekeeping.
+
+**lubuntu2 supplies the case a sweeper would get wrong**: four worktrees that are not a
+leak at all — three are live llama.cpp variants under active comparison. A long-lived
+resource with a declared owner is correct. That is the `explicit` scope above, and .78 is
+the reason it must exist rather than be a convenience.
+
+**And lubuntu1's caveat is the most useful sentence in the thread**, because it is about
+how the measurement lies:
+
+> *"I killed a stray llama-server earlier tonight after a benchmark, and I only noticed
+> because I went looking. Had I not, it would be in this count. My zero is partly
+> attention, not only design."*
+
+A zero produced by vigilance and a zero produced by a mechanism are the same number and
+different facts — `docs/closed-loop.md` §3 exactly, one layer up. So the acceptance test
+for this work is **not** "the counts are low". It is that the counts stay low when nobody
+is watching, which means the reaper has to be observable: a scope that ended must record
+what it killed, or its zero is unfalsifiable too.
+
+### Blocks on
+
+Nothing. This is substrate for M6 subagents (S8) and it is **cheaper to build before them
+than after**: the leak measured above came from subagents the harness does not yet have,
+run by an agent that does. The requirement was discovered before the feature, which is the
+rare ordering.

@@ -181,6 +181,16 @@ pub struct TurnView {
     pub ledger_head: String,
     pub text: String,
     pub reasoning: String,
+    /// The raw `<function=…>` markup of every tool call this turn has written so
+    /// far, concatenated.
+    ///
+    /// Accumulated for the same reason `text` is: a head that joins mid-call has
+    /// to be able to show the same thing as one that watched it. It is the
+    /// *unparsed* form and no default view renders it — `calls` is the settled
+    /// form — but the head keeps a chord that reveals it, and a snapshot that
+    /// dropped it would make that chord lie on a reattach.
+    #[serde(default)]
+    pub raw_calls: String,
     pub calls: Vec<CallView>,
     /// The transcript rows this turn appended, in order.
     ///
@@ -299,6 +309,7 @@ impl SessionView {
                     ledger_head: ledger_head.clone(),
                     text: String::new(),
                     reasoning: String::new(),
+                    raw_calls: String::new(),
                     calls: Vec::new(),
                     appended: Vec::new(),
                     progress: None,
@@ -324,6 +335,7 @@ impl SessionView {
                     match target {
                         crate::event::DeltaTarget::Text => t.text.push_str(text),
                         crate::event::DeltaTarget::Reasoning => t.reasoning.push_str(text),
+                        crate::event::DeltaTarget::ToolCall => t.raw_calls.push_str(text),
                     }
                 }
             }

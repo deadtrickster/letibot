@@ -23,7 +23,7 @@
 //! of a streaming model actually wants, because the interesting end is the end.
 
 use letibot_ui::highlight::StreamingCode;
-use letibot_ui::style::{Palette, Role};
+use letibot_ui::style::{Painter, Palette, Role};
 
 use crate::markdown::{Block, IncrementalMarkdown};
 
@@ -79,6 +79,20 @@ pub struct RenderConfig {
     pub width: usize,
     pub color: bool,
     pub budget: Budget,
+    /// The role of the block this render is happening *inside*, if any.
+    ///
+    /// `None` is the top level, where a span closes with a plain reset and the
+    /// output is byte-for-byte what it always was. `Some(Role::Reasoning)` is the
+    /// model's working-out, and it is the whole reason this field exists: a
+    /// heading or an inline code span inside a themed block used to close to the
+    /// *terminal default*, so the reasoning "tries to be grey, then goes green and
+    /// becomes white for several rows and then grey again" — the operator's words,
+    /// from looking at the screen.
+    ///
+    /// A reset is not a restore. Carried here rather than passed alongside because
+    /// every span this module paints has to close the same way, and a parameter
+    /// that is threaded by hand is a parameter one call site will be missing.
+    pub base: Option<Role>,
 }
 
 impl Default for RenderConfig {
@@ -87,6 +101,7 @@ impl Default for RenderConfig {
             width: 100,
             color: true,
             budget: Budget::default(),
+            base: None,
         }
     }
 }
@@ -105,9 +120,27 @@ impl RenderConfig {
         }
     }
 
+    /// The palette bound to [`RenderConfig::base`]. Everything painted by this
+    /// module goes through it, which is what makes the restore structural rather
+    /// than a fix applied to whichever call site somebody noticed.
+    pub fn painter(&self) -> Painter {
+        match self.base {
+            Some(b) => Painter::inside(self.palette(), b),
+            None => Painter::new(self.palette()),
+        }
+    }
+
+    /// The same config, rendering inside a block styled as `base`.
+    pub fn inside(&self, base: Role) -> RenderConfig {
+        RenderConfig {
+            base: Some(base),
+            ..self.clone()
+        }
+    }
+
     fn c(&self, code: &str, s: &str) -> String {
         if self.color {
-            format!("{code}{s}{}", sgr::RESET)
+            format!("{code}{s}{}", self.painter().close())
         } else {
             s.to_string()
         }
@@ -127,9 +160,9 @@ struct CodePaint {
 }
 
 impl CodePaint {
-    fn new(lang: &str, palette: Palette) -> CodePaint {
+    fn new(lang: &str, painter: Painter) -> CodePaint {
         CodePaint {
-            sc: StreamingCode::new(lang, palette),
+            sc: StreamingCode::inside(lang, painter),
             pushed: 0,
         }
     }
@@ -160,7 +193,7 @@ impl CodePaint {
 /// it is the same lexer fed the same bytes in the same order.
 pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
     let mut paint = match b {
-        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.palette())),
+        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.painter())),
         _ => None,
     };
     render_block_with(b, cfg, paint.as_mut())
@@ -177,7 +210,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
         // not a theme. So the hashes stay, faint, and carry the level for the
         // monochrome reader; the colour carries it for everyone else.
         Block::Heading { level, text } => {
-            let p = cfg.palette();
+            let p = cfg.painter();
             let role = match level {
                 1 => Role::Heading,
                 2 => Role::Subheading,
@@ -188,14 +221,14 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 &format!(
                     "{} {}",
                     p.paint(Role::Faint, &hashes),
-                    p.paint(role, &inline(text, cfg.color))
+                    p.paint(role, &inline(text, p))
                 ),
                 w,
             )]
         }
         Block::Paragraph { lines } => {
             let joined = lines.join(" ");
-            wrap(&inline(&joined, cfg.color), w)
+            wrap(&inline(&joined, cfg.painter()), w)
         }
         Block::Code {
             lang,
@@ -206,7 +239,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             let paint = match code {
                 Some(p) => p,
                 None => {
-                    owned = CodePaint::new(lang, cfg.palette());
+                    owned = CodePaint::new(lang, cfg.painter());
                     &mut owned
                 }
             };
@@ -236,7 +269,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             out
         }
         Block::List { ordered, items } => {
-            let p = cfg.palette();
+            let p = cfg.painter();
             let mut out = Vec::new();
             for (i, it) in items.iter().enumerate() {
                 // `·` rather than `•`, from grok-build: a bullet the same weight as
@@ -254,7 +287,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 // indenting a wrapped bullet by its byte length put every
                 // continuation line a column too far right.
                 let pad = visible_width(&marker);
-                let body = wrap(&inline(it, cfg.color), w.saturating_sub(pad));
+                let body = wrap(&inline(it, p), w.saturating_sub(pad));
                 for (j, line) in body.into_iter().enumerate() {
                     if j == 0 {
                         out.push(format!("{}{line}", p.paint(marker_role, &marker)));
@@ -267,7 +300,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
         }
         Block::Quote { lines } => {
             let joined = lines.join(" ");
-            wrap(&inline(&joined, cfg.color), w.saturating_sub(2))
+            wrap(&inline(&joined, cfg.painter()), w.saturating_sub(2))
                 .into_iter()
                 .map(|l| cfg.c(sgr::DIM, &format!("│ {l}")))
                 .collect()
@@ -282,7 +315,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
 /// is the disclosure, the same rule the log applies to `dropped`.
 pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String> {
     let mut paint = match b {
-        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.palette())),
+        Block::Code { lang, .. } => Some(CodePaint::new(lang, cfg.painter())),
         _ => None,
     };
     render_bounded_with(b, cfg, limit, paint.as_mut())
@@ -349,6 +382,10 @@ impl Decor {
 pub struct BlockCache {
     width: usize,
     color: bool,
+    /// The block style the cached prefix was painted inside. Part of the
+    /// invalidation key for the same reason `color` is: a prefix painted at a
+    /// different base closes its spans to a different sequence.
+    base: Option<Role>,
     decor: Decor,
     /// One streaming highlighter per open code block, keyed by the block's
     /// **absolute** index in the document.
@@ -430,13 +467,18 @@ impl BlockCache {
         cfg: &RenderConfig,
         limit: usize,
     ) -> (&[String], Vec<String>) {
-        if self.width != cfg.width || self.color != cfg.color || self.limit != limit {
+        if self.width != cfg.width
+            || self.color != cfg.color
+            || self.base != cfg.base
+            || self.limit != limit
+        {
             // A resize is the only thing that invalidates the prefix — and a change
             // of budget, which is a resize of a different axis: the same block
             // renders to a different number of lines when the bound moves, so a
             // prefix rendered under the old one is stale in exactly the same way.
             self.width = cfg.width;
             self.color = cfg.color;
+            self.base = cfg.base;
             self.limit = limit;
             self.stable_lines.clear();
             self.rendered_blocks = 0;
@@ -463,7 +505,7 @@ impl BlockCache {
             if paint.is_none()
                 && let Block::Code { lang, .. } = b
             {
-                paint = Some(CodePaint::new(lang, cfg.palette()));
+                paint = Some(CodePaint::new(lang, cfg.painter()));
             }
             let lines = render_bounded_with(b, cfg, limit, paint.as_mut());
             if let Some(p) = paint {
@@ -500,10 +542,13 @@ impl BlockCache {
 ///
 /// Deliberately not a parser. A model's inline markup is shallow, and the failure
 /// mode of getting it slightly wrong is a stray asterisk, not a wrong answer.
-pub fn inline(s: &str, color: bool) -> String {
-    if !color {
+pub fn inline(s: &str, p: Painter) -> String {
+    if !p.palette().is_colour() {
         return s.to_string();
     }
+    // Not `sgr::RESET`. Every span here closes back to whatever block it is
+    // inside — see `RenderConfig::base`.
+    let close = p.close();
     let mut out = String::with_capacity(s.len() + 16);
     let b = s.as_bytes();
     let mut i = 0;
@@ -513,7 +558,7 @@ pub fn inline(s: &str, color: bool) -> String {
         {
             out.push_str(sgr::CYAN);
             out.push_str(&s[i + 1..i + 1 + end]);
-            out.push_str(sgr::RESET);
+            out.push_str(&close);
             i = i + 1 + end + 1;
             continue;
         }
@@ -524,7 +569,7 @@ pub fn inline(s: &str, color: bool) -> String {
         {
             out.push_str(sgr::BOLD);
             out.push_str(&s[i + 2..i + 2 + end]);
-            out.push_str(sgr::RESET);
+            out.push_str(&close);
             i = i + 2 + end + 2;
             continue;
         }
@@ -533,7 +578,7 @@ pub fn inline(s: &str, color: bool) -> String {
         {
             out.push_str(sgr::ITALIC);
             out.push_str(&s[i + 1..i + 1 + end]);
-            out.push_str(sgr::RESET);
+            out.push_str(&close);
             i = i + 1 + end + 1;
             continue;
         }
@@ -586,6 +631,7 @@ mod tests {
             width: 72,
             color: false,
             budget: Budget::default(),
+            base: None,
         }
     }
 
@@ -665,7 +711,7 @@ mod tests {
 
     #[test]
     fn wrapping_counts_visible_columns_not_escape_bytes() {
-        let coloured = inline("a `code` b", true);
+        let coloured = inline("a `code` b", Painter::new(Palette::Colour));
         assert!(coloured.len() > 10);
         assert_eq!(visible_width(&coloured), "a code b".len());
         let lines = wrap(&coloured, 20);
@@ -689,6 +735,7 @@ mod tests {
             width: 100,
             color: true,
             budget: Budget::default(),
+            base: None,
         };
         let mut buf = String::new();
         let mut frames = 0u64;
@@ -732,6 +779,7 @@ mod tests {
             width: 100,
             color: true,
             budget: Budget::default(),
+            base: None,
         };
         let lines = render_block(&block, &cfg);
         let plain: Vec<String> = lines
@@ -748,8 +796,15 @@ mod tests {
                 "}"
             ]
         );
-        // …and it is actually painted.
-        assert!(lines.iter().any(|l| l.contains("\x1b[38;5;")), "{lines:?}");
+        // …and it is actually painted. In the theme's own colours: the roles moved
+        // off the 256-colour cube, so the evidence is a keyword wearing `35`, not
+        // an absolute `38;5;140`.
+        let kw = letibot_ui::style::Palette::Colour.open(Role::Keyword);
+        assert!(lines.iter().any(|l| l.contains(kw)), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("\x1b[38;5;")),
+            "a cube colour survived: {lines:?}"
+        );
     }
 
     fn strip(s: &str) -> String {
@@ -800,6 +855,7 @@ mod tests {
             width: 40,
             color: false,
             budget: Budget::default(),
+            base: None,
         };
         let lines = cache.lines(&md, &cfg, 40);
         assert!(md.stable_count() > 0, "some of it must be frozen");

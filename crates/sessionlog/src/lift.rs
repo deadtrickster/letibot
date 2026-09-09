@@ -58,6 +58,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             target: match target {
                 TurnDelta::Text => DeltaTarget::Text,
                 TurnDelta::Reasoning => DeltaTarget::Reasoning,
+                TurnDelta::ToolCall => DeltaTarget::ToolCall,
             },
             text,
         },

@@ -41,11 +41,18 @@
 use serde::{Deserialize, Serialize};
 
 /// Which channel a delta belongs to.
+///
+/// `ToolCall` is the third, and it is the reason `PROTOCOL_VERSION` is 3. It
+/// carries the raw `<function=…>` markup the model writes inside a `<tool_call>`
+/// block, which used to travel as `Text` because there was nowhere else to put it
+/// — the T13.5 gap, which a head could only work around by guessing. See
+/// `letibot_turn::DeltaTarget` for why guessing is not available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeltaTarget {
     Text,
     Reasoning,
+    ToolCall,
 }
 
 /// §5.6's prefill progress, as it reaches a head.

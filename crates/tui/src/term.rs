@@ -483,6 +483,14 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlT);
                 i += 1;
             }
+            // Ctrl+X: the raw form of a tool call. `x` for the XML-ish markup it
+            // shows; the argument for this byte rather than a nicer one is in
+            // `App::key`. Not a tty control character, and readline uses it only as
+            // a prefix, so nothing downstream is waiting for a second byte.
+            0x18 => {
+                out.push(Key::CtrlX);
+                i += 1;
+            }
             0x0c => {
                 out.push(Key::CtrlL);
                 i += 1;
@@ -660,6 +668,7 @@ mod tests {
         assert_eq!(decode(b"\r"), vec![Key::Enter]);
         assert_eq!(decode(b"\x7f"), vec![Key::Backspace]);
         assert_eq!(decode(b"\x1b"), vec![Key::Esc]);
+        assert_eq!(decode(b"\x18"), vec![Key::CtrlX]);
     }
 
     #[test]
