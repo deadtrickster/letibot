@@ -1,0 +1,30 @@
+[package]
+name = "letibot-turn"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+letibot-transcript.workspace = true
+letibot-dialect.workspace = true
+letibot-tokencore.workspace = true
+letibot-backend.workspace = true
+serde.workspace = true
+# preserve_order for the same reason dialect-glm needs it: a tool call's argument
+# key order becomes prompt bytes on the next turn, and reordering re-prefills.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+# The GLM adapter for the `PromptRenderer` seam. Optional and off by default, so
+# `cargo build -p letibot-turn` proves the engine has no path into a concrete
+# dialect; the tests turn it on.
+letibot-dialect-glm = { workspace = true, optional = true }
+
+[features]
+default = []
+glm = ["dep:letibot-dialect-glm"]
+
+[dev-dependencies]
+letibot-turn = { path = ".", features = ["glm"] }
+letibot-dialect-glm.workspace = true

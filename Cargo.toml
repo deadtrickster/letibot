@@ -6,6 +6,7 @@ members = [
     "crates/dialect-glm",
     "crates/tokencore",
     "crates/backend",
+    "crates/turn",
 ]
 
 [workspace.package]
@@ -19,3 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 letibot-transcript = { path = "crates/transcript" }
 letibot-dialect = { path = "crates/dialect" }
+letibot-dialect-glm = { path = "crates/dialect-glm" }
+letibot-tokencore = { path = "crates/tokencore" }
+letibot-backend = { path = "crates/backend" }
+letibot-turn = { path = "crates/turn" }
