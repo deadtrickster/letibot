@@ -392,6 +392,24 @@ blocks" — and the economics collapse.
 
 **So the paper solves the obstacle we do not have, and is silent on the one we do.**
 
+### What composable KV is ultimately for: active memory
+
+See `docs/memory.md`. Passive memory is a notebook — you must know to look. Active
+memory arrives unbidden because it is relevant. The transcript is passive and it
+failed exactly that way this session.
+
+The link to this item is economic: **without composition, surfacing a block costs a
+full re-prefill** — 144.6 s against 0.8 s for a prefix hit, measured here. That cost
+is why active memory is not standard: you would only dare fire it when already
+confident, which is when you did not need it. With composition a miss costs context
+rather than minutes, and being liberal becomes affordable.
+
+It is also a **fused-backend** feature and cannot be built on either side alone: the
+server holds the blocks and has no idea what is relevant; the daemon knows relevance
+and cannot place a block without re-prefilling it. That is a stronger argument for
+fusion than anything in §3.4, where the unlocks are optimisations rather than
+capabilities that do not otherwise exist.
+
 ### What settles it — UNVERIFIED-16, the experiment already specified
 
 §3.10-C states the method. Build `P = A ++ B ++ C`, take the reference KV by full
