@@ -10,6 +10,13 @@ Mostly right, and the interesting part is the quarter where it is wrong. Compani
 
 **Everything in §1–§3 was measured on this box. §5 is not, and says so.**
 
+> **Superseded in part by `docs/model-topology.md`** (2026-09-09, later the same
+> evening). The 12/36 split below is now *measured* from the GGUF tensor lists rather
+> than carried over from another document — and it is correct. But §1's account of the
+> attention half as pure dilution is incomplete: Flash-Next carries a sparse indexer with
+> `top_k = 2048`, so those layers **select** before they dilute, and selection is a hard
+> gate rather than a soft weight. See that document's §3.
+
 ---
 
 ## 1. Two fading mechanisms, not one
@@ -108,8 +115,10 @@ Stated separately because §1–§3's numbers are this box's and these are not:
    fresh, because re-anchoring restores the attention pathway and cannot restore
    overwritten recurrent state. This is the most interesting number in that run and
    nobody has it.
-5. **The 12/36 split** is read from the layer counts in `docs/compaction.md` §5's
-   measurement ("36 of 48 layers"), not from an independent architecture dump.
+5. ~~**The 12/36 split** is read from the layer counts in `docs/compaction.md` §5's
+   measurement, not from an independent architecture dump.~~ **Resolved 2026-09-09:**
+   measured from the GGUF tensor lists across all shards — 12 full attention and 36
+   linear over 48 serving blocks. `docs/model-topology.md` §1.
 6. **None of this is known to transfer to GLM**, which is also hybrid but differently —
    19.25 KiB/token including its DSA indexer, and a separate per-sequence charge of
    436.7 MiB at allocation.
