@@ -299,6 +299,67 @@ Found by building one. Listed with what W8 did about each.
 
 ---
 
+## T14 — Composable KV is a GOAL, not background — **operator requirement, stated twice**
+
+The plan analyses this well (§3.10-C, UNVERIFIED-16) but files it as an open question.
+The operator has asked for it twice and it is a **design goal**: a request should be
+able to send a *composition* — `[block_hash, block_hash, text, block_hash]` — rather
+than a full prompt, and blocks should be reusable **across sessions and across
+agents**, not only as a prefix of one conversation.
+
+### Two obstacles, and only one of them has a known answer
+
+**1. Position dependence (RoPE).** The same text at position 5,000 and 50,000 yields
+different KV, which is why vLLM's block hash chains the parent and why reuse is
+prefix-only everywhere in production today.
+
+arXiv 2608.03893 (*Cross-Model KV Cache Transfer in LLM Families*, Heo et al.) does
+the relevant trick as step 2 of its method: **strip RoPE from the keys to make them
+position-independent**, map, re-apply. Its own purpose is cross-model transfer within
+a family and its accuracy retention (73–98%) is far too lossy for us — but the
+position-independence technique is separable from the transfer claim, and it is the
+piece composable KV needs.
+
+This also corrects the design brief: it says KV pages "are not freely relocatable the
+way database pages are" as a hard property of attention. It is a property of how the
+KV is *stored*, not of attention.
+
+**2. Cross-attention context dependence — and on our models this is the binding
+constraint.** A block's KV is not a pure function of its own tokens; it depends on
+what preceded it. CacheBlend's answer is to recompute a fraction to reconcile.
+
+**But CacheBlend's premise assumes attention-only layers, and both our models are
+hybrid.** GLM is 12 MLA attention blocks and **34 KDA recurrent blocks**; Qwen3-Next
+is hybrid too — W6 measured llama.cpp resuming it from a context checkpoint and
+snapping `n_past` back. In a recurrent layer the state at position *n* is a function
+of all *n* tokens, so "recompute the last *k*" is not a partial correction: it is
+either exact, because you re-ran from the divergence, or it is wrong.
+
+If that holds, stitching applies to roughly a quarter of GLM and the recompute
+fraction is not "a few percent" but "everything after the divergence, for 34 of 46
+blocks" — and the economics collapse.
+
+**So the paper solves the obstacle we do not have, and is silent on the one we do.**
+
+### What settles it — UNVERIFIED-16, the experiment already specified
+
+§3.10-C states the method. Build `P = A ++ B ++ C`, take the reference KV by full
+prefill, then assemble from a cached `A`, a cached `C` taken from a **different
+position**, and a recompute of the first *k* tokens of `C` at its new position. Vary
+*k*. Measure exact agreement of 200 greedy continuation tokens, and run it **per
+layer class** — the whole question is whether the recurrent blocks behave differently
+from the attention ones.
+
+Qwen3-Next is serving and is hybrid, so this is runnable today on the model we
+actually use, not only on GLM.
+
+**Why this is the right next experiment:** it decides whether composable KV is
+achievable on this stack at all, and §19.3's recommendation against model swapping is
+permanent or provisional depending on the answer. Everything else in the composable-KV
+direction is unfundable until it is answered.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
