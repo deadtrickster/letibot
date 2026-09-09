@@ -156,11 +156,25 @@ impl Tool for Grep {
 
         let mut tried: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
+        let mut parseable: Vec<&'static str> = Vec::new();
 
         for attempt in &ladder {
-            let (hits, scanned, truncated) =
-                search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
-            files_scanned = files_scanned.max(scanned);
+            let scan = search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
+            files_scanned = files_scanned.max(scan.scanned);
+            // Only from the scope the model ASKED about. The widened rung reads
+            // the whole session root, and letting its languages count would
+            // produce "the files searched here are rust" about a `path: docs`
+            // holding nothing but markdown -- and then `outline` on that path
+            // would refuse. A suggestion that costs a round to save a round is
+            // worse than none.
+            if attempt.scope == scope {
+                for l in &scan.languages {
+                    if !parseable.contains(l) {
+                        parseable.push(l);
+                    }
+                }
+            }
+            let (hits, truncated) = (scan.hits, scan.truncated);
             if hits.is_empty() {
                 if let Some(r) = &attempt.relaxation {
                     tried.push(r.clone());
@@ -181,6 +195,14 @@ impl Tool for Grep {
                 ));
                 if attempt.scope != scope {
                     inv = inv.with_note(where_it_occurs(&hits, &scope));
+                }
+                // MATCHED POORLY: the pattern the model wrote found nothing and a
+                // relaxation rescued the call. If the pattern was structural, the
+                // relaxation is not the fix -- it is the second-best lexical
+                // approximation of a question that has an exact answer one tool
+                // over.
+                if let Some(n) = outline_suggestion(source, &scope, &parseable) {
+                    inv = inv.with_note(n);
                 }
             }
             if truncated {
@@ -236,13 +258,80 @@ impl Tool for Grep {
             "\nthe string is not in the searched tree. `glob` searches file *names*, \
              and `ask_code` answers questions the text does not spell out.\n",
         );
-        Invocation::abstained(
+        let suggestion = outline_suggestion(source, &scope, &parseable);
+        let mut inv = Invocation::abstained(
             format!(
                 "`{source}` does not occur in the {files_scanned} file(s) searched"
             ),
             body,
-        )
+        );
+        if let Some(n) = suggestion {
+            inv = inv.with_note(n);
+        }
+        inv
     }
+}
+
+/// The definition keywords that make a pattern structural rather than lexical.
+///
+/// Not "words that appear in code" — words that name a KIND OF DEFINITION, which
+/// is what `outline` indexes. `pub`, `return` and `let` are deliberately absent:
+/// a search for `pub` is a search for text.
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "fn", "func", "def", "struct", "enum", "impl", "trait", "mod", "class", "interface",
+    "type", "macro_rules", "package",
+];
+
+/// Does this pattern ask a STRUCTURAL question in a lexical language?
+///
+/// The test is deliberately narrow — a LINE ANCHOR plus a definition keyword —
+/// because a suggestion that fires on every search that mentions `fn` is noise,
+/// and noise in the notes is how the notes stop being read. The anchor is what
+/// makes it structural: `^fn` is not looking for the text `fn`, it is looking
+/// for a definition and guessing at the column it starts in.
+fn is_structural(source: &str) -> bool {
+    if !source.contains('^') {
+        return false;
+    }
+    let mut word = String::new();
+    let mut hit = false;
+    for c in source.chars().chain([' ']) {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            continue;
+        }
+        if DEFINITION_KEYWORDS.contains(&word.as_str()) {
+            hit = true;
+        }
+        word.clear();
+    }
+    hit
+}
+
+/// Name `outline` when it would actually have answered, and stay quiet otherwise.
+///
+/// Two conditions, and the second is the one that keeps it honest: the pattern
+/// has to be structural, AND the files that were actually opened have to be in a
+/// language this build can parse. Suggesting `outline` for a tree of `.tf` files
+/// would be handing the model a tool that will refuse it — a second wasted round
+/// to save a first one.
+///
+/// It suggests and does not run. §9.4: the harness must not silently improve a
+/// tool's query, and running a different tool is a larger rewrite than relaxing
+/// a pattern, not a smaller one. The model decides.
+fn outline_suggestion(source: &str, scope: &str, parseable: &[&'static str]) -> Option<String> {
+    if !is_structural(source) || parseable.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "`{source}` is a STRUCTURAL question asked lexically, and relaxing it cannot \
+         fix that: keep the `^` and a definition indented under an `impl` or a `class` \
+         is invisible, drop it and the keyword matches inside comments and strings. \
+         `outline` with `path: \"{scope}\"` answers it from a parse — definitions with \
+         line numbers, kinds and their containing symbol. The files searched here are \
+         {} and it can parse those.",
+        parseable.join(", ")
+    ))
 }
 
 /// Add a rung, or leave it off if its pattern will not compile.
@@ -284,13 +373,26 @@ fn compile_failed(e: &PatternError) -> Invocation {
     )
 }
 
+/// What one rung of the ladder found, and over what.
+struct Scan {
+    hits: Vec<Hit>,
+    /// Files actually OPENED. The denominator; zero is a failed scope.
+    scanned: usize,
+    truncated: bool,
+    /// The languages among the files opened that `outline` has a grammar for.
+    /// Collected here because it is the only place that knows which files were
+    /// really read, and a suggestion to use `outline` is only honest if it would
+    /// have worked.
+    languages: Vec<&'static str>,
+}
+
 fn search(
     ctx: &mut InvokeCtx<'_>,
     pattern: &Pattern,
     scope: &str,
     file_glob: Option<&str>,
     max: usize,
-) -> (Vec<Hit>, usize, bool) {
+) -> Scan {
     // `scope` may name a single file; `walk` would list it, fail, and return
     // nothing. See the `single_file` note above.
     let one: Vec<DirEntry>;
@@ -318,6 +420,7 @@ fn search(
 
     let mut hits = Vec::new();
     let mut scanned = 0usize;
+    let mut languages: Vec<&'static str> = Vec::new();
     for (i, e) in files.iter().enumerate() {
         if i > 0 && i % 500 == 0 {
             // §8.5: progress is liveness. A walk over a large tree must produce it.
@@ -331,6 +434,11 @@ fn search(
             continue;
         }
         scanned += 1;
+        if let Ok(l) = letibot_code::Language::of_path(&e.path)
+            && !languages.contains(&l.name())
+        {
+            languages.push(l.name());
+        }
         let (text, _) = text_of(&bytes);
         // One scan of the whole buffer rather than one engine call per line. The
         // semantics are identical -- `line_hits` confirms every candidate against
@@ -346,10 +454,20 @@ fn search(
             });
         });
         if truncated {
-            return (hits, scanned, true);
+            return Scan {
+                hits,
+                scanned,
+                truncated: true,
+                languages,
+            };
         }
     }
-    (hits, scanned, false)
+    Scan {
+        hits,
+        scanned,
+        truncated: false,
+        languages,
+    }
 }
 
 fn render_hits(hits: &[Hit], scope: &str) -> String {
@@ -544,6 +662,56 @@ mod tests {
         assert!(!r.is_grounded());
         let seen = r.render();
         assert!(seen.contains("KiB"), "{seen}");
+    }
+
+    /// Phase 2's escalation. The rano session wrote
+    /// `^(pub )?(mod|fn|struct|enum|impl|const|static)\s` and got a relaxation,
+    /// which is the best `grep` can do and is still the wrong answer: relaxing a
+    /// structural query lexically can only miss. The RESULT must name the tool
+    /// that answers it.
+    #[test]
+    fn a_structural_pattern_that_matches_poorly_names_outline() {
+        let mut h = harness();
+        // `src/lib.rs` has `pub fn parse_args`, so the anchored form misses and
+        // the ladder rescues the call with the bare identifier.
+        let r = h.call("grep", r#"{"pattern":"^\\s*fn parse_args\\("}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("outline"), "{notes}");
+        assert!(notes.contains("STRUCTURAL"), "{notes}");
+        // Suggested, not run: the payload is still grep's hits.
+        assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
+    }
+
+    #[test]
+    fn a_structural_pattern_that_matches_nothing_at_all_names_outline() {
+        let mut h = harness();
+        let r = h.call("grep", r#"{"pattern":"^impl QuokkaSentinel"}"#);
+        assert!(!r.is_grounded());
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("outline"), "{notes}");
+    }
+
+    /// Honesty is the whole value of the suggestion. A lexical search gets no
+    /// suggestion however badly it misses, and neither does a structural one
+    /// over files nothing here can parse — pointing a model at a tool that will
+    /// refuse it spends a round to save a round.
+    #[test]
+    fn the_suggestion_stays_quiet_when_it_would_not_have_helped() {
+        let mut h = harness();
+
+        // Lexical: no anchor, no definition keyword, so no suggestion.
+        let r = h.call("grep", r#"{"pattern":"quokka_sentinel"}"#);
+        assert!(!r.notes.join(" ").contains("outline"), "{:?}", r.notes);
+
+        // Structural, but every file in scope is markdown and there is no
+        // grammar for it.
+        let r = h.call("grep", r#"{"pattern":"^impl Widget","path":"docs"}"#);
+        assert!(
+            !r.notes.join(" ").contains("outline"),
+            "docs/ is markdown: {:?}",
+            r.notes
+        );
     }
 
     #[test]

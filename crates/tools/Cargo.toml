@@ -30,6 +30,10 @@ sha2 = "0.10"
 # label; `Pattern::compile` now returns an error and `grep` shows it.
 regex = "1.13"
 regex-syntax = "0.8"
+# The structural half of search: `outline` over a tree-sitter parse. It is a
+# separate crate because the grammars are C and pull a `cc` build, and this
+# crate deliberately has no `build.rs` — see below.
+letibot-code.workspace = true
 # No `libc`, no HTTP client, no async runtime.
 #
 # No `build.rs` either: nothing here links `libllama` (T10.5's rpath problem is

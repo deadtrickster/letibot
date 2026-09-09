@@ -16,6 +16,7 @@
 //! | [`read`] | a missing path returns the nearest existing directory's listing and the near-miss names; a directory returns its listing; an offset past the end returns the file from line 1 and says so |
 //! | [`grep`] | no match in scope reports **where the term does occur**, after relaxing a too-strict pattern to its bare identifier and reporting the relaxation |
 //! | [`glob`] | a miss returns the surrounding listing **and what would have matched**, under a named relaxation |
+//! | [`outline`] | an extension with no grammar is NAMED, with the list of grammars there are — never an empty outline; a `kind` filter that selects nothing reports the kinds that are there; a tree with nothing parseable is a failed scope and not an answer |
 //! | [`read_spill`] | an unknown hash lists the spilled outputs this session has |
 //! | [`retrieval`] | a corpus that does not cover the question abstains, in the `NO_RESULT` envelope, and says what it searched |
 //! | [`edit`] | a miss reports **the text that is actually there**, at which lines, and whether the difference is whitespace, indentation or case; more than one match reports every line number |
@@ -30,6 +31,7 @@
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod outline;
 pub mod pattern;
 pub mod read;
 pub mod read_spill;
