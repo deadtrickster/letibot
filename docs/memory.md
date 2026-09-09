@@ -56,25 +56,58 @@ So active memory is a **fused-seam feature**, and a stronger argument for fusion
 the ones in §3.4: semantic eviction and pre-warming are optimisations, and this is a
 capability that does not otherwise exist.
 
-## 4. The economics, and why nobody has built it
+## 4. Surface it as a suggestion, not an injection
 
-**Without composable KV, active memory costs a full re-prefill every time it fires.**
-Surface a 5k-token block into a 150k conversation and the prefix is invalidated —
-measured here at 144.6 s for 150k tokens against 0.8 s for a prefix hit.
+The obvious design — retrieve a block and splice it into the conversation — is
+destructive, and its cost is what has kept active memory out of harnesses:
+**injecting into history invalidates the prefix**, measured here at 144.6 s to
+re-prefill 150k tokens against 0.8 s for a hit. At that price you would only fire it
+when already confident it mattered, which is when you did not need the help.
 
-That is the whole reason this is not standard. The cost per firing is high enough that
-you would only dare surface something when you were already confident it mattered —
-which is exactly the case where you did not need the help.
+**Do not inject. Append a suggestion to the user turn.**
 
-With composition the block is *placed*, not recomputed, and the calculus inverts: you
-can afford to be liberal about what surfaces, because a miss costs context rather
-than minutes. **So active memory and composable KV are one project, not two.** See
-`TODO.md` T14, and UNVERIFIED-16, which decides whether composition is possible on
-hybrid models at all.
+New tokens at the end of the prompt leave the prefix untouched, so the cost is the
+suggestion's own tokens and nothing else. And the suggestion should carry a **handle,
+not content**:
 
-The fallback if it is not: the *record* must be addressable even when the KV cannot
-be. That makes T13's gap — session-log events that carry no content — blocking rather
-than cosmetic.
+```
+[recall] earlier this session: three measured ceilings for stroppy,
+         noop driver vs pg-noop vs PostgreSQL — segment 7f3a91
+```
+
+Twenty tokens. The model then decides whether to pull it, through a
+`recall(segment_id)` tool.
+
+Four properties follow, and three of them are things §5's trap otherwise demands
+work to get:
+
+- **Non-destructive.** The prefix is intact; nothing is rewritten.
+- **Refusable.** A bad suggestion costs twenty tokens the model ignores. Injected
+  content cannot be declined — it consumes context and anchors regardless. That is
+  most of "a wrong recall is worse than silence" removed, and it means retrieval
+  *precision* matters far less than it would otherwise.
+- **Structurally distinguishable for free.** It rides with the user turn as metadata,
+  so it cannot be mistaken for something the model itself concluded. §5's third
+  requirement is satisfied by construction rather than by designing an envelope.
+- **Model-directed.** We nominate; it selects.
+
+### This decouples active memory from composable KV
+
+Composition stops being a prerequisite and becomes an optimisation of the **pull**.
+Today `recall` returns text and costs an ordinary tool result. Later it composes a
+block and costs almost nothing. **UNVERIFIED-16 no longer gates the feature, only its
+efficiency** — which is a much better place for a hard open question to sit.
+
+### The cost, accepted deliberately
+
+A suggestion appended at turn N is part of the prefix at turn N+1 and **cannot be
+retracted** without invalidating everything after it. Suggestions therefore
+accumulate — twenty tokens each, permanently.
+
+The operator has accepted this. It is worth noting that it is also a useful forcing
+function: the budget disciplines the policy, so "few and short" is enforced by
+arithmetic rather than by a relevance threshold nobody can pick correctly. At ~20
+tokens a suggestion, a hundred turns costs ~2k tokens of a 262k window.
 
 ## 5. The trap, already measured on this fleet
 
@@ -97,6 +130,8 @@ Two consequences:
   model's own prior reasoning. Otherwise a surfaced fragment reads as something the
   model already concluded, which is §8.2's abstention failure wearing a new costume:
   the system reporting as grounded something that merely resembles grounding.
+  **§4's suggestion form gives this for free** — a handle riding with the user turn
+  is not in the assistant's voice and never was.
 
 ## 6. What exists to build on
 
@@ -124,7 +159,11 @@ Three things, none of which exist:
 
 ## 8. Status
 
-A concept note, not a plan. Nothing here is scheduled, and it is downstream of
-UNVERIFIED-16: if partial recompute cannot converge on this stack's recurrent layers,
-active memory is affordable only as text, and this note becomes an argument for
-making the record addressable instead.
+A concept note, not a plan — but no longer a blocked one. §4's suggestion form means
+this is buildable on what exists: it needs a `SegmentMark` producer, a retrieval
+policy, and a `recall` tool, and none of those wait on UNVERIFIED-16.
+
+What still depends on composable KV is only how much the *pull* costs. If partial
+recompute cannot converge on this stack's recurrent layers, `recall` returns text
+forever and active memory still works — it is simply priced as a tool call rather
+than as a composition.

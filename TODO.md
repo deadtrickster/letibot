@@ -404,6 +404,12 @@ is why active memory is not standard: you would only dare fire it when already
 confident, which is when you did not need it. With composition a miss costs context
 rather than minutes, and being liberal becomes affordable.
 
+**Revised 2026-09-09: composable KV is no longer a prerequisite for active memory.**
+A suggestion appended to the *user turn* leaves the prefix untouched, so the
+re-prefill cost never arises; composition becomes an optimisation of the `recall`
+pull rather than a gate on the feature. See `docs/memory.md` §4. What composable KV
+still buys is that the pull becomes nearly free rather than a tool call.
+
 It is also a **fused-backend** feature and cannot be built on either side alone: the
 server holds the blocks and has no idea what is relevant; the daemon knows relevance
 and cannot place a block without re-prefilling it. That is a stronger argument for
