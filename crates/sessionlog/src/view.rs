@@ -1,0 +1,591 @@
+//! The materialized view, and the snapshot cut from it.
+//!
+//! §13.2: *"`since_seq = 0` gets a snapshot — a materialized view of messages and
+//! parts as of seq S, maintained by the daemon — followed by events from S+1. A
+//! head that joins a 300-turn session never replays 300 turns of deltas."*
+//!
+//! Maintained incrementally, one `apply` per appended event, so `attach` is O(size
+//! of the answer) and not O(length of the log). That matters for the same reason
+//! §13.3 does: a cost that grows with the session is a cost that shows up only in
+//! the session you cared about.
+//!
+//! # The view **is** the stored projection
+//!
+//! The scrub is not a filter bolted onto the exit. It is applied here, at
+//! materialization, which is what makes it a projection:
+//!
+//! - `PromptProgress` never becomes history. It updates a `progress` field that is
+//!   *cleared* when the turn ends. A late head attaching mid-prefill is told where
+//!   the prefill is — current state, true right now — and a head attaching an hour
+//!   later is told nothing, because there is nothing true to tell.
+//! - `ToolProgress` does not touch the view at all. Partial tool output has no
+//!   durable form; a running tool renders as *running*, with no body.
+//! - `DecisionRequested` opens an entry; `DecisionAnswered` **removes** it and
+//!   records the outcome. So the snapshot cannot contain a settled decision as an
+//!   open prompt, because there is no code path that would put it there.
+//!
+//! That is the difference between "we remember to strip it on the way out" and
+//! "there is nowhere for it to be".
+//!
+//! # `TranscriptAppended` carries no content
+//!
+//! §4.5's event is `{item_id, kind, ledger_head}`. A head cannot reconstruct a
+//! conversation from that, and the snapshot is what §13.2 promises it instead. The
+//! daemon therefore has to hand the view the item alongside the event
+//! ([`SessionView::record_item`]) — the event stays exactly §4.5's, and the
+//! content travels by the same route it already travels in `Session::items`. This
+//! is a real gap in §4.5 and it is written up in the W7 report, not papered over
+//! by widening the event.
+
+use serde::{Deserialize, Serialize};
+
+use letibot_transcript::{ToolOutcome, TranscriptItem};
+
+use crate::event::{
+    Decider, DecisionOption, DecisionOutcome, Envelope, FinishReason, OnTimeout, PromptProgress,
+    SessionEvent, Timings, Usage,
+};
+
+/// One row of the conversation, as a head sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotItem {
+    pub item_id: String,
+    pub kind: String,
+    pub ledger_head: String,
+    /// The content, when the daemon supplied it. `None` is honest: it means the
+    /// event was seen and the item was not reconciled, which a head should render
+    /// as a placeholder rather than as an empty message.
+    pub item: Option<TranscriptItem>,
+}
+
+/// A decision that is still owed an answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpenDecision {
+    pub req_id: String,
+    pub kind: String,
+    pub call_id: Option<String>,
+    pub summary: String,
+    pub options: Vec<DecisionOption>,
+    pub deadline: Option<u64>,
+    pub on_timeout: OnTimeout,
+    /// When it was asked, so a head can show how long it has been waiting rather
+    /// than presenting a ten-minute-old question as if it were new.
+    pub asked_ts: u64,
+}
+
+/// A decision that has settled, kept so a head can render the outcome.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettledDecision {
+    pub req_id: String,
+    pub summary: String,
+    pub outcome: DecisionOutcome,
+    pub by: Decider,
+    pub basis: String,
+    pub late: bool,
+}
+
+/// A tool call the model proposed, and where it got to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallView {
+    pub call_id: String,
+    pub name: String,
+    pub args_digest: String,
+    pub state: CallState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CallState {
+    Proposed,
+    /// Running, with **no partial output**. See the module note.
+    Running,
+    Finished {
+        outcome: ToolOutcome,
+        payload_digest: String,
+        bytes: u64,
+    },
+}
+
+/// How the turn in view ended, if it has.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TurnState {
+    Running,
+    Finished {
+        finish_reason: FinishReason,
+        usage: Usage,
+        timings: Timings,
+    },
+    Interrupted {
+        reason: String,
+        partial_kept: bool,
+    },
+}
+
+/// The turn a late head is joining, with its text **accumulated once**.
+///
+/// This is the half of §13.3 that lives on the wire: the head does not replay
+/// N deltas to learn the text, it is handed the text and then receives increments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnView {
+    pub turn_id: String,
+    pub model: String,
+    pub ledger_head: String,
+    pub text: String,
+    pub reasoning: String,
+    pub calls: Vec<CallView>,
+    /// Live prefill state. `None` once the turn has ended — a progress frame is
+    /// true only while it is happening.
+    pub progress: Option<PromptProgress>,
+    pub state: TurnState,
+}
+
+/// A head the daemon believes is attached.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeadPresence {
+    pub head_id: String,
+    pub kind: String,
+    pub identity: String,
+}
+
+/// What a late head is handed. Everything true as of `seq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub session_id: String,
+    /// The snapshot is true as of this seq. The next event a head receives is
+    /// `seq + 1`, with no gap — see [`crate::hub::Hub::attach`].
+    pub seq: u64,
+    /// Events that fell off the back of the scrollback and this head will never
+    /// see. **Present and zero**, never omitted (§13.2b).
+    pub dropped: u64,
+    /// Transcript rows trimmed out of this snapshot. Present and zero, same rule.
+    pub items_dropped: u64,
+    pub items: Vec<SnapshotItem>,
+    pub turn: Option<TurnView>,
+    /// Only decisions genuinely still open. A settled one cannot appear here.
+    pub open_decisions: Vec<OpenDecision>,
+    /// Recent outcomes, so a head can render "denied, by policy" rather than
+    /// silence where a prompt used to be.
+    pub settled_decisions: Vec<SettledDecision>,
+    pub warnings: Vec<Warned>,
+    pub heads: Vec<HeadPresence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Warned {
+    pub code: String,
+    pub detail: String,
+    pub ts: u64,
+}
+
+/// How much of each unbounded thing the view keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewBounds {
+    pub items: usize,
+    pub settled_decisions: usize,
+    pub warnings: usize,
+}
+
+impl Default for ViewBounds {
+    fn default() -> Self {
+        ViewBounds {
+            items: 2_000,
+            settled_decisions: 64,
+            warnings: 128,
+        }
+    }
+}
+
+/// The daemon's materialized view of one session.
+#[derive(Debug)]
+pub struct SessionView {
+    session_id: String,
+    bounds: ViewBounds,
+    items: Vec<SnapshotItem>,
+    items_dropped: u64,
+    turn: Option<TurnView>,
+    open: Vec<OpenDecision>,
+    settled: Vec<SettledDecision>,
+    warnings: Vec<Warned>,
+    heads: Vec<HeadPresence>,
+}
+
+impl SessionView {
+    pub fn new(session_id: impl Into<String>, bounds: ViewBounds) -> Self {
+        SessionView {
+            session_id: session_id.into(),
+            bounds,
+            items: Vec::new(),
+            items_dropped: 0,
+            turn: None,
+            open: Vec::new(),
+            settled: Vec::new(),
+            warnings: Vec::new(),
+            heads: Vec::new(),
+        }
+    }
+
+    /// Fold one appended event into the view.
+    ///
+    /// The exhaustive match is the scrub's other half: a new event variant cannot
+    /// be added without deciding, here, what it means for a head that was not
+    /// watching.
+    pub fn apply(&mut self, env: &Envelope) {
+        match &env.event {
+            SessionEvent::TurnStarted {
+                turn_id,
+                model,
+                ledger_head,
+            } => {
+                self.turn = Some(TurnView {
+                    turn_id: turn_id.clone(),
+                    model: model.clone(),
+                    ledger_head: ledger_head.clone(),
+                    text: String::new(),
+                    reasoning: String::new(),
+                    calls: Vec::new(),
+                    progress: None,
+                    state: TurnState::Running,
+                });
+            }
+            SessionEvent::PromptProgress { turn_id, progress } => {
+                // State, not history: overwritten, and cleared when the turn ends.
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    t.progress = Some(*progress);
+                }
+            }
+            SessionEvent::Delta {
+                turn_id,
+                target,
+                text,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    match target {
+                        crate::event::DeltaTarget::Text => t.text.push_str(text),
+                        crate::event::DeltaTarget::Reasoning => t.reasoning.push_str(text),
+                    }
+                }
+            }
+            SessionEvent::ToolCallProposed {
+                turn_id,
+                call_id,
+                name,
+                args_digest,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    t.calls.push(CallView {
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        args_digest: args_digest.clone(),
+                        state: CallState::Proposed,
+                    });
+                }
+            }
+            SessionEvent::DecisionRequested {
+                req_id,
+                kind,
+                call_id,
+                summary,
+                options,
+                deadline,
+                on_timeout,
+            } => {
+                self.open.retain(|d| &d.req_id != req_id);
+                self.open.push(OpenDecision {
+                    req_id: req_id.clone(),
+                    kind: kind.clone(),
+                    call_id: call_id.clone(),
+                    summary: summary.clone(),
+                    options: options.clone(),
+                    deadline: *deadline,
+                    on_timeout: *on_timeout,
+                    asked_ts: env.ts,
+                });
+            }
+            SessionEvent::DecisionAnswered {
+                req_id,
+                outcome,
+                by,
+                basis,
+                late,
+            } => {
+                // The removal is the scrub. There is no path that leaves a settled
+                // decision in `open`, so no snapshot can carry one.
+                let summary = self
+                    .open
+                    .iter()
+                    .find(|d| &d.req_id == req_id)
+                    .map(|d| d.summary.clone())
+                    .unwrap_or_default();
+                self.open.retain(|d| &d.req_id != req_id);
+                self.settled.push(SettledDecision {
+                    req_id: req_id.clone(),
+                    summary,
+                    outcome: outcome.clone(),
+                    by: by.clone(),
+                    basis: basis.clone(),
+                    late: *late,
+                });
+                let over = self
+                    .settled
+                    .len()
+                    .saturating_sub(self.bounds.settled_decisions);
+                self.settled.drain(..over);
+            }
+            SessionEvent::ToolStarted { call_id, name } => {
+                if let Some(c) = self.call_mut(call_id) {
+                    c.state = CallState::Running;
+                } else if let Some(t) = self.turn.as_mut() {
+                    t.calls.push(CallView {
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        args_digest: String::new(),
+                        state: CallState::Running,
+                    });
+                }
+            }
+            // Deliberately nothing. Partial tool output has no durable form; see
+            // the module note. This arm exists so that "we forgot" and "we decided"
+            // do not look the same.
+            SessionEvent::ToolProgress { .. } => {}
+            SessionEvent::ToolFinished {
+                call_id,
+                outcome,
+                payload_digest,
+                bytes,
+            } => {
+                if let Some(c) = self.call_mut(call_id) {
+                    c.state = CallState::Finished {
+                        outcome: outcome.clone(),
+                        payload_digest: payload_digest.clone(),
+                        bytes: *bytes,
+                    };
+                }
+            }
+            SessionEvent::TurnFinished {
+                turn_id,
+                finish_reason,
+                usage,
+                timings,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    t.progress = None;
+                    t.state = TurnState::Finished {
+                        finish_reason: finish_reason.clone(),
+                        usage: *usage,
+                        timings: *timings,
+                    };
+                }
+            }
+            SessionEvent::TurnInterrupted {
+                turn_id,
+                reason,
+                partial_kept,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    t.progress = None;
+                    t.state = TurnState::Interrupted {
+                        reason: reason.clone(),
+                        partial_kept: *partial_kept,
+                    };
+                }
+            }
+            SessionEvent::TranscriptAppended {
+                item_id,
+                kind,
+                ledger_head,
+            } => {
+                self.items.push(SnapshotItem {
+                    item_id: item_id.clone(),
+                    kind: kind.clone(),
+                    ledger_head: ledger_head.clone(),
+                    item: None,
+                });
+                let over = self.items.len().saturating_sub(self.bounds.items);
+                if over > 0 {
+                    self.items.drain(..over);
+                    self.items_dropped += over as u64;
+                }
+            }
+            SessionEvent::HeadAttached {
+                head_id,
+                kind,
+                identity,
+            } => {
+                self.heads.retain(|h| &h.head_id != head_id);
+                self.heads.push(HeadPresence {
+                    head_id: head_id.clone(),
+                    kind: kind.clone(),
+                    identity: identity.clone(),
+                });
+            }
+            SessionEvent::HeadDetached { head_id, .. } => {
+                self.heads.retain(|h| &h.head_id != head_id);
+            }
+            SessionEvent::Warning { code, detail } => {
+                self.warnings.push(Warned {
+                    code: code.clone(),
+                    detail: detail.clone(),
+                    ts: env.ts,
+                });
+                let over = self.warnings.len().saturating_sub(self.bounds.warnings);
+                self.warnings.drain(..over);
+            }
+            // §6's plan is a full document. It belongs in the log, where a head can
+            // ask for it by seq; carrying every one of them in every snapshot would
+            // make the snapshot grow with the session.
+            SessionEvent::Explain { .. } => {}
+            // Who did what is history, and a head that was there saw it. It is not
+            // state a late head needs restated: the *effect* is in the transcript
+            // rows and the turn, which the snapshot already carries.
+            SessionEvent::CommandIssued { .. } => {}
+        }
+    }
+
+    fn call_mut(&mut self, call_id: &str) -> Option<&mut CallView> {
+        self.turn
+            .as_mut()?
+            .calls
+            .iter_mut()
+            .find(|c| c.call_id == call_id)
+    }
+
+    /// Attach content to an already-appended transcript row.
+    ///
+    /// See the module note: §4.5's `TranscriptAppended` has no content field, so
+    /// this is the seam by which the daemon supplies it. Idempotent, and a no-op
+    /// for an id the view has trimmed or never saw.
+    pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
+        if let Some(row) = self.items.iter_mut().find(|r| r.item_id == item_id) {
+            row.item = Some(item);
+        }
+    }
+
+    /// Cut a snapshot true as of `seq`.
+    pub fn snapshot(&self, seq: u64, dropped: u64) -> Snapshot {
+        Snapshot {
+            session_id: self.session_id.clone(),
+            seq,
+            dropped,
+            items_dropped: self.items_dropped,
+            items: self.items.clone(),
+            turn: self.turn.clone(),
+            open_decisions: self.open.clone(),
+            settled_decisions: self.settled.clone(),
+            warnings: self.warnings.clone(),
+            heads: self.heads.clone(),
+        }
+    }
+
+    pub fn open_decisions(&self) -> &[OpenDecision] {
+        &self.open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::log::{LogBounds, SessionLog};
+    use crate::testing::*;
+
+    fn fold(log: &SessionLog) -> SessionView {
+        let mut v = SessionView::new("s", ViewBounds::default());
+        for e in log.retained() {
+            v.apply(e);
+        }
+        v
+    }
+
+    #[test]
+    fn a_late_head_gets_the_text_once_not_the_deltas() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        for w in ["Hel", "lo ", "wor", "ld"] {
+            log.append(delta("t1", w));
+        }
+        let snap = fold(&log).snapshot(log.head_seq(), log.dropped());
+        assert_eq!(snap.turn.unwrap().text, "Hello world");
+    }
+
+    #[test]
+    fn progress_is_state_and_is_cleared_when_the_turn_ends() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        log.append(progress("t1"));
+        assert!(fold(&log).snapshot(1, 0).turn.unwrap().progress.is_some());
+        log.append(turn_finished("t1"));
+        assert!(
+            fold(&log).snapshot(3, 0).turn.unwrap().progress.is_none(),
+            "a finished turn has no prefill in flight, so there is nothing true to show"
+        );
+    }
+
+    #[test]
+    fn a_running_tool_renders_as_running_with_no_partial_output() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        log.append(proposed("t1", "c1", "read"));
+        log.append(SessionEvent::ToolStarted {
+            call_id: "c1".into(),
+            name: "read".into(),
+        });
+        log.append(tool_progress("c1", "…400 lines so far…"));
+        let snap = fold(&log).snapshot(4, 0);
+        let call = &snap.turn.unwrap().calls[0];
+        assert_eq!(call.state, CallState::Running);
+        // There is nowhere in `CallState::Running` to put the partial output. That
+        // is the design: it cannot leak because it has no home.
+        let json = serde_json::to_string(&snap.open_decisions).unwrap();
+        assert!(!json.contains("400 lines"));
+    }
+
+    #[test]
+    fn a_settled_decision_is_not_in_open_decisions_by_construction() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(requested("r1", "rm -rf"));
+        assert_eq!(fold(&log).open_decisions().len(), 1);
+        log.append(answered("r1", "deny"));
+        let v = fold(&log);
+        assert!(v.open_decisions().is_empty());
+        let snap = v.snapshot(2, 0);
+        assert_eq!(snap.settled_decisions.len(), 1);
+        assert_eq!(snap.settled_decisions[0].summary, "rm -rf");
+    }
+
+    #[test]
+    fn dropped_is_present_and_zero_in_the_wire_form() {
+        let v = SessionView::new("s", ViewBounds::default());
+        let json = serde_json::to_string(&v.snapshot(0, 0)).unwrap();
+        assert!(json.contains(r#""dropped":0"#), "{json}");
+        assert!(json.contains(r#""items_dropped":0"#), "{json}");
+    }
+
+    #[test]
+    fn transcript_content_arrives_out_of_band_and_absence_is_honest() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(SessionEvent::TranscriptAppended {
+            item_id: "s.0".into(),
+            kind: "user".into(),
+            ledger_head: "ab".into(),
+        });
+        let mut v = fold(&log);
+        assert_eq!(v.snapshot(1, 0).items[0].item, None);
+        v.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+            },
+        );
+        assert!(v.snapshot(1, 0).items[0].item.is_some());
+    }
+}

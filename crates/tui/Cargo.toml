@@ -1,0 +1,20 @@
+[package]
+name = "letibot-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+letibot-sessionlog.workspace = true
+letibot-transcript.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Raw mode and the window size. The only C this crate needs, and `libc` is already
+# in the tree via the token core.
+libc = "0.2"
+
+[[bin]]
+name = "letibot-tui"
+path = "src/bin/letibot-tui.rs"
