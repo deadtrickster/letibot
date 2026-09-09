@@ -435,6 +435,67 @@ direction is unfundable until it is answered.
 
 ---
 
+## T15 — Replace §10's compaction design with structural eviction — **design written, not scheduled**
+
+`docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
+with *destroying what is recoverable* (an accident). Falsifier B removed the usual
+justification — quality does not degrade with depth — so the trigger is the context
+wall and memory pressure only.
+
+The key constraint that rules out the easy fix: **plain eviction invalidates the
+prefix just as summarisation does**, because the prefix *is* the old turns. Both cost
+a re-prefill, so the question is what to get for it. Answer: replace an evicted span
+with a **structured, addressable map** rather than prose, maintained incrementally so
+there is no stop-the-world summarisation call, with zoom-in appended via `recall`
+rather than rewritten in place.
+
+Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
+
+---
+
+## T16 — W9's open questions — **several want an operator or a strand owner, not me**
+
+From the tool runtime, in descending order of consequence.
+
+1. **§8.1 clause 3 gives the outcome vocabulary but never the mapping.** Which outcome
+   is an empty `grep`? W9 decided: matches in scope or elsewhere ⇒ `Ok`; nothing
+   anywhere under any relaxation ⇒ `Abstained`; a nonexistent path ⇒ `Failed`. That
+   choice determines how often `propagate()` blocks a caller and should be recorded
+   rather than inherited.
+2. **D6 answered means M1 ships with clause 5 switched off.** `NoBudget` is correct per
+   D6 — unset is a genuine no-op — so **nothing spills until a budget is configured**.
+   A session-config gap, not a code one, and invisible unless said.
+3. **`Gate` will collide with W11.** W9 defined the smallest adjudication seam the
+   runtime needs (`admit(name, access, args)`). W11 should absorb it rather than build
+   a parallel one.
+4. **§8.1 clause 1 and §9.4 pull against each other.** Relaxing a pattern *is*
+   rewriting the query, which §9.4 forbids. The reconciling word is **visible**: every
+   relaxation appears in the result. Worth stating in §9.4 so nobody deletes one of
+   the two.
+5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
+   spill — so for that role the omission notice is advisory, which §8.3 says it must
+   not be. W9 shipped `read_spill` in its place.
+6. **Retrieval is inert.** `ask_code`/`ask_corpus` exist and abstain correctly, but the
+   oracle MCP endpoint (`192.168.1.55:9755`, SSE) **is not reachable from this box**,
+   so no client was written against something that could be tested. "Read-only tools
+   including ask_code/ask_corpus" is half-true today.
+7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
+   mark repeats across turns. Fine now, wrong once a head correlates across a session.
+
+---
+
+## T17 — Nothing assembles the daemon — **the last gap between here and M1**
+
+W6 parses tool calls; W9's runtime executes them; W7 logs; W8 renders. **No crate ties
+them together.** There is no `harnessd`. `ToolRuntime::transcript_item` and
+`ToolLogSink` are the two ends of that wire and both are tested; the loop between them
+does not exist.
+
+That loop *is* M1: submit, stream, parse a tool call, execute it, append the result,
+resubmit. Everything it needs is built and merged.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
