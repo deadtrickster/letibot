@@ -7,6 +7,9 @@ need no dependencies, which is the point: the layout is a fact about a file on d
 a fact you can re-read is not a fact you have to remember.
 
 Companion to `docs/qwen-attention.md`, **which this corrects in two places** (§6).
+What the layout *means* for memory is `docs/glm-and-dense-attention.md`, which computes
+the KV and state costs from these headers and reproduces three independently measured
+fleet numbers in the process.
 
 ---
 
