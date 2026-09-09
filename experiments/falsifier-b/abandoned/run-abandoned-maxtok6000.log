@@ -1,0 +1,7 @@
+building filler prefixes
+  depth target 20000: 10 pairs (20 turns) = 19190 tokens (-4.05%)
+  depth target 60000: 32 pairs (64 turns) = 60046 tokens (+0.08%)
+  depth target 150000: 76 pairs (152 turns) = 149713 tokens (-0.19%)
+[1/160] d=     0 rep0 merge_intervals        cache_n=     42 prompt_n=   295 pred=  856     8.1s  PASS
+[2/160] d=     0 rep0 parse_size             cache_n=     42 prompt_n=   510 pred= 6000    60.4s  TRUNC
+[3/160] d=     0 rep0 longest_common_prefix  cache_n=     42 prompt_n=   204 pred=  224     2.4s  PASS

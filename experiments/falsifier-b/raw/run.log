@@ -1,0 +1,165 @@
+building filler prefixes
+  depth target 20000: 10 pairs (20 turns) = 19190 tokens (-4.05%)
+  depth target 60000: 32 pairs (64 turns) = 60046 tokens (+0.08%)
+  depth target 150000: 76 pairs (152 turns) = 149713 tokens (-0.19%)
+[  1] d=     0 rep0 merge_intervals        cache_n=     42 prompt_n=   295 pred=  492   165.4s  FAILC
+[  3] d= 60000 rep0 merge_intervals        cache_n=  56548 prompt_n=  3795 pred=  514   166.2s  PASS
+[  2] d= 20000 rep0 merge_intervals        cache_n=     42 prompt_n= 19445 pred=  654   170.4s  PASS
+[  4] d=150000 rep0 merge_intervals        cache_n=     42 prompt_n=149968 pred=  785   186.4s  PASS
+[  7] d= 20000 rep0 parse_size             cache_n=  19192 prompt_n=   510 pred= 1857    56.6s  PASS
+[  9] d= 20000 rep0 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  197     7.0s  PASS
+[  6] d= 60000 rep0 parse_size             cache_n=  60048 prompt_n=   510 pred= 2539    82.3s  PASS
+[ 11] d= 60000 rep0 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  258     7.7s  PASS
+[  8] d=150000 rep0 parse_size             cache_n= 149715 prompt_n=   510 pred= 2865    85.8s  PASS
+[ 13] d=150000 rep0 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  354    12.1s  PASS
+[ 12] d= 60000 rep0 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1677    55.4s  PASS
+[ 10] d= 20000 rep0 lru_cache              cache_n=  19192 prompt_n=   391 pred= 2145    94.3s  PASS
+[ 14] d=150000 rep0 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1644    53.7s  PASS
+[ 15] d= 60000 rep0 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 1726    57.2s  PASS
+[ 17] d=150000 rep0 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 2515    78.8s  PASS
+[ 16] d= 20000 rep0 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 2482   103.6s  PASS
+[ 18] d= 60000 rep1 parse_size             cache_n=  60048 prompt_n=   510 pred= 2315    69.6s  PASS
+[ 21] d= 60000 rep1 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  183     6.0s  PASS
+[ 22] d= 60000 rep1 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1227    36.6s  PASS
+[ 19] d=150000 rep1 parse_size             cache_n= 149715 prompt_n=   510 pred= 2667    82.8s  FAILC
+[ 24] d=150000 rep1 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  447    14.3s  PASS
+[ 25] d=150000 rep1 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1810    57.9s  PASS
+[ 23] d= 60000 rep1 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 2330    97.7s  PASS
+[ 20] d= 20000 rep1 parse_size             cache_n=  19192 prompt_n=   510 pred= 4201   149.7s  PASS
+[ 28] d= 20000 rep1 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  265     8.6s  PASS
+[ 27] d= 60000 rep1 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  997    32.3s  PASS
+[ 30] d= 60000 rep2 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  178     6.8s  PASS
+[ 26] d=150000 rep1 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 1987    62.4s  PASS
+[ 32] d=150000 rep1 merge_intervals        cache_n= 149715 prompt_n=   295 pred=  536    14.7s  PASS
+[ 33] d=150000 rep2 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  252     7.7s  PASS
+[ 29] d= 20000 rep1 lru_cache              cache_n=  19192 prompt_n=   391 pred= 1930    86.0s  PASS
+[ 31] d= 60000 rep2 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1733    71.6s  PASS
+[ 34] d=150000 rep2 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1229    36.8s  PASS
+[ 35] d= 20000 rep1 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 1530    59.3s  PASS
+[ 38] d= 20000 rep1 merge_intervals        cache_n=  19192 prompt_n=   295 pred=  611    20.4s  compiles
+[ 39] d= 20000 rep2 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  236     7.4s  PASS
+[ 36] d= 60000 rep2 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 2372    79.3s  PASS
+[ 41] d= 60000 rep2 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  578    15.6s  PASS
+[  5] d=     0 rep0 parse_size             cache_n=     42 prompt_n=   510 pred=16000   644.9s  TRUNC
+[ 43] d=     0 rep0 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  457    17.9s  PASS
+[ 37] d=150000 rep2 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 4299   143.6s  PASS
+[ 42] d= 60000 rep2 parse_size             cache_n=  60048 prompt_n=   510 pred= 2248    72.2s  PASS
+[ 40] d= 20000 rep2 lru_cache              cache_n=  19192 prompt_n=   391 pred= 2398    94.7s  PASS
+[ 45] d=150000 rep2 merge_intervals        cache_n= 149715 prompt_n=   295 pred= 1088    34.2s  PASS
+[ 46] d= 60000 rep3 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1162    34.6s  PASS
+[ 48] d=150000 rep2 parse_size             cache_n= 149715 prompt_n=   510 pred= 2315    69.3s  PASS
+[ 50] d=150000 rep3 lru_cache              cache_n= 149715 prompt_n=   391 pred=  904    30.9s  PASS
+[ 49] d= 60000 rep3 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 2760    87.5s  PASS
+[ 52] d= 60000 rep3 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  657    18.4s  PASS
+[ 47] d= 20000 rep2 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 3983   169.0s  PASS
+[ 54] d= 20000 rep2 merge_intervals        cache_n=  19192 prompt_n=   295 pred=  361    11.2s  PASS
+[ 51] d=150000 rep3 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 3410   107.2s  PASS
+[ 53] d= 60000 rep3 parse_size             cache_n=  60048 prompt_n=   510 pred= 2951    99.2s  PASS
+[ 57] d= 60000 rep3 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  186     6.3s  PASS
+[ 44] d=     0 rep0 lru_cache              cache_n=     42 prompt_n=   391 pred= 6229   280.3s  FAILC
+[ 56] d=150000 rep3 merge_intervals        cache_n= 149715 prompt_n=   295 pred= 1010    30.5s  PASS
+[ 58] d= 60000 rep4 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 1718    56.4s  PASS
+[ 55] d= 20000 rep2 parse_size             cache_n=  19192 prompt_n=   510 pred= 3860   125.2s  FAILC
+[ 60] d=150000 rep3 parse_size             cache_n= 149715 prompt_n=   510 pred= 2059    62.3s  PASS
+[ 63] d=150000 rep3 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  210     7.5s  PASS
+[ 61] d= 60000 rep4 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  771    21.6s  PASS
+[ 62] d= 20000 rep3 lru_cache              cache_n=  19192 prompt_n=   391 pred= 1269    50.3s  PASS
+[ 65] d= 60000 rep4 parse_size             cache_n=  60048 prompt_n=   510 pred= 2712    78.5s  PASS
+[ 64] d=150000 rep4 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 2483    82.7s  FAILC
+[ 66] d= 20000 rep3 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 1811    60.8s  PASS
+[ 67] d= 60000 rep4 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  458    16.5s  PASS
+[ 68] d=150000 rep4 merge_intervals        cache_n= 149715 prompt_n=   295 pred=  845    24.9s  PASS
+[ 69] d= 20000 rep3 merge_intervals        cache_n=  19192 prompt_n=   295 pred= 1178    43.9s  PASS
+[ 70] d= 60000 rep4 lru_cache              cache_n=  60048 prompt_n=   391 pred= 2161    74.7s  PASS
+[ 73] d= 60000 rep5 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  499    13.8s  PASS
+[ 71] d=150000 rep4 parse_size             cache_n= 149715 prompt_n=   510 pred= 2684    82.8s  PASS
+[ 75] d=150000 rep4 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  244     8.2s  PASS
+[ 74] d= 60000 rep5 parse_size             cache_n=  60048 prompt_n=   510 pred= 1920    55.4s  PASS
+[ 77] d= 60000 rep5 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  380    14.2s  PASS
+[ 76] d=150000 rep4 lru_cache              cache_n= 149715 prompt_n=   391 pred= 2446    90.0s  PASS
+[ 78] d= 60000 rep5 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1241    40.1s  PASS
+[ 79] d=150000 rep5 merge_intervals        cache_n= 149715 prompt_n=   295 pred=  581    17.1s  PASS
+[ 72] d= 20000 rep3 parse_size             cache_n=  19192 prompt_n=   510 pred= 5296   186.3s  PASS
+[ 82] d= 20000 rep3 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  312    10.9s  PASS
+[ 80] d= 60000 rep5 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 1786    60.8s  PASS
+[ 81] d=150000 rep5 parse_size             cache_n= 149715 prompt_n=   510 pred= 2190    66.7s  PASS
+[ 85] d=150000 rep5 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred= 1034    33.8s  PASS
+[ 59] d=     0 rep0 parse_range_list       cache_n=     42 prompt_n=   447 pred=11589   487.4s  FAILC
+[ 83] d= 20000 rep4 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 3245   115.3s  PASS
+[ 84] d= 60000 rep6 parse_size             cache_n=  60048 prompt_n=   510 pred= 3196    99.5s  PASS
+[ 89] d= 60000 rep6 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  295     9.5s  PASS
+[ 86] d=150000 rep5 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1917    64.0s  PASS
+[ 88] d= 20000 rep4 merge_intervals        cache_n=  19192 prompt_n=   295 pred= 1109    42.2s  PASS
+[ 90] d= 60000 rep6 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1294    40.6s  PASS
+[ 93] d= 60000 rep6 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 1470    47.6s  PASS
+[ 94] d= 60000 rep6 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  630    18.4s  PASS
+[ 95] d= 60000 rep7 longest_common_prefix  cache_n=  60048 prompt_n=   204 pred=  309     9.6s  PASS
+[ 92] d= 20000 rep4 parse_size             cache_n=  19192 prompt_n=   510 pred= 2957    93.2s  PASS
+[ 97] d= 20000 rep4 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  373    12.2s  PASS
+[ 98] d= 20000 rep4 lru_cache              cache_n=  19192 prompt_n=   391 pred=  620    20.7s  PASS
+[ 99] d= 20000 rep5 merge_intervals        cache_n=  19192 prompt_n=   295 pred=  416    13.7s  PASS
+[ 96] d= 60000 rep7 lru_cache              cache_n=  60048 prompt_n=   391 pred= 1375    53.0s  PASS
+[ 91] d=150000 rep5 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 4840   168.3s  FAILC
+[102] d=150000 rep6 parse_size             cache_n= 149715 prompt_n=   510 pred= 1603    49.5s  PASS
+[103] d=150000 rep6 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  384    13.5s  PASS
+[101] d= 60000 rep7 parse_range_list       cache_n=  60048 prompt_n=   447 pred= 2075    69.0s  PASS
+[ 87] d=     0 rep1 parse_size             cache_n=     42 prompt_n=   510 pred= 6767   290.1s  PASS
+[106] d=     0 rep1 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  280     9.3s  PASS
+[105] d= 60000 rep7 merge_intervals        cache_n=  60048 prompt_n=   295 pred=  662    19.0s  PASS
+[104] d=150000 rep6 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1192    39.0s  PASS
+[100] d= 20000 rep5 parse_size             cache_n=  19192 prompt_n=   510 pred= 4219   126.3s  PASS
+[110] d= 20000 rep5 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  201     6.8s  PASS
+[108] d= 60000 rep7 parse_size             cache_n=  60048 prompt_n=   510 pred= 2451    78.2s  PASS
+[109] d=150000 rep6 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 2319    69.5s  PASS
+[107] d=     0 rep1 lru_cache              cache_n=     42 prompt_n=   391 pred= 2677   108.1s  PASS
+[112] d=150000 rep6 merge_intervals        cache_n= 149715 prompt_n=   295 pred=  440    13.1s  compiles
+[114] d=150000 rep7 longest_common_prefix  cache_n= 149715 prompt_n=   204 pred=  630    18.0s  PASS
+[111] d= 20000 rep5 lru_cache              cache_n=  19192 prompt_n=   391 pred= 2394    89.5s  FAILC
+[115] d=150000 rep7 lru_cache              cache_n= 149715 prompt_n=   391 pred= 1390    36.7s  PASS
+[117] d=150000 rep7 parse_range_list       cache_n= 149715 prompt_n=   447 pred= 2907    81.4s  PASS
+[118] d=150000 rep7 merge_intervals        cache_n= 149715 prompt_n=   295 pred=  743    17.0s  PASS
+[116] d= 20000 rep5 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 4249   144.6s  FAILC
+[119] d=150000 rep7 parse_size             cache_n= 149715 prompt_n=   510 pred= 2523    77.2s  PASS
+[120] d= 20000 rep6 parse_size             cache_n=  19192 prompt_n=   510 pred= 2153    55.3s  PASS
+[121] d= 20000 rep6 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  265     4.4s  PASS
+[122] d= 20000 rep6 lru_cache              cache_n=  19192 prompt_n=   391 pred= 1697    27.5s  PASS
+[113] d=     0 rep1 parse_range_list       cache_n=     42 prompt_n=   447 pred=10450   300.7s  PASS
+[124] d=     0 rep1 merge_intervals        cache_n=    333 prompt_n=     4 pred= 1573    24.8s  PASS
+[125] d=     0 rep2 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  285     4.2s  PASS
+[123] d= 20000 rep6 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 5368    90.2s  FAILC
+[127] d= 20000 rep6 merge_intervals        cache_n=  19192 prompt_n=   295 pred=  854    12.1s  PASS
+[128] d= 20000 rep7 longest_common_prefix  cache_n=  19192 prompt_n=   204 pred=  272     3.3s  PASS
+[129] d= 20000 rep7 lru_cache              cache_n=  19192 prompt_n=   391 pred=  733    11.5s  PASS
+[130] d= 20000 rep7 parse_range_list       cache_n=  19192 prompt_n=   447 pred= 3950    64.5s  PASS
+[131] d= 20000 rep7 merge_intervals        cache_n=  19192 prompt_n=   295 pred=  492     6.0s  PASS
+[132] d= 20000 rep7 parse_size             cache_n=  19192 prompt_n=   510 pred= 2055    25.6s  PASS
+[126] d=     0 rep2 lru_cache              cache_n=     42 prompt_n=   391 pred=16000   239.5s  TRUNC
+[133] d=     0 rep2 parse_range_list       cache_n=     42 prompt_n=   447 pred=13012   139.8s  PASS
+[134] d=     0 rep2 merge_intervals        cache_n=    333 prompt_n=     4 pred=  684     5.5s  PASS
+[135] d=     0 rep2 parse_size             cache_n=     42 prompt_n=   510 pred=10610   106.6s  PASS
+[136] d=     0 rep3 lru_cache              cache_n=     42 prompt_n=   391 pred= 5271    54.6s  PASS
+[137] d=     0 rep3 parse_range_list       cache_n=     42 prompt_n=   447 pred=14744   174.0s  PASS
+[138] d=     0 rep3 merge_intervals        cache_n=    333 prompt_n=     4 pred=  642     5.3s  PASS
+[139] d=     0 rep3 parse_size             cache_n=     42 prompt_n=   510 pred=13819   135.7s  PASS
+[140] d=     0 rep3 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  564     5.1s  PASS
+[141] d=     0 rep4 parse_range_list       cache_n=     42 prompt_n=   447 pred= 6447    67.3s  FAILC
+[142] d=     0 rep4 merge_intervals        cache_n=    333 prompt_n=     4 pred=  500     3.7s  PASS
+[143] d=     0 rep4 parse_size             cache_n=     42 prompt_n=   510 pred=16000    99.4s  TRUNC
+[144] d=     0 rep4 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  228     2.0s  PASS
+[145] d=     0 rep4 lru_cache              cache_n=     42 prompt_n=   391 pred= 8062    80.7s  PASS
+[146] d=     0 rep5 merge_intervals        cache_n=    333 prompt_n=     4 pred=  747     6.7s  FAILC
+[147] d=     0 rep5 parse_size             cache_n=     42 prompt_n=   510 pred=11431   118.2s  PASS
+[148] d=     0 rep5 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  241     1.9s  PASS
+[149] d=     0 rep5 lru_cache              cache_n=     42 prompt_n=   391 pred= 6489    64.4s  PASS
+[150] d=     0 rep5 parse_range_list       cache_n=     42 prompt_n=   447 pred=12072   128.7s  PASS
+[151] d=     0 rep6 parse_size             cache_n=     42 prompt_n=   510 pred= 9773    96.9s  PASS
+[152] d=     0 rep6 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  237     2.2s  PASS
+[153] d=     0 rep6 lru_cache              cache_n=     42 prompt_n=   391 pred=16000   187.7s  TRUNC
+[154] d=     0 rep6 parse_range_list       cache_n=     42 prompt_n=   447 pred=16000   172.2s  TRUNC
+[155] d=     0 rep6 merge_intervals        cache_n=    333 prompt_n=     4 pred=  597     5.2s  PASS
+[156] d=     0 rep7 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  195     1.7s  PASS
+[157] d=     0 rep7 lru_cache              cache_n=     42 prompt_n=   391 pred= 7369    78.7s  PASS
+[158] d=     0 rep7 parse_range_list       cache_n=     42 prompt_n=   447 pred= 9380    99.3s  FAILC
+[159] d=     0 rep7 merge_intervals        cache_n=    333 prompt_n=     4 pred=  474     4.6s  PASS
+[160] d=     0 rep7 parse_size             cache_n=     42 prompt_n=   510 pred=12077   121.6s  PASS
+done in 75.8 min

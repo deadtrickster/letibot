@@ -1,0 +1,428 @@
+{
+  "manifest": {
+    "started": 1788942049.2341928,
+    "model": "qwen-3.8-flash-next",
+    "n_ctx_per_slot": 262144,
+    "total_slots": 5,
+    "server_defaults": {
+      "seed": 4294967295,
+      "temperature": 1.0,
+      "dynatemp_range": 0.0,
+      "dynatemp_exponent": 1.0,
+      "top_k": 20,
+      "top_p": 0.949999988079071,
+      "min_p": 0.0,
+      "top_n_sigma": -1.0,
+      "xtc_probability": 0.0,
+      "xtc_threshold": 0.10000000149011612,
+      "typical_p": 1.0,
+      "repeat_last_n": 64,
+      "repeat_penalty": 1.0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "dry_multiplier": 0.0,
+      "dry_base": 1.75,
+      "dry_allowed_length": 2,
+      "dry_penalty_last_n": 64,
+      "mirostat": 0,
+      "mirostat_tau": 5.0,
+      "mirostat_eta": 0.10000000149011612,
+      "adaptive_target": -1.0,
+      "adaptive_decay": 0.8999999761581421,
+      "max_tokens": -1,
+      "n_predict": -1,
+      "n_keep": 0,
+      "n_discard": 0,
+      "ignore_eos": false,
+      "stream": false,
+      "n_probs": 0,
+      "min_keep": 0,
+      "chat_format": "Content-only",
+      "reasoning_format": "none",
+      "reasoning_in_content": false,
+      "generation_prompt": "",
+      "samplers": [
+        "penalties",
+        "dry",
+        "top_n_sigma",
+        "top_k",
+        "typ_p",
+        "top_p",
+        "min_p",
+        "xtc",
+        "temperature"
+      ],
+      "speculative.types": "none",
+      "timings_per_token": false,
+      "post_sampling_probs": false,
+      "backend_sampling": false,
+      "lora": []
+    },
+    "concurrency": 4,
+    "concurrency_note": "one worker per depth, each pinned to its own slot; timings are NOT idle-machine per-request numbers",
+    "slot_for_depth": {
+      "0": 0,
+      "20000": 1,
+      "60000": 2,
+      "150000": 4
+    },
+    "max_tokens": 16000,
+    "reps": 8,
+    "tasks": [
+      "merge_intervals",
+      "parse_size",
+      "longest_common_prefix",
+      "lru_cache",
+      "parse_range_list"
+    ],
+    "corpus": [
+      "/home/dead/Projects/letibot/docs/implementation-plan.md",
+      "/home/dead/Projects/letibot/docs/design-brief.md",
+      "/home/dead/Projects/letibot/docs/workstreams.md",
+      "/home/dead/Projects/letibot/docs/survey.md",
+      "/home/dead/Projects/letibot/docs/chat-templates.md",
+      "/home/dead/GLM-TODO.md",
+      "/home/dead/GLM-STATE.md",
+      "/home/dead/Projects/llama.cpp-notes/T4-test-plan.md",
+      "/home/dead/Projects/llama.cpp/HANDOVER-llama-upstream-pr.md",
+      "/home/dead/Projects/rano/PLAN.md"
+    ],
+    "depths": {
+      "0": {
+        "target": 0,
+        "actual_tokens": 0,
+        "turns": 0
+      },
+      "20000": {
+        "target": 20000,
+        "actual_tokens": 19190,
+        "turns": 20
+      },
+      "60000": {
+        "target": 60000,
+        "actual_tokens": 60046,
+        "turns": 64
+      },
+      "150000": {
+        "target": 150000,
+        "actual_tokens": 149713,
+        "turns": 152
+      }
+    }
+  },
+  "by_depth": {
+    "0": {
+      "depth_tokens": 0,
+      "n_scored": 35,
+      "n_truncated": 5,
+      "n_transport_error": 0,
+      "n_no_code_block": 0,
+      "compiles": 29,
+      "tests_pass": 29,
+      "compile_rate": 0.8285714285714286,
+      "pass_rate": 0.8285714285714286,
+      "pass_rate_ci95": [
+        0.6731739236041119,
+        0.9189747005514327
+      ],
+      "per_rep_pass_rates": [
+        0.25,
+        1.0,
+        1.0,
+        1.0,
+        0.75,
+        0.8,
+        1.0,
+        0.8
+      ],
+      "per_rep_sd": 0.23979157616563598
+    },
+    "20000": {
+      "depth_tokens": 19190,
+      "n_scored": 40,
+      "n_truncated": 0,
+      "n_transport_error": 0,
+      "n_no_code_block": 0,
+      "compiles": 36,
+      "tests_pass": 35,
+      "compile_rate": 0.9,
+      "pass_rate": 0.875,
+      "pass_rate_ci95": [
+        0.7388757932976185,
+        0.9454058022645871
+      ],
+      "per_rep_pass_rates": [
+        1.0,
+        0.8,
+        0.8,
+        1.0,
+        1.0,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "per_rep_sd": 0.13919410907075055
+    },
+    "60000": {
+      "depth_tokens": 60046,
+      "n_scored": 40,
+      "n_truncated": 0,
+      "n_transport_error": 0,
+      "n_no_code_block": 0,
+      "compiles": 40,
+      "tests_pass": 40,
+      "compile_rate": 1.0,
+      "pass_rate": 1.0,
+      "pass_rate_ci95": [
+        0.9123754607496077,
+        1.0
+      ],
+      "per_rep_pass_rates": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "per_rep_sd": 0.0
+    },
+    "150000": {
+      "depth_tokens": 149713,
+      "n_scored": 40,
+      "n_truncated": 0,
+      "n_transport_error": 0,
+      "n_no_code_block": 0,
+      "compiles": 37,
+      "tests_pass": 36,
+      "compile_rate": 0.925,
+      "pass_rate": 0.9,
+      "pass_rate_ci95": [
+        0.7694792561952611,
+        0.9604211124044252
+      ],
+      "per_rep_pass_rates": [
+        1.0,
+        0.8,
+        1.0,
+        1.0,
+        0.8,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "per_rep_sd": 0.09999999999999998
+    }
+  },
+  "by_depth_task": {
+    "merge_intervals": {
+      "0": {
+        "pass": 6,
+        "n": 8,
+        "compiles": 6
+      },
+      "20000": {
+        "pass": 7,
+        "n": 8,
+        "compiles": 8
+      },
+      "60000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "150000": {
+        "pass": 7,
+        "n": 8,
+        "compiles": 8
+      }
+    },
+    "parse_size": {
+      "0": {
+        "pass": 6,
+        "n": 6,
+        "compiles": 6
+      },
+      "20000": {
+        "pass": 7,
+        "n": 8,
+        "compiles": 7
+      },
+      "60000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "150000": {
+        "pass": 7,
+        "n": 8,
+        "compiles": 7
+      }
+    },
+    "longest_common_prefix": {
+      "0": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "20000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "60000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "150000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      }
+    },
+    "lru_cache": {
+      "0": {
+        "pass": 5,
+        "n": 6,
+        "compiles": 5
+      },
+      "20000": {
+        "pass": 7,
+        "n": 8,
+        "compiles": 7
+      },
+      "60000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "150000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      }
+    },
+    "parse_range_list": {
+      "0": {
+        "pass": 4,
+        "n": 7,
+        "compiles": 4
+      },
+      "20000": {
+        "pass": 6,
+        "n": 8,
+        "compiles": 6
+      },
+      "60000": {
+        "pass": 8,
+        "n": 8,
+        "compiles": 8
+      },
+      "150000": {
+        "pass": 6,
+        "n": 8,
+        "compiles": 6
+      }
+    }
+  },
+  "cache": {
+    "0": {
+      "first_cache_n": 42,
+      "first_prompt_n": 295,
+      "first_prompt_ms": 2637.388,
+      "median_cache_n": 42,
+      "median_prompt_n": 391,
+      "median_prompt_ms": 357.289,
+      "median_predicted_per_second": 97.02943740702301,
+      "median_wall_s": 80.657
+    },
+    "20000": {
+      "first_cache_n": 42,
+      "first_prompt_n": 19445,
+      "first_prompt_ms": 19319.143,
+      "median_cache_n": 19192,
+      "median_prompt_n": 391,
+      "median_prompt_ms": 525.739,
+      "median_predicted_per_second": 31.003011284967567,
+      "median_wall_s": 50.281
+    },
+    "60000": {
+      "first_cache_n": 56548,
+      "first_prompt_n": 3795,
+      "first_prompt_ms": 16987.211,
+      "median_cache_n": 60048,
+      "median_prompt_n": 391,
+      "median_prompt_ms": 655.967,
+      "median_predicted_per_second": 31.679049489903296,
+      "median_wall_s": 47.646
+    },
+    "150000": {
+      "first_cache_n": 42,
+      "first_prompt_n": 149968,
+      "first_prompt_ms": 144648.53,
+      "median_cache_n": 149715,
+      "median_prompt_n": 391,
+      "median_prompt_ms": 804.746,
+      "median_predicted_per_second": 32.84800115750332,
+      "median_wall_s": 49.457
+    }
+  },
+  "run_losses": {
+    "truncated": 5,
+    "transport_error": 0,
+    "total_samples": 160,
+    "truncated_by_depth": {
+      "0": 5,
+      "20000": 0,
+      "60000": 0,
+      "150000": 0
+    },
+    "truncated_by_task": {
+      "merge_intervals": 0,
+      "parse_size": 2,
+      "longest_common_prefix": 0,
+      "lru_cache": 2,
+      "parse_range_list": 1
+    }
+  },
+  "output_length": {
+    "0": {
+      "median": 6468.0,
+      "mean": 6661.6,
+      "p90": 16000,
+      "max": 16000,
+      "n": 40
+    },
+    "20000": {
+      "median": 1613.5,
+      "mean": 1854.95,
+      "p90": 4219,
+      "max": 5368,
+      "n": 40
+    },
+    "60000": {
+      "median": 1334.5,
+      "mean": 1399.85,
+      "p90": 2712,
+      "max": 3196,
+      "n": 40
+    },
+    "150000": {
+      "median": 1496.5,
+      "mean": 1644.525,
+      "p90": 2907,
+      "max": 4840,
+      "n": 40
+    }
+  },
+  "significance": {
+    "0_vs_20000": 0.7456099115024747,
+    "0_vs_60000": 0.00806100331471738,
+    "0_vs_150000": 0.4998522474575257,
+    "20000_vs_150000": 1.0,
+    "0_vs_all_depths_pooled": 0.10678293827891151
+  }
+}

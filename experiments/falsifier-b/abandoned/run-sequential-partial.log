@@ -1,0 +1,16 @@
+building filler prefixes
+  depth target 20000: 10 pairs (20 turns) = 19190 tokens (-4.05%)
+  depth target 60000: 32 pairs (64 turns) = 60046 tokens (+0.08%)
+  depth target 150000: 76 pairs (152 turns) = 149713 tokens (-0.19%)
+[1/160] d=     0 rep0 merge_intervals        cache_n=    333 prompt_n=     4 pred=  522     3.7s  PASS
+[2/160] d=     0 rep0 parse_size             cache_n=     42 prompt_n=   510 pred= 9128    90.9s  FAILC
+[3/160] d=     0 rep0 longest_common_prefix  cache_n=    242 prompt_n=     4 pred=  237     2.0s  PASS
+[4/160] d=     0 rep0 lru_cache              cache_n=     42 prompt_n=   391 pred=16000   184.0s  TRUNC
+[5/160] d=     0 rep0 parse_range_list       cache_n=     42 prompt_n=   447 pred=14234   154.3s  PASS
+[6/160] d=     0 rep1 parse_size             cache_n=     42 prompt_n=   510 pred=16000   154.2s  TRUNC
+[7/160] d=     0 rep1 longest_common_prefix  cache_n=    242 prompt_n=     4 pred= 1268    12.3s  PASS
+[8/160] d=     0 rep1 lru_cache              cache_n=     42 prompt_n=   391 pred= 3101    35.4s  PASS
+[9/160] d=     0 rep1 parse_range_list       cache_n=     42 prompt_n=   447 pred=10025   103.5s  PASS
+[10/160] d=     0 rep1 merge_intervals        cache_n=    333 prompt_n=     4 pred=  634     4.9s  PASS
+[11/160] d=     0 rep2 longest_common_prefix  cache_n=     42 prompt_n=   204 pred=  191     1.6s  PASS
+[12/160] d=     0 rep2 lru_cache              cache_n=     42 prompt_n=   391 pred= 2929    28.0s  PASS
