@@ -1,11 +1,92 @@
-//! The renderer. Every rule here was measured against `POST /apply-template`.
+//! The second renderer: hand-written, demoted, kept as a differential.
+//!
+//! Every rule here was measured against `POST /apply-template` and is now gated
+//! against CPython Jinja2 (`tests/fidelity/`). T1 replaced it as the *production*
+//! renderer — the shipped template run through minijinja does the same job for every
+//! model rather than for one — but two independent implementations that agree on 139
+//! cases are stronger evidence than one implementation that passes its own tests, and
+//! that is the job this file now has.
+//!
+//! It renders one thing only: the training format, as CPython Jinja2 produces it. The
+//! `server-bug-compatible` profile that used to live here — reproducing minja's
+//! cross-iteration `{% set %}` leak — is gone (T2). It cannot be produced by a
+//! template-driven renderer without deliberately reintroducing someone else's bug, and
+//! the thing it was evidence for is better served by running the real template through
+//! a correct engine.
 
+use crate::ReasoningEffort;
 use crate::json::arg_value_text;
 use crate::tokens as tk;
-use crate::{GlmQuirks, ReasoningEffort};
-use letibot_dialect::{RenderSpan, StablePrefix};
+use letibot_dialect::{ControlToken, RenderSpan, StablePrefix};
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::Value;
+
+/// GLM's hand-written renderer.
+///
+/// A pure function of `(effort, prefix, items)`, and now visibly so: the builder that
+/// carried a conversation around so that `render_incremental`'s trait signature could
+/// pretend to be stateless is gone with the trait. Appending takes the history as an
+/// argument, which is what it always needed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GlmRenderer {
+    effort: ReasoningEffort,
+}
+
+impl GlmRenderer {
+    pub fn new() -> Self {
+        GlmRenderer::default()
+    }
+
+    pub fn with_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    pub fn effort(&self) -> ReasoningEffort {
+        self.effort
+    }
+
+    /// The whole prompt: stable prefix, then every item.
+    pub fn render(&self, prefix: &StablePrefix, items: &[TranscriptItem]) -> Vec<RenderSpan> {
+        let mut out = Vec::new();
+        render_prefix(self.effort, prefix, &mut out);
+        let mut st = State::default();
+        render_items(items, &mut st, &mut out);
+        out
+    }
+
+    /// The spans to **append** to a render of `history`, for `new_items`.
+    ///
+    /// Must agree with [`GlmRenderer::render`]: rendering `history + new` from scratch
+    /// equals rendering `history` and appending this. The whole append-only design
+    /// rests on it, and because it is a pure function it is property-testable
+    /// exhaustively with no model present (`tests/invariants.rs`).
+    ///
+    /// `history` is the transcript already rendered, in full. It is not a `usize`,
+    /// because GLM's boundary state — is an assistant turn open, was `<think>` already
+    /// emitted, was the previous item a tool result — is not derivable from one. That
+    /// was CONTRACT-GAP-1, and the fix is an argument rather than a builder that
+    /// panicked when the caller forgot.
+    ///
+    /// The stable prefix is never re-emitted here: it is not an item, so
+    /// `render(prefix, &[])` owns it and `render_incremental(&[], items)` starts at
+    /// item 0.
+    pub fn render_incremental(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> Vec<RenderSpan> {
+        let mut st = State::default();
+        if !history.is_empty() {
+            // Replay the already-rendered items for their effect on the state only.
+            let mut discard = Vec::new();
+            render_items(history, &mut st, &mut discard);
+        }
+        let mut out = Vec::new();
+        render_items(new_items, &mut st, &mut out);
+        out
+    }
+}
 
 /// Where inside an assistant turn the renderer currently is.
 ///
@@ -21,15 +102,15 @@ enum Think {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct State {
+struct State {
     assistant_open: bool,
     think: Think,
-    /// The most recent **non-empty** reasoning text. Only used by
-    /// `GlmQuirks::reasoning_leak`; non-empty because llama.cpp drops an empty
-    /// `reasoning_content` before the template sees it, so an empty think block does
-    /// not reset the leaked value.
-    last_reasoning: Option<String>,
     prev_was_tool_result: bool,
+}
+
+/// Push a control token. A `clone` of a `Cow::Borrowed`, so it allocates nothing.
+fn ctl(out: &mut Vec<RenderSpan>, token: &ControlToken) {
+    out.push(RenderSpan::Control(token.clone()));
 }
 
 fn text(out: &mut Vec<RenderSpan>, s: impl Into<String>) {
@@ -45,19 +126,15 @@ fn text(out: &mut Vec<RenderSpan>, s: impl Into<String>) {
 /// This is the whole of what the server's prefix cache is keyed on, and the order is
 /// not ours to choose: the template emits the effort line and the tool block before
 /// it enters the message loop, so a bootstrap system message is *after* both.
-pub(crate) fn render_prefix(
-    effort: ReasoningEffort,
-    prefix: &StablePrefix,
-    out: &mut Vec<RenderSpan>,
-) {
-    out.push(RenderSpan::Control(tk::GMASK));
-    out.push(RenderSpan::Control(tk::SOP));
+fn render_prefix(effort: ReasoningEffort, prefix: &StablePrefix, out: &mut Vec<RenderSpan>) {
+    ctl(out, &tk::GMASK);
+    ctl(out, &tk::SOP);
 
-    out.push(RenderSpan::Control(tk::SYSTEM));
+    ctl(out, &tk::SYSTEM);
     text(out, format!("Reasoning Effort: {}", effort.rendered()));
 
     if !prefix.tools_json.is_empty() {
-        out.push(RenderSpan::Control(tk::SYSTEM));
+        ctl(out, &tk::SYSTEM);
         let mut head = String::from(
             "\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\n\
              You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n",
@@ -74,46 +151,47 @@ pub(crate) fn render_prefix(
         // The instruction line spells out GLM's own tool-call tokens, and they are
         // real single-token vocab entries even here, inside a system prompt. Emitting
         // them as text would tokenize the instruction differently from training.
-        out.push(RenderSpan::Control(tk::TOOL_CALL_OPEN));
+        ctl(out, &tk::TOOL_CALL_OPEN);
         text(out, "{function-name}");
-        out.push(RenderSpan::Control(tk::ARG_KEY_OPEN));
+        ctl(out, &tk::ARG_KEY_OPEN);
         text(out, "{arg-key-1}");
-        out.push(RenderSpan::Control(tk::ARG_KEY_CLOSE));
-        out.push(RenderSpan::Control(tk::ARG_VALUE_OPEN));
+        ctl(out, &tk::ARG_KEY_CLOSE);
+        ctl(out, &tk::ARG_VALUE_OPEN);
         text(out, "{arg-value-1}");
-        out.push(RenderSpan::Control(tk::ARG_VALUE_CLOSE));
-        out.push(RenderSpan::Control(tk::ARG_KEY_OPEN));
+        ctl(out, &tk::ARG_VALUE_CLOSE);
+        ctl(out, &tk::ARG_KEY_OPEN);
         text(out, "{arg-key-2}");
-        out.push(RenderSpan::Control(tk::ARG_KEY_CLOSE));
-        out.push(RenderSpan::Control(tk::ARG_VALUE_OPEN));
+        ctl(out, &tk::ARG_KEY_CLOSE);
+        ctl(out, &tk::ARG_VALUE_OPEN);
         text(out, "{arg-value-2}");
-        out.push(RenderSpan::Control(tk::ARG_VALUE_CLOSE));
+        ctl(out, &tk::ARG_VALUE_CLOSE);
         text(out, "...");
-        out.push(RenderSpan::Control(tk::TOOL_CALL_CLOSE));
+        ctl(out, &tk::TOOL_CALL_CLOSE);
     }
 
     if !prefix.system.is_empty() {
-        out.push(RenderSpan::Control(tk::SYSTEM));
+        ctl(out, &tk::SYSTEM);
         text(out, prefix.system.clone());
     }
 }
 
 /// `<|assistant|><think>` — what the model is handed to start speaking.
 ///
-/// Deliberately **not** part of `render`. A generation prompt is not a transcript
-/// item, and folding it into `render` would break `render_incremental ≡ render` for
-/// every conversation whose next item is a user message: the appended bytes would
-/// have to be un-appended first. See CONTRACT-GAP-1 in the crate docs.
+/// Deliberately **not** part of a render. A generation prompt is not a transcript
+/// item, and folding it in would break `render_incremental ≡ render` for every
+/// conversation whose next item is a user message: the appended bytes would have to be
+/// un-appended first. The template-driven renderer says the same thing with
+/// `add_generation_prompt`, which is where the contract now leaves it.
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
-        RenderSpan::Control(tk::ASSISTANT),
-        RenderSpan::Control(tk::THINK_OPEN),
+        RenderSpan::Control(tk::ASSISTANT.clone()),
+        RenderSpan::Control(tk::THINK_OPEN.clone()),
     ]
 }
 
 fn ensure_turn(st: &mut State, out: &mut Vec<RenderSpan>) {
     if !st.assistant_open {
-        out.push(RenderSpan::Control(tk::ASSISTANT));
+        ctl(out, &tk::ASSISTANT);
         st.assistant_open = true;
         st.think = Think::None;
     }
@@ -122,7 +200,7 @@ fn ensure_turn(st: &mut State, out: &mut Vec<RenderSpan>) {
 fn ensure_think_open(st: &mut State, out: &mut Vec<RenderSpan>) {
     ensure_turn(st, out);
     if st.think == Think::None {
-        out.push(RenderSpan::Control(tk::THINK_OPEN));
+        ctl(out, &tk::THINK_OPEN);
         st.think = Think::Open;
     }
 }
@@ -132,23 +210,13 @@ fn close_turn(st: &mut State) {
     st.think = Think::None;
 }
 
-pub(crate) fn render_items(
-    quirks: GlmQuirks,
-    items: &[TranscriptItem],
-    st: &mut State,
-    out: &mut Vec<RenderSpan>,
-) {
+fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSpan>) {
     for item in items {
-        render_item(quirks, item, st, out);
+        render_item(item, st, out);
     }
 }
 
-fn render_item(
-    quirks: GlmQuirks,
-    item: &TranscriptItem,
-    st: &mut State,
-    out: &mut Vec<RenderSpan>,
-) {
+fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>) {
     match item {
         // Zero-width by contract. Not even a state transition: a segment boundary
         // between two tool results must not split the observation block.
@@ -157,14 +225,14 @@ fn render_item(
         TranscriptItem::System { text: t, .. } => {
             close_turn(st);
             st.prev_was_tool_result = false;
-            out.push(RenderSpan::Control(tk::SYSTEM));
+            ctl(out, &tk::SYSTEM);
             text(out, t.clone());
         }
 
         TranscriptItem::User { parts } => {
             close_turn(st);
             st.prev_was_tool_result = false;
-            out.push(RenderSpan::Control(tk::USER));
+            ctl(out, &tk::USER);
             render_user_parts(parts, out);
         }
 
@@ -177,61 +245,47 @@ fn render_item(
                 close_turn(st);
             }
             ensure_think_open(st, out);
-            if t.is_empty() && quirks.reasoning_leak {
-                // llama.cpp drops `reasoning_content` when it is the empty string, so
-                // the template cannot tell an empty think block from an absent one and
-                // the leaked value survives. Modelling the leak means modelling that.
-                if let Some(prev) = &st.last_reasoning {
-                    text(out, prev.clone());
-                }
-            } else {
-                text(out, t.clone());
-            }
-            out.push(RenderSpan::Control(tk::THINK_CLOSE));
+            text(out, t.clone());
+            ctl(out, &tk::THINK_CLOSE);
             st.think = Think::Closed;
-            if !t.is_empty() {
-                st.last_reasoning = Some(t.clone());
-            }
         }
 
         TranscriptItem::Assistant { text: t, tool_calls } => {
             st.prev_was_tool_result = false;
             if st.think != Think::Closed {
                 ensure_think_open(st, out);
-                if let Some(prev) = st.last_reasoning.as_ref().filter(|_| quirks.reasoning_leak)
-                {
-                    text(out, prev.clone());
-                }
-                out.push(RenderSpan::Control(tk::THINK_CLOSE));
+                ctl(out, &tk::THINK_CLOSE);
                 st.think = Think::Closed;
             }
             // `{%- if content.strip() -%}{{ content.strip() }}{%- endif -%}`:
             // assistant content is stripped, user content is not.
             text(out, t.trim().to_string());
             for call in tool_calls {
-                out.push(RenderSpan::Control(tk::TOOL_CALL_OPEN));
+                ctl(out, &tk::TOOL_CALL_OPEN);
                 text(out, call.name.clone());
                 for (key, value) in arguments_of(&call.arguments) {
-                    out.push(RenderSpan::Control(tk::ARG_KEY_OPEN));
+                    ctl(out, &tk::ARG_KEY_OPEN);
                     text(out, key);
-                    out.push(RenderSpan::Control(tk::ARG_KEY_CLOSE));
-                    out.push(RenderSpan::Control(tk::ARG_VALUE_OPEN));
+                    ctl(out, &tk::ARG_KEY_CLOSE);
+                    ctl(out, &tk::ARG_VALUE_OPEN);
                     text(out, arg_value_text(&value));
-                    out.push(RenderSpan::Control(tk::ARG_VALUE_CLOSE));
+                    ctl(out, &tk::ARG_VALUE_CLOSE);
                 }
-                out.push(RenderSpan::Control(tk::TOOL_CALL_CLOSE));
+                ctl(out, &tk::TOOL_CALL_CLOSE);
             }
         }
 
-        TranscriptItem::ToolResult { outcome, payload, .. } => {
+        TranscriptItem::ToolResult {
+            outcome, payload, ..
+        } => {
             close_turn(st);
             if !st.prev_was_tool_result {
-                out.push(RenderSpan::Control(tk::OBSERVATION));
+                ctl(out, &tk::OBSERVATION);
             }
             st.prev_was_tool_result = true;
-            out.push(RenderSpan::Control(tk::TOOL_RESPONSE_OPEN));
+            ctl(out, &tk::TOOL_RESPONSE_OPEN);
             text(out, outcome_envelope(outcome, payload));
-            out.push(RenderSpan::Control(tk::TOOL_RESPONSE_CLOSE));
+            ctl(out, &tk::TOOL_RESPONSE_CLOSE);
         }
     }
 }
@@ -318,9 +372,9 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
             }
             UserPart::Image { .. } => {
                 flush(&mut pending, out);
-                out.push(RenderSpan::Control(tk::BEGIN_OF_IMAGE));
-                out.push(RenderSpan::Control(tk::IMAGE));
-                out.push(RenderSpan::Control(tk::END_OF_IMAGE));
+                ctl(out, &tk::BEGIN_OF_IMAGE);
+                ctl(out, &tk::IMAGE);
+                ctl(out, &tk::END_OF_IMAGE);
                 last_was_media = true;
             }
         }
@@ -331,14 +385,14 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
 /// True when the transcript ends with an assistant turn already open — i.e. no
 /// generation prompt should be appended, and the oracle must be asked with
 /// `add_generation_prompt: false`.
-pub(crate) fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
+pub fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
     let mut st = State::default();
     let mut discard = Vec::new();
-    render_items(GlmQuirks::default(), items, &mut st, &mut discard);
+    render_items(items, &mut st, &mut discard);
     st.assistant_open
 }
 
-/// Something about this transcript that the renderer cannot render faithfully.
+/// Something about this transcript that GLM's template cannot render faithfully.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anomaly {
     /// Tool results appear in an order other than the order of the calls they
@@ -354,27 +408,35 @@ pub enum Anomaly {
     ToolCallArgumentsNotAnObject { at: usize, name: String },
 }
 
-pub(crate) fn check_transcript(items: &[TranscriptItem]) -> Vec<Anomaly> {
+/// Report transcript shapes that cannot be rendered faithfully.
+///
+/// Declarative on purpose, in the same spirit as `Guard`: this says what is wrong, the
+/// caller decides. Empty means the render will match the shipped template.
+///
+/// A free function, not a renderer method: every anomaly here is a property of GLM's
+/// *template* — its sort, its `.items()` call — so it applies to whoever renders it.
+pub fn check_transcript(items: &[TranscriptItem]) -> Vec<Anomaly> {
     let mut out = Vec::new();
     let mut last_calls: Vec<String> = Vec::new();
     let mut block_ids: Vec<(usize, String)> = Vec::new();
 
-    let finish_block = |block: &mut Vec<(usize, String)>, calls: &[String], out: &mut Vec<Anomaly>| {
-        if block.is_empty() {
-            return;
-        }
-        let positions: Vec<Option<usize>> = block
-            .iter()
-            .map(|(_, id)| calls.iter().position(|c| c == id))
-            .collect();
-        if positions.iter().all(Option::is_some) {
-            let p: Vec<usize> = positions.into_iter().map(Option::unwrap).collect();
-            if p.windows(2).any(|w| w[0] > w[1]) {
-                out.push(Anomaly::ToolResultsOutOfCallOrder { at: block[0].0 });
+    let finish_block =
+        |block: &mut Vec<(usize, String)>, calls: &[String], out: &mut Vec<Anomaly>| {
+            if block.is_empty() {
+                return;
             }
-        }
-        block.clear();
-    };
+            let positions: Vec<Option<usize>> = block
+                .iter()
+                .map(|(_, id)| calls.iter().position(|c| c == id))
+                .collect();
+            if positions.iter().all(Option::is_some) {
+                let p: Vec<usize> = positions.into_iter().map(Option::unwrap).collect();
+                if p.windows(2).any(|w| w[0] > w[1]) {
+                    out.push(Anomaly::ToolResultsOutOfCallOrder { at: block[0].0 });
+                }
+            }
+            block.clear();
+        };
 
     for (i, item) in items.iter().enumerate() {
         match item {

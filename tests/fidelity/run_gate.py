@@ -3,9 +3,30 @@
 
     AUTHORITY (gates)       our `faithful` render  ==  CPython Jinja2 + transformers
     PROVENANCE (gates)      no RenderSpan::Control originates in substituted DATA
-    PROFILES (gates)        `server-bug-compatible` differs from the training
-                            runtime exactly on the fixtures that declare a divergence
-    INTEROP (reports only)  how llama.cpp's own renderer would differ
+    INTEROP (reports only)  how llama.cpp's own renderer would differ, and whether
+                            each declared divergence still reproduces
+
+WHAT HAPPENED TO THE PROFILES PHASE
+===================================
+
+There used to be a third gating phase. `letibot-render --profile
+server-bug-compatible` rendered the corpus a second time with a quirk that
+reproduced minja's cross-iteration `{% set %}` leak, and the gate required the
+two profiles to differ exactly on the fixtures that declared a divergence.
+
+T2 removed it, and the reason is worth keeping. Its purpose was to show we
+understood the shipped template well enough to reproduce llama.cpp's renderer
+exactly, which is what earned the `faithful` profile the standing to call a
+difference a divergence. Under T1 prompts are rendered by running the real
+template through a correct Jinja engine, and *that* is stronger evidence than
+reproducing a wrong one — while keeping the quirk would mean carrying a
+deliberate reimplementation of someone else's bug forever.
+
+The declarations did not become decoration with it. A fixture's `divergences`
+list is now checked in INTEROP, against the server itself rather than against
+our model of it: a declared divergence that the server no longer produces is
+reported there, which is the same two-sided check one hop closer to the thing
+being described. It does not gate, because it needs a server.
 
 WHY THE AUTHORITY MOVED
 =======================
@@ -206,64 +227,7 @@ def phase_authority(
 
 
 # --------------------------------------------------------------------------
-# Phase 2 - the two profiles must disagree, and only where we said they would
-# --------------------------------------------------------------------------
-
-
-def phase_profiles(bug_cases: list[dict], template: str, verbose: bool) -> list[str]:
-    """`server-bug-compatible` models minja; it must differ, and only as declared.
-
-    Both profiles have to survive. One is the training format, the other is our
-    model of llama.cpp's bug, and the pair is only a measurement while they
-    disagree in a place we can name:
-
-      * a fixture that DECLARES a divergence and no longer produces one means
-        either the quirk stopped being modelled or the fixture stopped reaching
-        it. Either way the declaration has become decoration.
-      * a fixture that declares nothing and diverges anyway means the quirk
-        leaked into cases we never characterised.
-
-    Note this runs with no server. The old version of this check needed
-    llama.cpp to observe the bug; now the bug is a property of our own quirk
-    switch, measured against the training runtime.
-    """
-    diverged: collections.Counter = collections.Counter()
-    declaring: dict[str, set[str]] = {}
-    for c in bug_cases:
-        fx = c["fixture"]
-        declaring.setdefault(fx, set()).update(c["divergences"])
-        try:
-            oracle = oracle_hf.render_request(template, c["request"]).text
-        except oracle_hf.ProvenanceError:
-            # Phase 1 already reported it; the clean render is still comparable.
-            oracle = oracle_hf.render_request_clean(template, c["request"])
-        if c["rendered"] != oracle:
-            diverged[fx] += 1
-            if verbose:
-                print(f"  quirk fires: {label_of(c)}")
-
-    failures = []
-    for fx, ids in sorted(declaring.items()):
-        if ids and not diverged[fx]:
-            failures.append(
-                f"  FAIL {fx}\n"
-                f"    declares {sorted(ids)} but the quirked profile now renders exactly\n"
-                f"    what the training runtime does. Either GlmQuirks stopped modelling\n"
-                f"    the bug or this fixture stopped reaching it. A stale exception is\n"
-                f"    how a gate rots into decoration - remove it or find out why."
-            )
-        if not ids and diverged[fx]:
-            failures.append(
-                f"  FAIL {fx}\n"
-                f"    declares no divergence but the quirked profile differs from the\n"
-                f"    training runtime in {diverged[fx]} case(s). An unnamed quirk is a\n"
-                f"    quirk nobody decided to keep."
-            )
-    return failures
-
-
-# --------------------------------------------------------------------------
-# Phase 3 - interop. Reports, never gates.
+# Phase 2 - interop. Reports, never gates.
 # --------------------------------------------------------------------------
 
 
@@ -289,12 +253,22 @@ def phase_interop(addr: str, cases: list[dict], template: str, verbose: bool) ->
     has already been proved equal to the oracle in phase 1 and because that
     framing puts the finding where it belongs: the difference is between two
     Jinja engines, not between us and anybody.
+
+    It also carries what the removed PROFILES phase used to check. A fixture that
+    DECLARES a divergence and no longer produces one against the real server means
+    either llama.cpp fixed the bug or the fixture stopped reaching it, and either
+    way the declaration has become decoration. That is reported, not gated: it
+    needs a server, and a check that only runs when somebody remembered to start
+    one must not be allowed to be the thing that says a render is correct.
     """
     agree = 0
     diffs: collections.Counter = collections.Counter()
+    declared_div: dict[str, set[str]] = {}
+    fired_div: collections.Counter = collections.Counter()
     declared_norm: set[str] = set()
     fired_norm: set[str] = set()
     for c in cases:
+        declared_div.setdefault(c["fixture"], set()).update(c["divergences"])
         rules = set(c.get("normalise", []))
         declared_norm |= rules
         try:
@@ -323,6 +297,7 @@ def phase_interop(addr: str, cases: list[dict], template: str, verbose: bool) ->
             agree += 1
             continue
         diffs[c["fixture"]] += 1
+        fired_div[c["fixture"]] += 1
         if verbose:
             print(f"  minja differs: {label_of(c)}\n{diff_head(ours, theirs)}")
 
@@ -330,6 +305,14 @@ def phase_interop(addr: str, cases: list[dict], template: str, verbose: bool) ->
     if diffs:
         print("  minja differs on: " + ", ".join(f"{k} ({v})" for k, v in sorted(diffs.items())))
         print("  This is interop information. See oracle_hf.py for why it does not gate.")
+    for fx, ids in sorted(declared_div.items()):
+        if ids and not fired_div[fx]:
+            print(f"  note: {fx} declares {sorted(ids)} but renders identically to the server.")
+            print("  Either llama.cpp fixed it or the fixture stopped reaching it. A stale")
+            print("  exception is how a gate rots into decoration - remove it or find out why.")
+        elif fired_div[fx] and not ids:
+            print(f"  note: {fx} declares no divergence but the server differs on it "
+                  f"({fired_div[fx]} case(s)).")
     stale = declared_norm - fired_norm
     if stale:
         print(f"  note: normalisation rules declared but never needed: {sorted(stale)}")
@@ -401,16 +384,6 @@ def main() -> int:
     print(f"  classified LITERAL by construction (structural keys): {sorted(keys)}")
     if failures:
         rc = 1
-
-    bug = render_cases(files, "server-bug-compatible", args.dialect)
-    print(f"\n=== PROFILES: {len(bug)} cases ===")
-    pf = phase_profiles(bug, template, args.verbose)
-    for f in pf:
-        print(f)
-    if pf:
-        rc = 1
-    else:
-        print("  the quirked profile diverges from the training runtime exactly where declared")
 
     if args.interop:
         print(f"\n=== INTEROP (reports only): {args.addr} ===")

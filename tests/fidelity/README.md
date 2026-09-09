@@ -160,36 +160,37 @@ third prefix is a renderer whose KV cache never hits.
 
 Explained in full in §4 below, because it is the part that does real work.
 
-### Phase 3 — PROFILES: the two profiles must disagree, and only where declared
+### The PROFILES phase, and why it is gone
 
-Our renderer has two settings and both must survive:
+There used to be a third gating phase. `--profile server-bug-compatible` rendered the
+corpus again with `GlmQuirks::reasoning_leak` on — a deliberate reproduction of minja's
+bug — and the gate required it to differ from the oracle exactly on the fixtures that
+declare a divergence.
 
-* **`faithful`** — what the harness actually emits. Models the *training format*. Must
-  equal the oracle everywhere (phase 1).
-* **`server-bug-compatible`** — every known minja quirk switched on
-  (`GlmQuirks::reasoning_leak`). Models *llama.cpp's bug*.
+T2 removed it. Its purpose was to prove we understood the shipped template well enough
+to reproduce llama.cpp's renderer exactly, which is what earned `faithful` the standing
+to call a difference a divergence. Under T1 prompts are rendered by running the real
+template through a correct Jinja engine, and that is stronger evidence than reproducing
+a wrong one — while keeping the quirk would mean carrying a reimplementation of someone
+else's bug forever. `--profile` survives with one value, and rejects the removed one
+with a message rather than treating it as a filename.
 
-Phase 3 checks that the second differs from the oracle **exactly on the fixtures that
-declare a divergence**, and nowhere else. Two-sided on purpose:
+The `divergences` declarations did not become decoration with it: they moved into
+INTEROP, where they are checked against the server itself instead of against our model
+of it.
 
-* a fixture that declares a divergence and stops producing one means either the quirk
-  stopped being modelled or the fixture stopped reaching it — either way the
-  declaration has become decoration;
-* a fixture that declares nothing and diverges anyway means a quirk leaked into cases
-  nobody characterised.
-
-Note what changed here. Under the old design, observing the bug required a running
-llama.cpp. Now the bug is a property of our own quirk switch, measured against the
-training runtime, and the whole check runs offline. Currently 5 of the
-`reasoning-leak` fixture's 13 cases diverge — the prefixes short enough to have no
-second assistant turn cannot leak, which is why the declaration is per fixture and the
-count is not.
-
-### Phase 4 — INTEROP: how llama.cpp would differ. Reports only.
+### Phase 3 — INTEROP: how llama.cpp would differ. Reports only.
 
 `--interop`, needs the server, **cannot fail the gate**. Currently 134/139 identical,
-differing on exactly the 5 reasoning-leak cases — the same 5 phase 3 found from the
-other direction, which is a pleasing cross-check.
+differing on exactly the 5 `reasoning-leak` cases — the prefixes short enough to have
+no second assistant turn cannot leak, which is why a divergence is declared per fixture
+and not per case.
+
+This phase also reports a fixture that declares a divergence the server no longer
+produces, and one that declares none and diverges anyway. That is the two-sided check
+the PROFILES phase used to run, one hop closer to the thing being described. It does
+not gate, because it needs a server, and a check that only runs when somebody
+remembered to start one must not be what says a render is correct.
 
 Demoting this is not discarding it. The day someone points this harness at a stock
 llama.cpp chat-completions endpoint instead of submitting token ids, it becomes
@@ -394,7 +395,7 @@ request body — those are derived, so there is nothing to keep in sync by hand.
   "items": [ … ],                      // TranscriptItem, exactly as serde serialises it
 
   "divergences": [                     // where llama.cpp's renderer differs from the
-    { "id": "reasoning-leak", "why": "…" }   // training runtime. Drives phase 3.
+    { "id": "reasoning-leak", "why": "…" }   // training runtime. Checked by INTEROP.
   ],
   "normalise": [                       // where byte equality is not AVAILABLE against
     { "id": "media-marker", "why": "…" }     // llama.cpp. Interop phase only.
@@ -425,8 +426,8 @@ Both now describe **llama.cpp**, not us. Our renderer has no declared divergence
 the authority — that is the point of the move, and phase 1 admits no exceptions at all.
 
 * **`divergences`** — the two engines genuinely disagree. Currently one:
-  `reasoning-leak`. Used by phase 3 (which fixtures must make the quirked profile
-  diverge) and reported by phase 4.
+  `reasoning-leak`. Two-sided checked by the interop phase: a declared divergence the
+  server stops producing is reported, and so is an undeclared one that appears.
 * **`normalise`** — byte equality against llama.cpp is not *available*. Currently one:
   `media-marker`, where llama.cpp substitutes `<__media_NONCE__>` with a nonce
   regenerated per server process, so no renderer could reproduce it. **The HF oracle
@@ -538,8 +539,8 @@ strand owns, and should move out when Qwen lands.
 
 ## 10. When the model ships a template change
 
-`template_sha` stops matching (`GlmDialect::template_sha` is computed from the embedded
-jinja, not pasted beside it), the dialect is stale, and this gate reports exactly which
+`template_sha` stops matching (`letibot_dialect_glm::template_sha` is computed from the
+embedded jinja, not pasted beside it), the spec is stale, and this gate reports which
 fixtures moved. Adopting the change forks every live transcript on that model (§5.5),
 because the render changed — which is correct, and which should be visible.
 

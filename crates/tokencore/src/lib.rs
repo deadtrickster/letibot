@@ -46,7 +46,9 @@ pub mod region;
 pub mod store;
 pub mod vocab;
 
-pub use control::{ControlMap, ControlResolveError, resolve, resolve_stops, tokenize_spans};
+pub use control::{
+    ControlMap, ControlResolveError, VocabDecoder, resolve, resolve_stops, tokenize_spans,
+};
 pub use ledger::{LedgerRow, PromptSpan, TokenLedger, chain, hash_tokens};
 pub use region::TokenRegion;
 pub use store::{SessionRecord, StablePrefixRecord, Store};
@@ -56,7 +58,8 @@ pub use vocab::{ResolveCause, TokenId, Vocab};
 mod tests {
     use super::*;
     use letibot_dialect::{
-        ControlRole, ControlToken, ControlTokens, RenderSpan, StablePrefix, spans_to_string,
+        ControlRole, ControlToken, ControlTokens, RenderSpan, StablePrefix, StopToken,
+        TokenDecoder, spans_to_string,
     };
     use letibot_transcript::{TranscriptItem, UserPart};
     use std::path::{Path, PathBuf};
@@ -168,30 +171,60 @@ mod tests {
     }
 
     const QWEN_CONTROLS: &[ControlToken] = &[
-        ControlToken { role: ControlRole::TurnStartUser, literal: "<|im_start|>" },
-        ControlToken { role: ControlRole::TurnEnd, literal: "<|im_end|>" },
-        ControlToken { role: ControlRole::ThinkOpen, literal: "<think>" },
-        ControlToken { role: ControlRole::ThinkClose, literal: "</think>" },
-        ControlToken { role: ControlRole::ToolCallOpen, literal: "<tool_call>" },
-        ControlToken { role: ControlRole::ToolCallClose, literal: "</tool_call>" },
+        ControlToken::borrowed(ControlRole::TurnStartUser, "<|im_start|>"),
+        ControlToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
+        ControlToken::borrowed(ControlRole::ThinkOpen, "<think>"),
+        ControlToken::borrowed(ControlRole::ThinkClose, "</think>"),
+        ControlToken::borrowed(ControlRole::ToolCallOpen, "<tool_call>"),
+        ControlToken::borrowed(ControlRole::ToolCallClose, "</tool_call>"),
     ];
+
+    fn qwen() -> ControlTokens {
+        ControlTokens::borrowed(QWEN_CONTROLS)
+    }
+
+    /// The span for a role, for the stand-in renderer below.
+    ///
+    /// It asserts the assumption it depends on instead of relying on it: ChatML
+    /// spells each of these exactly one way, so "the token for this role" is a
+    /// well-formed question here. `ControlTokens` no longer answers it in
+    /// general, because for GLM it was not one -- one role owned eight literals
+    /// and `get(role)` returned whichever the table happened to list first.
+    fn ctl(role: ControlRole) -> RenderSpan {
+        let tokens = qwen();
+        let mut all = tokens.all_with_role(role);
+        let token = all
+            .next()
+            .unwrap_or_else(|| panic!("ChatML has no token for {role:?}"))
+            .clone();
+        assert!(
+            all.next().is_none(),
+            "{role:?} has several literals; this renderer must name the one it means"
+        );
+        RenderSpan::Control(token)
+    }
 
     #[test]
     fn resolving_a_whole_dialect_reports_every_failure_at_once() {
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).expect("all six exist");
+        let map = resolve(&v, &qwen()).expect("all six exist");
         assert_eq!(map.len(), 6);
-        assert!(map.role(ControlRole::ThinkOpen).is_some());
-        assert!(map.role(ControlRole::TurnStartTool).is_none());
-        assert!(map.is_control_id(map.role(ControlRole::TurnEnd).unwrap()));
+        assert_eq!(map.ids_for_role(ControlRole::ThinkOpen).len(), 1);
+        assert!(map.ids_for_role(ControlRole::TurnStartTool).is_empty());
+        let im_end = map.ids_for_role(ControlRole::TurnEnd)[0];
+        assert!(map.is_control_id(im_end));
+        // The reverse direction, which is what a parser reads.
+        assert_eq!(map.role_of(im_end), Some(ControlRole::TurnEnd));
+        assert_eq!(map.id("<|im_end|>"), Some(im_end));
 
         const BROKEN: &[ControlToken] = &[
-            ControlToken { role: ControlRole::TurnStartUser, literal: "<|im_start|>" },
-            ControlToken { role: ControlRole::ThinkOpen, literal: "<|no_such_thing|>" },
-            ControlToken { role: ControlRole::ThinkClose, literal: "<|also_missing|>" },
-            ControlToken { role: ControlRole::TurnEnd, literal: "hi" },
+            ControlToken::borrowed(ControlRole::TurnStartUser, "<|im_start|>"),
+            ControlToken::borrowed(ControlRole::ThinkOpen, "<|no_such_thing|>"),
+            ControlToken::borrowed(ControlRole::ThinkClose, "<|also_missing|>"),
+            ControlToken::borrowed(ControlRole::TurnEnd, "hi"),
         ];
-        let err = resolve(&v, ControlTokens(BROKEN)).expect_err("three of four are broken");
+        let err =
+            resolve(&v, &ControlTokens::borrowed(BROKEN)).expect_err("three of four are broken");
         assert_eq!(
             err.failures.len(),
             3,
@@ -199,6 +232,99 @@ mod tests {
         );
         let text = err.to_string();
         assert!(text.contains("<|no_such_thing|>") && text.contains("hi"), "{text}");
+    }
+
+    #[test]
+    fn a_failure_listing_is_ordered_by_role_not_by_hashing() {
+        // `ControlRole: Ord` exists for exactly this: two runs against the same
+        // broken vocabulary must print the same report, so a diff of two startup
+        // logs is about the vocabulary. Declared here in a deliberately unsorted
+        // order.
+        let v = vocab();
+        const BROKEN: &[ControlToken] = &[
+            ControlToken::borrowed(ControlRole::ToolCallClose, "<|missing_c|>"),
+            ControlToken::borrowed(ControlRole::TurnStartUser, "<|missing_a|>"),
+            ControlToken::borrowed(ControlRole::ThinkOpen, "<|missing_b|>"),
+        ];
+        let err = resolve(&v, &ControlTokens::borrowed(BROKEN)).expect_err("all three are broken");
+        let roles: Vec<ControlRole> = err.failures.iter().map(|f| f.role).collect();
+        assert_eq!(
+            roles,
+            [
+                ControlRole::TurnStartUser,
+                ControlRole::ThinkOpen,
+                ControlRole::ToolCallClose
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stop_token_that_is_really_a_sequence_fails_at_startup_and_names_the_boundary() {
+        // The whole argument for `StopToken` carrying a role. A stop literal that
+        // is not one vocabulary entry never fires, and the turn then runs to
+        // n_ctx -- a failure that costs a whole context window and says nothing.
+        // Resolving it here costs one startup and names what was lost.
+        let v = vocab();
+        let good = [
+            StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
+            StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
+        ];
+        let ids = resolve_stops(&v, &good).expect("Qwen has both");
+        assert_eq!(ids.len(), 2);
+
+        let bad = [StopToken::borrowed(
+            ControlRole::TurnStartTool,
+            "<|observation|>",
+        )];
+        let err = resolve_stops(&v, &bad).expect_err("Qwen has no <|observation|>");
+        assert_eq!(err.failures[0].role, ControlRole::TurnStartTool);
+        let text = err.to_string();
+        assert!(
+            text.contains("TurnStartTool") && text.contains("<|observation|>"),
+            "a stop-token failure must say which boundary was lost: {text}"
+        );
+    }
+
+    #[test]
+    fn the_decoder_a_parser_needs_is_the_one_thing_with_a_vocabulary() {
+        // `parse(&[u32])` was unimplementable because the dialect crate has no
+        // vocab and must return Content(String). `TokenDecoder` is the seam, and
+        // this is its only real implementation: ids in, the exact rendered bytes
+        // back out, plus the role of every id that is a boundary.
+        let v = vocab();
+        let map = resolve(&v, &qwen()).unwrap();
+        let decoder = VocabDecoder::new(&v, &map);
+
+        let spans = vec![
+            ctl(ControlRole::TurnStartUser),
+            RenderSpan::Text("user\nis <|im_end|> a boundary?\n".into()),
+            ctl(ControlRole::TurnEnd),
+        ];
+        let toks = tokenize_spans(&v, &map, &spans).unwrap();
+
+        // Ids the decoder calls boundaries are exactly the ids the Control spans
+        // produced -- the pasted literal in the text is several ordinary tokens
+        // and none of them answers a role.
+        let boundaries: Vec<ControlRole> = toks
+            .iter()
+            .filter_map(|&t| decoder.control_role(t))
+            .collect();
+        assert_eq!(
+            boundaries,
+            [ControlRole::TurnStartUser, ControlRole::TurnEnd],
+            "user text spelling <|im_end|> must not decode as a boundary"
+        );
+
+        // And the text between them comes back byte for byte.
+        let first = toks
+            .iter()
+            .position(|&t| decoder.control_role(t) == Some(ControlRole::TurnEnd))
+            .unwrap();
+        assert_eq!(
+            decoder.decode(&toks[1..first]),
+            "user\nis <|im_end|> a boundary?\n"
+        );
+        assert_eq!(decoder.decode(&toks), spans_to_string(&spans));
     }
 
     // --- a stand-in dialect, so the seam can be exercised ------------------
@@ -210,7 +336,6 @@ mod tests {
     /// before a real dialect lands, and so the round trip below is over
     /// something with control tokens in it rather than over synthetic ids.
     fn render(prefix: &StablePrefix, items: &[TranscriptItem]) -> Vec<RenderSpan> {
-        let ctl = |role| RenderSpan::Control(ControlTokens(QWEN_CONTROLS).get(role).unwrap());
         let mut spans = Vec::new();
         spans.push(ctl(ControlRole::TurnStartUser));
         spans.push(RenderSpan::Text(format!("system\n{}\n", prefix.system)));
@@ -225,7 +350,6 @@ mod tests {
     }
 
     fn render_item(item: &TranscriptItem) -> Vec<RenderSpan> {
-        let ctl = |role| RenderSpan::Control(ControlTokens(QWEN_CONTROLS).get(role).unwrap());
         match item {
             // §4.2: renders to nothing.
             TranscriptItem::SegmentMark { .. } => vec![],
@@ -316,7 +440,7 @@ mod tests {
     #[test]
     fn tokenize_ledger_append_tokenize_is_always_a_strict_prefix_extension() {
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).unwrap();
+        let map = resolve(&v, &qwen()).unwrap();
 
         let prefix = StablePrefix {
             system: "You answer in the language of the question.".into(),
@@ -367,7 +491,7 @@ mod tests {
 
         // A control literal pasted by the user did not become a boundary: the
         // number of <|im_end|> ids is exactly what the renderer emitted.
-        let im_end = map.role(ControlRole::TurnEnd).unwrap();
+        let im_end = map.ids_for_role(ControlRole::TurnEnd)[0];
         let emitted = render(&prefix, &items)
             .iter()
             .filter(|s| matches!(s, RenderSpan::Control(c) if c.role == ControlRole::TurnEnd))
@@ -382,7 +506,7 @@ mod tests {
     #[test]
     fn a_segment_mark_costs_no_tokens_and_still_changes_the_head() {
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).unwrap();
+        let map = resolve(&v, &qwen()).unwrap();
         let mark = TranscriptItem::SegmentMark {
             segment_id: "s".into(),
             label: "l".into(),
@@ -406,7 +530,7 @@ mod tests {
         // compares this string against the server's; here we only prove the
         // tokenizer is not the thing that would make them differ.
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).unwrap();
+        let map = resolve(&v, &qwen()).unwrap();
         let prefix = StablePrefix { system: "sys".into(), tools_json: vec!["{}".into()] };
         let items = conversation(6);
         let spans = render(&prefix, &items);
@@ -418,9 +542,9 @@ mod tests {
     #[test]
     fn a_control_span_from_a_foreign_dialect_is_a_wiring_error() {
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).unwrap();
+        let map = resolve(&v, &qwen()).unwrap();
         const FOREIGN: ControlToken =
-            ControlToken { role: ControlRole::TurnStartTool, literal: "<|observation|>" };
+            ControlToken::borrowed(ControlRole::TurnStartTool, "<|observation|>");
         let err = tokenize_spans(&v, &map, &[RenderSpan::Control(FOREIGN)])
             .expect_err("a literal this map never resolved must not silently vanish");
         assert!(matches!(
@@ -434,7 +558,7 @@ mod tests {
     #[test]
     fn a_restart_replays_real_tokens_rather_than_re_rendering() {
         let v = vocab();
-        let map = resolve(&v, ControlTokens(QWEN_CONTROLS)).unwrap();
+        let map = resolve(&v, &qwen()).unwrap();
         let prefix = StablePrefix {
             system: "sys".into(),
             tools_json: vec![r#"{"name":"read"}"#.into()],
