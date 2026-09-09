@@ -1,0 +1,13 @@
+/target/
+/.target-shared/
+/.bench-target/
+/bench-jobs.json
+/compare-out.json
+/deps.txt
+/mj_*.txt
+/py_*.txt
+/templates/.err
+__pycache__/
+# Every corpus is generated -- see run.sh. Deterministic from its seed, so
+# checking the JSON in would only make the diff big.
+/cases-*.json

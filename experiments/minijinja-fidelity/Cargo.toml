@@ -1,0 +1,15 @@
+[package]
+name = "mjfid"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+minijinja = { version = "2.24.0", features = ["loop_controls", "json", "custom_syntax", "unicode", "preserve_order"] }
+minijinja-contrib = { version = "2.24.0", default-features = false, features = ["pycompat"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[workspace]
