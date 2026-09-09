@@ -57,11 +57,17 @@ pub fn reasoning(turn_id: &str, text: &str) -> SessionEvent {
 }
 
 pub fn proposed(turn_id: &str, call_id: &str, name: &str) -> SessionEvent {
+    proposed_on(turn_id, call_id, name, "")
+}
+
+/// A proposal with a §4.1 display target: what the call is *about*.
+pub fn proposed_on(turn_id: &str, call_id: &str, name: &str, target: &str) -> SessionEvent {
     SessionEvent::ToolCallProposed {
         turn_id: turn_id.into(),
         call_id: call_id.into(),
         name: name.into(),
         args_digest: "fnv1a:0000000000000000".into(),
+        target: target.into(),
     }
 }
 
@@ -221,7 +227,15 @@ pub fn recorded_session() -> Vec<SessionEvent> {
     for w in chunks("The user is asking about the prefix cache. I should check the ledger first.") {
         out.push(reasoning("s#1", &w));
     }
-    out.push(proposed("s#1", "c1", "read"));
+    // With its §4.1 display target, because `--demo` is the fixture people look at
+    // to decide whether the head is any good, and a demo that shows `Read (c1)`
+    // demonstrates the thing that was fixed as though it had not been.
+    out.push(proposed_on(
+        "s#1",
+        "c1",
+        "read",
+        "/home/dead/Projects/letibot/TODO.md",
+    ));
     out.push(requested("d1", "read /home/dead/Projects/letibot/TODO.md"));
     out.push(answered("d1", "allow"));
     out.push(SessionEvent::ToolStarted {

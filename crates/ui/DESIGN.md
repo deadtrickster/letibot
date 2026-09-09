@@ -24,6 +24,7 @@ changed, and what it did not:
 | 2.4 `card::reasoning` | **done** | The rail reaches the *frozen prefix* through `render::Decor`, applied once when a line enters `BlockCache` rather than per line per frame. |
 | 2.5 `highlight::StreamingCode` | **done**, option (b) | `BlockCache` keeps one highlighter per open code block, keyed by absolute block index. No change to `markdown.rs` was needed after all. `BlockCache::bytes_highlighted()` is the instrument, and there is a regression test on the ratio. |
 | 2.6 `diff::render` | **not done** | §4.2 and §4.3 are unresolved; nothing in the pipeline carries both sides of an edit. |
+| 2.3 `Card::target` | **done** | §4.1 was fixed; see §4.1 below for what changed and where the rule lives. |
 | 2.7 `editor::Editor` | **done** | `term.rs` grew a growable read with a carried tail, bracketed paste, and the full key vocabulary. `app::Key` mirrors `editor::Key` plus the head's five. |
 
 Also done, from §3's not-ported list: **DEC 2026 synchronised output**, in
@@ -362,7 +363,34 @@ Also not ported, with reasons:
 
 Written down rather than invented, per the brief.
 
-### 4.1 A live tool call has no display target
+### 4.1 A live tool call has no display target — **fixed**
+
+`ToolCallProposed` carries a `target: String` and `Card::target` is filled from it.
+What was built is not quite the "tool-supplied string" proposed below, and the
+difference is worth recording:
+
+- **The producer is the engine, not the tool.** `ToolCallProposed` is emitted from
+  the parsed call, before anything has been dispatched to a registry, so a
+  tool-supplied string would have to arrive on a *later* event — and having it on
+  the first one is the whole point.
+- **The rule has no per-tool table in it.** `letibot_sessionlog::display_target`
+  takes the scalar argument values in the order the model wrote them
+  (`preserve_order` keeps it): `{"pattern":"home.*button","path":"src"}` reads
+  `home.*button src`. A schema puts the subject first and every tool in this tree
+  does. A tool the rule reads badly gets a slightly wrong *label*, never a wrong
+  fact; nested values are elided as `{…}` / `[…]` rather than dumped.
+- **The cap is at the lift, not in the engine.** `TurnEvent::ToolCallProposed`
+  carries the raw arguments, which is safe because a `TurnEvent` goes to an
+  in-process sink; `letibot-sessionlog`'s lift cuts them to `TARGET_MAX_BYTES` on
+  the way to `SessionEvent`, which is where the fan-out actually starts.
+- **The head uses the same function** for a settled `Assistant { tool_calls }` row
+  whose proposal it never saw — a head that attached after the turn, or one that
+  switched into the session. Without that, every tool line older than the attach
+  read `Read (call_0)`, which is the decorative version of the feature.
+
+The original note follows, because the shape it argued for is still the shape.
+
+### 4.1a The original note
 
 `ToolCallProposed { turn_id, call_id, name, args_digest }` and
 `ToolStarted { turn_id, call_id, name, access }` carry no arguments. The
@@ -415,7 +443,19 @@ Recommendation: the tool's payload keeps whatever the model needs, and the
 *display* target from §4.1 is extended for edit-shaped tools to carry a patch.
 Not decided here; it needs whoever owns `letibot-tools`.
 
-### 4.4 The head cannot name what it is talking to
+### 4.4 The head cannot name what it is talking to — **fixed**
+
+`Hello` carries `wiring: SessionWiring { model, dialect, endpoint, workspace }`,
+per session, from the daemon's own command line. The composer's legend reads
+`qwen-3.8-flash-next · qwen3.8 · 127.0.0.1:8080 · normal` before any turn has
+started, where it used to read `no turn yet`. `workspace` was added beyond the
+three proposed, because the session header wants a left-hand side and the cwd is
+what grok-build puts there.
+
+Empty strings when a daemon supplied none — never a plausible default, which is a
+guess a head then quotes as a fact.
+
+### 4.4a The original note
 
 Measured while building the composer's facts line, which wants
 `model · dialect · endpoint` and can only fill the first.
@@ -434,7 +474,23 @@ This is small and it is not cosmetic: two daemons on one box serving two
 different models on two different ports is the normal case here, and a head that
 cannot say which one it is attached to is a head you have to guess about.
 
-### 4.5 A turn that fails ends nothing
+### 4.5 A turn that fails ends nothing — **fixed**
+
+`SessionEvent::TurnFailed { turn_id, error, partial_kept }` is a **terminal** state
+(`TurnState::Failed`), published by the daemon's worker — the only party that saw
+the error. A separate variant rather than a `TurnInterrupted` with a reason or a
+`TurnFinished { finish_reason: Other }`, because both of those are endings a turn
+is *allowed* to have, and folding a failure into either is the same move as
+recording a `length` as a completed turn.
+
+The daemon publishes the `Warning` too: one is state, the other is the grep-able
+history. The head renders the terminal state and **counts the warning as filtered**,
+because on a screen they are the same sentence twice three lines apart.
+
+The head's `nothing received for 17.0s` line stays, unchanged, as the backstop for
+a genuine stall — which is what it was always right about.
+
+### 4.5a The original note
 
 Already recorded in `app::inflight_line`'s comment and worth having in the list,
 because it was hit again while exercising the composer: when a turn fails, the

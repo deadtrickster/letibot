@@ -66,11 +66,16 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             call_id,
             name,
             args_digest,
+            arguments,
         } => SessionEvent::ToolCallProposed {
             turn_id,
             call_id,
             name,
             args_digest,
+            // §4.1's cap, applied at the boundary it is about: below this line the
+            // arguments are one in-process string, above it they would be a copy
+            // per attached head.
+            target: crate::event::display_target(&arguments),
         },
         // `tokens` is dropped: §4.5's `TranscriptAppended` is
         // `{item_id, kind, ledger_head}`. The token count is a ledger fact and the

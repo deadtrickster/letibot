@@ -45,6 +45,25 @@ pub enum TurnEvent {
         call_id: String,
         name: String,
         args_digest: String,
+        /// The call's raw arguments, **in process only**.
+        ///
+        /// `crates/ui/DESIGN.md` §4.1: a running call reached a head as `name` and
+        /// `args_digest`, so it could render `Running bash` and never `Running
+        /// "cargo test --workspace"` — the arguments arrived with the transcript,
+        /// i.e. after the call had finished, which is exactly when a head no longer
+        /// needs them.
+        ///
+        /// §4.1's objection to putting them on an event is that *"an event stream
+        /// fans out to every attached head and a 200 KB argument would be sent to
+        /// all of them"*. That is true of `letibot_sessionlog::SessionEvent`, which
+        /// goes on a socket. It is not true of this enum: a `TurnEvent` is handed
+        /// to an in-process `EventSink` and the string it carries is a clone of one
+        /// already in the transcript. So the arguments travel this far, and
+        /// `letibot_sessionlog::event::display_target` cuts them to a bounded label
+        /// at the lift — which is the boundary the cap is actually about, and the
+        /// one place a *head* can also reach when it needs the same label for a
+        /// settled transcript row.
+        arguments: String,
     },
     TranscriptAppended {
         item_id: String,

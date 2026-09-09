@@ -151,6 +151,48 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Ask what sessions this daemon holds. Answered with `ServerFrame::Sessions`
+    /// on the same stream the events arrive on, so the caller reads it out of its
+    /// own pump rather than blocking here — a head that stopped to wait for a list
+    /// would stop rendering the turn it is watching.
+    pub fn list_sessions(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::ListSessions)?;
+        Ok(())
+    }
+
+    pub fn new_session(&mut self, title: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::NewSession {
+            client_request_id: client_request_id.clone(),
+            title: title.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// Move this connection to another session.
+    ///
+    /// The answer is a second `Hello`, which the caller applies exactly the way it
+    /// applied the first — the head's late-join path *is* its switch path, which is
+    /// the reason the daemon answers with a `Hello` rather than a frame of its own.
+    ///
+    /// **`head_id` changes.** The head is a different head in the new session, and a
+    /// client that kept the old one would ack into a session it had left.
+    pub fn switch(&mut self, session_id: &str, since_seq: u64) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Switch {
+            session_id: session_id.to_string(),
+            since_seq,
+        })?;
+        Ok(())
+    }
+
+    /// Take the head id from a `Hello` the caller pumped off the socket.
+    ///
+    /// Not folded into `switch`: the `Hello` arrives on the reader thread, and a
+    /// client that read it here would race its own pump for the same bytes.
+    pub fn seated(&mut self, head_id: &str) {
+        self.head_id = head_id.to_string();
+    }
+
     pub fn detach(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Detach)?;
         Ok(())

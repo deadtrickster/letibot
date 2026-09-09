@@ -65,7 +65,17 @@ pub fn tick(
         }
     }
 
-    let mut actions = Vec::new();
+    // A `Hello` in the drain above may have seated this connection as a different
+    // head — that is what a session switch is — and a client still acking under the
+    // old id would ack into a session it has left, which the hub ignores in silence.
+    if let Some(id) = app.take_seated() {
+        client.seated(&id);
+    }
+
+    // Actions a *frame* produced, not a key: the switch that follows a session
+    // being created. Ahead of the key actions, because they are the answer to
+    // something the operator already asked for.
+    let mut actions = app.take_actions();
     for k in keys {
         // Cloned rather than copied: `Key::Paste` carries the paste, because the
         // point of bracketed paste is that a 3 KB stack trace is one key.
@@ -104,6 +114,15 @@ pub fn tick(
                 client.answer(&req_id, &option_id)?;
             }
             Action::Resync => client.request_resync()?,
+            Action::ListSessions => client.list_sessions()?,
+            Action::NewSession(title) => {
+                client.new_session(&title)?;
+            }
+            // The answer is a second `Hello`, which arrives on the pump and goes
+            // through `App::apply` exactly like the first one. Nothing is torn down
+            // here: the switch happens inside the daemon, on this same socket, so
+            // there is no window in which this head is attached to nothing.
+            Action::Switch(id) => client.switch(&id, 0)?,
             Action::Quit => {
                 let _ = client.detach();
             }

@@ -487,6 +487,13 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlL);
                 i += 1;
             }
+            // The session list. Ctrl+S is normally XOFF and would freeze a
+            // terminal; `cfmakeraw` clears `IXON`, so nothing here is listening for
+            // it and the byte reaches this decoder.
+            0x13 => {
+                out.push(Key::CtrlS);
+                i += 1;
+            }
             b'\r' | b'\n' => {
                 out.push(Key::Enter);
                 i += 1;

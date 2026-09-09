@@ -10,6 +10,7 @@
 //! ToolStarted / ToolProgress / ToolFinished{call_id, outcome, ...}
 //! TurnFinished{turn_id, finish_reason, usage, timings}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
+//! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
 //! TranscriptAppended{item_id, kind, ledger_head}
 //! TranscriptContent{item_id, item}          — not §4.5's; see the variant
 //! HeadAttached / HeadDetached{head_id, kind, identity}
@@ -174,6 +175,109 @@ pub struct Decider {
     pub identity: String,
 }
 
+/// How much of a tool call's arguments may travel to a head, in bytes.
+///
+/// `crates/ui/DESIGN.md` §4.1 asks for *"a short, tool-supplied, already-truncated
+/// display string … capped at something like 120 bytes"*. The cap is **here**,
+/// where `TurnEvent` becomes `SessionEvent`, because here is where the fan-out
+/// starts: below this line an argument is one in-process string, above it it is a
+/// copy per attached head. A head that truncated for itself would also give two
+/// heads two different renderings of one call.
+pub const TARGET_MAX_BYTES: usize = 120;
+
+/// The display target for a tool call: the one argument a person reads.
+///
+/// # Why it is derived and not tool-supplied
+///
+/// §4.1 proposes a *tool-supplied* string, on the argument that the tool knows
+/// which of its arguments a person reads. It does — and `ToolCallProposed` is
+/// emitted from the parsed call, before anything has been dispatched to a
+/// registry, so a tool-supplied string would have to arrive on a later event, and
+/// having it on the *first* one is the whole point.
+///
+/// The rule used instead has no per-tool table in it: **the scalar argument
+/// values, in the order the model wrote them**, which `preserve_order` keeps. That
+/// order is not arbitrary — a schema puts the subject first, and every tool in this
+/// tree does (`read{path}`, `grep{pattern, path}`, `list{path}`). So
+/// `{"pattern":"home.*button","path":"src"}` reads `home.*button src`, which is
+/// what a person scans for; a tool the rule reads badly gets a slightly wrong
+/// *label*, never a wrong fact.
+///
+/// Nested values are **elided, not flattened**: `{…}` and `[…]` say there is more
+/// without pretending a JSON dump is a label.
+///
+/// # It is public because a head needs it twice
+///
+/// Once on the wire, for a call that is *running*. And once locally, for a settled
+/// `TranscriptItem::Assistant { tool_calls }` whose proposal this head never saw —
+/// a head that attached after the turn, or one that switched into the session.
+/// Without a shared function that second case is either a second implementation of
+/// this rule in the head (two spellings of one display, drifting) or a tool list
+/// that says `Read (call_0)` for every row older than the attach.
+pub fn display_target(arguments: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        // Not JSON at all. The model wrote it, so it is still the most
+        // informative thing available; it is trimmed and shown as it is.
+        return truncate_target(arguments.trim());
+    };
+    let serde_json::Value::Object(map) = v else {
+        return truncate_target(&scalar(&v).unwrap_or_default());
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for (_k, val) in map {
+        parts.push(match scalar(&val) {
+            Some(s) => s,
+            None if val.is_array() => "[…]".into(),
+            None => "{…}".into(),
+        });
+        if parts.iter().map(|p| p.len() + 1).sum::<usize>() > TARGET_MAX_BYTES {
+            break;
+        }
+    }
+    truncate_target(parts.join(" ").trim())
+}
+
+/// One scalar argument as a label. A string containing whitespace is quoted, so
+/// `grep "two words" src` cannot be misread as three arguments.
+fn scalar(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(if s.chars().any(char::is_whitespace) {
+            format!("{s:?}")
+        } else {
+            s.clone()
+        }),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => Some("null".into()),
+        _ => None,
+    }
+}
+
+/// Cut to [`TARGET_MAX_BYTES`] on a character boundary, and say that it was cut.
+///
+/// Control characters go first: a newline inside a header would put a row on the
+/// screen the head did not count, which scrolls the frame it has just painted.
+/// That is the same fault `letibot_ui::width::break_cells` had, one layer up.
+fn truncate_target(s: &str) -> String {
+    let s: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if s.len() <= TARGET_MAX_BYTES {
+        return s;
+    }
+    // The ellipsis counts. `…` is three bytes, and a cap that forgets that is a cap
+    // the output is allowed to exceed — which is exactly the class of off-by-a-few
+    // that puts a status line one column past the terminal and scrolls the frame.
+    const ELLIPSIS: &str = "…";
+    let mut end = TARGET_MAX_BYTES - ELLIPSIS.len();
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ELLIPSIS}", &s[..end])
+}
+
+
 /// One event. `(session_id, seq, ts)` live on [`Envelope`], not here, because an
 /// event that has not been appended yet has none of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +305,18 @@ pub enum SessionEvent {
         call_id: String,
         name: String,
         args_digest: String,
+        /// The one argument a person reads: a path, a pattern, a command line.
+        ///
+        /// `crates/ui/DESIGN.md` §4.1, fixed. Before this field a head watching a
+        /// call could render `Running bash` and never `Running cargo test
+        /// --workspace`, because the arguments reached it only with the transcript
+        /// — after the call had finished.
+        ///
+        /// `#[serde(default)]` so a log recorded before the field existed still
+        /// replays; an old row then renders the verb with no target, which is what
+        /// it always did.
+        #[serde(default)]
+        target: String,
     },
     DecisionRequested {
         req_id: String,
@@ -276,6 +392,33 @@ pub enum SessionEvent {
     TurnInterrupted {
         turn_id: String,
         reason: String,
+        partial_kept: bool,
+    },
+    /// **The turn ended in a failure.** `crates/ui/DESIGN.md` §4.5, paid.
+    ///
+    /// Before this existed a turn that failed published a `Warning` and *no*
+    /// terminal event, so a head's `TurnState` stayed `Running` for the rest of the
+    /// session. Observed live: `! turn_failed — a frame advanced tokens_predicted
+    /// 142 -> 144 but carried 1 id(s)`, after which the head sat at `Responding`
+    /// forever. The head covered for it with *"nothing received for 17.0s"*, and a
+    /// head saying that cannot tell a failed turn from a slow one — only the party
+    /// that saw the error can, which is the party that publishes this.
+    ///
+    /// It is a **separate variant** rather than a `TurnInterrupted` with a reason
+    /// or a `TurnFinished { finish_reason: Other }`, because both of those are
+    /// endings a turn is allowed to have: an interrupt is something a person did,
+    /// and a finish is a turn that produced an answer. A failure is neither, and
+    /// folding it into either is the same move as recording a `length` as a
+    /// completed turn.
+    TurnFailed {
+        turn_id: String,
+        /// What went wrong, in the words the daemon has. Never abbreviated: this is
+        /// the only place the reason exists once the process moves on.
+        error: String,
+        /// Whether anything the model wrote before the failure was committed. False
+        /// for every §5.7 failure — the engine commits nothing — and the field is
+        /// present so a future failure that *does* keep a partial cannot arrive
+        /// looking like one that does not.
         partial_kept: bool,
     },
     TranscriptAppended {
@@ -382,6 +525,7 @@ impl SessionEvent {
             SessionEvent::ToolFinished { .. } => "ToolFinished",
             SessionEvent::TurnFinished { .. } => "TurnFinished",
             SessionEvent::TurnInterrupted { .. } => "TurnInterrupted",
+            SessionEvent::TurnFailed { .. } => "TurnFailed",
             SessionEvent::TranscriptAppended { .. } => "TranscriptAppended",
             SessionEvent::TranscriptContent { .. } => "TranscriptContent",
             SessionEvent::HeadAttached { .. } => "HeadAttached",
@@ -443,6 +587,57 @@ mod tests {
             let back: SessionEvent = serde_json::from_str(&s).unwrap();
             assert_eq!(e, back, "{s}");
         }
+    }
+
+    #[test]
+    fn a_display_target_is_the_argument_a_person_scans_for() {
+        assert_eq!(
+            display_target(r#"{"path":"crates/tui/src/app.rs"}"#),
+            "crates/tui/src/app.rs"
+        );
+        // Key order is the model's, and `preserve_order` keeps it.
+        assert_eq!(
+            display_target(r#"{"pattern":"home.*button","path":"src"}"#),
+            "home.*button src"
+        );
+        // A command line keeps its spaces and is quoted, so it cannot be read as
+        // three arguments.
+        assert_eq!(
+            display_target(r#"{"cmd":"cargo test --workspace"}"#),
+            "\"cargo test --workspace\""
+        );
+    }
+
+    #[test]
+    fn a_nested_argument_is_elided_rather_than_dumped() {
+        assert_eq!(
+            display_target(r#"{"path":"a.rs","edits":[{"old":"x"}]}"#),
+            "a.rs […]"
+        );
+    }
+
+    #[test]
+    fn a_target_never_exceeds_the_cap_and_says_when_it_was_cut() {
+        let long = "x".repeat(400);
+        let t = display_target(&format!(r#"{{"path":"{long}"}}"#));
+        assert!(t.len() <= TARGET_MAX_BYTES, "{} bytes", t.len());
+        assert!(t.ends_with('…'), "{t}");
+    }
+
+    #[test]
+    fn a_target_never_carries_a_control_character_into_a_one_line_header() {
+        // A newline here would put a row on the screen the head did not count,
+        // which scrolls the frame it has just painted — the same fault
+        // `letibot_ui::width::break_cells` had, one layer up.
+        let t = display_target("{\"cmd\":\"a\\nb\"}");
+        assert!(!t.contains('\n'), "{t:?}");
+    }
+
+    #[test]
+    fn arguments_that_are_not_json_still_produce_something_readable() {
+        // The model wrote them; refusing to show them would hide the evidence of
+        // exactly the malformed call this case is.
+        assert_eq!(display_target("  path=src/main.rs  "), "path=src/main.rs");
     }
 
     #[test]

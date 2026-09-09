@@ -50,6 +50,7 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod protocol;
+pub mod registry;
 pub mod scrub;
 pub mod server;
 pub mod testing;
@@ -65,9 +66,10 @@ pub mod lift_tools;
 pub use cursor::{Batch, ReadMark};
 pub use event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason, OnTimeout,
-    OptionKind, PromptProgress, SessionEvent, Timings, Usage,
+    OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES, Timings, Usage, display_target,
 };
-pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand};
+pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, SessionStatus};
+pub use registry::{Bell, CreateError, Registry, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};

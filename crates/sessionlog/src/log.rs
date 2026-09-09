@@ -104,6 +104,14 @@ impl SessionLog {
         self.dropped
     }
 
+    /// `ts` of the newest retained event, or `0` when nothing has been appended.
+    ///
+    /// The log's own clock, not a wall clock in whoever asks — a session list read
+    /// from a recorded log must sort the same way it did live.
+    pub fn last_ts(&self) -> u64 {
+        self.ring.back().map(|r| r.env.ts).unwrap_or(0)
+    }
+
     /// Append, stamping `(session_id, seq, ts)`.
     pub fn append(&mut self, event: SessionEvent) -> Envelope {
         self.head_seq += 1;

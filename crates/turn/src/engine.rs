@@ -516,6 +516,11 @@ impl TurnEngine<'_> {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
                 args_digest: args_digest(&call.arguments),
+                // §4.1. The digest is a correlation key and is useless on a
+                // screen; these are what a person reads while the call runs. They
+                // go no further than the in-process sink — the lift cuts them to a
+                // bounded label before anything reaches a socket.
+                arguments: call.arguments.clone(),
             });
         }
 

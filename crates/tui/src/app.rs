@@ -26,8 +26,9 @@
 //! rejects is counted. That is what makes the counter meaningful rather than
 //! decorative: there is a key that changes it, so the number moves.
 
-use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
+use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
+use letibot_sessionlog::registry::{SessionBrief, SessionWiring};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, SettledDecision, Snapshot, SnapshotItem, TurnState, Warned,
 };
@@ -89,6 +90,13 @@ pub enum Action {
     Interrupt(String),
     Answer { req_id: String, option_id: String },
     Resync,
+    /// Ask the daemon what sessions it holds.
+    ListSessions,
+    /// Make one. The head switches to it when the daemon says which id it minted;
+    /// see [`App::apply`]'s `Sessions` arm.
+    NewSession(String),
+    /// Move this connection to another session.
+    Switch(String),
     Quit,
 }
 
@@ -136,6 +144,8 @@ pub enum Key {
     CtrlT,
     /// Repaint from scratch.
     CtrlL,
+    /// Open or close the session picker.
+    CtrlS,
     PageUp,
     PageDown,
 }
@@ -168,7 +178,9 @@ impl Key {
             Key::Esc => E::Esc,
             Key::CtrlC => E::CtrlC,
             Key::Eof => E::Eof,
-            Key::CtrlR | Key::CtrlT | Key::CtrlL | Key::PageUp | Key::PageDown => return None,
+            Key::CtrlR | Key::CtrlT | Key::CtrlL | Key::CtrlS | Key::PageUp | Key::PageDown => {
+                return None;
+            }
         })
     }
 }
@@ -215,6 +227,11 @@ impl Fold {
 struct CallRow {
     call_id: String,
     name: String,
+    /// The §4.1 display target: the path, pattern or command line the call is
+    /// about. Empty when the event carried none — a log recorded before the field
+    /// existed, or a call first seen as `ToolStarted` — and the card then renders
+    /// the verb alone rather than a guess.
+    target: String,
     state: CallState,
     /// `Envelope::ts` of the proposal or the start, and of the finish. Zero means
     /// this call came out of a snapshot, which has no timestamps — and a duration
@@ -271,6 +288,27 @@ pub struct App {
     pub verbosity: Verbosity,
     session_id: String,
     head_id: String,
+    /// The head id the daemon just handed out, for the driver to give the client.
+    ///
+    /// A `Switch` seats this connection as a *different head* in the new session,
+    /// and a client that kept the old id would ack into a session it had left —
+    /// which the hub would silently ignore, so the mark would stop advancing and
+    /// nothing would say why.
+    seated: Option<String>,
+    /// What this session is talking to: `model · dialect · endpoint · workspace`.
+    /// §4.4, arriving on `Hello`.
+    wiring: SessionWiring,
+    /// Every session the daemon holds, as of the last `Hello` or `Sessions` frame.
+    sessions: Vec<SessionBrief>,
+    /// Actions produced by a *frame* rather than by a key: the switch that follows
+    /// a session being created. Drained by the driver, which is the only thing that
+    /// can send.
+    queued: Vec<Action>,
+    /// Set when this head asked for a session and is waiting to be told its id.
+    want_new_session: bool,
+    /// The last turn's `usage`, kept past the end of the turn so the header can
+    /// say how much context this session is carrying while nothing is running.
+    usage: Option<Usage>,
     items: Vec<SnapshotItem>,
     hist_lines: Vec<String>,
     hist_upto: usize,
@@ -314,6 +352,11 @@ pub struct App {
     /// and the old one replaced the input line for the rest of the session.
     notice_ttl: u32,
     help: bool,
+    /// The session picker, which is a screen like `help` rather than a mode with a
+    /// cursor. Same argument as the folds: there is one input surface here and it
+    /// is a line, so the affordance is *typing the number you can see* — which also
+    /// means the picker needs no keymap of its own and works over a pipe.
+    picker: bool,
     quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
     redraw: bool,
@@ -331,8 +374,14 @@ pub struct App {
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
     /// composer's own line has to say what it is talking to when nothing is
-    /// running — which is most of the time a person is looking at it.
+    /// running — which is most of the time a person is looking at it. Since §4.4 it
+    /// is also on `Hello`, so a head with no turn yet has an answer too.
     model: String,
+    /// §4.1's display target, by call id, for every proposal this head has seen.
+    ///
+    /// Bounded by the session rather than by the turn on purpose: a transcript row
+    /// from six turns ago still wants to say which file it read.
+    call_targets: std::collections::HashMap<String, String>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
     /// Where the terminal's caret belongs, from the last frame.
@@ -391,6 +440,12 @@ impl App {
             verbosity: Verbosity::Normal,
             session_id: String::new(),
             head_id: String::new(),
+            seated: None,
+            wiring: SessionWiring::default(),
+            sessions: Vec::new(),
+            queued: Vec::new(),
+            want_new_session: false,
+            usage: None,
             items: Vec::new(),
             hist_lines: Vec::new(),
             hist_upto: 0,
@@ -409,11 +464,13 @@ impl App {
             scroll: 0,
             editor: Editor::new(),
             model: String::new(),
+            call_targets: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             notice: None,
             notice_ttl: 0,
             help: false,
+            picker: false,
             quit: false,
             redraw: false,
             now_ms: 0,
@@ -443,6 +500,33 @@ impl App {
         &self.head_id
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// The head id the daemon just seated this connection with, once.
+    ///
+    /// The driver hands it to the client. It is `take`n rather than read because a
+    /// client that re-applied a stale one would ack into the session it left.
+    pub fn take_seated(&mut self) -> Option<String> {
+        self.seated.take()
+    }
+
+    /// Actions a *frame* produced, for the driver to send. Empty almost always.
+    pub fn take_actions(&mut self) -> Vec<Action> {
+        std::mem::take(&mut self.queued)
+    }
+
+    /// How this session should be named on a screen: its title, or its id.
+    fn session_label(&self, id: &str) -> String {
+        self.sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .filter(|s| !s.title.is_empty())
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
     pub fn open_decisions(&self) -> &[OpenDecision] {
         &self.open
     }
@@ -450,21 +534,70 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
+            // Once per *attachment*, which is now more than once per connection: a
+            // `Switch` is answered with a second `Hello`, and this arm is the whole
+            // of the head's switch path. That is the reason the daemon answers a
+            // switch with a `Hello` rather than a frame of its own — the late-join
+            // path is the best-tested path in this head, and a second one that
+            // "also seats you somewhere" is a second one to keep in step.
             ServerFrame::Hello {
                 session_id,
                 head_id,
                 dropped,
                 snapshot,
                 scrubbed,
+                wiring,
+                sessions,
                 ..
             } => {
-                self.session_id = session_id;
-                self.head_id = head_id;
+                let moved = !self.session_id.is_empty() && self.session_id != session_id;
+                self.head_id = head_id.clone();
+                self.seated = Some(head_id);
+                self.wiring = wiring;
+                self.sessions = sessions;
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
-                if let Some(s) = snapshot {
-                    self.load(*s);
+                // `session_id` is assigned by `load` and **not before it**: `load`
+                // decides whether this is the same session by comparing the two,
+                // and assigning first made that comparison always true — so a
+                // switch kept the previous session's token count and model on the
+                // header, over the new session's empty transcript. Seen under tmux:
+                // a brand-new session claiming `4470 ctx · 34% cached`.
+                match snapshot {
+                    Some(s) => self.load(*s),
+                    // A resume served from the scrollback: no snapshot, and the
+                    // state that is already here is this session's.
+                    None => self.session_id = session_id,
                 }
+                if moved {
+                    // The picker is closed by arriving, not by the key that opened
+                    // it: the switch is the answer to the question the picker
+                    // asked, and leaving it up over the session you just joined is
+                    // a screen the operator has to dismiss for no reason.
+                    self.picker = false;
+                    self.say(&format!("switched to {}", self.session_label(&self.session_id)));
+                }
+                Disposition::Control
+            }
+            ServerFrame::Sessions {
+                sessions,
+                current,
+                created,
+            } => {
+                self.sessions = sessions;
+                self.session_id = current;
+                match created {
+                    // A session was made *because this head asked*. Going there is
+                    // what was meant — `/new` that leaves you where you were is a
+                    // command whose effect is invisible.
+                    Some(id) if self.want_new_session => {
+                        self.want_new_session = false;
+                        self.queued.push(Action::Switch(id));
+                    }
+                    Some(id) => self.say(&format!("session {id} created")),
+                    None => self.picker = true,
+                }
+                self.redraw = true;
                 Disposition::Control
             }
             ServerFrame::Resync {
@@ -525,9 +658,29 @@ impl App {
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
     fn load(&mut self, s: Snapshot) {
+        // Everything session-scoped goes, not just the transcript. A snapshot is a
+        // *replacement*, and this is also the switch path: carrying the previous
+        // session's model name or a tool target keyed by a call id that only
+        // existed over there is how a switched head shows the right conversation
+        // with the wrong facts attached to it.
+        if self.session_id != s.session_id {
+            self.call_targets.clear();
+            self.usage = None;
+            self.model.clear();
+            self.turn = None;
+            self.heads = 0;
+        }
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
+        for c in s.turn.iter().flat_map(|t| t.calls.iter()) {
+            if !c.target.is_empty() {
+                self.call_targets.insert(c.call_id.clone(), c.target.clone());
+            }
+        }
+        if let Some(TurnState::Finished { usage, .. }) = s.turn.as_ref().map(|t| &t.state) {
+            self.usage = Some(*usage);
+        }
         self.items = s.items;
         self.invalidate_history();
         self.open = s.open_decisions;
@@ -536,6 +689,12 @@ impl App {
         self.notes = s
             .warnings
             .into_iter()
+            // Same rule as the live arm: `turn_failed` is the log's record of what
+            // the turn's own terminal state already says on the screen. Filtering
+            // it here as well is what stops a *snapshot* from putting it back —
+            // which is exactly what happened the first time, and is the reason the
+            // live path and the snapshot path have to agree about every filter.
+            .filter(|w| w.code != "turn_failed")
             .map(|w| (0, Note::Warned(w)))
             .chain(s.settled_decisions.into_iter().map(|d| (0, Note::Decided(d))))
             .collect();
@@ -554,6 +713,7 @@ impl App {
                     .map(|c| CallRow {
                         call_id: c.call_id,
                         name: c.name,
+                        target: c.target,
                         state: c.state,
                         started_ms: 0,
                         ended_ms: 0,
@@ -641,11 +801,26 @@ impl App {
                     }
                 }
             }
-            SessionEvent::ToolCallProposed { call_id, name, .. } => {
+            SessionEvent::ToolCallProposed {
+                call_id,
+                name,
+                target,
+                ..
+            } => {
+                // Kept beyond the turn: a settled `Assistant { tool_calls }` row
+                // renders `→ Read crates/tui/src/app.rs`, and the only place the
+                // head can get that word from is the proposal it already saw.
+                // Re-deriving it from the row's own `arguments` would put a second
+                // copy of `display_target` in this crate, and two spellings of a
+                // display rule drift.
+                if !target.is_empty() {
+                    self.call_targets.insert(call_id.clone(), target.clone());
+                }
                 if let Some(t) = self.turn.as_mut() {
                     t.calls.push(CallRow {
                         call_id,
                         name,
+                        target,
                         state: CallState::Proposed,
                         started_ms: ts,
                         ended_ms: 0,
@@ -667,6 +842,8 @@ impl App {
                         None => t.calls.push(CallRow {
                             call_id,
                             name,
+                            // `ToolStarted` carries no target and none is invented.
+                            target: String::new(),
                             state: CallState::Running,
                             started_ms: ts,
                             ended_ms: 0,
@@ -771,12 +948,38 @@ impl App {
                 timings,
                 ..
             } => {
+                // Kept on the head, not only on the pane: the session header says
+                // how much context this conversation is carrying, and that question
+                // is asked between turns, when the pane may have been superseded by
+                // the transcript.
+                self.usage = Some(usage);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
                     t.state = Some(TurnState::Finished {
                         finish_reason,
                         usage,
                         timings,
+                    });
+                }
+                Disposition::Rendered
+            }
+            // §4.5's terminal event, which did not exist. The head used to be told
+            // a `Warning` and nothing else, so `TurnState` stayed `Running` and the
+            // spinner span at a dead turn until somebody closed the window; the
+            // "nothing received for 17.0s" line below is the *disclosure* that
+            // covered for it, and it stays as the backstop for a genuine stall.
+            SessionEvent::TurnFailed {
+                turn_id,
+                error,
+                partial_kept,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && (t.turn_id == turn_id || turn_id.is_empty())
+                {
+                    t.progress = None;
+                    t.state = Some(TurnState::Failed {
+                        error,
+                        partial_kept,
                     });
                 }
                 Disposition::Rendered
@@ -807,6 +1010,10 @@ impl App {
                     item_id,
                     kind,
                     ledger_head,
+                    // When it happened, from the log's own clock. A head reading a
+                    // recorded session must show the same times as the one that
+                    // watched it, so this is never `now`.
+                    ts,
                     item: None,
                 });
                 Disposition::Rendered
@@ -844,6 +1051,16 @@ impl App {
             // conversation, and putting it there is what makes it scroll away like
             // one — and still be there when you scroll back.
             SessionEvent::Warning { code, detail } => {
+                // `turn_failed` is the log's grep-able record of the same fact
+                // `TurnFailed` puts under the turn, and the daemon publishes both
+                // on purpose — one is state, the other is history. On a *screen*
+                // they are the same sentence twice, three lines apart, so this head
+                // renders the terminal state and counts the warning as filtered.
+                // Counted, not dropped: the status line's `filtered` is what makes
+                // "I chose not to show this" different from "nothing happened".
+                if code == "turn_failed" {
+                    return Disposition::Filtered;
+                }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered
             }
@@ -921,6 +1138,15 @@ impl App {
                 self.redraw = true;
                 return None;
             }
+            Key::CtrlS => {
+                self.picker = !self.picker;
+                self.redraw = true;
+                // Opening it asks for a fresh list rather than drawing the one from
+                // the attach: sessions are a shared thing, and a picker showing what
+                // was true when this head connected is a picker that hides the
+                // session somebody else just started.
+                return self.picker.then_some(Action::ListSessions);
+            }
             Key::PageUp => {
                 self.scroll = (self.scroll + 10).min(self.body_len);
                 return None;
@@ -932,10 +1158,11 @@ impl App {
             _ => {}
         }
 
-        // Help is a screen, and the two keys that mean "go back" close it before
-        // the composer ever sees them.
-        if self.help && matches!(k, Key::Esc | Key::CtrlC) {
+        // Help and the picker are screens, and the two keys that mean "go back"
+        // close them before the composer ever sees them.
+        if (self.help || self.picker) && matches!(k, Key::Esc | Key::CtrlC) {
             self.help = false;
+            self.picker = false;
             self.redraw = true;
             return None;
         }
@@ -991,6 +1218,13 @@ impl App {
         if let Some(rest) = text.strip_prefix('/') {
             return self.command(rest.trim());
         }
+        // The picker takes the line as a row number or an id prefix. It is checked
+        // before the decision arm and before the prompt arm, because while a picker
+        // is on the screen a bare `2` means the second session and cannot sensibly
+        // mean anything else.
+        if self.picker {
+            return self.pick(text.trim());
+        }
         // An open decision takes the line as an option id or its first letter, so
         // answering does not require a second keymap.
         if let Some(d) = self.open.first().cloned()
@@ -1036,7 +1270,79 @@ impl App {
         ));
     }
 
+    /// Answer the session picker: a row number, or enough of an id to be unique.
+    ///
+    /// An ambiguous prefix is **refused with the count**, not resolved to the first
+    /// match. Switching to the wrong session is not a keystroke you can take back —
+    /// the prompt you type next lands there.
+    fn pick(&mut self, typed: &str) -> Option<Action> {
+        if typed.is_empty() {
+            self.picker = false;
+            self.redraw = true;
+            return None;
+        }
+        if let Ok(n) = typed.parse::<usize>()
+            && n >= 1
+            && n <= self.sessions.len()
+        {
+            let id = self.sessions[n - 1].session_id.clone();
+            return self.switch_to(id);
+        }
+        let hits: Vec<&SessionBrief> = self
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.session_id.starts_with(typed)
+                    || (!s.title.is_empty()
+                        && s.title.to_ascii_lowercase().contains(&typed.to_ascii_lowercase()))
+            })
+            .collect();
+        match hits.len() {
+            1 => {
+                let id = hits[0].session_id.clone();
+                self.switch_to(id)
+            }
+            0 => {
+                self.say(&format!("no session matches {typed:?} — esc closes the list"));
+                None
+            }
+            n => {
+                self.say(&format!(
+                    "{n} sessions match {typed:?}; type the number on the left instead"
+                ));
+                None
+            }
+        }
+    }
+
+    fn switch_to(&mut self, id: String) -> Option<Action> {
+        if id == self.session_id {
+            self.picker = false;
+            self.redraw = true;
+            self.say("already here");
+            return None;
+        }
+        // `since_seq` is not sent: this head has no state for the session it is
+        // going to, so a snapshot is the only honest ask. Coming *back* to a
+        // session it was watching would be a resume, and this head does not keep
+        // per-session marks — it would be a cache with no invalidation rule.
+        Some(Action::Switch(id))
+    }
+
     fn command(&mut self, cmd: &str) -> Option<Action> {
+        if let Some(title) = cmd.strip_prefix("new") {
+            self.want_new_session = true;
+            self.say("making a session…");
+            return Some(Action::NewSession(title.trim().to_string()));
+        }
+        if matches!(cmd, "sessions" | "s") {
+            self.picker = true;
+            self.redraw = true;
+            return Some(Action::ListSessions);
+        }
+        if let Some(id) = cmd.strip_prefix("switch ") {
+            return self.pick(id.trim());
+        }
         match cmd {
             "quit" | "q" => {
                 self.quit = true;
@@ -1267,11 +1573,27 @@ impl App {
             chrome.drain(..chrome.len() - h.max(1));
         }
 
-        let room = h.saturating_sub(chrome.len()).max(1);
+        // The session header, pinned above everything. One row, and it is the row
+        // both surveyed heads spend first: opencode puts the title left and
+        // `39,413  20% ($0.29)` right, grok-build puts the cwd left and `9.5K /
+        // 500K` right. What is here is the same shape with this harness's own
+        // numbers — see `header_line` for which of theirs are deliberately absent.
+        //
+        // It costs a row of transcript and it is worth it because the question it
+        // answers ("which session am I in, and how big has it got") is otherwise
+        // answered by scrolling.
+        let header = (h >= 6 && !self.session_id.is_empty()).then(|| self.header_line(w));
+        let room = h
+            .saturating_sub(chrome.len() + usize::from(header.is_some()))
+            .max(1);
         let mut out = if self.help {
             let mut help = help_lines(&self.cfg, w);
             help.truncate(room);
             help
+        } else if self.picker {
+            let mut rows = self.picker_lines(w);
+            rows.truncate(room);
+            rows
         } else {
             self.body_window(room)
         };
@@ -1279,7 +1601,11 @@ impl App {
             out.push(String::new());
         }
         out.truncate(room);
-        let body_rows = out.len();
+        let mut body_rows = out.len();
+        if let Some(l) = header {
+            out.insert(0, l);
+            body_rows += 1;
+        }
         out.extend(chrome);
         out.truncate(h);
         // The caret is the affordance. It goes where the composer says, and the
@@ -1354,10 +1680,20 @@ impl App {
     /// nothing is running, which is most of the time anybody is looking at it.
     fn facts(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        if self.model.is_empty() {
-            parts.push("no turn yet".into());
-        } else {
+        // §4.4, arriving. This used to read `no turn yet` for a freshly attached
+        // head, because `TurnStarted { model }` was the only one of the three facts
+        // that ever reached a head and it only arrives when a turn starts — so the
+        // composer could not name what it was talking to at the one moment somebody
+        // was about to talk to it. The daemon has known all three since it parsed
+        // its own command line; now it says so on `Hello`.
+        let summary = self.wiring.summary();
+        if !summary.is_empty() {
+            parts.push(summary);
+        } else if !self.model.is_empty() {
             parts.push(self.model.clone());
+        } else {
+            // A `--replay` or `--demo` head has no daemon to have asked.
+            parts.push("no daemon".into());
         }
         parts.push(self.verbosity.as_str().to_string());
         if self.heads > 1 {
@@ -1379,10 +1715,12 @@ impl App {
         let mut s = self.editor.hint(self.turn_running(), self.now_ms, p);
         let tail = if self.help {
             "esc closes this"
+        } else if self.picker {
+            "type a number to switch · /new [title] · esc closes"
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-r thinking · ctrl-t tool output · pgup scrolls · /help"
+            "ctrl-s sessions · ctrl-r thinking · ctrl-t tool output · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -1399,23 +1737,59 @@ impl App {
         // Rows and notes, interleaved in the order they happened. A note anchored
         // at row N renders between row N-1 and row N, which is where it was when it
         // arrived.
-        loop {
-            let note_next = self
-                .notes
-                .get(self.note_upto)
-                .is_some_and(|(at, _)| *at <= self.hist_upto);
-            if note_next {
-                let (_, n) = self.notes[self.note_upto].clone();
-                self.hist_lines.extend(note_lines(&cfg, &n));
-                self.hist_lines.push(String::new());
-                self.note_upto += 1;
-            } else if self.hist_upto < self.items.len() {
-                let it = self.items[self.hist_upto].clone();
-                self.hist_lines.extend(item_lines(&it, &cfg, think, tool));
-                self.hist_lines.push(String::new());
-                self.hist_upto += 1;
-            } else {
-                break;
+        //
+        // Destructured rather than indexed through `self`, so a row can be rendered
+        // *while* the rendered lines are being appended and the tool-target table
+        // is being read — three disjoint fields, one borrow each, no clone of a row
+        // per frame.
+        {
+            let App {
+                hist_lines,
+                hist_upto,
+                note_upto,
+                items,
+                notes,
+                call_targets,
+                ..
+            } = self;
+            loop {
+                let note_next = notes
+                    .get(*note_upto)
+                    .is_some_and(|(at, _)| *at <= *hist_upto);
+                if note_next {
+                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
+                    hist_lines.push(String::new());
+                    *note_upto += 1;
+                } else if *hist_upto < items.len() {
+                    // An assistant row carries the arguments for the calls it
+                    // proposed, and the tool-result rows that follow it want the
+                    // same label. Learning them here, in transcript order, is what
+                    // lets a head that attached *after* a turn still say which file
+                    // was read — the proposal event is long gone and the row is the
+                    // only place the arguments survive.
+                    if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
+                        items[*hist_upto].item.as_ref()
+                    {
+                        for c in tool_calls {
+                            call_targets
+                                .entry(c.id.clone())
+                                .or_insert_with(|| {
+                                    letibot_sessionlog::display_target(&c.arguments)
+                                });
+                        }
+                    }
+                    hist_lines.extend(item_lines(
+                        &items[*hist_upto],
+                        &cfg,
+                        think,
+                        tool,
+                        call_targets,
+                    ));
+                    hist_lines.push(String::new());
+                    *hist_upto += 1;
+                } else {
+                    break;
+                }
             }
         }
 
@@ -1534,7 +1908,13 @@ impl App {
 
         let total: usize = segs.iter().map(Seg::len).sum();
         self.body_len = total;
-        self.scroll = self.scroll.min(total.saturating_sub(1));
+        // Clamped so the window stays **full**, not so the last line stays on
+        // screen. It was `total - 1`, which meant scrolling to the top left a
+        // one-line window — and since the banner below overwrites the last line of
+        // the window, the whole screen went blank with `── scrolled back · 56 lines
+        // below` at the top of it. Found by pressing PageUp six times under tmux,
+        // which is a thing a person does and no test did.
+        self.scroll = self.scroll.min(total.saturating_sub(room.max(1)));
         let end = total.saturating_sub(self.scroll);
         let start = end.saturating_sub(room);
         let mut out = take_window(&segs, start, end);
@@ -1547,6 +1927,174 @@ impl App {
                 &format!("── scrolled back · {behind} lines below · ↓ or esc to follow"),
             );
         }
+        out
+    }
+
+    /// The session header: which session, and how big it has got.
+    ///
+    /// ```text
+    ///   ▌ the cache question  ~/Projects/letibot            41.2k ctx · 92% cached  2/4
+    /// ```
+    ///
+    /// **What is deliberately not on it.** opencode's right-hand side reads
+    /// `39,413  20% ($0.29)` — tokens, context *used as a percentage*, and money.
+    /// The percentage needs the context window and the price needs a tariff, and
+    /// this harness has neither: nothing on the wire carries `n_ctx`, and the model
+    /// is on the other side of a Unix socket on this box and costs nothing per
+    /// token. Rendering `20%` against a denominator nobody sent would be the same
+    /// move as rendering `0.0s` for a call that was never timed.
+    ///
+    /// What is here instead is the number this harness exists to move and neither
+    /// surveyed head can show at all: **how much of the prompt was cached**. It is
+    /// `f_sim` — cached over *this* prompt — and it is labelled `cached`, never
+    /// `f_keep`, which needs the previous turn's entry as its denominator.
+    /// # It degrades by deletion, one field at a time
+    ///
+    /// The first version handed the two halves to `split_row`, which drops the
+    /// **whole** right half when they do not both fit — correct for the in-flight
+    /// line, where the left half is what is happening, and wrong here, where the
+    /// right half is the part you cannot get any other way. Measured under tmux at
+    /// 110 columns: an 82-column path plus a 27-column tail is 111, and the entire
+    /// tail vanished with nothing to say it had. So the tail is built in priority
+    /// order and the path is shortened from its left before anything is dropped —
+    /// a path is recognisable from its end, and a token count is not recoverable
+    /// from anywhere else on the screen.
+    fn header_line(&self, w: usize) -> String {
+        let p = self.cfg.palette();
+        let name = self.session_label(&self.session_id);
+
+        // Most valuable first: which of several sessions this is, then how big the
+        // prompt has got, then how much of it the cache saved.
+        let mut right: Vec<String> = Vec::new();
+        if self.sessions.len() > 1 {
+            let at = self
+                .sessions
+                .iter()
+                .position(|s| s.session_id == self.session_id)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            right.push(format!("{at}/{}", self.sessions.len()));
+        }
+        // Live prefill numbers win over the last turn's: while a turn is running,
+        // "how big is this prompt" is a question about the prompt being sent.
+        let usage = match self.turn.as_ref().and_then(|t| t.progress.as_ref()) {
+            Some(pp) if pp.total > 0 => Some((pp.total, pp.cache)),
+            _ => self
+                .usage
+                .filter(|u| u.prompt_tokens > 0)
+                .map(|u| (u.prompt_tokens, u.cached_tokens)),
+        };
+        if let Some((total, cached)) = usage {
+            right.push(format!("{} ctx", progress::thousands(total)));
+            right.push(format!("{:.0}% cached", cached as f64 * 100.0 / total as f64));
+        }
+        // Drop from the end until it leaves room for the name.
+        let name_cols = visible_width(&name) + 2;
+        while right.len() > 1 && name_cols + right.join(" · ").chars().count() + 2 > w {
+            right.pop();
+        }
+        let tail = right.join(" · ");
+        let tail_cols = if tail.is_empty() { 0 } else { tail.chars().count() + 2 };
+
+        let mut left = String::new();
+        left.push_str(&p.paint(Role::UserAccent, "▌ "));
+        left.push_str(&p.paint(Role::Strong, &name));
+        let mut left_cols = 2 + visible_width(&name);
+        // The workspace fills whatever is left, shortened from its *left*: the end
+        // of a path is the part that identifies it.
+        if !self.wiring.workspace.is_empty() {
+            let path = tilde(&self.wiring.workspace);
+            let room = w.saturating_sub(left_cols + tail_cols + 2);
+            if room >= 8 {
+                let shown = ellipsise_left(&path, room);
+                left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
+                left_cols += 2 + visible_width(&shown);
+            }
+        }
+        let pad = w.saturating_sub(left_cols + tail.chars().count());
+        trim_to(
+            &format!("{left}{}{}", " ".repeat(pad), p.paint(Role::Faint, &tail)),
+            w,
+        )
+    }
+
+    /// The session picker: every session this daemon holds, and how to go there.
+    ///
+    /// A screen and not a mode. There is no pointer in this head and no selection,
+    /// so a cursor here would be a second keymap for a program whose whole input
+    /// surface is one line — the same argument the folds settled. The affordance is
+    /// the number in the left column, which you type into the composer that is
+    /// still there under the list.
+    fn picker_lines(&self, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let mut out = vec![
+            colour(&self.cfg, sgr::BOLD, "sessions in this daemon"),
+            String::new(),
+        ];
+        if self.sessions.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "  none listed yet — the daemon has not answered, or this head is \
+                 replaying a recorded log and has no daemon to ask.",
+            ));
+        }
+        for (i, s) in self.sessions.iter().enumerate() {
+            let here = s.session_id == self.session_id;
+            let mark = if here { "▸" } else { " " };
+            let name = if s.title.is_empty() {
+                s.session_id.clone()
+            } else {
+                s.title.clone()
+            };
+            let left = format!(
+                "{mark} {:>2}  {}",
+                i + 1,
+                p.paint(if here { Role::Strong } else { Role::Plain }, &name),
+            );
+            // Busy is the fact a picker exists to show: switching away from a
+            // running turn is fine — the daemon keeps generating — and switching
+            // *into* one is how you go back and watch it.
+            let mut facts: Vec<String> = Vec::new();
+            if s.status.running {
+                facts.push("generating".into());
+            }
+            if s.status.items > 0 {
+                facts.push(format!("{} rows", s.status.items));
+            }
+            if s.status.heads > 0 {
+                facts.push(format!(
+                    "{} head{}",
+                    s.status.heads,
+                    if s.status.heads == 1 { "" } else { "s" }
+                ));
+            }
+            if !s.wiring.model.is_empty() {
+                facts.push(s.wiring.model.clone());
+            }
+            let right = p.paint(
+                if s.status.running {
+                    Role::Pending
+                } else {
+                    Role::Faint
+                },
+                &facts.join(" · "),
+            );
+            out.push(trim_to(&split_row(&left, &right, w), w));
+            if !s.title.is_empty() {
+                out.push(dim(&self.cfg, &format!("      {}", s.session_id)));
+            }
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  type a number or part of a name and press enter · /new [title] makes one \
+             · esc closes",
+        ));
+        out.push(dim(
+            &self.cfg,
+            "  switching does not stop anything: a turn keeps running in the session you \
+             left, and it is still there when you come back.",
+        ));
         out
     }
 
@@ -1596,7 +2144,21 @@ impl App {
         if !matches!(t.state, Some(TurnState::Running)) {
             return None;
         }
-        let elapsed = t.last_ms.saturating_sub(t.started_ms);
+        // **`started_ms == 0` means the turn came out of a snapshot**, which has no
+        // timestamps — the same case `Phase::Replayed` exists for on a tool card.
+        // `last_ms` is then an epoch millisecond and the difference is one, so the
+        // line read `Responding · 496940h16m`. Found by switching into a session
+        // that was mid-turn, which is the case the whole switch feature is for.
+        let elapsed = (t.started_ms != 0).then(|| t.last_ms.saturating_sub(t.started_ms));
+        // The spinner still has to turn: it is keyed off the log's clock rather
+        // than off a duration, so it animates in both cases.
+        let phase_ms = elapsed.unwrap_or(t.last_ms);
+        // `Responding · 4.2s` when the duration was measured, and `Responding since
+        // you attached` when it was not — never a number nobody took.
+        let since = match elapsed {
+            Some(ms) => format!(" · {}", progress::duration(ms)),
+            None => " · started before this head attached".to_string(),
+        };
         let p = self.cfg.palette();
 
         // A turn that is running and silent. The daemon sends prefill progress
@@ -1628,7 +2190,7 @@ impl App {
             ));
         }
 
-        let spin = progress::spinner(elapsed).to_string();
+        let spin = progress::spinner(phase_ms).to_string();
         let s = match &t.progress {
             Some(pp) if pp.total > 0 && pp.processed < pp.total => {
                 let pf = progress::Prefill {
@@ -1649,7 +2211,7 @@ impl App {
             Some(pp) if pp.total > 0 => split_row(
                 &p.paint(
                     Role::Pending,
-                    &format!("{spin} Responding · {}", progress::duration(elapsed)),
+                    &format!("{spin} Responding{since}"),
                 ),
                 &p.paint(
                     Role::Faint,
@@ -1666,7 +2228,7 @@ impl App {
             _ => split_row(
                 &p.paint(
                     Role::Pending,
-                    &format!("{spin} Responding · {}", progress::duration(elapsed)),
+                    &format!("{spin} Responding{since}"),
                 ),
                 &p.paint(
                     Role::Faint,
@@ -1935,6 +2497,23 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
                 }
             ),
         )],
+        // §4.5. A failure is not an ending a turn is allowed to have, so it does
+        // not read like one: red, shouted, and wrapped rather than truncated,
+        // because the reason is the whole content of the event.
+        TurnState::Failed {
+            error,
+            partial_kept,
+        } => {
+            let kept = if *partial_kept {
+                "what it had written is kept"
+            } else {
+                "nothing was recorded"
+            };
+            wrap(&format!("── FAILED — {error} ({kept})"), cfg.width)
+                .into_iter()
+                .map(|l| warn_line(cfg, &l))
+                .collect()
+        }
     }
 }
 
@@ -1949,6 +2528,9 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-a ctrl-e", "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks"),
         ("ctrl-z", "undo — a word at a time, and a kill is always its own step"),
         ("paste", "five lines or more collapses to a marker and is sent in full"),
+        ("ctrl-s", "the session list: type a number or part of a name to switch"),
+        ("/new [title]", "start a session in this daemon and go there"),
+        ("/switch WHAT", "go to a session by number, id or part of its name"),
         ("ctrl-r", "fold or unfold the model's thinking"),
         ("ctrl-t", "fold or unfold tool output"),
         ("ctrl-l", "repaint the screen"),
@@ -2017,9 +2599,13 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
 /// `Phase` distinguishes running from settled at all.
 fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<String> {
     let mut card = card::Card::new(&c.name, &c.call_id);
-    // §4.1: `ToolCallProposed` carries `name` and `args_digest` and no arguments,
-    // so there is nothing honest to put here. A digest is not a display string
-    // and a guess is worse than a blank.
+    // §4.1, fixed. `ToolCallProposed` now carries a bounded display target beside
+    // the digest — the path, the pattern, the command line — so a call that is
+    // still running says `Running "cargo test --workspace"` rather than `Running
+    // bash`. Empty is still possible (a call first seen as `ToolStarted`, or a log
+    // recorded before the field existed) and is still rendered as nothing: a digest
+    // is not a display string and a guess is worse than a blank.
+    card.target = c.target.clone();
     let mut body: Vec<String> = Vec::new();
     card.phase = match &c.state {
         CallState::Proposed => card::Phase::Proposed,
@@ -2090,7 +2676,113 @@ fn outcome_str(o: &letibot_transcript::ToolOutcome) -> String {
     }
 }
 
-fn item_lines(it: &SnapshotItem, cfg: &RenderConfig, think: Fold, tools: Fold) -> Vec<String> {
+/// The user's own message: an accent bar, a raised block, and the time it was sent.
+///
+/// The three things opencode and grok-build both do and this head did not. It used
+/// to be `› {line}` in bold, which is a *prefix* rather than a block: at a glance
+/// down a long conversation the operator's own words had the same shape as
+/// everything else, and finding "what did I actually ask" meant reading.
+///
+/// - **The bar** (`▌`) is the signal that survives with no colour at all and
+///   survives a copy-paste, which is the same argument the reasoning rail makes.
+/// - **The block** sets a background *and* a foreground. The head's own note on
+///   the composer rejects a raised background because "a dark block is either
+///   invisible or unreadable depending on which half of the pair lands" — which is
+///   true of a background set alone, and is fixed by setting both.
+/// - **The timestamp** is right-aligned, from the log's own clock, and is
+///   **omitted entirely when the row carries no `ts`** — a snapshot from a log
+///   recorded before the field existed. The same rule as a replayed tool call
+///   showing no duration.
+fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    let p = cfg.palette();
+    let w = cfg.width.max(20);
+    let bar = p.paint(Role::UserAccent, "▌");
+    let stamp = clock_time(ts);
+    // The first row shares its width with the timestamp; the rest have the row.
+    let head_w = w.saturating_sub(2 + visible_width(&stamp) + usize::from(!stamp.is_empty()));
+    let mut lines = wrap(text, head_w.max(8));
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let mut out = Vec::with_capacity(lines.len());
+    for (i, l) in lines.iter().enumerate() {
+        // Padded to the full width so the block is a block: `term::paint` erases
+        // each row it rewrites with `\x1b[K`, and a background that stops early
+        // leaves a ragged right edge that reads as damage.
+        let tail = if i == 0 && !stamp.is_empty() {
+            let pad = w
+                .saturating_sub(2)
+                .saturating_sub(visible_width(l))
+                .saturating_sub(visible_width(&stamp));
+            format!("{}{stamp}", " ".repeat(pad))
+        } else {
+            " ".repeat(w.saturating_sub(2).saturating_sub(visible_width(l)))
+        };
+        out.push(format!("{bar} {}", p.paint(Role::UserBlock, &format!("{l}{tail}"))));
+    }
+    out
+}
+
+/// `14:32:07` in the local zone, or empty when the row carries no timestamp.
+///
+/// Zero is *unknown*, not the epoch: a log recorded before `SnapshotItem::ts`
+/// existed replays with zeros, and rendering those as `01:00:00` would be a
+/// measurement that was never taken rendered as one that was.
+fn clock_time(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    let secs = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `localtime_r` writes into `tm` and reads `secs`; both are owned here.
+    // The `_r` form is the one that does not hand back a shared static, which
+    // matters because the driver is not the only thread in this process.
+    let ok = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
+    if !ok {
+        return String::new();
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+/// Shorten a path to `max` columns by eating its **left**.
+///
+/// `…/worktrees/agent-a19da2/crates/tui`, not `~/Projects/letibot/.claud…`. A path
+/// is recognised by where it ends; truncating from the right of a deep tree leaves
+/// every session on this box looking identical.
+fn ellipsise_left(s: &str, max: usize) -> String {
+    if visible_width(s) <= max || max < 2 {
+        return s.to_string();
+    }
+    let keep = max - 1;
+    let mut out = String::new();
+    let mut cols = 0usize;
+    for c in s.chars().rev() {
+        let cw = visible_width(&c.to_string());
+        if cols + cw > keep {
+            break;
+        }
+        out.push(c);
+        cols += cw;
+    }
+    format!("…{}", out.chars().rev().collect::<String>())
+}
+
+/// A path with `$HOME` written as `~`. Twelve columns of an eighty-column header
+/// spent on `/home/dead` is twelve columns not spent on the session's name.
+fn tilde(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && path.starts_with(&h) => format!("~{}", &path[h.len()..]),
+        _ => path.to_string(),
+    }
+}
+
+fn item_lines(
+    it: &SnapshotItem,
+    cfg: &RenderConfig,
+    think: Fold,
+    tools: Fold,
+    targets: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
     let Some(item) = &it.item else {
         // The event arrived and the body has not — which, since the body now
         // travels on the log too, is a real in-flight state and no longer a
@@ -2116,10 +2808,7 @@ fn item_lines(it: &SnapshotItem, cfg: &RenderConfig, think: Fold, tools: Fold) -
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            wrap(&text, cfg.width.saturating_sub(2))
-                .into_iter()
-                .map(|l| colour(cfg, sgr::BOLD, &format!("› {l}")))
-                .collect()
+            user_block(&text, it.ts, cfg)
         }
         TranscriptItem::Reasoning { text, .. } => {
             // A settled row: `Thought`, with no duration. The head can compute one
@@ -2141,8 +2830,37 @@ fn item_lines(it: &SnapshotItem, cfg: &RenderConfig, think: Fold, tools: Fold) -
             md.push(text);
             let mut cache = BlockCache::new();
             let mut out = cache.lines(&md, cfg, cfg.budget.body_lines);
+            let p = cfg.palette();
             for c in tool_calls {
-                out.push(colour(cfg, sgr::CYAN, &format!("→ {}({})", c.name, c.id)));
+                // `→ Read crates/tui/src/app.rs`, not `→ read(call_7)`. The verb is
+                // the same one the live card used, so a call reads identically
+                // before and after the turn settles; the target comes from the
+                // proposal this head saw, and is **absent rather than guessed** for
+                // a row whose proposal it never saw — a head that attached after
+                // the call, or a log recorded before §4.1 was fixed.
+                let verb = card::Verb::of(&c.name);
+                let mut line = format!("→ {}", verb.label(false));
+                // The proposal's target if this head saw it, and otherwise the same
+                // rule applied to the arguments on the row itself — **the same
+                // function**, `letibot_sessionlog::display_target`, so a call that
+                // was watched live and one reconstructed from the transcript render
+                // identically. Deriving it here with a second copy of the rule is
+                // what would make a switched head disagree with the head it
+                // switched away from.
+                let target = match targets.get(&c.id) {
+                    Some(t) if !t.is_empty() => t.clone(),
+                    _ => letibot_sessionlog::display_target(&c.arguments),
+                };
+                if target.is_empty() {
+                    // The call id earns its columns only when there is nothing
+                    // better: it is a correlation key, and it is the only thing
+                    // that distinguishes two calls to the same tool.
+                    line.push_str(&format!(" ({})", c.id));
+                } else {
+                    line.push(' ');
+                    line.push_str(&target);
+                }
+                out.push(trim_to(&p.paint(Role::Faint, &line), cfg.width));
             }
             out
         }
@@ -2155,11 +2873,20 @@ fn item_lines(it: &SnapshotItem, cfg: &RenderConfig, think: Fold, tools: Fold) -
             let lines: Vec<&str> = payload.lines().collect();
             let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
             let mark = if tools.is_open() { "▾" } else { "▸" };
+            // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-t`, not
+            // `▾ read(call_0) …`. The verb and the target are the two words a
+            // person scans a settled call for, and the id — a correlation key —
+            // takes their place only when the target is not known.
+            let verb = card::Verb::of(name).label(false).to_string();
+            let subject = match targets.get(call_id) {
+                Some(t) if !t.is_empty() => t.clone(),
+                _ => format!("({call_id})"),
+            };
             let head = colour(
                 cfg,
                 if bad { sgr::RED } else { sgr::GREY },
                 &format!(
-                    "{mark} {name}({call_id}) {} · {} line{} · ctrl-t",
+                    "{mark} {verb} {subject} · {} · {} line{} · ctrl-t",
                     outcome_str(outcome),
                     lines.len(),
                     if lines.len() == 1 { "" } else { "s" }
@@ -2350,6 +3077,8 @@ mod tests {
             snapshot: att.snapshot.map(Box::new),
             resumed_from: att.resumed_from,
             scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
         });
         hub.publish(testing::delta("t1", "!"));
         feed(&mut a, &hub, &att.head_id);
@@ -2889,6 +3618,376 @@ mod tests {
         });
         assert_eq!(a.turn.as_ref().unwrap().text.raw(), "abc", "not abcabc");
         assert_eq!(a.resyncs, 1);
+    }
+
+    fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
+        SessionBrief {
+            session_id: id.into(),
+            title: title.into(),
+            created_ms: 0,
+            status: letibot_sessionlog::SessionStatus {
+                session_id: id.into(),
+                seq: 4,
+                items: 6,
+                heads: 1,
+                running,
+                model: "qwen-3.8-flash-next".into(),
+                last_ms: 0,
+            },
+            wiring: wiring(),
+        }
+    }
+
+    fn wiring() -> SessionWiring {
+        SessionWiring {
+            model: "qwen-3.8-flash-next".into(),
+            dialect: "qwen3.8".into(),
+            endpoint: "127.0.0.1:8080".into(),
+            workspace: "/home/dead/Projects/letibot".into(),
+        }
+    }
+
+    fn hello(session: &str, sessions: Vec<SessionBrief>, snapshot: Snapshot) -> ServerFrame {
+        ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: session.into(),
+            head_id: "h1".into(),
+            dropped: 0,
+            snapshot: Some(Box::new(snapshot)),
+            resumed_from: None,
+            scrubbed: Default::default(),
+            wiring: wiring(),
+            sessions,
+        }
+    }
+
+    #[test]
+    fn the_composer_can_name_what_it_is_talking_to_before_any_turn() {
+        // §4.4. It read `no turn yet` for a freshly attached head, because
+        // `TurnStarted { model }` was the only one of the three facts that reached a
+        // head and it only arrives when a turn starts — so the composer could not
+        // say what it was about to talk to at the one moment somebody was about to.
+        let mut a = app();
+        let empty = Hub::new("s").snapshot();
+        a.apply(hello("s", vec![brief("s", "", false)], empty));
+        let facts = a.facts();
+        assert!(facts.contains("qwen-3.8-flash-next"), "{facts}");
+        assert!(facts.contains("qwen3.8"), "{facts}");
+        assert!(facts.contains("127.0.0.1:8080"), "{facts}");
+        assert!(!facts.contains("no turn yet"), "{facts}");
+    }
+
+    #[test]
+    fn a_running_tool_call_says_what_it_is_running_on() {
+        // §4.1, fixed. The whole difference between a tool list that is useful and
+        // one that is decorative.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env_at(1, 1_000, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test --workspace\""),
+        )));
+        a.apply(ServerFrame::Event(env_at(
+            3,
+            2_000,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            screen.contains("Running \"cargo test --workspace\""),
+            "a running call renders its argument, not just its verb:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_the_head_never_saw_proposed_still_names_its_target() {
+        // The reattach case, which is the common one: a head that joins after a
+        // turn has no proposal event to have learned the target from, and the
+        // arguments on the settled row are the only place it survives. It uses the
+        // *same* function the wire does, so both renderings agree.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "c1".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"crates/ui/src/style.rs"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            screen.contains("→ Read crates/ui/src/style.rs"),
+            "{screen}"
+        );
+        assert!(!screen.contains("(c1)"), "the id is not shown when a name is: {screen}");
+    }
+
+    #[test]
+    fn a_failed_turn_stops_the_spinner_instead_of_being_a_warning_and_a_hang() {
+        // §4.5. Observed live before this event existed: the engine published a
+        // `Warning` and no terminal event, `TurnState` stayed `Running`, and the
+        // head span at a dead session for as long as anyone left it open.
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        assert!(a.turn_running());
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TurnFailed {
+                turn_id: "t1".into(),
+                error: "http io: Connection refused (os error 111)".into(),
+                partial_kept: false,
+            },
+        )));
+        assert!(!a.turn_running(), "the turn is still marked running");
+        assert!(a.inflight_line(120).is_none(), "the spinner is still there");
+        let screen = a.screen(120, 16).join("\n");
+        assert!(screen.contains("FAILED"), "{screen}");
+        assert!(screen.contains("Connection refused"), "{screen}");
+        // …and the daemon's grep-able warning is not the same sentence a second
+        // time three lines away. Filtered, and counted as filtered.
+        let before = a.filtered;
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::Warning {
+                code: "turn_failed".into(),
+                detail: "http io: Connection refused (os error 111)".into(),
+            },
+        )));
+        assert_eq!(a.filtered - before, 1);
+        assert_eq!(
+            a.screen(120, 16).join("\n").matches("Connection refused").count(),
+            1,
+            "the same failure is on the screen twice"
+        );
+    }
+
+    #[test]
+    fn a_turn_joined_from_a_snapshot_shows_no_elapsed_rather_than_an_epoch() {
+        // Found by switching into a session that was mid-turn — the case the whole
+        // switch feature exists for. A snapshot has no timestamps, `started_ms` is
+        // 0, and `last_ms - 0` is a Unix epoch in milliseconds: the line read
+        // `Responding · 496940h16m`.
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(testing::delta("t1", "half an answer"));
+        let mut a = app();
+        a.apply(ServerFrame::Resync {
+            reason: "switch".into(),
+            dropped: 0,
+            snapshot: Box::new(hub.snapshot()),
+            scrubbed: Default::default(),
+        });
+        a.apply(ServerFrame::Event(env_at(
+            99,
+            1_788_984_000_000,
+            testing::delta("t1", " more"),
+        )));
+        let line = a.inflight_line(120).expect("the turn is running");
+        assert!(line.contains("started before this head attached"), "{line}");
+        // No `NNNh` anywhere: that shape is what an epoch renders as.
+        let chars: Vec<char> = line.chars().collect();
+        assert!(
+            !chars.windows(2).any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
+            "an epoch rendered as a duration: {line}"
+        );
+    }
+
+    #[test]
+    fn the_session_header_degrades_by_deletion_and_never_wraps() {
+        // It handed both halves to `split_row`, which drops the **whole** right one
+        // when they do not both fit — correct for the in-flight line and wrong here,
+        // where the right half is the part you cannot get anywhere else. Measured
+        // under tmux at 110 columns: an 82-column path plus a 27-column tail is 111,
+        // and the entire tail vanished with nothing to say it had.
+        let mut a = app();
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(SessionEvent::TurnFinished {
+            turn_id: "t1".into(),
+            finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+            usage: Usage {
+                prompt_tokens: 41_233,
+                cached_tokens: 38_100,
+                predicted_tokens: 200,
+            },
+            timings: Default::default(),
+        });
+        a.apply(hello(
+            "s",
+            vec![brief("s", "the cache question", false), brief("s2", "", false)],
+            hub.snapshot(),
+        ));
+        for w in [40usize, 60, 80, 110, 200] {
+            let l = a.header_line(w);
+            assert!(line_width(&l) <= w, "w={w}: {} cols: {l}", line_width(&l));
+            // The session index is the field that survives longest: with several
+            // sessions, "which one is this" is the question the header exists for.
+            assert!(l.contains("1/2"), "w={w}: {l}");
+            if w >= 80 {
+                assert!(l.contains("41.2k ctx"), "w={w}: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_users_own_message_is_a_block_with_a_bar_and_the_time_it_was_sent() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_788_984_000_000,
+            testing::appended("s.0", "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::content("s.0", "why did the cache miss"),
+        )));
+        let screen = a.screen(80, 16);
+        let row = screen
+            .iter()
+            .find(|l| l.contains("why did the cache miss"))
+            .expect("the prompt is on the screen");
+        // The bar is the signal that survives with no colour and survives a
+        // copy-paste, which is why it is a glyph and not only a colour.
+        assert!(row.starts_with('▌'), "{row:?}");
+        // A wall-clock time, from the log's own clock. Which one depends on the
+        // box's zone, so the assertion is on the shape.
+        assert!(
+            row.split_whitespace().last().is_some_and(|t| t.len() == 8 && t.contains(':')),
+            "no timestamp on the row: {row:?}"
+        );
+        // The block is padded to the full width, or the background stops mid-row
+        // and reads as damage.
+        assert_eq!(line_width(row), 80, "{row:?}");
+    }
+
+    #[test]
+    fn a_row_with_no_timestamp_shows_none_rather_than_the_epoch() {
+        // A log recorded before `SnapshotItem::ts` existed replays with zeros, and
+        // `01:00:00` would be a measurement nobody took rendered as one they did.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "user"))));
+        a.apply(ServerFrame::Event(env(2, testing::content("s.0", "no clock here"))));
+        let screen = a.screen(80, 16);
+        let row = screen.iter().find(|l| l.contains("no clock here")).unwrap();
+        assert!(!row.contains(':'), "a fabricated timestamp: {row:?}");
+    }
+
+    #[test]
+    fn the_picker_lists_the_sessions_and_a_number_switches_to_one() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![
+                brief("s", "the cache question", true),
+                brief("s2", "scratch", false),
+            ],
+            Hub::new("s").snapshot(),
+        ));
+        assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
+        let screen = a.screen(110, 24).join("\n");
+        assert!(screen.contains("the cache question"), "{screen}");
+        assert!(screen.contains("scratch"), "{screen}");
+        assert!(screen.contains("generating"), "the busy one says so:\n{screen}");
+        typed(&mut a, "2");
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s2".into())));
+    }
+
+    #[test]
+    fn an_ambiguous_pick_is_refused_with_the_count_rather_than_resolved() {
+        // Switching to the wrong session is not a keystroke you can take back: the
+        // prompt you type next lands there.
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![
+                brief("s", "cache one", false),
+                brief("s2", "cache two", false),
+                brief("s3", "other", false),
+            ],
+            Hub::new("s").snapshot(),
+        ));
+        a.key(Key::CtrlS);
+        typed(&mut a, "cache");
+        assert_eq!(a.key(Key::Enter), None, "an ambiguous prefix must not switch");
+        let screen = a.screen(110, 24).join("\n");
+        assert!(screen.contains("2 sessions match"), "{screen}");
+    }
+
+    #[test]
+    fn switching_replaces_the_previous_sessions_facts_and_does_not_carry_them_over() {
+        // Seen under tmux: a brand-new empty session claiming `4470 ctx · 34%
+        // cached`, because the head assigned `session_id` before `load` compared
+        // the two and so `load` never saw that it had moved.
+        let mut a = app();
+        let one = Hub::new("s1");
+        one.publish(testing::turn_started("t1"));
+        one.publish(SessionEvent::TurnFinished {
+            turn_id: "t1".into(),
+            finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+            usage: Usage {
+                prompt_tokens: 4_470,
+                cached_tokens: 1_500,
+                predicted_tokens: 10,
+            },
+            timings: Default::default(),
+        });
+        a.apply(hello("s1", vec![brief("s1", "one", false)], one.snapshot()));
+        assert!(a.header_line(200).contains("4470 ctx"));
+
+        a.apply(hello(
+            "s2",
+            vec![brief("s1", "one", false), brief("s2", "two", false)],
+            Hub::new("s2").snapshot(),
+        ));
+        let h = a.header_line(200);
+        assert!(!h.contains("4470"), "the old session's token count came along: {h}");
+        assert!(h.contains("2/2"), "{h}");
+        assert!(a.turn.is_none(), "the old session's turn came along");
+    }
+
+    #[test]
+    fn scrolling_to_the_top_leaves_a_full_screen_rather_than_a_blank_one() {
+        // Found by pressing PageUp six times under tmux. The scroll was clamped to
+        // `total - 1`, so the top of the history was a one-line window — and since
+        // the scrollback banner overwrites the last line of the window, the whole
+        // screen went blank with the banner alone on it.
+        let mut a = app();
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("s.{i}"), "user"))));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("line {i}")),
+            )));
+        }
+        // A frame first: `body_len` is what `PageUp` clamps against and it is only
+        // known once something has been laid out.
+        a.screen(80, 24);
+        for _ in 0..30 {
+            a.key(Key::PageUp);
+            a.screen(80, 24);
+        }
+        let screen = a.screen(80, 24);
+        let filled = screen.iter().filter(|l| !l.trim().is_empty()).count();
+        assert!(
+            filled > 6,
+            "scrolled to the top and the screen is empty:\n{}",
+            screen.join("\n")
+        );
+        assert!(screen.iter().any(|l| l.contains("line 0")), "{}", screen.join("\n"));
     }
 
     fn env(seq: u64, event: SessionEvent) -> letibot_sessionlog::event::Envelope {

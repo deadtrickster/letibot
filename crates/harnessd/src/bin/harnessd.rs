@@ -5,7 +5,7 @@
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
 //!          [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]
 //!          [--spill-inline BYTES] [--spill-dir DIR]
-//!          [--max-tool-rounds N] [--session ID]
+//!          [--max-tool-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
 //! ```
 //!
@@ -19,8 +19,8 @@
 use std::path::PathBuf;
 
 use letibot_harnessd::config::{Config, Disclosure, SpillPolicy, SpillStorage};
-use letibot_harnessd::{Daemon, Dialect, Harness, Outcome, Parts};
-use letibot_sessionlog::hub::Hub;
+use letibot_harnessd::{Daemon, Dialect, Outcome, Parts, Sessions};
+use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
 
 fn usage() -> String {
@@ -28,7 +28,7 @@ fn usage() -> String {
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
      \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N] [--session ID] [--prompt TEXT ...]"
+     \x20        [--max-tool-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]"
         .into()
 }
 
@@ -55,6 +55,7 @@ fn run() -> Result<i32, String> {
             "--socket" => cfg.socket = PathBuf::from(next()?),
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
             "--session" => cfg.session_id = next()?,
+            "--title" => cfg.title = next()?,
             "--model" => cfg.model = next()?,
             "--vocab" => cfg.vocab_gguf = PathBuf::from(next()?),
             "--effort" => cfg.effort = Some(next()?),
@@ -89,12 +90,24 @@ fn run() -> Result<i32, String> {
     }
 
     let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
-    let hub = Hub::new(cfg.session_id.clone());
+
+    // One registry, seeded with the session named on the command line. A head can
+    // make more over the socket; this one is the daemon's own, and it is opened
+    // eagerly so that a dialect which does not fit the vocabulary is a startup
+    // error rather than a failure on somebody's first prompt.
+    let registry = Registry::new();
+    registry
+        .create(
+            cfg.session_id.clone(),
+            cfg.title.clone(),
+            Sessions::wiring(&cfg),
+        )
+        .map_err(|e| e.to_string())?;
 
     // Bind before opening the session: a socket that is already served means
-    // another daemon owns this session, and finding that out after loading a
-    // vocabulary wastes the load.
-    let mut daemon = Daemon::serve(hub.clone(), &cfg.socket).map_err(|e| e.to_string())?;
+    // another daemon owns it, and finding that out after loading a vocabulary
+    // wastes the load.
+    let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
     daemon.catch_signals().map_err(|e| e.to_string())?;
 
     let socket = daemon.socket().display().to_string();
@@ -103,31 +116,46 @@ fn run() -> Result<i32, String> {
     let endpoint = cfg.endpoint.authority();
     let workspace = cfg.workspace.display().to_string();
     let disclosures = cfg.disclosures();
+    let stored = stored_sessions(&cfg);
+    let session_id = cfg.session_id.clone();
 
-    let mut harness = match Harness::open(&parts, cfg, hub.clone()) {
-        Ok(h) => h,
+    let mut sessions = match Sessions::open_first(&parts, cfg, registry.clone()) {
+        Ok(s) => s,
         Err(e) => {
             daemon.shutdown();
             return Err(e.to_string());
         }
     };
+    let (prefix_tokens, ledger_head) = sessions
+        .harness_of(&session_id)
+        .map(|h| (h.tokens().len(), h.ledger_head()))
+        .unwrap_or((0, String::new()));
 
-    eprintln!("harnessd: session {}", harness.config().session_id);
+    eprintln!("harnessd: session {session_id}");
     eprintln!("  model    {model} via {endpoint} (/completion, token array)");
     eprintln!("  dialect  {dialect}");
     eprintln!("  workspace {workspace}");
     eprintln!("  socket   {socket}");
-    eprintln!("  prefix   {} tokens, head {}", harness.tokens().len(), harness.ledger_head());
+    eprintln!("  prefix   {prefix_tokens} tokens, head {ledger_head}");
+    eprintln!("  sessions 1 open — a head can list them, switch, and make more");
     eprintln!();
     for line in banner(&disclosures, term_cols()) {
         eprintln!("{line}");
+    }
+    // Measured rather than assumed. A count that is silently absent reads as
+    // "there is nothing there", which for a store that has been collecting
+    // transcripts for weeks is the opposite of true.
+    if let Some(n) = stored {
+        for line in banner(&[resume_disclosure(n)], term_cols()).into_iter().skip(1) {
+            eprintln!("{line}");
+        }
     }
     eprintln!();
 
     let mut failed = 0;
     if !prompts.is_empty() {
         for p in &prompts {
-            match harness.submit(p) {
+            match sessions.submit(&session_id, p) {
                 Ok(reply) => {
                     println!("{}", reply.text);
                     let keeps = reply.f_keep();
@@ -159,16 +187,50 @@ fn run() -> Result<i32, String> {
     }
 
     eprintln!("  waiting for a head. Ctrl-C to stop.");
-    daemon.run(&mut harness, |cmd, outcome| match outcome {
+    daemon.run(&mut sessions, |session, cmd, outcome| match outcome {
+        // The session is named on every line: with more than one of them, "who did
+        // what" is only half the question and the other half used to be unanswerable
+        // from this log.
         Outcome::Replied(r) => eprintln!(
-            "  {} -> {} round(s), {} tool call(s)",
+            "  {session} · {} -> {} round(s), {} tool call(s)",
             cmd.identity, r.rounds, r.tool_calls
         ),
-        Outcome::Failed(e) => eprintln!("  {} -> {e}", cmd.identity),
+        Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}
     });
     daemon.shutdown();
     Ok(0)
+}
+
+/// How many sessions the store already holds, or `None` when there is no store.
+///
+/// A `SELECT` through `Store::connection`, which is the escape hatch that exists
+/// for exactly this: the append-only guarantees are triggers, not a property of
+/// whoever holds the connection, so a read here cannot weaken them.
+fn stored_sessions(cfg: &Config) -> Option<u64> {
+    let path = cfg.store.as_ref()?;
+    let store = letibot_tokencore::store::Store::open(path).ok()?;
+    store
+        .connection()
+        .query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
+        .ok()
+        .map(|n| n as u64)
+}
+
+/// The disclosure for a store full of sessions this daemon cannot resume.
+fn resume_disclosure(n: u64) -> Disclosure {
+    Disclosure::off(
+        "resume",
+        &format!("{n} ON DISK"),
+        "the transcript, the ledger rows and the token blobs are all persisted, and \
+         Store::load_transcript plus TokenLedger::restore would rebuild them — what is \
+         missing is a constructor for letibot_turn::Session from a restored ledger. \
+         Replaying the items through append_items instead would RE-RENDER the assistant \
+         rows, and those rows were cut from the ids the server streamed; re-rendering \
+         them reintroduces exactly the renderer non-determinism the hash chain exists to \
+         catch, during recovery, when nobody is looking. So they are counted here and \
+         not resumed approximately.",
+    )
 }
 
 /// The startup disclosures, as something that can be scanned.

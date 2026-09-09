@@ -61,6 +61,16 @@ pub struct SnapshotItem {
     pub item_id: String,
     pub kind: String,
     pub ledger_head: String,
+    /// `Envelope::ts` of the `TranscriptAppended` that announced this row: when it
+    /// happened, on the log's own clock.
+    ///
+    /// A head renders it as the row's timestamp. **Zero means unknown** — a row
+    /// replayed from a log recorded before this field existed — and a head shows
+    /// nothing rather than 01:00:00, for the same reason a card from a snapshot
+    /// shows no duration: a measurement that was never taken must not be rendered
+    /// as one that was.
+    #[serde(default)]
+    pub ts: u64,
     /// The content, when the daemon supplied it. `None` is honest: it means the
     /// event was seen and the item was not reconciled, which a head should render
     /// as a placeholder rather than as an empty message.
@@ -99,6 +109,12 @@ pub struct CallView {
     pub call_id: String,
     pub name: String,
     pub args_digest: String,
+    /// The display target from `ToolCallProposed` (§4.1). Empty when the call was
+    /// first seen as `ToolStarted`, or when it came from a log recorded before the
+    /// field existed — in which case a head renders the verb alone rather than
+    /// guessing.
+    #[serde(default)]
+    pub target: String,
     pub state: CallState,
 }
 
@@ -135,6 +151,23 @@ pub enum TurnState {
         reason: String,
         partial_kept: bool,
     },
+    /// The turn failed. A *terminal* state, which is the whole point of it
+    /// existing: without one, `Running` was the last thing a head ever heard about
+    /// a turn that died (`crates/ui/DESIGN.md` §4.5).
+    Failed {
+        error: String,
+        partial_kept: bool,
+    },
+}
+
+impl TurnState {
+    /// Whether the turn is still going. One function, because "is it running" is
+    /// asked in the head, in the registry's session list and in the snapshot, and
+    /// a new terminal state that one of the three forgets is a spinner nobody can
+    /// stop.
+    pub fn is_running(&self) -> bool {
+        matches!(self, TurnState::Running)
+    }
 }
 
 /// The turn a late head is joining, with its text **accumulated once**.
@@ -299,6 +332,7 @@ impl SessionView {
                 call_id,
                 name,
                 args_digest,
+                target,
             } => {
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id
@@ -307,6 +341,7 @@ impl SessionView {
                         call_id: call_id.clone(),
                         name: name.clone(),
                         args_digest: args_digest.clone(),
+                        target: target.clone(),
                         state: CallState::Proposed,
                     });
                 }
@@ -370,6 +405,9 @@ impl SessionView {
                         call_id: call_id.clone(),
                         name: name.clone(),
                         args_digest: String::new(),
+                        // No proposal was seen, so there is no target and none is
+                        // invented: the verb alone is what is true here.
+                        target: String::new(),
                         state: CallState::Running,
                     });
                 }
@@ -429,6 +467,26 @@ impl SessionView {
                     };
                 }
             }
+            // §4.5. Not matched on `turn_id`: a turn can fail *before* it published
+            // a `TurnStarted` (a render or a tokenize error), and in that case the
+            // pane a head is looking at is the one that has to stop spinning. The
+            // id is still carried, because a head that has moved on must be able to
+            // tell that this failure is not about the turn it is watching.
+            SessionEvent::TurnFailed {
+                turn_id,
+                error,
+                partial_kept,
+            } => {
+                if let Some(t) = self.turn.as_mut()
+                    && (t.turn_id == *turn_id || turn_id.is_empty())
+                {
+                    t.progress = None;
+                    t.state = TurnState::Failed {
+                        error: error.clone(),
+                        partial_kept: *partial_kept,
+                    };
+                }
+            }
             SessionEvent::TranscriptAppended {
                 item_id,
                 kind,
@@ -438,6 +496,7 @@ impl SessionView {
                     item_id: item_id.clone(),
                     kind: kind.clone(),
                     ledger_head: ledger_head.clone(),
+                    ts: env.ts,
                     item: None,
                 });
                 let over = self.items.len().saturating_sub(self.bounds.items);
@@ -529,6 +588,19 @@ impl SessionView {
             warnings: self.warnings.clone(),
             heads: self.heads.clone(),
         }
+    }
+
+    /// The turn in view, if there is one. For a session list, which wants to know
+    /// whether this session is busy without cutting a whole snapshot to find out.
+    pub fn turn(&self) -> Option<&TurnView> {
+        self.turn.as_ref()
+    }
+
+    /// Transcript rows the view is holding. Bounded by [`ViewBounds::items`], so
+    /// this is not the length of the conversation — `items_dropped` is the other
+    /// half and is on the snapshot.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
     }
 
     pub fn open_decisions(&self) -> &[OpenDecision] {

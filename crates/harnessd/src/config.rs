@@ -54,6 +54,13 @@ pub struct Config {
     /// `None` keeps the transcript in memory only — usable, and honest about it.
     pub store: Option<PathBuf>,
     pub session_id: String,
+    /// A human name for the session, or empty.
+    ///
+    /// Empty is the default and a head then shows the id. Deliberately **not**
+    /// derived from the first prompt: a title guessed from content is a title that
+    /// changes under you, and a session picker whose rows rename themselves is a
+    /// picker you cannot learn.
+    pub title: String,
     pub owner: String,
     /// The bootstrap system prompt. Part of the stable prefix; nothing volatile
     /// belongs in it (§5.2, and the operator paid for that rule).
@@ -109,6 +116,7 @@ impl Config {
             socket: letibot_sessionlog::server::default_socket_path(),
             store: None,
             session_id: format!("s-{}", now_ns()),
+            title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
             effort: None,
@@ -200,7 +208,10 @@ pub struct Disclosure {
 }
 
 impl Disclosure {
-    fn off(subject: &str, state: &str, detail: &str) -> Disclosure {
+    /// Public because the daemon has disclosures the config cannot compute — the
+    /// count of stored sessions needs the store open — and a second Disclosure
+    /// constructor in the binary is a second way for the banner to be shaped.
+    pub fn off(subject: &str, state: &str, detail: &str) -> Disclosure {
         Disclosure {
             subject: subject.into(),
             state: state.into(),

@@ -72,6 +72,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::ToolFinished { .. }
         | SessionEvent::TurnFinished { .. }
         | SessionEvent::TurnInterrupted { .. }
+        | SessionEvent::TurnFailed { .. }
         | SessionEvent::TranscriptAppended { .. }
         // Durable, and the *point* of it is that it is durable: it exists so the
         // stored projection of the stream contains the conversation. Stripping it

@@ -8,17 +8,17 @@
 //! ```text
 //!         ┌──────────────────────── harnessd ────────────────────────┐
 //!         │                                                          │
-//!  head ──┼─ sessionlog::serve ── Hub ── take_command ── worker ──────┼── llama.cpp
-//!         │                        │                       │         │   /completion
-//!         │                     LogSink                 Harness      │
-//!         │                   ToolLogSink        engine · tools      │
-//!         │                                       ledger · store     │
+//!  head ──┼─ sessionlog::serve ── Registry ─ next_command ─ worker ───┼── llama.cpp
+//!         │                     Hub per session               │      │   /completion
+//!         │                     LogSink            Harness per session│
+//!         │                   ToolLogSink        engine · tools       │
+//!         │                                       ledger · store      │
 //!         └──────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # What it does
 //!
-//! * Opens one session over a content-addressed stable prefix, on the
+//! * Opens **one session per `Hub`** over a content-addressed stable prefix, on the
 //!   `/completion` token-array fallback (§5.6). No control channel: S0 is
 //!   deliberately off the critical path.
 //! * Runs §5.1's loop — render, tokenize, append, submit, stream, parse, execute,
@@ -45,8 +45,25 @@
 //!   boundary and no human in the loop. `Gate` is a parameter, not a constant, so
 //!   W11 has a seam to absorb rather than a hard-coded `NoBoundary`.
 //! * **No compaction, no fork, no subagents.** M2 and later.
-//! * **One session per process.** `Hub` is per-session by construction and §13.2's
-//!   multi-session daemon is M5's problem, not a thing to half-build here.
+//! * **No resume from the store.** The transcript, the ledger rows and the token
+//!   blobs are all persisted and `Store::load_transcript` + `TokenLedger::restore`
+//!   would rebuild them — what is missing is a constructor for
+//!   `letibot_turn::Session` from a restored ledger, and the alternative (replaying
+//!   the items through `append_items`) **re-renders the assistant rows**, which the
+//!   engine deliberately never does: those rows were cut from the ids the server
+//!   streamed, and re-rendering them reintroduces exactly the renderer
+//!   non-determinism the hash chain exists to catch, during recovery, when nobody
+//!   is looking. So a stored session is listed and refused with that reason, not
+//!   resumed approximately. See [`sessions`].
+//!
+//! # What used to be here and is not
+//!
+//! **"One session per process"** was a disclosure in this list. It no longer is:
+//! [`sessions::Sessions`] holds a `Harness` per `Hub` and
+//! `letibot_sessionlog::registry` holds a `Hub` per session, addressable over the
+//! socket. The per-session guarantees the old note was protecting are unchanged and
+//! are now structural rather than incidental — see [`sessions`]'s header for which
+//! of them is per session and why it cannot be otherwise.
 //!
 //! # Two known gaps it works around rather than hides
 //!
@@ -66,8 +83,10 @@ pub mod config;
 pub mod daemon;
 pub mod dialect;
 pub mod harness;
+pub mod sessions;
 
 pub use config::{Config, SpillPolicy, SpillStorage};
-pub use daemon::{Daemon, Outcome};
+pub use daemon::Daemon;
+pub use sessions::{Outcome, Sessions};
 pub use dialect::{Dialect, Wiring};
 pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
