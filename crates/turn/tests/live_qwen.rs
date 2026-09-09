@@ -233,10 +233,39 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
     // What the ledger holds, decoded back through the real vocabulary.
     let decoded = letibot_turn::engine::decode_tokens(vocab(), engine.control(), committed);
 
+    // # Why this compares against the rows and not against the decoded ledger
+    //
+    // The decoded ledger is not what a head is shown and was never meant to be.
+    // It opens with the generation prompt — `<|im_start|>assistant\n<think>` — which
+    // the harness wrote rather than the model, and it carries the model's own
+    // `</think>`, which is a boundary the parser drops from every row it commits.
+    // A head is shown the rows. This used to assert `decoded.contains(streamed)`,
+    // which held only because T12 streamed the boundary literal to heads as visible
+    // characters; the containment passed *because* of the defect.
+    //
+    // So the comparison is against what was committed, which is the thing a head is
+    // supposed to end up agreeing with, and it is equality.
+    let committed_prose: String = ok
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::Reasoning { text, .. } | TranscriptItem::Assistant { text, .. } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        streamed, committed_prose,
+        "what a head was streamed is not what the turn committed.\n  streamed: \
+         {streamed:?}\n  committed: {committed_prose:?}\n  ledger:   {decoded:?}"
+    );
+    // The ledger is still the authority on the *tokens*, and it holds the boundary
+    // the rows do not.
     assert!(
-        decoded.contains(streamed.trim()) || streamed.trim().is_empty(),
-        "the ledger's tokens do not decode to what was streamed.\n  streamed: \
-         {streamed:?}\n  ledger:   {decoded:?}"
+        decoded.contains("</think>"),
+        "the boundary is committed as a token even though no row and no delta \
+         contains its text: {decoded:?}"
     );
     eprintln!("committed {} id(s): {decoded:?}", committed.len());
 }

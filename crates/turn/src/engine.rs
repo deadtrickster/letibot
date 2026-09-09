@@ -299,6 +299,27 @@ impl<'a> TurnEngine<'a> {
         VocabDecoder::new(self.vocab, &self.control)
     }
 
+    /// The literal a control id spells, so a live stream can cut it out of the text
+    /// the server sends alongside it.
+    ///
+    /// By id through the dialect's own table, never by scanning the text for
+    /// something that looks like a boundary — that is the rule [`ControlRole`] and
+    /// [`RenderSpan`] exist to enforce in both directions. A linear walk over ten
+    /// entries, reached only on a token that is already known to be a boundary.
+    ///
+    /// Note that a control token whose literal the server does **not** put in
+    /// `content` (a `CONTROL`-attribute token, as against Qwen's `USER_DEFINED`
+    /// `</think>`) simply is not found in the chunk, and the channel switch happens
+    /// with nothing to cut. Both cases are correct and neither needs to be
+    /// distinguished here.
+    fn control_literal(&self, id: TokenId) -> Option<&str> {
+        self.spec
+            .control_tokens
+            .iter()
+            .find(|c| self.control.id(&c.literal) == Some(id))
+            .map(|c| c.literal.as_ref())
+    }
+
     fn tokenize(&self, spans: &[RenderSpan]) -> Result<Vec<TokenId>, EngineError> {
         tokenize_spans(self.vocab, &self.control, spans)
             .map_err(|e| EngineError::Tokenize(e.to_string()))
@@ -415,8 +436,21 @@ impl TurnEngine<'_> {
         prompt.extend_from_slice(&lead);
         let prompt_tokens = prompt.len() as u64;
 
-        let (outcome, guard_trip) =
-            self.stream_turn(&turn_id, prompt.clone(), sink, steering, &mut pending)?;
+        // Which channel the model starts on. Read off the dialect's own generation
+        // prompt — the tokens we are about to submit — rather than assumed, and by
+        // the same function `items::produce` uses to decide the same thing about
+        // the same tokens. Seeding this from a *generated* `ThinkOpen` was one half
+        // of T12: the lead already opened the block, so the model reasons from
+        // token one while every head is told it is assistant text.
+        let opens_in_reasoning = items::lead_opens_reasoning(&lead, &self.decoder());
+        let (outcome, guard_trip) = self.stream_turn(
+            &turn_id,
+            prompt.clone(),
+            opens_in_reasoning,
+            sink,
+            steering,
+            &mut pending,
+        )?;
         let wall_ms = started.elapsed().as_millis() as u64;
 
         if let Some(trip) = guard_trip {
@@ -668,10 +702,25 @@ impl TurnEngine<'_> {
     }
 
     /// Submit and consume the stream. Returns the outcome and any guard trip.
+    ///
+    /// # The channel a `Delta` announces is decided by ids, before any text moves
+    ///
+    /// `opens_in_reasoning` is the state the **generation prompt** left the model
+    /// in ([`items::lead_opens_reasoning`]), not `false`: the lead this engine
+    /// submits ends inside `<think>` for every dialect that has one, so a turn is
+    /// reasoning from its first generated token.
+    ///
+    /// Within a chunk the ids are walked *first* and the text is cut against them,
+    /// so a boundary arriving mid-chunk switches the channel for the remainder of
+    /// that same chunk and the boundary's own literal is never streamed as content.
+    /// A head's deltas therefore split exactly where `items::produce` splits the
+    /// committed rows, which is §13.2b's requirement that the live view and the
+    /// stored view not disagree.
     fn stream_turn(
         &self,
         turn_id: &str,
         prompt: Vec<TokenId>,
+        opens_in_reasoning: bool,
         sink: &mut dyn EventSink,
         steering: &mut dyn SteeringSource,
         pending: &mut Pending,
@@ -681,7 +730,7 @@ impl TurnEngine<'_> {
 
         let mut acc = IdAccumulator::new();
         let mut guards = GuardSet::new(&self.spec.guards);
-        let mut in_reasoning = false;
+        let mut in_reasoning = opens_in_reasoning;
         let mut trip: Option<Trip> = None;
         let mut abort: Option<AbortCause> = None;
         let mut final_chunk = None;
@@ -711,22 +760,38 @@ impl TurnEngine<'_> {
                 }
             };
 
-            if let Chunk::Token { text, .. } = &chunk
-                && !text.is_empty()
-            {
-                sink.emit(TurnEvent::Delta {
-                    turn_id: turn_id.to_string(),
-                    target: if in_reasoning {
-                        DeltaTarget::Reasoning
-                    } else {
-                        DeltaTarget::Text
-                    },
-                    text: text.clone(),
-                });
-            }
+            // The text this chunk carries, consumed left to right as its ids are
+            // walked. Never re-derived from the ids: the server buffers an
+            // incomplete UTF-8 character across frames, and detokenizing a chunk
+            // ourselves would undo that. What the ids decide is *where* it is cut
+            // and *which channel* each piece is announced on.
+            let mut rest: &str = match &chunk {
+                Chunk::Token { text, .. } => text.as_str(),
+                _ => "",
+            };
+            let mut halt = false;
 
             for id in fresh {
                 let role = self.control.role_of(id);
+                if role.is_some()
+                    && let Some(literal) = self.control_literal(id)
+                    && let Some(at) = rest.find(literal)
+                {
+                    // Everything before the boundary belongs to the channel that
+                    // was open when it was generated; the boundary's own literal
+                    // belongs to neither. The parser drops it from the committed
+                    // row, so a head that renders it is showing markup the
+                    // transcript does not contain.
+                    //
+                    // The first occurrence, which is the right one whenever a
+                    // frame carries a single token — the normal case, and always
+                    // the case without a draft model. A multi-token frame in which
+                    // the *text* preceding the boundary also spells the boundary
+                    // out would cut early; the pieces stay on the same channel and
+                    // only the spelled-out copy is swallowed.
+                    emit_delta(sink, turn_id, in_reasoning, &rest[..at]);
+                    rest = &rest[at + literal.len()..];
+                }
                 match role {
                     Some(ControlRole::ThinkOpen) => in_reasoning = true,
                     Some(ControlRole::ThinkClose) => in_reasoning = false,
@@ -735,14 +800,26 @@ impl TurnEngine<'_> {
                 if let Some(t) = guards.observe(id, role) {
                     trip = Some(t.clone());
                     abort = Some(AbortCause::Guard(t.code.to_string()));
-                    return Ok(Flow::Stop);
+                    halt = true;
+                    break;
                 }
                 if self.client_stop_ids.contains(&id) {
                     // A stop enforced by id, not by matching decoded text — and
                     // only for stops the server will not act on itself.
                     abort = Some(AbortCause::StopToken(id));
-                    return Ok(Flow::Stop);
+                    halt = true;
+                    break;
                 }
+            }
+            // Flushed on the way out too, so that aborting mid-chunk cannot drop
+            // characters a head would otherwise have been shown — which would be
+            // this same defect with the sign flipped. What a head does with the
+            // tail of an aborted turn is settled by `TurnInterrupted{partial_kept}`
+            // and not by withholding deltas: a guard trip commits nothing and says
+            // so, while a steering interrupt keeps its partial.
+            emit_delta(sink, turn_id, in_reasoning, rest);
+            if halt {
+                return Ok(Flow::Stop);
             }
 
             // §5.8's escape hatch, checked once per frame: an urgent message
@@ -824,6 +901,26 @@ impl TurnEngine<'_> {
             wall_ms,
         }
     }
+}
+
+/// One `Delta`, on a channel that has already been decided.
+///
+/// Free-standing and taking the channel as a `bool` rather than reading it off the
+/// engine, because the whole of T12 was that this call used to happen *before* the
+/// value it needs had been computed.
+fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, in_reasoning: bool, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    sink.emit(TurnEvent::Delta {
+        turn_id: turn_id.to_string(),
+        target: if in_reasoning {
+            DeltaTarget::Reasoning
+        } else {
+            DeltaTarget::Text
+        },
+        text: text.to_string(),
+    });
 }
 
 fn hex32(bytes: &[u8; 32]) -> String {

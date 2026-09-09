@@ -124,6 +124,39 @@ fn segment(tokens: &[TokenId], decoder: &dyn TokenDecoder) -> Vec<(SegKind, Rang
     out
 }
 
+/// Which channel the model is speaking on **before it has generated anything**.
+///
+/// A per-dialect fact, and the only honest source of it is the dialect's own
+/// generation prompt — [`crate::PromptRenderer::generation_prompt`], tokenized and
+/// read back through the same `control_role` lookup the parser uses. GLM's is
+/// `<|assistant|><think>` and the ChatML fixture's is `<|im_start|>assistant\n<think>`,
+/// so both hand the model a turn that is already inside a reasoning block. A dialect
+/// whose generation prompt stops at `<|assistant|>` does not, and a hardcoded `true`
+/// would label that model's *answer* as its reasoning — the same defect with the sign
+/// flipped.
+///
+/// It is a fold rather than "does the last control token open a think block" because
+/// a generation prompt is free to open and close one (`<think></think>`, which is how
+/// a no-reasoning turn is spelled), and only the final state is the answer.
+///
+/// # Why the live stream and the committed transcript call this same function
+///
+/// [`produce`] needs it because the lead is not parsed: without it an aborted
+/// deliberation reads as visible content, and §5.7's `ReasoningOnly` failure becomes
+/// a `TruncatedText` success. The engine's stream loop needs it because a head is
+/// told a channel per delta, and a head told the wrong one shows the reasoning as the
+/// answer for the length of the turn. Those are the two views §13.2b requires to
+/// agree, so they are seeded from one function over one input rather than from two
+/// readings of the same intent.
+pub fn lead_opens_reasoning(lead: &[TokenId], decoder: &dyn TokenDecoder) -> bool {
+    lead.iter()
+        .fold(false, |open, id| match decoder.control_role(*id) {
+            Some(ControlRole::ThinkOpen) => true,
+            Some(ControlRole::ThinkClose) => false,
+            _ => open,
+        })
+}
+
 /// Build items and their token ranges from one generation.
 ///
 /// `lead` is the generation prompt that was submitted but not committed; it is
@@ -149,19 +182,7 @@ pub fn produce(
     // a bare turn-start — are carried forward onto the next item rather than
     // dropped. A token with no row is a token the next turn will re-send.
     let mut carried: Option<usize> = None;
-    // The generation prompt normally *opens* a reasoning block (`<|assistant|>`
-    // `<think>`), so the model's first generated token is already inside one. Since
-    // the lead is not parsed, that state has to be carried across the boundary or
-    // an aborted deliberation reads as visible content — and §5.7's `ReasoningOnly`
-    // failure becomes a `TruncatedText` success, which is the exact defect §5.7
-    // exists to prevent.
-    let lead_leaves_think_open =
-        lead.iter()
-            .fold(false, |open, id| match decoder.control_role(*id) {
-                Some(ControlRole::ThinkOpen) => true,
-                Some(ControlRole::ThinkClose) => false,
-                _ => open,
-            });
+    let lead_leaves_think_open = lead_opens_reasoning(lead, decoder);
 
     for (kind, range) in segment(&tokens, decoder) {
         let start = carried.take().unwrap_or(range.start);

@@ -22,8 +22,8 @@ use letibot_dialect::{Guard, StablePrefix};
 use letibot_tokencore::Vocab;
 use letibot_transcript::{ReasoningField, TranscriptItem, UserPart};
 use letibot_turn::{
-    EmptyReason, Endpoint, PrefixCheck, RecordingSink, Session, SteeringMessage, SteeringSource,
-    TurnEngine, TurnEvent, TurnFailure,
+    DeltaTarget, EmptyReason, Endpoint, PrefixCheck, RecordingSink, Session, SteeringMessage,
+    SteeringSource, TurnEngine, TurnEvent, TurnFailure,
 };
 
 use support::canned::{Canned, Frame};
@@ -107,6 +107,59 @@ fn token_frames(ids: &[u32]) -> Vec<Frame> {
             text: "",
         })
         .collect()
+}
+
+/// The same, but each frame carries the token's **own** text, the way the server
+/// does.
+///
+/// `token_frames` sends `text: ""` because most cases here are about ids and a head
+/// is not the subject. The channel tests below compare what a head was *shown*
+/// against what the parser *committed*, so the two have to be the same bytes coming
+/// out of the same vocabulary — including `</think>`, which Qwen marks
+/// `USER_DEFINED` and which therefore does arrive in `content`. That is what made
+/// it visible on a real head.
+fn spoken_frames(ids: &[u32]) -> Vec<Frame> {
+    ids.iter()
+        .map(|id| Frame::Token {
+            id: *id,
+            text: vocab()
+                .detokenize(&[*id], true)
+                .expect("one token decodes")
+                .leak(),
+        })
+        .collect()
+}
+
+/// Every `Delta` a turn emitted, in order, with the channel it was announced on.
+fn deltas(sink: &RecordingSink) -> Vec<(DeltaTarget, &str)> {
+    sink.events
+        .iter()
+        .filter_map(|e| match e {
+            TurnEvent::Delta { target, text, .. } => Some((*target, text.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A turn shaped exactly like the live one T12 was measured on: the generation
+/// prompt has already opened `<think>`, the model thinks, closes the block, answers
+/// and ends the turn.
+fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
+    let mut frames = vec![Frame::Progress {
+        total: 12,
+        processed: 12,
+    }];
+    frames.extend(spoken_frames(thought));
+    frames.extend(spoken_frames(&[THINK_CLOSE]));
+    frames.extend(spoken_frames(answer));
+    frames.extend(spoken_frames(&[IM_END]));
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (thought.len() + answer.len() + 2) as u64,
+        n_prompt: 12,
+        cache_n: 0,
+    });
+    frames
 }
 
 // --------------------------------------------------------------------------
@@ -605,4 +658,158 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
         "a checkpoint-bounded reuse is not a divergence"
     );
     session.ledger.verify_chain().unwrap();
+}
+
+// --------------------------------------------------------------------------
+// T12 — the live view and the stored view must agree about the channel
+// --------------------------------------------------------------------------
+//
+// The symptom was one thing and the causes were two, so the cases below are
+// written so that **each cause fails one of them on its own**. A single test that
+// only goes red when both are broken would have gone green again on half a fix.
+//
+// `crates/sessionlog/tests/live_e2e.rs` asserts the same agreement end to end
+// against the real model and a real head. These are here because a canned stream
+// can hold the seed and the emission order still while the other one moves, which
+// a live model cannot be asked to do.
+
+/// **Cause 1, alone.** The generation prompt ends inside `<think>`, so the very
+/// first generated token is reasoning and a head must be told so.
+///
+/// Nothing in this test involves a boundary token: it looks only at the deltas that
+/// arrive *before* `</think>`. Reordering the emission back in front of the role
+/// inspection does not change what it asserts, so a failure here means the seed —
+/// and only the seed.
+#[test]
+fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_it() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let thought = ids_of("The user wants the days of the week.");
+    let answer = ids_of("Monday");
+    let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "seed");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("the days, please")], &mut sink)
+        .unwrap();
+    engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let deltas = deltas(&sink);
+    let (target, text) = *deltas.first().expect("the turn streamed something");
+    assert_eq!(
+        target,
+        DeltaTarget::Reasoning,
+        "the first delta of the turn was announced as {target:?} carrying {text:?}. \
+         The dialect's generation prompt ends in `<think>`, so the model was \
+         reasoning before it emitted anything; seeding `in_reasoning` from a \
+         *generated* `ThinkOpen` tells every head the reasoning is the answer for \
+         the length of the turn."
+    );
+    // Every delta before the boundary, not merely the first: one per generated
+    // token, all of them reasoning, and none of them left over for `Text`.
+    assert_eq!(
+        deltas
+            .iter()
+            .take_while(|(t, _)| *t == DeltaTarget::Reasoning)
+            .count(),
+        thought.len(),
+        "the run of Reasoning deltas does not cover the whole thought: {deltas:?}"
+    );
+}
+
+/// **Cause 2, alone.** A chunk's text must be cut against the roles of the ids in
+/// it, so a boundary switches the channel for the rest of that same chunk and its
+/// own literal is never streamed.
+///
+/// The seed is irrelevant to what this asserts: `</think>` is dropped and the
+/// answer is `Text` whichever channel the turn started on, so a failure here means
+/// the emission order — and only the emission order.
+#[test]
+fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let thought = ids_of("Seven of them.");
+    let answer = ids_of("Monday");
+    let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "boundary");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("the days, please")], &mut sink)
+        .unwrap();
+    engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let deltas = deltas(&sink);
+    // The server really does send `</think>` in `content` — it is `USER_DEFINED`,
+    // not `CONTROL` — and `spoken_frames` reproduces that. The parser drops it from
+    // every committed row, so a head that renders it is showing markup the
+    // transcript does not contain.
+    for (target, text) in &deltas {
+        assert!(
+            !text.contains("</think>") && !text.contains("<|im_end|>"),
+            "a boundary literal reached a head as {target:?} text: {text:?}. The \
+             chunk's text was emitted before the ids in it had their roles \
+             inspected."
+        );
+    }
+    // And the switch happened at the boundary rather than one chunk late.
+    assert_eq!(
+        deltas.last().map(|(t, _)| *t),
+        Some(DeltaTarget::Text),
+        "the tokens after `</think>` are the answer and must be announced as Text"
+    );
+}
+
+/// The agreement itself, deterministically: a head's live stream, split by channel,
+/// **equals** the transcript rows the same turn committed.
+///
+/// This is the live file's assertion with the model replaced by a fixed script. It
+/// fails under either cause, which is why the two above exist.
+#[test]
+fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let thought = ids_of("They want seven lines and nothing else.");
+    let answer = ids_of("Monday\nTuesday");
+    let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "agree");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("the days, please")], &mut sink)
+        .unwrap();
+    let ok = engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let mut streamed_reasoning = String::new();
+    let mut streamed_text = String::new();
+    for (target, text) in deltas(&sink) {
+        match target {
+            DeltaTarget::Reasoning => streamed_reasoning.push_str(text),
+            DeltaTarget::Text => streamed_text.push_str(text),
+        }
+    }
+    let committed_reasoning: String = ok
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::Reasoning { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let committed_text: String = ok
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!committed_reasoning.is_empty() && !committed_text.is_empty());
+    assert_eq!(streamed_reasoning, committed_reasoning);
+    assert_eq!(streamed_text, committed_text);
 }
