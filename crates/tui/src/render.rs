@@ -129,12 +129,16 @@ pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
                 } else {
                     "• ".to_string()
                 };
-                let body = wrap(&inline(it, cfg.color), w.saturating_sub(marker.len()));
+                // Columns, not bytes. `"• "` is two columns and four bytes, and
+                // indenting a wrapped bullet by its byte length put every
+                // continuation line two columns too far right.
+                let pad = visible_width(&marker);
+                let body = wrap(&inline(it, cfg.color), w.saturating_sub(pad));
                 for (j, line) in body.into_iter().enumerate() {
                     if j == 0 {
                         out.push(format!("{marker}{line}"));
                     } else {
-                        out.push(format!("{:width$}{line}", "", width = marker.len()));
+                        out.push(format!("{:width$}{line}", "", width = pad));
                     }
                 }
             }
@@ -174,6 +178,10 @@ pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String
 pub struct BlockCache {
     width: usize,
     color: bool,
+    /// The per-block line bound the prefix was rendered under. Part of the cache
+    /// key: collapsing reasoning changes it, and a prefix rendered under the old
+    /// bound is as stale as one rendered at the old width.
+    limit: usize,
     /// Lines for the blocks that were frozen when they were rendered.
     stable_lines: Vec<String>,
     /// How many of the document's stable blocks are already in `stable_lines`.
@@ -189,16 +197,45 @@ impl BlockCache {
 
     /// Total lines for the document: the cached prefix plus a freshly rendered
     /// tail.
+    ///
+    /// Convenience over [`BlockCache::split`], and it **copies the prefix**. Fine
+    /// for a one-shot render of a finished document; not for the per-frame path,
+    /// where the copy is O(accumulated output) and §13.3 says a frame must not be.
     pub fn lines(
         &mut self,
         md: &IncrementalMarkdown,
         cfg: &RenderConfig,
         limit: usize,
     ) -> Vec<String> {
-        if self.width != cfg.width || self.color != cfg.color {
-            // A resize is the only thing that invalidates the prefix.
+        let (stable, tail) = self.split(md, cfg, limit);
+        let mut out = stable.to_vec();
+        out.extend(tail);
+        while out.last().is_some_and(|l| l.is_empty()) {
+            out.pop();
+        }
+        out
+    }
+
+    /// The frozen prefix **by reference**, and the live tail freshly rendered.
+    ///
+    /// This is the per-frame form. The prefix is the part that grows without bound
+    /// over a long answer, and handing it back borrowed is what keeps the cost of
+    /// drawing a frame proportional to the tail and the window rather than to
+    /// everything said so far.
+    pub fn split(
+        &mut self,
+        md: &IncrementalMarkdown,
+        cfg: &RenderConfig,
+        limit: usize,
+    ) -> (&[String], Vec<String>) {
+        if self.width != cfg.width || self.color != cfg.color || self.limit != limit {
+            // A resize is the only thing that invalidates the prefix — and a change
+            // of budget, which is a resize of a different axis: the same block
+            // renders to a different number of lines when the bound moves, so a
+            // prefix rendered under the old one is stale in exactly the same way.
             self.width = cfg.width;
             self.color = cfg.color;
+            self.limit = limit;
             self.stable_lines.clear();
             self.rendered_blocks = 0;
         }
@@ -210,16 +247,16 @@ impl BlockCache {
         }
         self.rendered_blocks = stable.len();
 
-        let mut out = self.stable_lines.clone();
+        let mut tail = Vec::new();
         for b in md.tail() {
-            out.extend(render_bounded(b, cfg, limit));
-            out.push(String::new());
+            tail.extend(render_bounded(b, cfg, limit));
+            tail.push(String::new());
             self.blocks_rendered += 1;
         }
-        while out.last().is_some_and(|l| l.is_empty()) {
-            out.pop();
+        while tail.last().is_some_and(|l| l.is_empty()) {
+            tail.pop();
         }
-        out
+        (&self.stable_lines, tail)
     }
 
     pub fn blocks_rendered(&self) -> u64 {
@@ -285,13 +322,33 @@ fn utf8_len(b: u8) -> usize {
 }
 
 /// Word-wrap, counting *visible* columns so an SGR escape does not consume width.
+///
+/// A word wider than the whole line is **hard-broken** rather than emitted long.
+/// Not a nicety: a model answering a question about this tree writes absolute
+/// paths, and a 90-column path in an 80-column terminal used to be wrapped by the
+/// terminal itself — which put a line on the screen the head had not counted, so
+/// the bottom of the frame scrolled away under the status line and every
+/// subsequent frame fought it. A head that decides the line count has to mean it.
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
     let mut out = Vec::new();
     let mut line = String::new();
     let mut col = 0usize;
     for word in s.split(' ') {
-        let wlen = visible_width(word);
+        let mut word = word;
+        let mut wlen = visible_width(word);
+        // Break the oversized word across as many full lines as it needs, then let
+        // the remainder flow normally.
+        while wlen > width {
+            if col > 0 {
+                out.push(std::mem::take(&mut line));
+                col = 0;
+            }
+            let (head, rest) = split_at_visible(word, width);
+            out.push(head);
+            word = rest;
+            wlen = visible_width(word);
+        }
         if col > 0 && col + 1 + wlen > width {
             out.push(std::mem::take(&mut line));
             col = 0;
@@ -307,6 +364,69 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+/// Split at `width` visible columns, keeping escapes with the half they opened in.
+fn split_at_visible(s: &str, width: usize) -> (String, &str) {
+    let mut n = 0;
+    let mut in_esc = false;
+    for (i, c) in s.char_indices() {
+        if in_esc {
+            if c == 'm' {
+                in_esc = false;
+            }
+            continue;
+        }
+        if c == '\x1b' {
+            in_esc = true;
+            continue;
+        }
+        if n == width {
+            return (s[..i].to_string(), &s[i..]);
+        }
+        n += 1;
+    }
+    (s.to_string(), "")
+}
+
+/// A byte count a person can read. `8192` is a number to decode; `8.0 KB` is not.
+pub fn bytes_human(n: u64) -> String {
+    const K: u64 = 1024;
+    match n {
+        0..=1_023 => format!("{n} B"),
+        _ if n < K * K => format!("{:.1} KB", n as f64 / K as f64),
+        _ if n < K * K * K => format!("{:.1} MB", n as f64 / (K * K) as f64),
+        _ => format!("{:.1} GB", n as f64 / (K * K * K) as f64),
+    }
+}
+
+/// A duration a person can read.
+pub fn dur_human(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
+/// A proportional bar `width` columns wide. Used for prefill, which is the one
+/// thing in this harness that has a real denominator.
+pub fn bar(done: u64, total: u64, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let filled = if total == 0 {
+        0
+    } else {
+        ((done.min(total) as f64 / total as f64) * width as f64).round() as usize
+    };
+    let mut s = String::with_capacity(width * 3);
+    for i in 0..width {
+        s.push(if i < filled { '█' } else { '░' });
+    }
+    s
 }
 
 /// Columns a string occupies, ignoring SGR sequences. Counts a char as one column,

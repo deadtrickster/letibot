@@ -11,6 +11,7 @@
 //! TurnFinished{turn_id, finish_reason, usage, timings}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
 //! TranscriptAppended{item_id, kind, ledger_head}
+//! TranscriptContent{item_id, item}          — not §4.5's; see the variant
 //! HeadAttached / HeadDetached{head_id, kind, identity}
 //! Warning{code, detail}
 //! Explain{turn_id, plan}
@@ -282,6 +283,42 @@ pub enum SessionEvent {
         kind: String,
         ledger_head: String,
     },
+    /// **The second addition to §4.5, and it is T13.1 being paid rather than
+    /// deferred.**
+    ///
+    /// §4.5's `TranscriptAppended` announces a row and carries no body, and until
+    /// now the body reached a head *only* through the snapshot
+    /// ([`crate::view::SessionView::record_item`]). That works for a head that
+    /// attaches after the row exists and fails permanently for one that was already
+    /// attached: it is told a row landed, no later frame ever carries the content,
+    /// and its placeholder is not a loading state — it is the final state. Measured
+    /// on a live session: the operator's own prompt renders as
+    /// `[user … — content not loaded]` forever.
+    ///
+    /// T13.1 also argues the log should be a **sufficient record of a session**, and
+    /// it is not one today: `letibot-tui --replay recorded.jsonl` shows a placeholder
+    /// for every row, because the only copy of the content was in a snapshot that
+    /// was never written down. Assistant text is *nearly* recoverable from `Delta`,
+    /// but the item boundaries are not, and a `ToolResult` payload is not on the
+    /// wire at all — `ToolFinished` carries a digest by design.
+    ///
+    /// So the content goes in the log. **The right shape is a body on
+    /// `TranscriptAppended` itself** — one row, one event, and no
+    /// announced-but-empty state for anyone to render. That shape needs
+    /// `letibot_turn::TurnEvent::TranscriptAppended` to carry the item too, because
+    /// the engine is what emits the announcement and the daemon does not hold the
+    /// item until the engine's call returns. Until that seam is widened, this
+    /// variant carries the body a moment later, on the same log, and a head handles
+    /// it with the same code it will use afterwards: fill the row this names.
+    /// Deleting this variant is then the whole of the migration.
+    ///
+    /// Boxed for the reason `Hello.snapshot` is: a `TranscriptItem` is two orders
+    /// of magnitude larger than a `Delta`, and an unboxed one would make every
+    /// event on the hot path pay for it.
+    TranscriptContent {
+        item_id: String,
+        item: Box<letibot_transcript::TranscriptItem>,
+    },
     HeadAttached {
         head_id: String,
         kind: String,
@@ -346,6 +383,7 @@ impl SessionEvent {
             SessionEvent::TurnFinished { .. } => "TurnFinished",
             SessionEvent::TurnInterrupted { .. } => "TurnInterrupted",
             SessionEvent::TranscriptAppended { .. } => "TranscriptAppended",
+            SessionEvent::TranscriptContent { .. } => "TranscriptContent",
             SessionEvent::HeadAttached { .. } => "HeadAttached",
             SessionEvent::HeadDetached { .. } => "HeadDetached",
             SessionEvent::Warning { .. } => "Warning",
