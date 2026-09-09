@@ -220,6 +220,15 @@ impl GateCall<'_> {
 /// the bound down, and every implementation in the tree already satisfies it.
 pub trait Gate: Send + Sync {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision;
+
+    /// Who is adjudicating, for the daemon's startup disclosure.
+    ///
+    /// Defaults to naming the absence, because that is the case an operator most
+    /// needs to see and the one a hard-coded banner gets wrong: a gate that does
+    /// not identify an adjudicator does not have one.
+    fn describe(&self) -> String {
+        "none (no adjudicator attached)".into()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

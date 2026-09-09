@@ -115,7 +115,6 @@ fn run() -> Result<i32, String> {
     let model = cfg.model.clone();
     let endpoint = cfg.endpoint.authority();
     let workspace = cfg.workspace.display().to_string();
-    let disclosures = cfg.disclosures();
     let stored = stored_sessions(&cfg);
     let session_id = cfg.session_id.clone();
 
@@ -130,6 +129,15 @@ fn run() -> Result<i32, String> {
         .harness_of(&session_id)
         .map(|h| (h.tokens().len(), h.ledger_head()))
         .unwrap_or((0, String::new()));
+
+    // After the session is open, not before: the adjudication line is read from the
+    // backend, the gate and the seated schemas, and none of those exist until the
+    // harness is built. A banner computed early is a banner describing a session
+    // that had not been wired yet.
+    let disclosures = sessions
+        .harness_of(&session_id)
+        .map(|h| h.config().disclosures(h.wiring()))
+        .unwrap_or_default();
 
     eprintln!("harnessd: session {session_id}");
     eprintln!("  model    {model} via {endpoint} (/completion, token array)");

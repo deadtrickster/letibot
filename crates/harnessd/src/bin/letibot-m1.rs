@@ -115,7 +115,7 @@ fn main() {
     println!("workspace {}", workspace.display());
     println!("prefix    {} tokens", harness.tokens().len());
     println!("turns     {turns}");
-    for d in harness.config().disclosures() {
+    for d in harness.config().disclosures(harness.wiring()) {
         println!("!         {d}");
     }
     println!();

@@ -829,6 +829,10 @@ impl AdjudicatedGate {
 }
 
 impl Gate for AdjudicatedGate {
+    fn describe(&self) -> String {
+        self.adjudicator.describe()
+    }
+
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
         let req = self.request_for(call);
 
@@ -1048,6 +1052,21 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// `Gate::describe` defaults to naming the absence, and an attached gate names
+    /// its adjudicator. The daemon's banner is computed from this, so a gate that
+    /// answered vaguely would put a vague sentence in front of the operator.
+    #[test]
+    fn a_gate_says_who_is_adjudicating_or_that_nobody_is() {
+        use crate::runtime::{Gate, NoBoundary};
+        assert!(
+            NoBoundary.describe().starts_with("none"),
+            "the default must name the absence: {}",
+            NoBoundary.describe()
+        );
+        let gate = AdjudicatedGate::new(Box::new(NoAdjudicator));
+        assert_eq!(gate.describe(), NoAdjudicator.describe());
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -133,7 +133,11 @@ impl Config {
     ///
     /// A daemon that does not say "spill is unset" is a daemon whose operator finds
     /// out when a 40 MB grep result lands in the prompt.
-    pub fn disclosures(&self) -> Vec<Disclosure> {
+    ///
+    /// Takes [`GateWiring`] rather than deciding for itself, because the config does
+    /// not know which tools were seated or how the backend was opened, and a
+    /// disclosure that guesses is the thing this list exists to prevent.
+    pub fn disclosures(&self, wiring: &GateWiring) -> Vec<Disclosure> {
         let mut out = Vec::new();
         match &self.spill {
             SpillPolicy::Unset => out.push(Disclosure::off(
@@ -173,13 +177,53 @@ impl Config {
              running anywhere (T16.6), so nothing was searched; saying `the corpus does \
              not cover this` would be a claim about a corpus nobody queried.",
         ));
-        out.push(Disclosure::off(
-            "adjudication",
-            "NONE",
-            "M1 is read-only tools, which never prompt (clause 4). There is no boundary \
-             and no human in the loop.",
-        ));
+        let (state, detail, active) = letibot_tools::adjudicate::startup_disclosure(
+            &wiring.adjudicator,
+            wiring.backend_writable,
+            wiring.has_write_tools,
+        );
+        out.push(Disclosure {
+            subject: "adjudication".into(),
+            state: state.into(),
+            detail,
+            active,
+        });
         out
+    }
+}
+
+/// What the session actually wired, read from it rather than asserted about it.
+///
+/// This type exists because of a defect it now makes unwriteable. The adjudication
+/// disclosure was a hard-coded sentence — *"M1 is read-only tools, which never
+/// prompt (clause 4). There is no boundary and no human in the loop."* It was true
+/// when it was written and **nothing checked it**. The moment a session seats a
+/// role containing `write` or `edit`, that banner tells the operator there is no
+/// boundary while there is one, and that nothing can prompt while everything can.
+///
+/// A banner whose job is to say what is off, and which says it from memory instead
+/// of from the wiring, is worse than no banner: it is trusted. Every field here is
+/// read at open time — [`ExecBackend::is_writable`], [`Gate::describe`], and the
+/// registry's own schemas — so the sentence cannot drift away from the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateWiring {
+    /// How the adjudicator identifies itself, or a string beginning `none`.
+    pub adjudicator: String,
+    /// Whether the execution backend was opened with a writable constructor.
+    pub backend_writable: bool,
+    /// Whether any seated tool declares `Access::Write`.
+    pub has_write_tools: bool,
+}
+
+impl GateWiring {
+    /// The read-only wiring: no adjudicator, no writable backend, no write tools.
+    /// Used by callers that have not opened a session yet.
+    pub fn read_only() -> GateWiring {
+        GateWiring {
+            adjudicator: "none (no adjudicator attached)".into(),
+            backend_writable: false,
+            has_write_tools: false,
+        }
     }
 }
 
@@ -256,18 +300,74 @@ mod tests {
         let c = Config::for_this_box("/tmp");
         assert_eq!(c.spill, SpillPolicy::Unset);
         assert!(
-            c.disclosures()
+            c.disclosures(&GateWiring::read_only())
                 .iter()
                 .any(|d| d.to_string().contains("spill: UNSET")),
             "a daemon that does not disclose an unset budget is the defect"
         );
     }
 
+    /// The defect this replaced: the adjudication line was a sentence asserting
+    /// "M1 is read-only tools, which never prompt", printed regardless of what the
+    /// session had seated. Nothing here checks that a *particular* wording is
+    /// produced — what it checks is that the wording MOVES when the wiring does.
+    /// A banner that says the same thing about a read-only session and a session
+    /// with `write` and `edit` in it is not a disclosure.
+    #[test]
+    fn the_adjudication_line_reads_the_wiring_rather_than_asserting_it() {
+        let c = Config::for_this_box("/tmp");
+        let line = |w: &GateWiring| {
+            c.disclosures(w)
+                .into_iter()
+                .find(|d| d.subject == "adjudication")
+                .expect("adjudication is always disclosed")
+        };
+
+        let ro = line(&GateWiring::read_only());
+        assert!(!ro.active);
+        assert!(
+            ro.detail.contains("read-only"),
+            "a read-only session should say so: {}",
+            ro.detail
+        );
+
+        // Write tools seated, nobody to ask. This is the case the old sentence got
+        // exactly backwards: it reported no boundary while the gate was refusing
+        // every call.
+        let unattended = GateWiring {
+            adjudicator: "none (no adjudicator attached)".into(),
+            backend_writable: true,
+            has_write_tools: true,
+        };
+        let u = line(&unattended);
+        assert_ne!(
+            u.detail, ro.detail,
+            "seating write tools must change the disclosure; it did not"
+        );
+        assert!(
+            u.detail.contains("WRITE TOOLS"),
+            "an operator must be able to see write tools are present: {}",
+            u.detail
+        );
+        assert!(!u.active, "no adjudicator is not an active boundary");
+
+        // Fully wired: an admitted call reaches the disk, and that is a third
+        // distinct thing to say.
+        let wired = GateWiring {
+            adjudicator: "console adjudicator".into(),
+            backend_writable: true,
+            has_write_tools: true,
+        };
+        let w = line(&wired);
+        assert!(w.active, "an attached adjudicator over a writable backend is on");
+        assert_ne!(w.detail, u.detail);
+    }
+
     #[test]
     fn every_thing_that_is_off_is_disclosed() {
         let c = Config::for_this_box("/tmp");
         let all = c
-            .disclosures()
+            .disclosures(&GateWiring::read_only())
             .iter()
             .map(|d| d.to_string())
             .collect::<Vec<_>>()

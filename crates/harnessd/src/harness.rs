@@ -52,8 +52,11 @@ use letibot_turn::{
     TurnFailure, TurnMetrics, TurnOk,
 };
 
-use crate::config::{Config, SpillPolicy, SpillStorage};
+use crate::config::{Config, GateWiring, SpillPolicy, SpillStorage};
 use crate::dialect::Wiring;
+// `is_writable` is a trait method; the backend's own answer is only reachable
+// with the trait in scope.
+use letibot_tools::ExecBackend as _;
 
 /// Everything the engine borrows for the life of the daemon.
 ///
@@ -247,6 +250,9 @@ pub struct Harness<'a> {
     system_updates: u64,
     /// The turn this harness last started. §4.5: a failure has to name one.
     last_turn_id: String,
+    /// Read at open time from the backend, the gate and the seated schemas, so the
+    /// adjudication disclosure is a reading rather than a claim. See [`GateWiring`].
+    wiring: GateWiring,
 }
 
 impl<'a> Harness<'a> {
@@ -292,6 +298,17 @@ impl<'a> Harness<'a> {
             .resolve_role(&roles::m1_orchestrator())
             .map_err(|e| HarnessError::Setup(format!("seating the orchestrator role: {e}")))?;
         let schemas = registry.schemas();
+
+        // Read, never asserted. `is_writable` is the backend's own answer, `describe`
+        // is the gate's, and the write-tool question is answered by the schemas that
+        // were actually seated a few lines above -- not by which role was requested.
+        let wiring = GateWiring {
+            adjudicator: gate.describe(),
+            backend_writable: backend.is_writable(),
+            has_write_tools: schemas
+                .iter()
+                .any(|s| s.access == letibot_tools::schema::Access::Write),
+        };
 
         let spiller = build_spiller(&cfg)?;
         let runtime = ToolRuntime::new(registry, Box::new(backend))
@@ -363,6 +380,7 @@ impl<'a> Harness<'a> {
         };
 
         Ok(Harness {
+            wiring,
             cfg,
             engine,
             session,
@@ -388,6 +406,12 @@ impl<'a> Harness<'a> {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// What this session actually wired. The adjudication disclosure is computed
+    /// from it; see [`GateWiring`] for why it is not a constant.
+    pub fn wiring(&self) -> &GateWiring {
+        &self.wiring
     }
 
     pub fn config(&self) -> &Config {
