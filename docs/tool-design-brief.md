@@ -109,6 +109,27 @@ around refusals.
   succeeds: `edit`'s read-before-write refusal *hands over the file's contents*, which is
   clause 1 applied to a guard.
 
+## 3b. letibot must work with no flowy, and with nothing else attached either
+
+**A no-flowy mode is kept.** Someone with no fleet, no node and no token gets a working
+harness. This is an architectural constraint, not a preference, and it decides designs:
+
+- Anything needing external infrastructure is an **optional attachment**, shaped like
+  `builtins::retrieval::Retrieval` and its `Unavailable` default.
+- **Not attached is the default and is not a fault.** The disclosure says what is off and
+  how to turn it on; it does not read as an error.
+- **A capability that needs the attachment degrades to absence, never to a substitute.**
+  `not_run`, naming what is missing. A tool that quietly falls back to a local
+  approximation and reports success is the silent-degradation failure -- and it is worse
+  when nothing is attached than when something is merely unreachable, because afterwards
+  there is nothing to reconcile against.
+- **The local path must be testable with the environment absent.** Unset every relevant
+  variable, unplug every backend, and the local half still passes. If an absent env var
+  can break it, it was never standalone.
+
+The same rule governs the whole "fabric as cornerstone" direction: seams that accept an
+attachment, never a dependency the basic thing needs.
+
 ## 4. Where the details are
 
 | you need | read |
