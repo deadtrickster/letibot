@@ -198,6 +198,58 @@ cannot resolve a 5-point slide. 150k–262k is unmeasured. One model.
 
 ---
 
+## T10 — Contract gaps found by W6 — **small, concrete, one blocks a §5.8 feature**
+
+The turn engine is the first real consumer of the crates below, and it found five
+things. Listed in the order I would fix them.
+
+1. **`TranscriptItem::Assistant` has no `truncated` field**, and both §5.7 and §5.8
+   require one. Currently tracked on the turn record instead, which is why **one
+   piece of steering is unbuilt**. Needs a `transcript` crate change — the only item
+   here that blocks a feature rather than costing elegance.
+2. **`ParsedSpan` carries no token offsets**, so a `Parser` cannot say which ids an
+   item owns. Cost an entire module (`crates/turn/src/items.rs`) to work around
+   without reimplementing the parser. Adding a span to `ParsedSpan` would delete it.
+3. **`DialectSpec` has no `ReasoningField`** — a per-model fact of exactly the kind
+   that crate exists to model as data. The engine takes it as config rather than
+   guessing, which works but puts a model fact in the wrong place.
+4. **`render_incremental(history, new)` replays the whole history** for boundary
+   state, so building one ledger row per item is O(n²) replays. Microseconds today
+   at our sizes; a resumable state token fixes it. Note T1 may delete this entirely
+   when the template-driven renderer lands.
+5. **`cargo:rustc-link-arg` does not propagate across crates**, so every crate that
+   links `libllama` needs its own `build.rs` to bake the rpath. Without it, test
+   binaries link fine and fail at exec looking like a missing library. Fixed in
+   `crates/turn`; worth a note so the third crate does not rediscover it.
+
+---
+
+## T11 — §18.1-I1's observable form is not checkable on a hybrid model — **resolved in code, plan text still wrong**
+
+§18.1-I1 states the prefix invariant observably as
+`cached_tokens(N+1) >= prompt_tokens(N) + predicted_tokens(N)`. On this box it
+**cannot pass**, and not because the invariant is violated.
+
+Qwen3-Next is hybrid/recurrent, so llama.cpp resumes from a **context checkpoint**
+and snaps `n_past` back to it (`server-context.cpp:5910`). Measured against prompts
+*proven* identical over the shared span: reuse 48 of 52, and 38 of 44. The server is
+reusing less than it could, correctly, for reasons of its own memory model.
+
+W6's resolution, which I agree with: make the **exact** form the assertion — hash
+turn N's prompt plus its committed generation, re-hash that span of N+1's prompt —
+and demote the observable number to a *measurement of the server*, with a warning
+that says which it is.
+
+**Second defect in the same sentence:** `predicted_tokens(N)` is the wrong term for
+a harness that owns its turn boundaries. A trailing stop token is stripped before
+commit — keeping GLM's emitted `<|user|>` would put a second one in the next prompt —
+so the witness must record **committed** generated tokens. With `predicted`, every
+turn warns by one, forever.
+
+Both need fixing in `docs/implementation-plan.md` §18.1. The code is already right.
+
+---
+
 ## T5 — Operator decisions still open
 
 Carried from `DECISIONS.md`; see there for the full statement of each.
