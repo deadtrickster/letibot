@@ -53,6 +53,7 @@ pub mod length;
 pub mod metrics;
 pub mod prefix;
 pub mod renderer;
+pub mod resume;
 pub mod steering;
 pub mod stream;
 
@@ -66,5 +67,6 @@ pub use length::{EmptyReason, LengthVerdict, SalvageBudget, TurnShape};
 pub use metrics::TurnMetrics;
 pub use prefix::{PrefixCheck, PrefixWitness};
 pub use renderer::PromptRenderer;
+pub use resume::RestoreError;
 pub use steering::{ChannelSteering, NoSteering, SteeringMessage, SteeringSource};
 pub use stream::{AbortCause, IdAccumulator, StreamError, StreamOutcome};

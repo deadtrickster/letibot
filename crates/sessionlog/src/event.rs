@@ -515,6 +515,24 @@ pub enum SessionEvent {
         /// What the daemon did with it, in the words the issuing head was given.
         note: String,
     },
+
+    /// **The second addition required by §13.2, for the same reason as the first.**
+    ///
+    /// A session's title reaches a head in `SessionBrief`, which travels only in
+    /// `Hello` and in `Sessions` — both of which a head receives when it *asks*. So a
+    /// title set during a session (by `/rename`, or by the daemon naming an unnamed
+    /// session from its first message) was invisible until the operator opened the
+    /// picker, and the header went on showing the raw id over a session that had a
+    /// name. Two heads sharing a session saw two different names for it, which is the
+    /// same failure `CommandIssued` exists to prevent one variant along.
+    ///
+    /// It carries no `session_id`: an event is already addressed to one, by the
+    /// envelope it travels in and by the log it is appended to.
+    SessionRenamed {
+        /// Empty means the name was cleared, and a head goes back to showing the id.
+        /// Not `Option`: "renamed to nothing" and "no rename" must not be one shape.
+        title: String,
+    },
 }
 
 impl SessionEvent {
@@ -537,6 +555,7 @@ impl SessionEvent {
             SessionEvent::TranscriptContent { .. } => "TranscriptContent",
             SessionEvent::HeadAttached { .. } => "HeadAttached",
             SessionEvent::HeadDetached { .. } => "HeadDetached",
+            SessionEvent::SessionRenamed { .. } => "SessionRenamed",
             SessionEvent::Warning { .. } => "Warning",
             SessionEvent::Explain { .. } => "Explain",
             SessionEvent::CommandIssued { .. } => "CommandIssued",

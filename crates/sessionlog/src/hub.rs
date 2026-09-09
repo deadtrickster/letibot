@@ -133,7 +133,12 @@ struct Inner {
 /// accessors, because four accessors are four different instants and a list in
 /// which one row is 30 ms older than the next is a list that can show a session as
 /// both running and finished.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// `Default` is all zeroes and an empty id: what a session that has **no hub** looks
+/// like, which is the shape a stored-but-not-live session takes in a listing. It is
+/// derived rather than hand-written so that a field added here cannot quietly acquire
+/// a plausible default nobody chose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionStatus {
     pub session_id: String,
     /// The head seq: how much has happened here.

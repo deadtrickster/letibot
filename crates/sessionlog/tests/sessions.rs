@@ -254,7 +254,7 @@ fn a_head_can_make_a_session_and_the_daemon_mints_the_id() {
     let (tx, rx) = std::sync::mpsc::channel();
     let pumping = std::thread::spawn(move || pump(reader, tx));
 
-    client.new_session("a third thing").unwrap();
+    client.new_session("a third thing", "/home/dead/Projects/letibot").unwrap();
     let frames = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
     let ServerFrame::Sessions {
         sessions,

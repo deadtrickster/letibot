@@ -35,6 +35,20 @@ use crate::view::Snapshot;
 /// as the control channel: a silent version skew that looks like a bug in the other
 /// half.
 ///
+/// **4** since a head can reach sessions that are not in the daemon yet.
+///
+/// `ResumeSession` and `RenameSession` are new client frames and
+/// `SessionEvent::SessionRenamed` is a new event, so a version-3 head talking to a
+/// version-4 daemon would fail to parse an event it is sent mid-session — which is a
+/// deserialization error in the middle of a turn, and the worst possible place for
+/// one. Both sides refuse the mismatch at ATTACH instead.
+///
+/// What made it necessary: a stored session is now **resumable**, and a head is
+/// where the operator asks for that. Without a frame for it, `letibot --continue`
+/// against a *running* daemon could only work by killing the daemon and restarting
+/// it with `--session` — which would take down every other session on the box to
+/// open one, and this box runs several.
+///
 /// **3** since a tool call's body got a channel of its own.
 ///
 /// `DeltaTarget` gained `ToolCall` and `TurnView` gained `raw_calls`, closing
@@ -52,7 +66,7 @@ use crate::view::Snapshot;
 /// head is attached *to* (§4.4) and the session list a picker is drawn from,
 /// `Attach`'s `session_id` naming one of several rather than being checked against
 /// the only one, and `ToolCallProposed` carrying a display target (§4.1).
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// What a head can do and what it wants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,8 +153,48 @@ pub enum ClientFrame {
     /// session ready for later should not have to leave the one it is in.
     NewSession {
         client_request_id: String,
-        /// A human name, or empty. Never derived from a prompt here: a title
-        /// guessed from content is a title that changes under you.
+        /// A human name, or empty. A title is set **once**; a daemon may name an
+        /// unnamed session from the message that opened it, and after that only a
+        /// deliberate rename changes it. What must not happen is a row that renames
+        /// itself as the conversation goes on.
+        title: String,
+        /// The tree this session is about, from the head that asked.
+        ///
+        /// Empty means "wherever the daemon is", which is what a head that does not
+        /// know sends. It is here because the daemon's own working directory is a
+        /// fact about the daemon and not about the conversation: a `letibot --new`
+        /// typed in `~/Projects/rano` against a daemon started in `~` used to seat
+        /// the new session's read-only tools at `~`, and every path in it resolved,
+        /// so the only symptom was answers about the wrong tree.
+        workspace: String,
+    },
+    /// Bring a session that is **in the store but not in this daemon** back to life.
+    ///
+    /// Separate from [`ClientFrame::NewSession`] because the two differ in the one
+    /// way that matters: this one **names** the session and `NewSession` deliberately
+    /// does not. An id minted daemon-side is right for a new session (two heads
+    /// racing to create "scratch" must not collide) and wrong for a resume, where the
+    /// whole point is *that* conversation and no other.
+    ///
+    /// Idempotent. A session the daemon already holds is answered with the list and
+    /// its own id, not refused: "resume the one I am already in" is a no-op the
+    /// operator is allowed to ask for, and a refusal there would send `letibot
+    /// --continue` down an error path on the most ordinary case there is.
+    ///
+    /// It does **not** switch to it, for the same reason `NewSession` does not: the
+    /// head sends [`ClientFrame::Switch`] once it has the id.
+    ResumeSession {
+        client_request_id: String,
+        session_id: String,
+    },
+    /// Name a session, or clear its name with an empty title.
+    ///
+    /// Carries a `session_id` rather than acting on the current one: a picker is
+    /// where renaming is wanted, and in a picker the session you are looking at is
+    /// usually not the session you are in.
+    RenameSession {
+        client_request_id: String,
+        session_id: String,
         title: String,
     },
     /// Move this connection to another session.
@@ -290,6 +344,12 @@ pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
 /// seats you in somebody else's conversation looks exactly like a working attach
 /// to an empty one, and you find out by prompting into it.
 pub const REJECT_UNKNOWN_SESSION: &str = "no such session";
+/// A `ResumeSession` named a session that is in neither the daemon nor the store.
+///
+/// Distinct from [`REJECT_UNKNOWN_SESSION`] on purpose: "this daemon does not hold
+/// it" and "nothing anywhere has ever heard of it" send an operator to two different
+/// places, and collapsing them is how a typo becomes half an hour with a database.
+pub const REJECT_NOT_IN_STORE: &str = "no such session in the store";
 
 #[cfg(test)]
 mod tests {
@@ -376,6 +436,16 @@ mod tests {
             ClientFrame::ListSessions,
             ClientFrame::NewSession {
                 client_request_id: "r4".into(),
+                title: "the cache question".into(),
+                workspace: "/home/dead/Projects/letibot".into(),
+            },
+            ClientFrame::ResumeSession {
+                client_request_id: "r5".into(),
+                session_id: "s-1788987496351498881".into(),
+            },
+            ClientFrame::RenameSession {
+                client_request_id: "r6".into(),
+                session_id: "s-2".into(),
                 title: "the cache question".into(),
             },
             ClientFrame::Switch {

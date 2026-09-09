@@ -160,10 +160,42 @@ impl HeadClient {
         Ok(())
     }
 
-    pub fn new_session(&mut self, title: &str) -> Result<String, ClientError> {
+    /// `workspace` is the tree the new session is about — the head's own working
+    /// directory. Empty leaves it to the daemon, which is what a head that has no
+    /// opinion sends.
+    pub fn new_session(&mut self, title: &str, workspace: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::NewSession {
             client_request_id: client_request_id.clone(),
+            title: title.to_string(),
+            workspace: workspace.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// Ask the daemon to bring a stored session in. Answered with `Sessions`
+    /// carrying it as `created`, exactly as `new_session` is — a head then switches
+    /// to it by the same code path, which is what keeps "make one" and "get the old
+    /// one back" from being two half-tested flows.
+    pub fn resume_session(&mut self, session_id: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ResumeSession {
+            client_request_id: client_request_id.clone(),
+            session_id: session_id.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// Name a session, or clear its name with an empty title.
+    pub fn rename_session(
+        &mut self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::RenameSession {
+            client_request_id: client_request_id.clone(),
+            session_id: session_id.to_string(),
             title: title.to_string(),
         })?;
         Ok(client_request_id)

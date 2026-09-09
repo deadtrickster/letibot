@@ -84,7 +84,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::Explain { .. }
         // Durable: "bob interrupted at 14:02" stays true. It is a record of what a
         // head did, not a request for a head to do something.
-        | SessionEvent::CommandIssued { .. } => false,
+        | SessionEvent::CommandIssued { .. }
+        // Durable: the session still has that name. A head replaying it re-reads a
+        // fact that is still true, which is exactly the test above.
+        | SessionEvent::SessionRenamed { .. } => false,
     }
 }
 

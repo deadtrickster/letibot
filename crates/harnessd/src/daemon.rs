@@ -45,6 +45,8 @@ use letibot_sessionlog::registry::Registry;
 use letibot_sessionlog::server::{ServerHandle, serve_registry};
 
 use crate::harness::HarnessError;
+use letibot_sessionlog::registry::Work;
+
 use crate::sessions::{Outcome, Sessions};
 
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
@@ -152,9 +154,46 @@ impl Daemon {
         sessions: &mut Sessions<'_>,
         mut on_reply: impl FnMut(&str, &QueuedCommand, Outcome),
     ) {
-        while let Some((session_id, cmd)) = self.registry().next_command() {
-            let outcome = sessions.dispatch(&session_id, &cmd);
-            on_reply(&session_id, &cmd, outcome);
+        while let Some(work) = self.registry().next_work() {
+            match work {
+                // A session was created — by a head's `/new`, or by a `--continue`
+                // asking for one out of the store. Opened **here**, on the worker,
+                // rather than on the connection thread that asked: the worker is the
+                // one authoritative reader (§13.2), and a harness built on a socket
+                // thread would be a second one.
+                //
+                // A failure is already announced on that session's own log by
+                // `Sessions::open`; the daemon keeps serving, because one session
+                // that cannot be rebuilt is not the others' problem.
+                Work::Open(session_id) => {
+                    match sessions.open(&session_id) {
+                        Err(e) => eprintln!("  {session_id} · not opened: {e}"),
+                        // Already open: the daemon's own first session, whose banner
+                        // was printed at startup. Saying it twice would suggest two
+                        // resumes happened.
+                        Ok(false) => {}
+                        Ok(true) => {
+                            if let Some(r) = sessions.resume_report(&session_id) {
+                                eprintln!(
+                                    "  {session_id} · resumed {} row(s), {} tokens, head {}",
+                                    r.rows,
+                                    r.tokens,
+                                    &r.head[..16.min(r.head.len())]
+                                );
+                                for note in &r.notes {
+                                    eprintln!("    note: {note}");
+                                }
+                            } else {
+                                eprintln!("  {session_id} · opened, nothing to resume");
+                            }
+                        }
+                    }
+                }
+                Work::Command(session_id, cmd) => {
+                    let outcome = sessions.dispatch(&session_id, &cmd);
+                    on_reply(&session_id, &cmd, outcome);
+                }
+            }
         }
     }
 

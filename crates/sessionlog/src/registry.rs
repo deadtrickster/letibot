@@ -71,7 +71,20 @@ pub struct Bell {
 #[derive(Debug, Default)]
 struct BellInner {
     pending: VecDeque<String>,
+    /// Sessions that exist and have not been opened yet. A **separate** queue, not a
+    /// marker in `pending`: `pending` is arrival order across sessions and that is a
+    /// promise §13.2 makes, so putting a create in it made a session's first command
+    /// jump ahead of a command submitted before it. Measured by
+    /// `one_worker_is_woken_by_whichever_session_was_prompted`, which is exactly what
+    /// that test is for.
+    opens: VecDeque<String>,
     closed: bool,
+}
+
+/// What a wake was about.
+enum Ring {
+    Open(String),
+    Command(String),
 }
 
 impl Bell {
@@ -84,6 +97,15 @@ impl Bell {
         {
             let mut g = self.lock();
             g.pending.push_back(session_id.to_string());
+        }
+        self.cv.notify_all();
+    }
+
+    /// Say that `session_id` exists and nothing has opened it yet.
+    pub fn ring_open(&self, session_id: &str) {
+        {
+            let mut g = self.lock();
+            g.opens.push_back(session_id.to_string());
         }
         self.cv.notify_all();
     }
@@ -115,6 +137,29 @@ impl Bell {
         }
     }
 
+    /// Block until there is either a session to open or a session to serve.
+    ///
+    /// **Opens first.** A session that is not open yet is one whose resume has not
+    /// run, and its chain check, its dialect refusal and its republished transcript
+    /// all live in that open — running a command in it first would put all three
+    /// inside somebody's prompt. The wait is bounded by a store read, not by a
+    /// generation.
+    fn next_any(&self) -> Option<Ring> {
+        let mut g = self.lock();
+        loop {
+            if let Some(id) = g.opens.pop_front() {
+                return Some(Ring::Open(id));
+            }
+            if let Some(id) = g.pending.pop_front() {
+                return Some(Ring::Command(id));
+            }
+            if g.closed {
+                return None;
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, BellInner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -129,16 +174,31 @@ impl Bell {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionBrief {
     pub session_id: String,
-    /// A human name. Empty until somebody sets one; a head shows the id then,
-    /// rather than inventing a title from the first prompt — a title guessed from
-    /// content is a title that changes under you.
+    /// A human name. Empty until it has one; a head shows a short id then.
+    ///
+    /// A title is set **once** and then only on purpose — by `--title`, by `/rename`,
+    /// or by the daemon naming an unnamed session from the message that opened it.
+    /// What must not happen is the original objection: a row that renames itself as
+    /// the conversation goes on is a row you cannot learn.
     pub title: String,
     /// Unix millis when the daemon created it.
     pub created_ms: u64,
     /// Everything the log knows, cut in one lock.
+    ///
+    /// All zeroes for a session that is only in the store: it has no hub, so there is
+    /// no log to cut. `live` is what tells the two apart — reading "0 rows" off a
+    /// stored session and concluding it is empty is exactly the mistake this pair of
+    /// fields exists to prevent, which is why `stored_items` is here beside it.
     pub status: SessionStatus,
     /// What this session is talking to (`crates/ui/DESIGN.md` §4.4).
     pub wiring: SessionWiring,
+    /// Whether this daemon holds a hub for it. `false` means it is on disk and has to
+    /// be resumed ([`crate::protocol::ClientFrame::ResumeSession`]) before it can be
+    /// switched to.
+    pub live: bool,
+    /// Transcript rows the **store** holds. Zero for a live session in a daemon with
+    /// no store, which is a real state and not a missing measurement.
+    pub stored_items: u32,
 }
 
 /// What a session is attached to. The daemon's own command line, which is the only
@@ -173,6 +233,65 @@ impl SessionWiring {
     }
 }
 
+/// The last eight characters of a session id, with a leading ellipsis.
+///
+/// Ids are minted `format!("s-{}", now_ns())`, so two made on the same afternoon
+/// share thirteen leading characters and differ only at the end. Shortening from the
+/// **left** is therefore the one direction that keeps them distinguishable; a
+/// left-anchored truncation would render every session that day as the same string.
+///
+/// One function, here, because the head's header, the picker and the daemon's own
+/// listing all want it and three spellings of "shorten an id" produce three different
+/// strings for one session — which is the opposite of what an identifier is for.
+pub fn short_id(id: &str) -> String {
+    let n = id.chars().count();
+    if n <= 10 {
+        return id.to_string();
+    }
+    let tail: String = id.chars().skip(n - 8).collect();
+    format!("…{tail}")
+}
+
+/// A session that exists somewhere the registry cannot see — on disk.
+///
+/// The registry holds hubs, and a hub is a live thing. This is the shape of a
+/// session that is not live yet, so that one list can hold both and a picker does not
+/// have to be told there is a second place to look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBrief {
+    pub session_id: String,
+    pub title: String,
+    pub items: u32,
+    pub last_activity_ms: u64,
+    pub wiring: SessionWiring,
+}
+
+/// Where a registry can find sessions it is not already holding.
+///
+/// A **trait and not a `Store`**: `letibot-sessionlog` does not depend on
+/// `letibot-tokencore` and should not start — the log and the token ledger are two
+/// strands that meet in `harnessd`, and a dependency here would make every head
+/// binary link a SQLite. So the daemon passes an implementation in, and a registry
+/// with no source behaves exactly as it did before, which is what every existing test
+/// asserts.
+pub trait SessionSource: Send + Sync {
+    /// Every session on disk, newest activity first.
+    fn list(&self) -> Vec<StoredBrief>;
+    /// One session, or `None` if nothing anywhere has heard of it.
+    fn lookup(&self, session_id: &str) -> Option<StoredBrief> {
+        self.list().into_iter().find(|s| s.session_id == session_id)
+    }
+    /// Make the name durable. An empty title clears it.
+    ///
+    /// The default refuses, and refusing is the point: a registry with no source has
+    /// nowhere to put a name, and a rename that only lived in memory would come back
+    /// as the old name the next time the daemon started — with nothing having said
+    /// so. A head is told, and can say so.
+    fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
+        Err("this daemon has no store, so a name would not survive it".into())
+    }
+}
+
 struct Entry {
     hub: Arc<Hub>,
     title: String,
@@ -194,6 +313,24 @@ struct Inner {
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
+    /// Set once at startup by the daemon. `None` in every head and every test that
+    /// predates resume, and the registry then lists only what it holds.
+    source: Mutex<Option<Arc<dyn SessionSource>>>,
+}
+
+/// What the worker was woken for.
+///
+/// A second variant rather than a second loop: [`Registry::next_command`] blocks, so
+/// a session created by a head while the worker is asleep would sit unopened until
+/// somebody prompted into it — and "unopened" is where a resume's chain check, its
+/// dialect refusal and its republished transcript all live. A head that resumed a
+/// session and then attached to it would find an empty screen and no error, which is
+/// the shape of failure this whole strand exists to remove.
+pub enum Work {
+    /// Open this session before anything else happens in it.
+    Open(String),
+    /// Run this command against this session.
+    Command(String, QueuedCommand),
 }
 
 /// Why a session could not be created.
@@ -230,6 +367,7 @@ impl Registry {
                 view_bounds,
             }),
             bell: Bell::new(),
+            source: Mutex::new(None),
         })
     }
 
@@ -289,7 +427,7 @@ impl Registry {
             g.default_id = id.clone();
         }
         g.entries.push((
-            id,
+            id.clone(),
             Entry {
                 hub: hub.clone(),
                 title: title.into(),
@@ -297,7 +435,37 @@ impl Registry {
                 wiring,
             },
         ));
+        drop(g);
+        // Wake the worker so it opens this session *now* rather than on the first
+        // prompt into it. On the bell's own `opens` queue, so a caller that predates
+        // `next_work` — every existing test, and `Daemon::run`'s old shape — sees the
+        // command stream it always did, unpolluted by creations.
+        self.bell.ring_open(&id);
         Ok(hub)
+    }
+
+    /// Where to find sessions this registry is not holding. See [`SessionSource`].
+    pub fn set_source(&self, source: Arc<dyn SessionSource>) {
+        *self.source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    fn source(&self) -> Option<Arc<dyn SessionSource>> {
+        self.source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// A session that is on disk and not in this daemon, or `None`.
+    ///
+    /// `None` for a session that **is** live, deliberately: the caller asking this is
+    /// asking "do I need to bring it in", and a live session is the one case where
+    /// the answer is no.
+    pub fn resumable(&self, session_id: &str) -> Option<StoredBrief> {
+        if self.get(session_id).is_some() {
+            return None;
+        }
+        self.source()?.lookup(session_id)
     }
 
     pub fn get(&self, session_id: &str) -> Option<Arc<Hub>> {
@@ -364,6 +532,20 @@ impl Registry {
         }
     }
 
+    /// Name a session **and make it durable**, through the source.
+    ///
+    /// Both halves or neither: the in-memory title is what a head is about to be
+    /// sent and the stored one is what it will see next week, and a rename that did
+    /// one of them is a rename that appears to work and silently is not.
+    pub fn rename(&self, session_id: &str, title: &str) -> Result<(), String> {
+        let Some(src) = self.source() else {
+            return Err("this daemon has no store, so a name would not survive it".into());
+        };
+        src.set_title(session_id, title)?;
+        self.set_title(session_id, title);
+        Ok(())
+    }
+
     /// Every session, in creation order, each cut under its own hub's lock.
     ///
     /// The hubs are cloned out from under the registry lock first, so listing a
@@ -386,15 +568,49 @@ impl Registry {
                 })
                 .collect()
         };
-        rows.into_iter()
-            .map(|(session_id, title, created_ms, hub, wiring)| SessionBrief {
-                session_id,
-                title,
-                created_ms,
-                status: hub.status(),
-                wiring,
+        let stored: Vec<StoredBrief> = self.source().map(|s| s.list()).unwrap_or_default();
+        let mut out: Vec<SessionBrief> = rows
+            .into_iter()
+            .map(|(session_id, title, created_ms, hub, wiring)| {
+                let on_disk = stored.iter().find(|d| d.session_id == session_id);
+                SessionBrief {
+                    // A daemon started with `--title` and a store that already names
+                    // the session must not disagree with itself. The store wins for a
+                    // session it knows, because that is the name the operator set and
+                    // the one every other list shows.
+                    title: on_disk
+                        .map(|d| d.title.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or(title),
+                    stored_items: on_disk.map(|d| d.items).unwrap_or(0),
+                    session_id,
+                    created_ms,
+                    status: hub.status(),
+                    wiring,
+                    live: true,
+                }
             })
-            .collect()
+            .collect();
+        // Then everything on disk this daemon is not holding. Appended rather than
+        // interleaved by time: the live ones are the ones a switch reaches in one
+        // keystroke, and a picker that mixes them puts a two-step action next to a
+        // one-step action with nothing to say which is which. `live` says it per row;
+        // the ordering says it again.
+        for d in stored {
+            if out.iter().any(|b| b.session_id == d.session_id) {
+                continue;
+            }
+            out.push(SessionBrief {
+                session_id: d.session_id,
+                title: d.title,
+                created_ms: d.last_activity_ms,
+                status: SessionStatus::default(),
+                wiring: d.wiring,
+                live: false,
+                stored_items: d.items,
+            });
+        }
+        out
     }
 
     pub fn len(&self) -> usize {
@@ -411,6 +627,29 @@ impl Registry {
     /// source, during a turn — is skipped rather than returned as an empty wake.
     /// That loop is bounded by the number of rings, not by time: nothing here
     /// spins.
+    /// The next thing for the worker to do. Blocks. Supersedes
+    /// [`Registry::next_command`], which is kept for the callers that have no
+    /// sessions to open.
+    ///
+    /// An open is drained **before** the command that woke the same session, because
+    /// the alternative is opening a session as a side effect of running a turn in it
+    /// — and a resume that failed its chain check would then fail inside a prompt the
+    /// operator is watching, instead of before it.
+    pub fn next_work(&self) -> Option<Work> {
+        loop {
+            match self.bell.next_any()? {
+                Ring::Open(id) => return Some(Work::Open(id)),
+                Ring::Command(id) => {
+                    let Some(hub) = self.get(&id) else { continue };
+                    if let Some(cmd) = hub.try_command() {
+                        self.set_default(&id);
+                        return Some(Work::Command(id, cmd));
+                    }
+                }
+            }
+        }
+    }
+
     pub fn next_command(&self) -> Option<(String, QueuedCommand)> {
         loop {
             let id = self.bell.next()?;

@@ -30,6 +30,11 @@ use letibot_tui::term::Terminal;
 struct Args {
     socket: std::path::PathBuf,
     session: String,
+    /// A session to resume out of the store and switch to, once attached.
+    resume: String,
+    /// A session to create and switch to, once attached. `Some("")` is an untitled
+    /// one — distinct from `None`, which is "do not make one".
+    new_session: Option<String>,
     since: u64,
     replay: Option<String>,
     demo: bool,
@@ -42,6 +47,8 @@ fn parse() -> Result<Args, String> {
     let mut a = Args {
         socket: default_socket_path(),
         session: String::new(),
+        resume: String::new(),
+        new_session: None,
         since: 0,
         replay: None,
         demo: false,
@@ -55,6 +62,8 @@ fn parse() -> Result<Args, String> {
         match arg.as_str() {
             "--socket" => a.socket = next()?.into(),
             "--session" => a.session = next()?,
+            "--resume" => a.resume = next()?,
+            "--new-session" => a.new_session = Some(next()?),
             "--since" => a.since = next()?.parse().map_err(|e| format!("--since: {e}"))?,
             "--replay" => a.replay = Some(next()?),
             "--identity" => a.identity = next()?,
@@ -77,7 +86,8 @@ fn parse() -> Result<Args, String> {
 }
 
 fn usage() -> String {
-    "letibot-tui [--socket PATH] [--session ID] [--since SEQ] [--identity NAME]\n\
+    "letibot-tui [--socket PATH] [--session ID] [--resume ID] [--new-session TITLE]\n\
+     \x20           [--since SEQ] [--identity NAME]\n\
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
      \x20           [--body-lines N] [--reasoning-lines N]"
         .into()
@@ -226,6 +236,15 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
 
     let mut app = App::new(cfg);
     app.apply(hello);
+    // After the `Hello`, so the head knows what the daemon holds before it asks for
+    // something else — a resume of a session that is already live is then a switch
+    // rather than a round trip through the store.
+    if !args.resume.is_empty() {
+        app.request_session(&args.resume);
+    }
+    if let Some(title) = &args.new_session {
+        app.request_new_session(title);
+    }
 
     let term = if args.no_tty {
         None

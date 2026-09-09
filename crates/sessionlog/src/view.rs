@@ -564,6 +564,13 @@ impl SessionView {
             // state a late head needs restated: the *effect* is in the transcript
             // rows and the turn, which the snapshot already carries.
             SessionEvent::CommandIssued { .. } => {}
+            // The name is carried by `SessionBrief`, which travels in `Hello` and
+            // `Sessions` — so a head that attaches *after* a rename is told the
+            // current name by the attach itself and needs nothing restated here.
+            // Folding it into the snapshot as well would put the same fact in two
+            // places with two update paths, and the picker and the header would then
+            // be able to disagree about what the session is called.
+            SessionEvent::SessionRenamed { .. } => {}
         }
     }
 
