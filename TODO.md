@@ -682,7 +682,17 @@ So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable an
 reached. On B it is arithmetically impossible for any session that returns tool
 output.
 
-### The choice — operator's
+### SETTLED 2026-09-09 — option 1, see D11
+
+`f_keep = lcp / cached_entry`, computed as
+`cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))` — **no server change
+needed**, since the denominator is what we left in the cache and the numerator is what
+the server already returns. It is the ratio form of C3's inequality, over C3's own
+quantities.
+
+**M1 must be re-measured.** 0.8771 was a correct measurement of the wrong metric.
+
+### The choice as it stood — operator's
 
 1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
    motivated it, indifferent to growth, and what the append-only invariant actually
@@ -820,7 +830,17 @@ So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable an
 reached. On B it is arithmetically impossible for any session that returns tool
 output.
 
-### The choice — operator's
+### SETTLED 2026-09-09 — option 1, see D11
+
+`f_keep = lcp / cached_entry`, computed as
+`cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))` — **no server change
+needed**, since the denominator is what we left in the cache and the numerator is what
+the server already returns. It is the ratio form of C3's inequality, over C3's own
+quantities.
+
+**M1 must be re-measured.** 0.8771 was a correct measurement of the wrong metric.
+
+### The choice as it stood — operator's
 
 1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
    motivated it, indifferent to growth, and what the append-only invariant actually

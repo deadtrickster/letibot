@@ -178,3 +178,34 @@ showing the same green tick as the structural check is the exact failure this pr
 exists to remove.
 
 Still open, and deferred with the milestone: which provider to build against first.
+
+## D11 — C4's `f_keep` is `lcp / cached_entry` — **SETTLED 2026-09-09**
+
+§18.2's C4 defined `f_keep` as `cached_tokens / prompt_tokens`, which is the server's
+**`f_sim`** under `f_keep`'s name, and then claimed comparability to the 0.000 → 0.999
+measurement — which was the server's actual `f_keep`, `lcp / cached_entry`. A bar
+measured on one metric was applied to another. See `TODO.md` T22.
+
+**Decision: C4 uses `lcp / cached_entry`.** The denominator is what was cached, so the
+metric is *indifferent to how much the conversation grew* — which is the property that
+made 0.99 meaningful in the first place.
+
+**It needs no server change, and this is the part worth writing down.** `lcp` is not in
+the OpenAI-shaped `usage`, but the denominator is a quantity we already own: the entry
+we left in the cache last turn is `prompt_tokens(N) + committed_generated(N)`, straight
+off the ledger. And `cached_tokens(N+1)` is the numerator the server already returns.
+So:
+
+```
+f_keep(N+1) = cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))
+```
+
+Those are **exactly C3's quantities**. C3 asserts
+`cached(N+1) ≥ prompt(N) + generated(N)`; C4 is the **ratio form of the same
+inequality**. One measurement, two readings — the assertion and its margin.
+
+Note `committed`, not `predicted`: a trailing stop token is stripped before commit, so
+a witness counting predicted tokens is off by one on every turn (T11).
+
+**Consequence:** the M1 run must be re-measured before M1's exit can be judged. The
+0.8771 was a correct measurement of the wrong metric.
