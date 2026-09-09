@@ -237,33 +237,38 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     assert!(b_end >= b_from, "B received nothing after its snapshot");
     assert!(a_end > 0);
 
-    // And the head's view agrees with what was committed to the transcript.
+    // And the head's live view agrees with what was committed to the transcript —
+    // about the **channel**, not merely about the characters. This is T12.
     //
-    // # A measured disagreement, recorded here rather than papered over
+    // # What this used to say, and why it now says more
     //
-    // The *content* agrees: every committed character reached a head as a delta.
-    // The **channel** does not. On this box, with this model, the engine's
-    // `DeltaTarget` said `Text` for the whole generation, including the reasoning
-    // block and the literal `</think>`, while the parser committed a `Reasoning`
-    // item and an `Assistant` item. Two causes, both in `crates/turn`:
+    // Measured here first: the *content* agreed — every committed character
+    // reached a head — while the **channel** did not. `DeltaTarget` said `Text`
+    // for the whole generation, including the reasoning block and the literal
+    // `</think>`, while the parser committed a `Reasoning` item and an `Assistant`
+    // item. So for the length of every turn a head showed the model's reasoning as
+    // its answer, and the transcript row then replaced it. Two causes in
+    // `crates/turn`, both now fixed: `in_reasoning` was seeded `false` rather than
+    // from the dialect's generation prompt, which ends inside `<think>`; and a
+    // chunk's text was emitted as a `Delta` before the ids in that chunk had their
+    // roles inspected, so a boundary's literal arrived as visible characters.
     //
-    // 1. `in_reasoning` starts `false` (`engine.rs:~717`) and is only set by a
-    //    *generated* `ThinkOpen`. The generation prompt ends inside `<think>` —
-    //    the engine's own module diagram says so — so the model is reasoning from
-    //    token one and no head is told.
-    // 2. `Chunk::Token{text}` is emitted as a `Delta` **before** the ids in that
-    //    chunk have their roles inspected, so a control token's literal text is
-    //    streamed to every head as visible characters.
+    // # Why per-channel equality is the right assertion and is about the whole turn
     //
-    // The consequence for a head is precise: during a turn it shows the reasoning
-    // as the answer, and then the answer replaces it when the transcript row
-    // lands. Not corruption — the ledger is built from ids and the parser is
-    // authoritative — but the live view and the stored view disagree for the
-    // length of the turn, which is exactly the class of defect §13.2b is about.
+    // `Seen` only ever appends, and it appends into the accumulator the delta
+    // named. A delta announced on the wrong channel therefore lands in the wrong
+    // string and no later delta can move it: there is no way to pass this by
+    // being right only at the end, which was exactly the failure mode. Equality
+    // rather than containment, because the transcript is the authority on what the
+    // turn said and a head that shows a character the row does not contain — a
+    // boundary literal, say — is as wrong as one that drops a character it does.
     //
-    // These assertions are written against the contract as it *should* be, in the
-    // weakest form that passes today, so that fixing W6 makes them tightenable
-    // rather than making them fail silently.
+    // # What it cannot do
+    //
+    // It cannot tell the two causes apart: either one alone leaves a visible
+    // artefact and fails here. `crates/turn/tests/engine_decisions.rs` separates
+    // them against canned frames, where the seed and the emission order can be
+    // regressed one at a time.
     let committed_assistant: String = items
         .iter()
         .filter_map(|i| match i {
@@ -271,12 +276,6 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
             _ => None,
         })
         .collect();
-    let everything_a_head_saw = format!("{}{}", a_seen.reasoning, a_seen.text);
-    assert!(
-        everything_a_head_saw.contains(committed_assistant.trim()),
-        "a committed character never reached a head:\n  committed: {committed_assistant:?}\n  \
-         streamed:  {everything_a_head_saw:?}"
-    );
     let committed_reasoning: String = items
         .iter()
         .filter_map(|i| match i {
@@ -284,17 +283,42 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
             _ => None,
         })
         .collect();
-    if !committed_reasoning.trim().is_empty() {
+
+    // A run in which the model never reasoned would satisfy everything below
+    // vacuously, and the defect this file found lives entirely in the reasoning
+    // channel. The generation prompt hands the model an open `<think>`, so a turn
+    // with no reasoning item at all means the run did not exercise the split —
+    // report that as such rather than passing.
+    assert!(
+        !committed_reasoning.is_empty(),
+        "the turn committed no reasoning item, so the channel split was never \
+         exercised. This run proved nothing about T12; it is not evidence that the \
+         engine is correct."
+    );
+    assert_eq!(
+        a_seen.reasoning, committed_reasoning,
+        "the head's Reasoning deltas do not equal the committed reasoning row"
+    );
+    assert_eq!(
+        a_seen.text, committed_assistant,
+        "the head's Text deltas do not equal the committed assistant row"
+    );
+
+    // The second cause again, phrased so that it fails on its own even if the
+    // model happened to commit nothing on one of the two channels: a boundary is
+    // structure, the parser drops it from every row, and a head that renders it is
+    // showing markup the transcript does not contain.
+    let everything_a_head_saw = format!("{}{}", a_seen.reasoning, a_seen.text);
+    for literal in [
+        chatml::THINK_OPEN.literal.as_ref(),
+        chatml::THINK_CLOSE.literal.as_ref(),
+        chatml::IM_START.literal.as_ref(),
+        chatml::IM_END.literal.as_ref(),
+    ] {
         assert!(
-            everything_a_head_saw.contains(committed_reasoning.trim()),
-            "committed reasoning never reached a head"
-        );
-        // The known divergence, asserted so that it cannot be fixed quietly.
-        assert!(
-            a_seen.reasoning.is_empty(),
-            "the engine now routes reasoning to DeltaTarget::Reasoning. Good — \
-             tighten this test to assert the split exactly, and delete the W7 \
-             report's note about it."
+            !everything_a_head_saw.contains(literal),
+            "the control literal {literal:?} reached a head as visible text; no \
+             committed row contains it"
         );
     }
 
