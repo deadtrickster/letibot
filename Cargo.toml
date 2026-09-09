@@ -5,6 +5,7 @@ members = [
     "crates/dialect",
     "crates/dialect-glm",
     "crates/tokencore",
+    "crates/backend",
 ]
 
 [workspace.package]

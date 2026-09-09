@@ -698,14 +698,32 @@ def _adapt_request(req: dict) -> dict:
     return req
 
 
+def _split_request(req: dict):
+    r = _adapt_request(req)
+    return (
+        r.pop("messages", []),
+        r.pop("tools", None),
+        r.pop("documents", None),
+        r.pop("add_generation_prompt", False),
+        r,
+    )
+
+
 def render_request(template: str, req: dict) -> Provenance:
     """Render one `/apply-template`-shaped request body, with provenance."""
-    r = _adapt_request(req)
-    messages = r.pop("messages", [])
-    tools = r.pop("tools", None)
-    documents = r.pop("documents", None)
-    agp = r.pop("add_generation_prompt", False)
-    return render_with_provenance(template, messages, tools, documents, agp, **r)
+    messages, tools, documents, agp, rest = _split_request(req)
+    return render_with_provenance(template, messages, tools, documents, agp, **rest)
+
+
+def render_request_clean(template: str, req: dict) -> str:
+    """The render alone, with no provenance map.
+
+    For the one caller that still needs the bytes after `render_request` has
+    refused to produce a map: the failure is already reported, and the comparison
+    it was making is still meaningful.
+    """
+    messages, tools, documents, agp, rest = _split_request(req)
+    return render(template, messages, tools, documents, agp, **rest)
 
 
 def main() -> int:

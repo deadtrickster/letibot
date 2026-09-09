@@ -132,3 +132,41 @@ reason to prefer it over MIT for something that may be published.
 **Private for now.** `git@github.com:deadtrickster/letibot.git`, ssh remote per the
 standing rule against https remotes. Public later is a one-line change; the reverse
 is not, which is why it starts closed.
+
+## D10 — cloud-hosted models — **SETTLED 2026-09-09: mode 3 later, seam reserved now**
+
+A token-metered provider API is **not** an M1 target. The seam it will need exists
+from today, in `crates/backend`.
+
+Reserving costs one small crate with no implementation behind it. Retrofitting would
+mean touching the turn engine, compaction, EXPLAIN and every metric — the same shape
+of mistake D6 avoids one level down.
+
+**What the seam carries, and why each part is there:**
+
+- `TurnRequest` holds the **transcript**, not a rendered prompt. Realisation is the
+  backend's job — the local one renders, tokenizes and appends to the ledger; a
+  provider one converts to that provider's message shape. Passing a rendered string
+  across this seam would force every backend through the rendering stack it will
+  never use, which is also why the crate depends on `letibot-transcript` and nothing
+  else.
+- `BackendCaps` states facts, not preferences: `renders_locally`,
+  `accepts_token_ids`, `cache_reporting`, `meter`, `prefix`.
+- `Meter` distinguishes wall clock from money. Per the operator's observation, our
+  **own cloud compute is `WallClock`** — renting the hardware still bills by time —
+  so mode 2 is architecturally mode 1 and only a metered API is a different shape.
+- `TurnCost.micros_usd` is `Option`, absent under `WallClock` rather than zero,
+  because zero is a number somebody will sum into a total.
+- `PrefixGuarantee` is the important one. §4.3's claim is that a prefix violation is
+  *inexpressible*, and that is a property of submitting token ids over memory we
+  own. It does not survive a `messages` API.
+
+**The rule, decided here:** a backend must declare what it cannot guarantee, and the
+invariant suites must **skip loudly rather than pass vacuously**. `skip_reason()`
+returns a message rather than a bool precisely so that the silent skip is harder to
+write than the loud one, and the message says "the check did not run and this is not
+a pass". A suite that quietly degrades to "the provider's cache seemed fine" while
+showing the same green tick as the structural check is the exact failure this project
+exists to remove.
+
+Still open, and deferred with the milestone: which provider to build against first.

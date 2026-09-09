@@ -189,17 +189,20 @@ Named now, mode 3 is an implementation. Retrofitted, it means touching the turn
 engine, compaction, EXPLAIN and every metric — this is exactly what D6 taught about
 `max_inline_bytes`, one week earlier and one level larger.
 
-**What is genuinely undecided:**
+**DECIDED 2026-09-09 (D10): mode 3 later, seam reserved now.** `crates/backend`
+exists with `BackendCaps`, `PrefixGuarantee`, `Meter` and `TurnCost`, and no
+implementation behind it. Suites must skip loudly rather than pass vacuously;
+`skip_reason()` returns a message, not a bool, so the silent skip is the harder one
+to write.
 
-1. Is mode 3 a first-class target for M1, or a later milestone with the seam
-   reserved now? Reserving the seam is cheap; building two backends in M1 is not.
-2. Which providers. "Apple ecosystem, I don't care about other providers" was the
-   local stance; mode 3 needs at least one concrete API to build against.
-3. Does the harness *degrade* to mode 3 (same features, weaker guarantees) or
-   *refuse* the guarantees it cannot keep? A silently weaker prefix invariant is the
-   failure this project exists to avoid, so my instinct is that `BackendCaps` must
-   be surfaced in `EXPLAIN` and the invariant tests must skip loudly rather than
-   pass vacuously.
+**Still open, deferred with the milestone:**
+
+1. Which provider to build against first. "Apple ecosystem, I don't care about other
+   providers" was the local stance; mode 3 needs one concrete API.
+2. Whether `EXPLAIN` renders `BackendCaps` inline on every plan or only on a
+   capability change. Inline is honest and noisy.
+3. Whether compaction reads `Meter` directly or is handed a policy — the same
+   interface-versus-constant question D6 settled for spill.
 
 ---
 

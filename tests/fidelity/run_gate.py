@@ -156,12 +156,20 @@ def check_span_kinds(case: dict, prov: oracle_hf.Provenance) -> list[str]:
     return problems
 
 
-def phase_authority(cases: list[dict], template: str, verbose: bool) -> tuple[list[str], int, int]:
+def phase_authority(
+    cases: list[dict], template: str, verbose: bool
+) -> tuple[list[str], int, int, set[str]]:
     """`faithful` must equal the training runtime, and its spans must agree with it."""
     failures: list[str] = []
     exact = 0
     checked_spans = 0
+    structural_keys: set[str] = set()
     for c in cases:
+        structural_keys.update(
+            oracle_hf.literal_data_keys(
+                c["request"].get("messages", []), c["request"].get("tools")
+            )
+        )
         lab = label_of(c)
         try:
             prov = oracle_hf.render_request(template, c["request"])
@@ -194,7 +202,7 @@ def phase_authority(cases: list[dict], template: str, verbose: bool) -> tuple[li
             failures.append(f"  FAIL {lab}\n" + "\n".join(problems))
         elif verbose:
             print(f"  ok   {lab}  ({prov.pairs} data regions)")
-    return failures, exact, checked_spans
+    return failures, exact, checked_spans, structural_keys
 
 
 # --------------------------------------------------------------------------
@@ -228,12 +236,7 @@ def phase_profiles(bug_cases: list[dict], template: str, verbose: bool) -> list[
             oracle = oracle_hf.render_request(template, c["request"]).text
         except oracle_hf.ProvenanceError:
             # Phase 1 already reported it; the clean render is still comparable.
-            r = oracle_hf._adapt_request(c["request"])
-            msgs = r.pop("messages", [])
-            oracle = oracle_hf.render(
-                template, msgs, r.pop("tools", None), r.pop("documents", None),
-                r.pop("add_generation_prompt", False), **r,
-            )
+            oracle = oracle_hf.render_request_clean(template, c["request"])
         if c["rendered"] != oracle:
             diverged[fx] += 1
             if verbose:
@@ -387,11 +390,15 @@ def main() -> int:
 
     faithful = render_cases(files, "faithful", args.dialect)
     print(f"\n=== AUTHORITY + PROVENANCE: {len(faithful)} cases ===")
-    failures, exact, spans = phase_authority(faithful, template, args.verbose)
+    failures, exact, spans, keys = phase_authority(faithful, template, args.verbose)
     for f in failures:
         print(f)
     print(f"  {exact}/{len(faithful)} byte-identical to the training runtime; "
           f"{spans} control spans checked against the provenance map")
+    # The one place the map is deliberately incomplete: dictionary keys the template
+    # looks up by name cannot be wrapped without changing control flow, so they stay
+    # LITERAL. Printed rather than assumed, so an unexpected one is noticed.
+    print(f"  classified LITERAL by construction (structural keys): {sorted(keys)}")
     if failures:
         rc = 1
 
