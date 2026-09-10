@@ -928,6 +928,10 @@ impl App {
                     last_ms: ts,
                     ..TurnPane::default()
                 });
+                // A new turn takes the pane away from the previous one, so the
+                // previous one's rows now own everything they proposed. Same
+                // reason as the terminal states above: the history is cached.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::PromptProgress { progress, .. } => {
@@ -1139,6 +1143,13 @@ impl App {
                         timings,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             // §4.5's terminal event, which did not exist. The head used to be told
@@ -1160,6 +1171,13 @@ impl App {
                         partial_kept,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::TurnInterrupted {
@@ -1174,6 +1192,13 @@ impl App {
                         partial_kept,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::TranscriptAppended {
@@ -2094,16 +2119,43 @@ impl App {
         // *while* the rendered lines are being appended and the tool-target table
         // is being read — three disjoint fields, one borrow each, no clone of a row
         // per frame.
-        // The rows that belong to the turn the live pane is still drawing. An
-        // assistant row in this set does **not** draw its own unsettled calls: the
-        // pane below is drawing them, with a spinner and a running clock, and
-        // `→ Read foo.rs · no result` above a `◐ Reading foo.rs` is both a
-        // duplicate and, while the call is still running, false.
-        let in_flight: std::collections::HashSet<&str> = self
-            .turn
-            .as_ref()
-            .map(|t| t.appended.iter().map(String::as_str).collect())
-            .unwrap_or_default();
+        // Does the transcript already own this turn's content? If so the live pane
+        // is a duplicate of history and only its summary line survives — otherwise
+        // the answer is on the screen twice, once in the wrong order.
+        //
+        // Computed before the walk, because the walk needs it: it is the
+        // difference between "the pane below is drawing this call" and "nothing
+        // is".
+        let superseded = !matches!(
+            self.turn.as_ref().and_then(|t| t.state.as_ref()),
+            Some(TurnState::Running) | None
+        ) && self.turn.as_ref().is_some_and(|t| {
+            !t.appended.is_empty()
+                && t.appended.iter().all(|id| {
+                    self.items
+                        .iter()
+                        .find(|r| &r.item_id == id)
+                        .is_some_and(|r| r.item.is_some())
+                })
+        });
+        // The rows the live pane is still drawing. An assistant row in this set
+        // does **not** draw its own unsettled calls: the pane below is drawing
+        // them, with a spinner and a running clock, and `→ Read foo.rs · no result`
+        // above a `◐ Reading foo.rs` is both a duplicate and, while the call is
+        // still running, false.
+        //
+        // Empty once the pane has stood down, which is what stops a call the turn
+        // was interrupted in the middle of from vanishing off the screen entirely:
+        // nothing is drawing it, so the assistant row draws it, and says it never
+        // came back.
+        let in_flight: std::collections::HashSet<&str> = if superseded {
+            std::collections::HashSet::new()
+        } else {
+            self.turn
+                .as_ref()
+                .map(|t| t.appended.iter().map(String::as_str).collect())
+                .unwrap_or_default()
+        };
         {
             let App {
                 hist_lines,
@@ -2193,22 +2245,6 @@ impl App {
                 }
             }
         }
-
-        // Does the transcript already own this turn's content? If so the live pane
-        // is a duplicate of history and only its summary line survives — otherwise
-        // the answer is on the screen twice, once in the wrong order.
-        let superseded = !matches!(
-            self.turn.as_ref().and_then(|t| t.state.as_ref()),
-            Some(TurnState::Running) | None
-        ) && self.turn.as_ref().is_some_and(|t| {
-            !t.appended.is_empty()
-                && t.appended.iter().all(|id| {
-                    self.items
-                        .iter()
-                        .find(|r| &r.item_id == id)
-                        .is_some_and(|r| r.item.is_some())
-                })
-        });
 
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
@@ -3486,8 +3522,13 @@ fn shorten_subject(s: &str, max: usize) -> String {
     if visible_width(s) <= max {
         return s.to_string();
     }
-    let globbish = s.contains(['*', '?', '{', '[']);
-    if s.contains('/') && !globbish {
+    // A glob metacharacter, or a quote — `display_target` quotes any argument
+    // containing whitespace, so a leading `"` is how prose announces itself.
+    // Measured: an `ask_code` call whose subject was a sentence with `src/` in the
+    // middle of it left-cut to `…/ is responsible for, how main.rs, editor.rs,
+    // and…`, which has thrown away the question and kept its tail.
+    let not_a_path = s.contains(['*', '?', '{', '[', '"']);
+    if s.contains('/') && !not_a_path {
         ellipsise_left(s, max)
     } else {
         trim_to(s, max)
@@ -3908,17 +3949,24 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // tail. Never folded, never truncated, and in the outcome's own role:
             // a call that abstained or was refused said *why*, and that sentence
             // is the whole content of the row.
-            if let Some(why) = outcome_why(outcome) {
+            let why = outcome_why(outcome);
+            if let Some(why) = &why {
                 out.extend(
-                    wrap(&why, w.saturating_sub(2))
+                    wrap(why, w.saturating_sub(2))
                         .into_iter()
                         .map(|l| p.paint(outcome_role, &format!("  {l}"))),
                 );
             }
             // Folded shows the first line, which is where a tool puts what it did.
-            // A failure is never folded: an error nobody can read is an error
-            // nobody acts on.
-            let limit = if tools.is_open() || bad {
+            //
+            // A failure used to be exempt — *an error nobody can read is an error
+            // nobody acts on* — and that rule is satisfied by the line above,
+            // which prints the reason in full, wrapped, unfoldable. What the
+            // exemption was actually doing on the screen was printing a tool's
+            // whole `<<<TOOL_ERROR>>>` envelope, in which the reason appears twice
+            // more. So the exemption now applies only when there is **no** reason
+            // to have printed: a timeout, where the payload is all there is.
+            let limit = if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
             } else {
                 2
@@ -5361,9 +5409,60 @@ mod tests {
             "**/*.{md,js…",
             "and so does a glob, slash or no slash"
         );
+        assert_eq!(
+            shorten_subject("\"what is src/main.rs for\"", 12),
+            "\"what is sr…",
+            "a quoted sentence is prose with a slash in it, not a path"
+        );
         // A single segment with no separator to cut on falls back to characters
         // rather than returning something wider than it was asked for.
         assert!(letibot_ui::width::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
+    }
+
+    /// A call the turn was cut short in the middle of does not leave the screen.
+    ///
+    /// The hazard in "one row per call": while the live pane is drawing a turn,
+    /// that turn's assistant rows deliberately draw none of their own unsettled
+    /// calls. If the pane then stands down with a call still unanswered, nobody is
+    /// drawing it — and the operator is looking at a turn that asked for three
+    /// files with no sign it ever did.
+    #[test]
+    fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        // While it is running the pane owns it and the row says nothing.
+        assert!(
+            !a.screen(120, 24).join("\n").contains("no result"),
+            "not while it is still running"
+        );
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TurnInterrupted {
+                turn_id: "t1".into(),
+                reason: "operator pressed esc twice".into(),
+                partial_kept: true,
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            screen.contains("→ Read TODO.md · no result"),
+            "and once nothing is drawing it, the row does:\n{screen}"
+        );
     }
 
     /// The other half of the same table: a result whose round is not on the screen
