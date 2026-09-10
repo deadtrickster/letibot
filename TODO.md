@@ -628,6 +628,39 @@ Honest limit: detecting intent is a judgement, not a parse, so there will be fal
 positives. The harness does not need certainty — it needs the gap **visible rather than
 silent**, and a wrong steer costs a few tokens. Same trade as the recall suggestion.
 
+### T21.3 — **JOINED 2026-09-10.** Both halves existed; nobody called the boundary
+
+`intent::close_the_turn` and `letibot_turn::steering` were both built, both tested, and
+had no join: T21.3 sat announced-but-not-done, which is the failure it exists to catch.
+The session loop now calls the diff at the turn boundary and routes findings through the
+steering source, which injects at the next step boundary.
+
+**Two decisions the join forced, neither of them obvious.**
+
+**The prose half is a flag and the tool-declared half is not**, and the split is the rule
+this repo is under rather than caution. `IntentLedger::reconcile(turn_id, "")` — the
+deterministic half — cannot fire unless the model used `todo` or `goal`, and only a role
+that names them seats them, so a default session is behaviourally identical with it on.
+`intent::close_the_turn` also reads the assistant's prose, and `commitments` fires on any
+turn that ran no tools — which for a plain answer is the *normal* shape. Switching that on
+for every existing session would put *"you said you would X"* into conversations that were
+working. It is the more useful half and the one with an unmeasured false-positive rate, so
+it is `--intent-prose`.
+
+**The nudge is capped at one per user turn.** T21.3's response is *"append … and
+continue"*, and continuing means the answer turn is not the end of the loop — the
+`calls.is_empty()` branch appends the notice and goes round again rather than returning.
+Uncapped, a model that answers the nudge with more prose and no tool call produces a
+second finding, a third, and burns `max_tool_rounds` on an argument. One is the error
+signal; two is the harness insisting. If the model explains itself and stops, that is a
+legitimate answer to the check — `docs/closed-loop.md`'s tolerance band (T22-adjacent, and
+D22's open question), set at its narrowest until somebody measures a better one.
+
+**Still open:** the false-positive rate of the prose half is unmeasured, which is exactly
+why it is off. Measuring it needs a corpus of turns labelled *"did this commitment matter"*,
+and the honest source for one is the same as §4c's: run with it on and record the
+overrides.
+
 ---
 
 ## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other
@@ -1106,6 +1139,24 @@ the two would make "I believed I had waited" spellable. A ceiling quietly raised
 everybody is not a ceiling; one role declaring its own number with the trade written down is
 a decision somebody can reverse, and a test pins both numbers.
 
+> **2026-09-10: the role is seatable, and it seats eight of the nine.** `--role runner`
+> over `HostBackend::confined`. `bash` needs `--bash` on top, because
+> `docs/boundary-and-adjudication.md` §5's transcript choke point does not exist: the
+> boundary keeps secret bytes out of the process's **view** — `~/.ssh` is *absent* from
+> the mount namespace, not denied — and nothing yet stops a tool result carrying bytes
+> from inside that view into the transcript. `bash` is the tool whose result is an
+> arbitrary byte stream; the job verbs and `monitor` are shaped by the tool. So the
+> common case is eight tools, which is `DEFAULT_MAX_TOOLS` exactly, and the ninth seat is
+> spent only when somebody asks for it. That is a nicer answer than the entry above
+> expected and it is a **consequence**, not a plan: the ceiling was not what kept `bash`
+> off.
+>
+> Measured on `.79`: `HostBackend::confined` builds — delegated cgroup v2 subtree and
+> `bwrap` both present — so the runner seat is real here rather than a constructor that
+> always errors. A box without either gets a refusal naming which half is missing, and
+> never a silent fall back to `HostBackend::executable`, which buys cgroup lifetime and
+> no view at all.
+
 **A port watch has no `host` argument, and that omission is load-bearing.** A monitor that
 could reach an arbitrary address would have to declare `Access::Network` on *every* call,
 including the ones watching a cgroup — which is D12's shape (a network declaration making an
@@ -1128,14 +1179,47 @@ no jobs, and therefore no job to promote. The constant is also the one line ever
 wire-touching branch edits, and 5 was taken deliberately *"to coordinate rather than race"*
 (D10). So: one variant and one integer, whenever a head is ready to send it.
 
-### Still open — nothing calls the monitor wake seam
+### ~~Still open — nothing calls the monitor wake seam~~ — **CLOSED 2026-09-10**
 
-`Monitors::wait_for_any(since, deadline)` is a `Condvar` that returns the monitors which
-settled during the call, and it is the "wakes the loop when it fires" half of the sentence
-above. **The loop does not call it yet.** Until it does, a fired monitor reaches the model
-when something asks — `job_list` shows it, with why — which is a poll, not a wake. That is
-honest and it is not the whole requirement, and the gap is named here rather than left to be
-discovered as a silence.
+`Monitors::wait_for_any` now has a caller, and the interesting part is what had to be
+added before it could have one.
+
+**`Bell::ring` was not the door.** `Registry::next_work` skips a session whose command
+queue is empty, so ringing the existing bell for a firing would have been a no-op that
+*read* like a wake — worse than the poll it was replacing, because the poll was honest.
+So `Bell::ring_wake` and `Work::Woken` are new: a third queue, drained **last**, because
+a head that pressed enter is waiting and a monitor is not. A third `Work` variant rather
+than a synthetic `Command`, because a command has an issuing head, an identity and a
+`client_request_id`, and inventing three of those would put a head's name on something no
+head did.
+
+**Two cursors, and they answer different questions.** The waiter thread keeps *"have I
+rung for this?"*; the harness and its steering source share *"has the model seen this?"*.
+That is what makes a firing arrive exactly once whether it is picked up mid-turn (through
+steering, at the next step boundary) or between turns (through the wake). A wake that
+raced a mid-turn pickup returns `Outcome::Ignored` rather than running a turn about
+something already delivered.
+
+**No monitors, no thread**, the same rule `Monitors`' own poller keeps and the same rule
+this entry exists to enforce: the waiter is armed after a turn in which something is
+actually watching, one per session, tracked so a second cannot start. Its `wait_for_any`
+deadline is **not** delivery — the condvar is — it is the only thing a thread blocked in
+that condvar can do about `Bell::close`, which notifies a different one. Named here
+because "no timer, no poll loop" (§18.1-I12) is a property this daemon states about
+itself, and a re-check that went undescribed would read as a violation of it.
+
+What is **not** closed: the wake runs a full turn with the firing as a user item. A
+session with a chatty monitor therefore spends generations on it, and nothing bounds that
+except the monitor's own TTL. A firing that should be noted and not acted on has no
+spelling yet.
+
+### Still open — the disclosure can say `POLL ONLY` and the operator cannot tell why
+
+`GateWiring::monitor_wake` is stamped by `Sessions::arm_wake`, so a `Harness` driven
+directly by a test or by `letibot-m1` honestly reports `false`. What it does not
+distinguish is *"no daemon armed one"* from *"the thread failed to start"* — the second
+publishes a `Warning`, the first is silent, and both render the same line. Small, and the
+kind of thing that costs an hour once.
 
 ---
 
@@ -1186,10 +1270,32 @@ intent, outside-world. All green, all rebase cleanly. Landing costs the running 
 (pid 384248) its live session, because protocol 3 → 4 makes a fresh head refuse it by
 name. Every transcript is on disk and `--continue` now genuinely returns the newest.
 
+> **Overtaken 2026-09-10: `PROTOCOL_VERSION` is 6.** The four branches landed and the
+> assembly on top of them needed a wire change of its own — `SessionEvent::DenialRaised`,
+> §4b's requirement that a refusal reach the operator when it happens. The cost D11 named
+> is now paid once for both: a running daemon on 5 loses its live session to a fresh head
+> either way. T24's `PromoteJob` was the *other* claimant on 6 (`ProcessHost::promote`'s
+> doc specifies the frame verbatim) and it is **not** in this bump — it is a `ClientFrame`
+> and needs a head that sends it, whereas a denial is a `SessionEvent` and needs only a
+> head that renders it. Adding it later is another integer; the constant is the one line
+> every wire-touching branch edits and taking 6 for the thing that was ready is the same
+> "coordinate rather than race" D10 settled.
+
 **D12 — A mounted board makes `todo` gated.** The flowy backing declares
 `Access::Network`, so mounting a board without an adjudicator attached makes `todo` refuse
 *entirely* — the unmounted local list works, the mounted one does not. Correct by the
 rules and possibly intolerable in practice.
+
+> **Sharper as of 2026-09-10, and generalised.** The same shape now decides whether a
+> session *opens at all*: a seat whose tools declare `Write`, `Exec` or `Network` and has
+> no adjudicator refuses to start, rather than starting and failing every call. That is
+> the right end of the trade for `write` and `bash`. For **`say`** it is the D12 problem
+> with a bigger blast radius — the planner seat needs an adjudicator because it can talk
+> to a room, and a planner that cannot plan without one is exactly *"correct by the rules
+> and intolerable in practice"*. The unasked question underneath both: is *reaching the
+> fabric the operator already authorised this seat to be on* the same class of act as
+> *reaching an arbitrary host*. `Surroundings::seen_hosts` says first contact and second
+> contact differ; nothing yet says a **declared** attachment differs from a discovered one.
 
 **D13 — `Access::Session`, a new access class.** Declaring the intent tools `Read` would
 have reproduced the gap the survey names in grok-build (§1.4). The wire carries access as
@@ -1201,6 +1307,12 @@ the box is busy. **Three separate agents have now reported it as a possible regr
 and one of them burned a re-run attributing it. A test that reads as a failure whenever
 the box is loaded is a broken instrument. Proposal: gate it behind an env var or `#[ignore]`
 so `--workspace` means what it says.
+
+> Fourth data point, 2026-09-10: green in 22.2 s standalone and green under
+> `--workspace` on an unloaded box, alongside `turn/tests/live_qwen` (4 tests, 6.0 s).
+> Two passes are not evidence against the entry — the failure mode is contention and
+> the box was quiet — but they do say the instrument is not broken in some second way,
+> which is what a fifth agent would otherwise spend a re-run finding out.
 
 **D15 — 13 stale worktrees and one 30-hour orphan tmux** (`nano_test`). Safe to prune the
 finished ones; two belong to live agents, so not a blanket sweep. T24 is the mechanism,
@@ -1236,7 +1348,31 @@ restart because the model cannot be trusted with it. Tonight's blocked
 
 **D22 — The tolerance band: one, or per-operation?** Also §9. How large a deviation is
 corrected silently versus faulted to a human is the whole design decision, and both ends
-have measured costs.
+have measured costs. **One data point now exists**: T21.3's nudge is capped at one per
+user turn, chosen at its narrowest for want of a measurement rather than because one is
+right.
+
+**D25 — The console adjudicator reads the daemon's own stdin, and a head cannot answer
+it.** New, and the direct consequence of making roles reachable. `--role coder` gets
+`ConsoleAdjudicator::stdio` by default, which blocks on stdin: correct and usable for
+`harnessd --prompt …` and for a daemon in a foreground terminal, and **not** usable for
+the shape people actually run — a daemon in the background with `letibot-tui` attached.
+The head's answer affordance is D10, which is specified (`Answer { option, note, free }`,
+a protocol bump, an affordance in the head) and not built.
+
+So today a write or exec seat is a foreground thing. The startup disclosure says so; it
+is not silent. What it means in practice is that the reachability this strand added is
+reachable **from a terminal**, and a head-driven write session waits on D10. Two ways
+out and they are not equivalent: wire the adjudicator to the head (D10, correct, costs a
+protocol bump and head work), or attach the model adjudicator (D13, which needs an
+oracle and a reviewed always-ask list, and is what the survey's 83% is about).
+
+**D26 — A wake spends a generation, and nothing bounds a chatty monitor.** T24's wake
+turns a firing into a user item and runs a turn. A monitor watching a path that changes
+every second would spend the box's slots on itself until its TTL expires. The TTL is the
+only bound and it is up to an hour. A firing that should be *noted* rather than *acted
+on* has no spelling — and inventing one is a decision about what a monitor is for, not a
+fix.
 
 ### Not ours, tracked because we caused or found them
 

@@ -78,6 +78,11 @@ struct BellInner {
     /// `one_worker_is_woken_by_whichever_session_was_prompted`, which is exactly what
     /// that test is for.
     opens: VecDeque<String>,
+    /// Sessions something **inside the daemon** woke, with no command behind it.
+    /// A third queue for the same reason `opens` is a second one: `pending` is
+    /// arrival order across heads and that ordering is a promise, while a wake has
+    /// no head and no `client_request_id` to be fair to.
+    wakes: VecDeque<String>,
     closed: bool,
 }
 
@@ -85,6 +90,7 @@ struct BellInner {
 enum Ring {
     Open(String),
     Command(String),
+    Woken(String),
 }
 
 impl Bell {
@@ -97,6 +103,27 @@ impl Bell {
         {
             let mut g = self.lock();
             g.pending.push_back(session_id.to_string());
+        }
+        self.cv.notify_all();
+    }
+
+    /// **Say that something inside the daemon woke this session**, with no command
+    /// behind it.
+    ///
+    /// `TODO.md` T24's monitors are the caller: *"a monitor is a condition watched
+    /// **between** turns that wakes the loop when it fires"*. Until this existed the
+    /// only way into the worker was a head's command, so a fired monitor could be
+    /// **polled** — `job_list` shows it, with why — and never **woke** anything.
+    /// A ring with no command was swallowed by [`Registry::next_work`], which skips
+    /// a session whose queue is empty, so ringing [`Bell::ring`] would have been a
+    /// no-op that read like a wake.
+    ///
+    /// It rings no timer and starts no thread. The caller is already blocked in a
+    /// `Condvar` on the thing it is watching.
+    pub fn ring_wake(&self, session_id: &str) {
+        {
+            let mut g = self.lock();
+            g.wakes.push_back(session_id.to_string());
         }
         self.cv.notify_all();
     }
@@ -152,6 +179,12 @@ impl Bell {
             }
             if let Some(id) = g.pending.pop_front() {
                 return Some(Ring::Command(id));
+            }
+            // **Last**, and deliberately. A wake has nobody waiting on it; a head
+            // that pressed enter does. Draining wakes first would let a chatty
+            // monitor put itself in front of the operator.
+            if let Some(id) = g.wakes.pop_front() {
+                return Some(Ring::Woken(id));
             }
             if g.closed {
                 return None;
@@ -331,6 +364,14 @@ pub enum Work {
     Open(String),
     /// Run this command against this session.
     Command(String, QueuedCommand),
+    /// **Something inside the daemon woke this session** and no head asked for it.
+    ///
+    /// T24's monitors are the caller. It is a third variant rather than a synthetic
+    /// `Command` because a command has an issuing head, an identity and a
+    /// `client_request_id`, and inventing three of those for a firing would put a
+    /// head's name on something no head did. The worker decides what a wake means
+    /// for that session; the registry only says which session woke.
+    Woken(String),
 }
 
 /// Why a session could not be created.
@@ -639,6 +680,14 @@ impl Registry {
         loop {
             match self.bell.next_any()? {
                 Ring::Open(id) => return Some(Work::Open(id)),
+                // A wake for a session this registry does not hold is dropped, the
+                // same way a command for one is: the session is gone and there is
+                // nothing to wake.
+                Ring::Woken(id) => {
+                    if self.get(&id).is_some() {
+                        return Some(Work::Woken(id));
+                    }
+                }
                 Ring::Command(id) => {
                     let Some(hub) = self.get(&id) else { continue };
                     if let Some(cmd) = hub.try_command() {
@@ -772,6 +821,7 @@ mod tests {
         // at a step boundary, and the ring is still outstanding.
         let r = reg();
         let a = r.create("s-a", "", SessionWiring::default()).unwrap();
+        assert!(matches!(r.next_work(), Some(Work::Open(_))), "create rings an open");
         let h = a.attach("tui", "alice", Caps::default(), 0);
         a.submit(
             &h.head_id,
@@ -818,6 +868,71 @@ mod tests {
             partial_kept: false,
         });
         assert!(!r.list()[0].status.running);
+    }
+
+    /// **A wake with no command behind it reaches the worker.**
+    ///
+    /// This is what `TODO.md` T24 left open: `Monitors::wait_for_any` is the "wakes
+    /// the loop when it fires" half and nothing called it, because there was no way
+    /// in. `Bell::ring` was not it — `next_work` skips a session whose command queue
+    /// is empty, so ringing it for a firing would have been a no-op that read like a
+    /// wake, which is worse than the poll it was replacing.
+    #[test]
+    fn a_wake_with_no_command_behind_it_still_reaches_the_worker() {
+        let r = reg();
+        r.create("s-a", "", SessionWiring::default()).unwrap();
+        // `create` rings an open, and an open is drained first (a session
+        // whose resume has not run must not serve a command). Take it so the
+        // assertion below is about the wake and not about the create.
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        r.bell().ring_wake("s-a");
+        match r.next_work() {
+            Some(Work::Woken(id)) => assert_eq!(id, "s-a"),
+            _ => panic!("a wake must be work"),
+        }
+    }
+
+    /// **A head that pressed enter is waiting; a monitor is not.**
+    ///
+    /// Wakes are drained last, so a chatty watcher cannot put itself in front of a
+    /// person. Asserted rather than left to the queue order in `next_any`, because
+    /// that order is a policy and a reader of the three `pop_front`s cannot tell a
+    /// policy from an accident.
+    #[test]
+    fn a_wake_is_served_after_every_queued_command() {
+        let r = reg();
+        let a = r.create("s-a", "", SessionWiring::default()).unwrap();
+        assert!(matches!(r.next_work(), Some(Work::Open(_))), "create rings an open");
+        let h = a.attach("tui", "dead", Caps::default(), 0);
+        r.bell().ring_wake("s-a");
+        a.submit(&h.head_id, "c1", 0, CommandKind::Prompt { text: "hello".into() });
+
+        match r.next_work() {
+            Some(Work::Command(id, cmd)) => {
+                assert_eq!(id, "s-a");
+                assert!(matches!(cmd.kind, CommandKind::Prompt { .. }));
+            }
+            _ => panic!("the operator's prompt goes first even though the wake rang first"),
+        }
+        assert!(matches!(r.next_work(), Some(Work::Woken(_))));
+    }
+
+    /// A wake for a session this registry does not hold is dropped, the same way a
+    /// command for one is. The session is gone; there is nothing to wake.
+    #[test]
+    fn a_wake_for_an_unknown_session_does_not_stall_the_worker() {
+        let r = reg();
+        r.create("s-a", "", SessionWiring::default()).unwrap();
+        // `create` rings an open, and an open is drained first (a session
+        // whose resume has not run must not serve a command). Take it so the
+        // assertion below is about the wake and not about the create.
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        r.bell().ring_wake("s-gone");
+        r.bell().ring_wake("s-a");
+        match r.next_work() {
+            Some(Work::Woken(id)) => assert_eq!(id, "s-a"),
+            _ => panic!("the unknown one must be skipped, not returned"),
+        }
     }
 
     #[test]

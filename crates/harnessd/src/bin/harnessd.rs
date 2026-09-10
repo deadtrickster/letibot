@@ -32,7 +32,9 @@
 
 use std::path::PathBuf;
 
-use letibot_harnessd::config::{Config, Disclosure, SpillPolicy, SpillStorage};
+use letibot_harnessd::config::{
+    AdjudicatorChoice, Config, Disclosure, Seat, SpillPolicy, SpillStorage,
+};
 use letibot_harnessd::{Daemon, Dialect, Outcome, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
@@ -43,6 +45,25 @@ fn usage() -> String {
      \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
      \x20        [--max-tool-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]\n\
+     \n\
+     what this session may do — every one of these is off unless you pass it:\n\
+     \x20 --role NAME               orchestrator (default, read-only) | planner |\n\
+     \x20                           researcher | coder (write+edit) | runner (exec)\n\
+     \x20 --bash                    seat `bash` under --role runner. OFF even behind\n\
+     \x20                           the role: the transcript choke point does not\n\
+     \x20                           exist yet, so the boundary keeps secret bytes out\n\
+     \x20                           of the VIEW and nothing stops a tool result\n\
+     \x20                           carrying them into the transcript\n\
+     \x20 --adjudicator console     who decides a gated call, and the default for any\n\
+     \x20                           role that can reach the gate. Reads this daemon's\n\
+     \x20                           own stdin, so it works in the foreground and an\n\
+     \x20                           attached head cannot answer it (T25/D10). There is\n\
+     \x20                           no `none`: a role with nobody to decide refuses to\n\
+     \x20                           start, because --role orchestrator is the honest\n\
+     \x20                           spelling of a session that cannot write\n\
+     \x20 --intent-prose            also read the assistant's prose for commitments\n\
+     \x20                           it did not act on. The tool-declared half is\n\
+     \x20                           always on; this half has false positives\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -97,6 +118,12 @@ fn run() -> Result<i32, String> {
             "--model" => cfg.model = next()?,
             "--vocab" => cfg.vocab_gguf = PathBuf::from(next()?),
             "--effort" => cfg.effort = Some(next()?),
+            // **The four flags that make anything reachable, and all four are
+            // opt-in.** Nothing here changes what an invocation without them gets.
+            "--role" => cfg.seat = Seat::parse(&next()?)?,
+            "--bash" => cfg.allow_bash = true,
+            "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
+            "--intent-prose" => cfg.intent_prose = true,
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?

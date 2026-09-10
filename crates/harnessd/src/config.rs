@@ -39,6 +39,99 @@ pub enum SpillStorage {
     Dir(PathBuf),
 }
 
+/// **Which role a session seats, and therefore what it can reach.**
+///
+/// Every capability in this harness was built behind a role and none of them was
+/// constructible: `harnessd` seated [`letibot_tools::roles::m1_orchestrator`] as a
+/// constant, so `write`, `edit`, `bash`, the job verbs, `monitor`, `todo`, `goal`,
+/// `write_plan` and `say` existed, were tested, and could not be called by anything.
+/// This enum is the flag that makes them reachable.
+///
+/// # Nothing widens by default
+///
+/// [`Seat::Orchestrator`] is the default and is exactly what a `letibot` invocation
+/// gets today: read-only tools, a read-only backend, no adjudicator, and no code
+/// path from a tool to a question (clause 4). An operator who passes no `--role`
+/// gets no new capability from this file existing. That is the property, and it is
+/// checked by a test rather than asserted here.
+///
+/// # The seat decides three things at once, and they are not independent
+///
+/// The role picks the tool list; the tool list's declared [`letibot_tools::Access`]
+/// picks the backend constructor and decides whether an adjudicator is *required*.
+/// Reading the second and third off the first is what stops a session from being
+/// seated with `edit` over a read-only backend, or with `bash` and nobody to ask —
+/// both of which start cleanly and then fail every call, which wastes a turn to
+/// discover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Seat {
+    /// §8.4's `orchestrator`: `read`, `grep`, `glob`, `ask_code`, `ask_corpus`,
+    /// `read_spill`. Read-only backend, no gate traffic. **The default.**
+    #[default]
+    Orchestrator,
+    /// D9's plan mode: read, search, the intent list, and the two things that make
+    /// a plan a plan — `write_plan` (a write scoped to plan documents by taking a
+    /// *name* rather than a path) and `say`. Needs a writable backend for the plan
+    /// file and an adjudicator for `write_plan` and `say`.
+    Planner,
+    /// §8.4's `researcher` with the web instead of `search_corpus`. Four of its
+    /// seven seats refuse today for want of a backend; the two network ones still
+    /// declare `Access::Network`, so it needs an adjudicator to be honest.
+    Researcher,
+    /// §8.4's `coder` without `bash`: `read`, `write`, `edit`, `grep`, `glob`,
+    /// `read_spill`. Writable backend.
+    Coder,
+    /// The only role that can run a command: the job verbs, `monitor`, and — only
+    /// behind [`Config::allow_bash`] — `bash`. **Confined backend, never
+    /// `HostBackend::executable`.**
+    Runner,
+}
+
+impl Seat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Seat::Orchestrator => "orchestrator",
+            Seat::Planner => "planner",
+            Seat::Researcher => "researcher",
+            Seat::Coder => "coder",
+            Seat::Runner => "runner",
+        }
+    }
+
+    /// Parse a `--role` value. Every unknown value names the five rather than
+    /// falling back to the default: a typo that silently seated the read-only role
+    /// would be an operator who thinks they have `edit` and does not.
+    pub fn parse(s: &str) -> Result<Seat, String> {
+        match s {
+            "orchestrator" | "m1" => Ok(Seat::Orchestrator),
+            "planner" | "plan" => Ok(Seat::Planner),
+            "researcher" => Ok(Seat::Researcher),
+            "coder" => Ok(Seat::Coder),
+            "runner" => Ok(Seat::Runner),
+            other => Err(format!(
+                "unknown role `{other}`; this build has orchestrator, planner, \
+                 researcher, coder, runner"
+            )),
+        }
+    }
+
+    /// Whether this seat needs a backend that can change the operator's tree.
+    ///
+    /// Read off the seat rather than off a flag so the two cannot disagree. The
+    /// *authoritative* answer is still the seated schemas — `GateWiring` reads
+    /// those — and this is what decides which constructor to call before the
+    /// schemas exist.
+    pub fn needs_writable_backend(self) -> bool {
+        matches!(self, Seat::Planner | Seat::Coder | Seat::Runner)
+    }
+
+    /// Whether this seat needs a backend that can start processes, and therefore
+    /// the boundary that goes around one.
+    pub fn needs_exec_backend(self) -> bool {
+        matches!(self, Seat::Runner)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
@@ -69,6 +162,47 @@ pub struct Config {
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
     pub sampling: Value,
+    /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
+    /// is what every invocation gets today. See [`Seat`].
+    pub seat: Seat,
+    /// **`bash` stays off even behind [`Seat::Runner`], and this is the flag.**
+    ///
+    /// Not caution for its own sake — a named, still-open hole.
+    /// `docs/boundary-and-adjudication.md` §5, *"where the transcript edge is
+    /// enforced"*: §3's invariant is that secret bytes may be consumed inside the
+    /// boundary but may never enter the transcript, and the **single choke point
+    /// every tool result passes through does not exist yet**. Today each tool
+    /// builds its own body and `Baseline::of_paths` covers the path-shaped tools by
+    /// *reproducing* the rule rather than by sharing an edge.
+    ///
+    /// So [`crate::harness::Harness`]'s confined backend keeps secret bytes out of
+    /// the process's **view** — `~/.ssh` is absent from the mount namespace, not
+    /// merely denied — and nothing yet stops a tool result carrying bytes from
+    /// *inside* the view into the transcript. `bash` is the tool whose result is an
+    /// arbitrary byte stream, so it is the one that turns that gap from theoretical
+    /// into reachable. The job verbs, `monitor`, `read`, `grep` and `read_spill` do
+    /// not: their outputs are shaped by the tool.
+    ///
+    /// The disclosure says exactly this, so an operator who passes the flag is
+    /// making a decision rather than accepting a default.
+    pub allow_bash: bool,
+    /// Who decides a gated call. See [`AdjudicatorChoice`].
+    pub adjudicator: AdjudicatorChoice,
+    /// **Whether the intent check reads the assistant's prose as well as its tools.**
+    ///
+    /// Off by default, and the asymmetry is deliberate. The tool-declared half of
+    /// the diff — an item declared with `todo` and a turn that ran nothing — cannot
+    /// fire unless a role that seats `todo` or `goal` is in use, so it costs an
+    /// existing session nothing and is always on. The prose half
+    /// (`intent::commitments`) fires on any turn that ran no tools, which for a
+    /// plain answer is the normal case, and *"you said you would X"* landing in a
+    /// conversation that was working is the false positive that makes people turn
+    /// the whole check off.
+    ///
+    /// It is the more useful half. It is also the one with a false-positive rate
+    /// nobody has measured, so it is a flag rather than a default, and the cost of
+    /// each choice is written here rather than discovered.
+    pub intent_prose: bool,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
     /// How many times one user turn may go round the tool loop before the daemon
@@ -76,6 +210,84 @@ pub struct Config {
     /// a model that calls `read` on the same file forever is a reported failure
     /// rather than a session that never returns.
     pub max_tool_rounds: usize,
+}
+
+/// **Who decides a gated call.**
+///
+/// `docs/tool-design-brief.md` §2.5: a gate that says "allowed" because nothing is
+/// wired is worse than no gate. The inverse is also true and is what this enum is
+/// for — a gate that refuses everything because nobody attached anything is not a
+/// safety property, it is a session that starts cleanly and then fails every call.
+/// The operator finds out one wasted turn later.
+///
+/// So a seat whose tools declare `Write`, `Exec` or `Network` gets
+/// [`AdjudicatorChoice::Console`], and there is **no value that means nobody**.
+/// That is not an oversight; see [`AdjudicatorChoice::parse`].
+///
+/// One variant today, and it is still an enum: this is the seam a second one lands
+/// on, and [`AdjudicatorChoice::parse`] is where the two refusals live with their
+/// reasons, which is the part that has to exist whether or not there is a choice
+/// to make yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AdjudicatorChoice {
+    /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr.
+    ///
+    /// **The default for any seat that can reach the gate.** Its honest limit is
+    /// where it reads from: this works for `harnessd --prompt …` and for a daemon
+    /// run in a foreground terminal, and a head attached over the socket has no way
+    /// to answer it — the head's answer affordance is T25/D10 and is not built. The
+    /// startup disclosure says so rather than letting somebody discover it by
+    /// watching a daemon block on a closed stdin.
+    #[default]
+    Console,
+}
+
+impl AdjudicatorChoice {
+    /// The two values this refuses are the interesting part.
+    ///
+    /// **`none`** would be a session with `write` or `bash` seated and nothing that
+    /// can approve a call: every gated call returns `NotRun`, the model is told
+    /// nobody decided, and the operator has a harness that looks wired and does
+    /// nothing. There is no use for that state — a session that wants no writes is
+    /// spelled `--role orchestrator`, which does not seat the tools in the first
+    /// place, so the model is not told it has a capability it cannot use. The two
+    /// spellings are not equivalent and the difference is which one lies to the
+    /// model.
+    ///
+    /// **`model`** is the one somebody reaches for after reading
+    /// `docs/boundary-and-adjudication.md`, and "unknown adjudicator" would read as
+    /// this build not having the concept. It has the concept and no oracle behind
+    /// it, which is a different fact and the one worth saying.
+    pub fn parse(s: &str) -> Result<AdjudicatorChoice, String> {
+        match s {
+            "console" => Ok(AdjudicatorChoice::Console),
+            "none" => Err(
+                "there is no `none`. A seat with write, exec or network tools and \
+                 nobody to decide is a session that starts, prints a banner, and \
+                 refuses every call with `not_run` — and the model is meanwhile \
+                 carrying tool definitions for capabilities it does not have. If you \
+                 want a session that cannot write, pass `--role orchestrator`: it \
+                 does not seat the tools, so nothing is claimed and nothing refuses."
+                    .into(),
+            ),
+            "model" => Err(
+                "the model adjudicator is not wired: `ModelAdjudicator` takes an \
+                 `AuthorisationOracle` and this build has no oracle behind it, and its \
+                 always-ask list is unreviewed (TODO.md T25/D13). It would refuse every \
+                 call on an uncollected trail, which is `console` with extra steps"
+                    .into(),
+            ),
+            other => Err(format!(
+                "unknown adjudicator `{other}`; this build has console"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdjudicatorChoice::Console => "console",
+        }
+    }
 }
 
 /// The system prompt M1 ships.
@@ -123,6 +335,13 @@ impl Config {
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
             sampling: json!({"temperature": 0.0, "top_k": 1, "seed": 7}),
+            // Nothing widens by default: this is exactly what an invocation got
+            // before roles were reachable. `the_default_seat_is_what_shipped_before`
+            // is the test that keeps it true.
+            seat: Seat::default(),
+            allow_bash: false,
+            adjudicator: AdjudicatorChoice::default(),
+            intent_prose: false,
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
             max_tool_rounds: 12,
@@ -182,19 +401,195 @@ impl Config {
                 active: row.active,
             });
         }
-        let (state, detail, active) = letibot_tools::adjudicate::startup_disclosure(
-            &wiring.adjudicator,
-            wiring.backend_writable,
-            wiring.has_write_tools,
-        );
+        // **The seat, read from the resolved registry rather than from `--role`.**
+        // A role that resolved to fewer tools than its name suggests is exactly the
+        // thing an operator should be able to see, so the names travel with it.
+        out.push(Disclosure {
+            subject: "role".into(),
+            state: String::new(),
+            detail: format!(
+                "seated as `{}`: {} tool(s) — {}. Access classes present: {}.",
+                wiring.role,
+                wiring.seated.len(),
+                if wiring.seated.is_empty() {
+                    "none".to_string()
+                } else {
+                    wiring.seated.join(", ")
+                },
+                {
+                    let mut c = vec!["read"];
+                    if wiring.has_write_tools {
+                        c.push("write");
+                    }
+                    if wiring.has_exec_tools {
+                        c.push("exec");
+                    }
+                    if wiring.has_network_tools {
+                        c.push("network");
+                    }
+                    c.join(" + ")
+                }
+            ),
+            active: true,
+        });
+        // The backend **quotes itself**. `HostBackend::describe` used to answer
+        // `read-only` for every backend including the writable one, and a banner
+        // that paraphrases a wiring is a banner that can be wrong about it.
+        out.push(Disclosure {
+            subject: "backend".into(),
+            state: if wiring.backend_writable {
+                "WRITABLE"
+            } else {
+                ""
+            }
+            .into(),
+            detail: wiring.backend.clone(),
+            active: true,
+        });
+        // **Plan mode, and the half of it this build cannot do.**
+        //
+        // Seating `planner` puts the session in plan mode for real — the state is
+        // active, so `write_plan` and the ledger mean what they say and
+        // `exit_plan_mode` is not a seat that can only refuse. What it cannot do is
+        // the *widening*: a role's tool list is `tools_json`, which is stable-prefix
+        // bytes, so re-seating `write` and `edit` mid-session rewrites message 0 and
+        // costs a full cold re-prefill of the whole conversation. That is the one
+        // thing this harness is built not to do (§5.3, measured at 179k tokens).
+        //
+        // So leaving plan mode records the plan and does not hand over the tools,
+        // and an operator who reads this knows to open a coder session against the
+        // plan rather than discovering it from a `write` that is not there.
+        if self.seat == Seat::Planner {
+            out.push(Disclosure::off(
+                "plan mode",
+                "NO HANDOVER",
+                "this session is in plan mode and can record a plan (`write_plan`) and \
+                 talk to the fabric (`say`). `exit_plan_mode` commits the plan to the \
+                 intent list; it does NOT seat `write` and `edit`, because a role's \
+                 tool list is stable-prefix bytes and re-seating mid-session is a full \
+                 cold re-prefill of the conversation. Open a `--role coder` session \
+                 against the plan to execute it.",
+            ));
+        }
+        // `bash`, and why it is off. Only interesting where it could have been on.
+        if self.seat == Seat::Runner && !wiring.seated.iter().any(|t| t == "bash") {
+            out.push(Disclosure::off(
+                "bash",
+                "OFF",
+                "the runner role is seated without `bash`, which is its own flag \
+                 (--bash) even behind the role. The reason is a named hole, not \
+                 caution: docs/boundary-and-adjudication.md §5 — the single choke \
+                 point every tool result passes through does not exist, so the \
+                 boundary keeps secret bytes out of the process's VIEW and nothing \
+                 yet stops a tool result carrying bytes from inside that view into \
+                 the transcript. `bash` is the tool whose result is an arbitrary \
+                 byte stream. The job verbs and `monitor` are seated and shaped.",
+            ));
+        }
+        let (state, detail, active) =
+            letibot_tools::adjudicate::startup_disclosure_for(
+                &wiring.adjudicator,
+                wiring.backend_writable,
+                // **The classes travel, rather than a bool that means "write".**
+                // The gate is reachable from any class that is not unattended, so a
+                // disclosure counting only writes would call a planner (`say`) or a
+                // runner (the job verbs) unattended. Passing `true` for "something
+                // is gated" fixed the on/off logic and produced a sentence saying
+                // *"Write tools are callable"* about a session with no write tools —
+                // correct about the boundary and wrong about the session, which is
+                // this defect rather than a smaller version of it.
+                &gated_classes(wiring),
+                wiring.denials_surfaced,
+            );
         out.push(Disclosure {
             subject: "adjudication".into(),
             state: state.into(),
             detail,
             active,
         });
+        // **The authorisation trail.** Only worth a line where something can reach
+        // the gate; on a read-only seat there is nothing to authorise.
+        if wiring.has_write_tools || wiring.has_exec_tools || wiring.has_network_tools {
+            if wiring.trail_installed {
+                out.push(Disclosure::on(
+                    "auth trail",
+                    "the adjudicator is shown the operator's own words from this \
+                     transcript, with their distance in turns and in seconds. \
+                     §2: the same command is authorised or not depending on what \
+                     was just said, so a decision without the trail is a decision \
+                     about a different question.",
+                ));
+            } else {
+                out.push(Disclosure::off(
+                    "auth trail",
+                    "NOT COLLECTED",
+                    "no trail source is installed, so every adjudication sees \
+                     `NotCollected` — nobody looked, which is NOT evidence that the \
+                     operator said nothing. A model adjudicator refuses on it \
+                     rather than deciding blind, and a human one is asked to \
+                     approve a command with no idea what asked for it.",
+                ));
+            }
+        }
+        // **The intent diff**, T21.3's error signal.
+        if wiring.intent_encoder {
+            out.push(Disclosure::on(
+                "intent check",
+                "at every turn boundary, what the turn SAID it would do is diffed \
+                 against what actually ran, and a mismatch is injected as steering \
+                 at the next step boundary. Only an `ok` tool result counts as an \
+                 effect; an abstention is an attempt.",
+            ));
+        } else {
+            out.push(Disclosure::off(
+                "intent check",
+                "NO ENCODER",
+                "nothing is measuring what this session's turns actually did, so \
+                 'I will start X' and 'I started X' are indistinguishable here. \
+                 That is `Verification::NoEncoder` — not complete, and the reason \
+                 is ours rather than the model's.",
+            ));
+        }
+        // **The monitor wake.** A poll and a wake are different facts, and T24 says
+        // so in the entry that left this gap open.
+        if wiring.seated.iter().any(|t| t == "monitor") {
+            if wiring.monitor_wake {
+                out.push(Disclosure::on(
+                    "monitor wake",
+                    "a monitor that fires WAKES this session between turns; it does \
+                     not wait to be asked.",
+                ));
+            } else {
+                out.push(Disclosure::off(
+                    "monitor wake",
+                    "POLL ONLY",
+                    "a fired monitor reaches the model only when something calls \
+                     `job_list`. That is a poll, not a wake, and a condition that \
+                     fires while nothing is running is a condition nobody acts on.",
+                ));
+            }
+        }
         out
     }
+}
+
+/// The access classes this session seated that can reach the gate, in prompt order.
+///
+/// Read off the wiring's booleans, which were themselves read off the seated schemas.
+/// `Read` and `Session` are absent because they are unattended — a read-only tool has
+/// no code path to a question (clause 4).
+fn gated_classes(wiring: &GateWiring) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if wiring.has_write_tools {
+        out.push("write");
+    }
+    if wiring.has_exec_tools {
+        out.push("exec");
+    }
+    if wiring.has_network_tools {
+        out.push("network");
+    }
+    out
 }
 
 /// What the session actually wired, read from it rather than asserted about it.
@@ -222,6 +617,46 @@ pub struct GateWiring {
     /// read off the seams themselves. The same argument as the three fields above,
     /// applied to four more things that can silently be absent.
     pub external: letibot_tools::ExternalWiring,
+
+    // ---- the seams wired on top, every one of them read rather than asserted ----
+    /// The role that was **actually seated**, taken from the resolved registry.
+    /// Not the role that was *asked for*: a role that failed to resolve does not
+    /// open a session at all, and one that resolved to fewer tools than its name
+    /// suggests is a fact an operator should be able to see.
+    pub role: String,
+    /// Every seated tool name, in prompt order. The evidence behind every boolean
+    /// below, so a disclosure can be checked rather than believed.
+    pub seated: Vec<String>,
+    /// Whether any seated tool declares `Access::Exec`. Read off the schemas, so a
+    /// build that seats `bash` under some other name still says so.
+    pub has_exec_tools: bool,
+    /// Whether any seated tool declares `Access::Network`.
+    pub has_network_tools: bool,
+    /// How the execution backend describes itself — `HostBackend::describe`, which
+    /// says `read-only`, `writable`, `NOT CONFINED` or names the boundary. This
+    /// field exists because `describe` used to return `read-only` for every backend
+    /// including the writable one: four instances of one defect in one night, and
+    /// the fix is that the banner *quotes* the backend rather than paraphrasing it.
+    pub backend: String,
+    /// Whether a [`letibot_tools::DenialSink`] is attached, so a refusal reaches
+    /// the operator at the moment it is decided.
+    ///
+    /// `docs/boundary-and-adjudication.md` §4b: a session whose denials go nowhere
+    /// has the defect the operator named, and it is not a state to be in silently.
+    pub denials_surfaced: bool,
+    /// Whether an authorisation trail source is installed, so the adjudicator sees
+    /// the operator's own words rather than deciding blind. `false` means every
+    /// trail is `NotCollected` — *nobody looked*, which is a different fact from an
+    /// empty trail and is why `ModelAdjudicator` refuses on one.
+    pub trail_installed: bool,
+    /// Whether the intent encoder is attached, so `close_the_turn` can diff what
+    /// the turn *said* it would do against what ran. `false` makes every completion
+    /// `Verification::NoEncoder` — not complete, and the reason is ours.
+    pub intent_encoder: bool,
+    /// Whether a fired monitor **wakes** the loop rather than waiting to be asked.
+    /// `false` means monitors are polled: `job_list` shows a firing, with why, and
+    /// nothing acts on it until the model happens to look.
+    pub monitor_wake: bool,
 }
 
 impl GateWiring {
@@ -233,6 +668,15 @@ impl GateWiring {
             backend_writable: false,
             has_write_tools: false,
             external: letibot_tools::ExternalWiring::none(),
+            role: "orchestrator".into(),
+            seated: Vec::new(),
+            has_exec_tools: false,
+            has_network_tools: false,
+            backend: "not opened".into(),
+            denials_surfaced: false,
+            trail_installed: false,
+            intent_encoder: false,
+            monitor_wake: false,
         }
     }
 }
@@ -367,11 +811,173 @@ mod tests {
             adjudicator: "console adjudicator".into(),
             backend_writable: true,
             has_write_tools: true,
+            denials_surfaced: true,
             ..GateWiring::read_only()
         };
         let w = line(&wired);
         assert!(w.active, "an attached adjudicator over a writable backend is on");
         assert_ne!(w.detail, u.detail);
+
+        // **A fourth thing, and it is the one §4b is about.** An adjudicator over a
+        // writable backend whose denials go nowhere is not a boundary an operator
+        // has: they see a task that stopped and never the decision that stopped it.
+        // The disclosure must therefore differ from the fully wired one AND must
+        // not read as on.
+        let blind = GateWiring {
+            denials_surfaced: false,
+            ..wired.clone()
+        };
+        let b = line(&blind);
+        assert!(
+            !b.active,
+            "an adjudicator whose denials reach nobody is not an active boundary"
+        );
+        assert_ne!(
+            b.detail, w.detail,
+            "losing the denial sink must change the disclosure; it did not"
+        );
+    }
+
+    /// **Nothing widens by default**, as a test rather than as a sentence at the
+    /// top of the file.
+    ///
+    /// The whole of this strand is capabilities becoming reachable, and the rule it
+    /// is under is that an invocation which passes no flag gets exactly what it got
+    /// before. Four fields decide that and all four are checked here, because the
+    /// way this regresses is somebody making one of them "sensible" in isolation.
+    #[test]
+    fn the_default_seat_is_what_shipped_before() {
+        let c = Config::for_this_box("/tmp");
+        assert_eq!(c.seat, Seat::Orchestrator);
+        assert!(!c.allow_bash, "`bash` is off even before a role is chosen");
+        assert!(
+            !c.intent_prose,
+            "the prose half of the intent check has unmeasured false positives"
+        );
+        assert!(
+            !c.seat.needs_writable_backend(),
+            "the default seat must get HostBackend::new"
+        );
+        assert!(!c.seat.needs_exec_backend());
+    }
+
+    /// A typo in `--role` names the five rather than falling back to the default.
+    ///
+    /// Falling back would give an operator who typed `--role codre` a read-only
+    /// session that looks like the one they asked for and cannot edit anything —
+    /// found out one turn later, which is the cost this whole file is written
+    /// against.
+    #[test]
+    fn an_unknown_role_is_refused_with_the_list() {
+        let e = Seat::parse("codre").unwrap_err();
+        for known in ["orchestrator", "planner", "researcher", "coder", "runner"] {
+            assert!(e.contains(known), "{e}");
+        }
+        assert_eq!(Seat::parse("coder").unwrap(), Seat::Coder);
+        assert_eq!(Seat::parse("runner").unwrap(), Seat::Runner);
+    }
+
+    /// The model adjudicator is **named as unwired**, not silently missing.
+    ///
+    /// `--adjudicator model` is the thing somebody reaches for after reading
+    /// `docs/boundary-and-adjudication.md`, and "unknown adjudicator" would read as
+    /// this build not having the concept. It has the concept and no oracle behind
+    /// it (T25/D13), which is a different fact and the one worth saying.
+    #[test]
+    fn the_model_adjudicator_says_why_it_is_not_here() {
+        let e = AdjudicatorChoice::parse("model").unwrap_err();
+        assert!(e.contains("oracle"), "{e}");
+        assert!(e.contains("D13"), "{e}");
+    }
+
+    /// Every seam this strand wired is disclosed, and each one **moves** with the
+    /// wiring rather than being a sentence.
+    ///
+    /// The defect this guards is the one already paid for four times in one night:
+    /// a banner that said "M1 is read-only tools" about sessions with write tools,
+    /// a `describe` that said `read-only` for every backend including the writable
+    /// one, and a constant `writable + UNSANDBOXED EXEC`. Nothing here asserts a
+    /// particular wording. What it asserts is that the wording is different when
+    /// the wiring is.
+    #[test]
+    fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
+        let c = Config::for_this_box("/tmp");
+        let subjects = |w: &GateWiring| -> Vec<String> {
+            c.disclosures(w).into_iter().map(|d| d.subject).collect()
+        };
+        let detail = |w: &GateWiring, s: &str| -> String {
+            c.disclosures(w)
+                .into_iter()
+                .find(|d| d.subject == s)
+                .map(|d| d.detail)
+                .unwrap_or_default()
+        };
+
+        let ro = GateWiring::read_only();
+        for expected in ["role", "backend", "adjudication", "intent check"] {
+            assert!(
+                subjects(&ro).iter().any(|s| s == expected),
+                "{expected} is not disclosed: {:?}",
+                subjects(&ro)
+            );
+        }
+        // A read-only seat has nothing to authorise, so the trail line is absent
+        // rather than saying "not collected" about a session where it could not
+        // matter. Absence with a reason, not silence.
+        assert!(!subjects(&ro).iter().any(|s| s == "auth trail"));
+
+        let gated = GateWiring {
+            has_write_tools: true,
+            backend_writable: true,
+            role: "coder".into(),
+            seated: vec!["read".into(), "write".into(), "edit".into()],
+            backend: "the host filesystem under /tmp, writable".into(),
+            ..GateWiring::read_only()
+        };
+        assert!(subjects(&gated).iter().any(|s| s == "auth trail"));
+        assert!(
+            detail(&gated, "auth trail").contains("NOT"),
+            "an uninstalled trail must not read as installed"
+        );
+        let with_trail = GateWiring {
+            trail_installed: true,
+            ..gated.clone()
+        };
+        assert_ne!(
+            detail(&with_trail, "auth trail"),
+            detail(&gated, "auth trail")
+        );
+
+        // The backend line quotes the backend. Two different backends must not
+        // produce one sentence.
+        let other = GateWiring {
+            backend: "a project-scoped namespace over /tmp".into(),
+            ..gated.clone()
+        };
+        assert_ne!(detail(&other, "backend"), detail(&gated, "backend"));
+
+        // The role line names what was seated, so a role that resolved to fewer
+        // tools than its name suggests is visible.
+        assert!(detail(&gated, "role").contains("write"));
+        assert!(detail(&gated, "role").contains("coder"));
+
+        // The monitor line exists only where a monitor could be declared, and it
+        // distinguishes a wake from a poll.
+        assert!(!subjects(&gated).iter().any(|s| s == "monitor wake"));
+        let watching = GateWiring {
+            seated: vec!["monitor".into()],
+            has_exec_tools: true,
+            ..gated.clone()
+        };
+        assert!(detail(&watching, "monitor wake").contains("poll"));
+        let woken = GateWiring {
+            monitor_wake: true,
+            ..watching.clone()
+        };
+        assert_ne!(
+            detail(&woken, "monitor wake"),
+            detail(&watching, "monitor wake")
+        );
     }
 
     #[test]

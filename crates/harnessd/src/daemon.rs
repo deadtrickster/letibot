@@ -193,6 +193,27 @@ impl Daemon {
                     let outcome = sessions.dispatch(&session_id, &cmd);
                     on_reply(&session_id, &cmd, outcome);
                 }
+                // **A monitor fired while nothing was running.** T24's *"wakes the
+                // loop when it fires"*, which until now had no caller: a firing was
+                // visible in `job_list` and nothing acted on it, which is a poll.
+                //
+                // It is served on the worker like everything else — one
+                // authoritative reader (§13.2) — and it is served **after** every
+                // queued command, because the bell drains wakes last and a head
+                // that pressed enter is waiting while a monitor is not.
+                //
+                // `Ignored` is a real outcome here and the common one under load: a
+                // firing the running turn already picked up through steering has
+                // been delivered, and the shared cursor is what stops the wake
+                // telling the model the same thing twice.
+                Work::Woken(session_id) => match sessions.wake(&session_id) {
+                    Outcome::Replied(r) => eprintln!(
+                        "  {session_id} · monitor -> {} round(s), {} tool call(s)",
+                        r.rounds, r.tool_calls
+                    ),
+                    Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
+                    Outcome::Ignored => {}
+                },
             }
         }
     }

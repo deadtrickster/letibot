@@ -79,7 +79,23 @@ use crate::view::Snapshot;
 /// [`crate::question::QuestionAnswer`] — a head answering a **question** rather than
 /// granting a **permission**. See `crates/sessionlog/src/question.rs` for why those
 /// are two vocabularies and not one.
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// # 5 → 6: a denial the operator can see
+///
+/// `docs/boundary-and-adjudication.md` §4b, which is a requirement and not a
+/// nicety: *"a denial the operator cannot see manufactures the workaround"* — the
+/// model infers the approach was wrong rather than forbidden, tries a variant, and
+/// the task dies with the operator seeing only a dead task. Nothing on this wire
+/// could carry a refusal. `Warning` is for §18's assertions and using it here would
+/// make a decision taken on the operator's behalf look like a defect, which is the
+/// same abuse [`crate::SessionEvent::CommandIssued`] exists to avoid one variant
+/// along.
+///
+/// So 6 adds [`crate::SessionEvent::DenialRaised`], published **at the moment the
+/// gate decides** rather than at turn end. Both sides refuse a mismatch by name, so
+/// a head built against 5 is told which version it is speaking to rather than
+/// silently missing every refusal — which would be the very defect, one layer down.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.

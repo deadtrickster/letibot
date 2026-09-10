@@ -208,6 +208,21 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             client_request_id: "c1".into(),
             note: "queued".into(),
         },
+        SessionEvent::DenialRaised {
+            request_id: "adj-s1-0001".into(),
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            tool: "bash".into(),
+            summary: "bash(command: systemctl --user restart llama)".into(),
+            baseline: "1 command; intents: privilege_escalation(system)".into(),
+            by: "human:dead".into(),
+            basis: "always-ask: privilege escalation".into(),
+            tier: "always_ask".into(),
+            outcome: "denied".into(),
+            repeat_count: 1,
+            breaker_open: false,
+            grant: "grant `adj-s1-0001` (bash) for this session".into(),
+        },
     ]
 }
 
