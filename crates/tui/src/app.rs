@@ -412,10 +412,30 @@ pub struct App {
     /// running — which is most of the time a person is looking at it. Since §4.4 it
     /// is also on `Hello`, so a head with no turn yet has an answer too.
     model: String,
-    /// §4.1's display target, by call id, for every proposal this head has seen.
+    /// §4.1's display target, by call id, **for the round the history walk is
+    /// currently inside** — and for no other.
     ///
-    /// Bounded by the session rather than by the turn on purpose: a transcript row
-    /// from six turns ago still wants to say which file it read.
+    /// # Why this is not session-scoped, which is what it used to be
+    ///
+    /// A call id is positional *within one round of one turn*:
+    /// `letibot_turn::items` assigns `format!("call_{}", calls.len())` when the
+    /// wire format carries no id, so every round of every turn starts again at
+    /// `call_0`. This table was keyed on the id alone and kept for the life of the
+    /// session, which means the fourteen rounds of a long turn all wrote to the
+    /// same three keys — and every settled card then read back whichever round
+    /// happened to write last.
+    ///
+    /// What that looked like on the screen, from the operator's capture:
+    /// `▸ Read */Cargo.toml · ok · 3 lines` above a body reading
+    /// `pub fn longest_common_prefix(…)`. The payload was the right one; the label
+    /// was another round's. A head that names a file the tool never opened is
+    /// telling the operator something false about what a tool returned, which is
+    /// the defect class this repo exists against — so the fix is not to widen the
+    /// key but to stop the table outliving the thing it describes.
+    ///
+    /// It is therefore **replaced wholesale** every time the walk reaches an
+    /// `Assistant` row, in transcript order, and a `ToolResult` that finds no
+    /// entry renders its correlation id rather than a neighbour's path.
     call_targets: std::collections::HashMap<String, String>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
@@ -753,11 +773,10 @@ impl App {
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
-        for c in s.turn.iter().flat_map(|t| t.calls.iter()) {
-            if !c.target.is_empty() {
-                self.call_targets.insert(c.call_id.clone(), c.target.clone());
-            }
-        }
+        // The snapshot's in-flight calls are **not** seeded into `call_targets`.
+        // They reach the screen as `TurnPane::calls`, which carries each call's own
+        // target on the row that is about to draw it; putting them in an id-keyed
+        // table as well is how a live `call_0` came to relabel a settled one.
         if let Some(TurnState::Finished { usage, .. }) = s.turn.as_ref().map(|t| &t.state) {
             self.usage = Some(*usage);
         }
@@ -918,15 +937,13 @@ impl App {
                 target,
                 ..
             } => {
-                // Kept beyond the turn: a settled `Assistant { tool_calls }` row
-                // renders `→ Read crates/tui/src/app.rs`, and the only place the
-                // head can get that word from is the proposal it already saw.
-                // Re-deriving it from the row's own `arguments` would put a second
-                // copy of `display_target` in this crate, and two spellings of a
-                // display rule drift.
-                if !target.is_empty() {
-                    self.call_targets.insert(call_id.clone(), target.clone());
-                }
+                // Not kept beyond the turn, and not put in `call_targets`. It used
+                // to be, on the argument that a settled `Assistant { tool_calls }`
+                // row needs the word and the proposal is where the head saw it —
+                // but the row carries the arguments the word is derived from, and
+                // the id it would be filed under is reused by the next round. The
+                // proposal's target lives on the `CallRow` below, which is the row
+                // that draws it, and dies with the turn that made it.
                 if let Some(t) = self.turn.as_mut() {
                     // The proposal is the settled form of whatever was being
                     // written, so the pending affordance stands down here.
@@ -1627,6 +1644,10 @@ impl App {
         self.hist_lines.clear();
         self.hist_upto = 0;
         self.note_upto = 0;
+        // The target table is the walk's own state — the round it is currently
+        // inside — so it is thrown away with the lines it labelled. Leaving it
+        // behind is what let a rebuild start at row 0 holding round 14's paths.
+        self.call_targets.clear();
     }
 
     /// File something that happened between rows, at the row it happened at.
@@ -2018,15 +2039,22 @@ impl App {
                     // lets a head that attached *after* a turn still say which file
                     // was read — the proposal event is long gone and the row is the
                     // only place the arguments survive.
+                    //
+                    // **Replaced, not merged.** `call_0` is round-positional, so a
+                    // merge is how round 4's `call_0` came to be labelled with
+                    // round 1's path. An assistant row opens a new round and its
+                    // calls are the only ones the rows after it can be about; one
+                    // with no calls at all opens a round with no calls, and a
+                    // stray result then has to say so rather than borrow.
                     if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
                         items[*hist_upto].item.as_ref()
                     {
+                        call_targets.clear();
                         for c in tool_calls {
-                            call_targets
-                                .entry(c.id.clone())
-                                .or_insert_with(|| {
-                                    letibot_sessionlog::display_target(&c.arguments)
-                                });
+                            call_targets.insert(
+                                c.id.clone(),
+                                letibot_sessionlog::display_target(&c.arguments),
+                            );
                         }
                     }
                     hist_lines.extend(item_lines(
@@ -3195,17 +3223,18 @@ fn item_lines(
                 // the call, or a log recorded before §4.1 was fixed.
                 let verb = card::Verb::of(&c.name);
                 let mut line = format!("→ {}", verb.label(false));
-                // The proposal's target if this head saw it, and otherwise the same
-                // rule applied to the arguments on the row itself — **the same
-                // function**, `letibot_sessionlog::display_target`, so a call that
-                // was watched live and one reconstructed from the transcript render
-                // identically. Deriving it here with a second copy of the rule is
-                // what would make a switched head disagree with the head it
-                // switched away from.
-                let target = match targets.get(&c.id) {
-                    Some(t) if !t.is_empty() => t.clone(),
-                    _ => letibot_sessionlog::display_target(&c.arguments),
-                };
+                // Derived from the arguments **on this row**, never looked up by
+                // call id. The row is holding the very bytes the rule reads, and it
+                // is the only copy of them that is guaranteed to belong to this
+                // round — an id-keyed lookup was how `→ Read TODO.md` came to sit
+                // above a card whose payload was `README.md`.
+                //
+                // It is the same function the engine puts on the wire,
+                // `letibot_sessionlog::display_target`, so a call watched live and
+                // one reconstructed from the transcript still render identically;
+                // a second copy of the rule here is what would make a switched head
+                // disagree with the head it switched away from.
+                let target = letibot_sessionlog::display_target(&c.arguments);
                 if target.is_empty() {
                     // The call id earns its columns only when there is nothing
                     // better: it is a correlation key, and it is the only thing
@@ -4286,6 +4315,115 @@ mod tests {
             "{screen}"
         );
         assert!(!screen.contains("(c1)"), "the id is not shown when a name is: {screen}");
+    }
+
+    /// Two rounds of one turn, both numbering their calls from `call_0`, which is
+    /// what `letibot_turn::items` does whenever the wire format carries no id.
+    ///
+    /// Taken from the operator's own session (`s-1788987496351498881`, fourteen
+    /// rounds of `call_0`/`call_1`/`call_2`) and reduced to the two rows that make
+    /// the defect: the head kept one session-wide table keyed on the call id, so
+    /// the later round's paths overwrote the earlier round's and every settled card
+    /// read back the survivor. On screen that was `▸ Read TODO.md · ok · 143 lines`
+    /// above a body beginning `# rano` — the payload of `README.md`.
+    ///
+    /// It is a correctness test, not a layout one. A card that names a file the
+    /// tool did not open is the head telling the operator something false about
+    /// what a tool returned.
+    #[test]
+    fn a_second_round_of_calls_does_not_relabel_the_first_rounds_results() {
+        fn call(id: &str, name: &str, arguments: &str) -> letibot_transcript::ToolCall {
+            letibot_transcript::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments: arguments.into(),
+            }
+        }
+        fn assistant(a: &mut App, seq: u64, id: &str, calls: Vec<letibot_transcript::ToolCall>) {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "assistant"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::Assistant {
+                        text: String::new(),
+                        tool_calls: calls,
+                    }),
+                },
+            )));
+        }
+        fn result(a: &mut App, seq: u64, id: &str, call_id: &str, name: &str, payload: &str) {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: call_id.into(),
+                        name: name.into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: payload.into(),
+                    }),
+                },
+            )));
+        }
+
+        let mut a = app();
+        assistant(&mut a, 1, "r1.a", vec![call("call_0", "read", r#"{"path":"README.md"}"#)]);
+        result(&mut a, 3, "r1.t", "call_0", "read", "FIRST-ROUND-PAYLOAD\n");
+        assistant(&mut a, 5, "r2.a", vec![call("call_0", "read", r#"{"path":"TODO.md"}"#)]);
+        result(&mut a, 7, "r2.t", "call_0", "read", "SECOND-ROUND-PAYLOAD\n");
+
+        // A tall enough screen that both rounds are on it at once, which is the
+        // only way the pairing is visible at all.
+        let lines = a.screen(120, 60);
+        // The card a payload is sitting under: the nearest header above it.
+        let label = |needle: &str| -> String {
+            let i = lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not on the screen:\n{}", lines.join("\n")));
+            lines[..i]
+                .iter()
+                .rev()
+                .find(|l| l.contains('▸') || l.contains('▾'))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let screen = lines.join("\n");
+        assert!(
+            label("FIRST-ROUND-PAYLOAD").contains("README.md"),
+            "round one's payload is under `{}`:\n{screen}",
+            label("FIRST-ROUND-PAYLOAD")
+        );
+        assert!(
+            label("SECOND-ROUND-PAYLOAD").contains("TODO.md"),
+            "round two's payload is under `{}`:\n{screen}",
+            label("SECOND-ROUND-PAYLOAD")
+        );
+    }
+
+    /// The other half of the same table: a result whose round is not on the screen
+    /// borrows nothing. `(call_0)` is a correlation key and reads as one; a
+    /// neighbour's path reads as a fact.
+    #[test]
+    fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("t.0", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "t.0".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "hello\n".into(),
+                }),
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(screen.contains("(call_0)"), "{screen}");
     }
 
     #[test]
