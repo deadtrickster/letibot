@@ -1077,3 +1077,113 @@ Nothing. This is substrate for M6 subagents (S8) and it is **cheaper to build be
 than after**: the leak measured above came from subagents the harness does not yet have,
 run by an agent that does. The requirement was discovered before the feature, which is the
 rare ordering.
+
+---
+
+## T25 — Everything waiting on the operator, as of 2026-09-10 01:00
+
+Filed on request, so a question does not live only in a scrollback. Continues the D
+series. **Two arrived answered in the same message and are recorded as resolved** rather
+than dropped, because the answer is the interesting part.
+
+### Resolved on arrival
+
+**D9 — What may a session in plan mode actually do? — RESOLVED.**
+> *"plan mode must be able to write plan markdowns and chat in flowy"*
+
+The build made plan mode `roles::planner` with write tools **absent** from `tools_json` —
+a capability boundary rather than a flag, which was right in shape and too wide in reach.
+Plan mode is not "no writes", it is **no writes to the work**. Writing the plan itself and
+talking to the fleet are the two things a plan *is*. So `planner` seats a scoped write
+(plan markdown only) plus the flowy chat verb, and the boundary is on the target rather
+than on the verb. This also removes an absurdity nobody had noticed: a planner that
+cannot record its plan has to hold it in the context it is about to hand over.
+
+**D10 — What vocabulary does `ask_user_question` need? — RESOLVED.**
+> *"we need user questions claude code style - model provided options with user notes and
+> then opencode style free user reply input, not claude code 'chat later'"*
+
+The seam refuses correctly today (four paths, all `not_run`), and the protocol could not
+carry an answer: `OptionKind` is `AllowOnce|AllowAlways|RejectOnce|RejectAlways`, which is
+an *adjudication* vocabulary and not an answer. Three things are wanted together:
+
+1. **Model-provided options** — the question carries its own choices, so the common case
+   is one keystroke.
+2. **A note attachable to a chosen option** — the choice and the qualification are
+   different fields; folding a note into free text loses which option it qualifies.
+3. **Free-form reply as a first-class answer**, not a deferral. Named explicitly against
+   Claude Code's "chat later", which turns a question into a suspended turn — and against
+   grok-build's `"User declined… use your best judgment"`, which turns a refusal into a
+   success (survey §1.4).
+
+So the wire needs `Answer { option: Option<usize>, note: Option<String>, free: Option<String> }`
+with *at least one* present, and a distinct `Unanswered` that is `not_run` and never a
+default. Protocol bump; the head grows an answer affordance.
+
+### Open
+
+**D11 — Land the four branches?** session-resume (protocol 4, `--continue`), exec,
+intent, outside-world. All green, all rebase cleanly. Landing costs the running daemon
+(pid 384248) its live session, because protocol 3 → 4 makes a fresh head refuse it by
+name. Every transcript is on disk and `--continue` now genuinely returns the newest.
+
+**D12 — A mounted board makes `todo` gated.** The flowy backing declares
+`Access::Network`, so mounting a board without an adjudicator attached makes `todo` refuse
+*entirely* — the unmounted local list works, the mounted one does not. Correct by the
+rules and possibly intolerable in practice.
+
+**D13 — `Access::Session`, a new access class.** Declaring the intent tools `Read` would
+have reproduced the gap the survey names in grok-build (§1.4). The wire carries access as
+a String so nothing breaks, but no head has rendered one.
+
+**D14 — `loop_closes` needs an exclusive model server.** It drives live inference on
+`:8080`; it passes alone in 11–32 s and times out under `cargo test --workspace` whenever
+the box is busy. **Three separate agents have now reported it as a possible regression**,
+and one of them burned a re-run attributing it. A test that reads as a failure whenever
+the box is loaded is a broken instrument. Proposal: gate it behind an env var or `#[ignore]`
+so `--workspace` means what it says.
+
+**D15 — 13 stale worktrees and one 30-hour orphan tmux** (`nano_test`). Safe to prune the
+finished ones; two belong to live agents, so not a blanket sweep. T24 is the mechanism,
+this is the backlog it would have prevented.
+
+**D16 — `~/bin/letibot` is not version-controlled**, and two real bugs were found in it
+tonight (a `--continue` that showed an empty screen, and an `up()` that would have
+orphaned a version-skewed daemon holding every session). It belongs in the repo.
+
+**D17 — Group 2, subagents and admission.** Held all evening because it lands in
+`crates/harnessd/src/sessions.rs`, which session-resume was rewriting. **Now unblocked.**
+Its hard requirement is already written: `Fits{ceiling, cost_per_id, pool_free}`, because
+436.7 MiB per sequence id charged at allocation makes N subagents an OOM path — and two of
+the five surveyed harnesses ship subagents with no ceiling at all.
+
+**D18 — LSP.** The one gap in the survey's ten that no group covers. Four of five
+harnesses have it, the most complete is 14 actions, and it needs a language server per
+language. Its own decision, not a group.
+
+**D19 — The dense-27B control cannot run here.** 23.6 GiB of weights against 22.9 GiB
+free, ~30 GiB with KV. It is the control that separates *selection* loss from
+*recurrent-state* loss (`docs/glm-and-dense-attention.md` §4.2), and it needs exclusive
+GPUs.
+
+**D20 — `never_hit` now sees network arguments.** A `web_search` or `github` string that
+merely *mentions* `.config/gh` or `.password-store` is denied by the never-write list.
+Fail-closed, and a real false positive.
+
+**D21 — Enforcement binds the model, or the seat?** From `docs/closed-loop.md` §9. They
+differ when a human is driving, and the operator should not be locked out of their own
+restart because the model cannot be trusted with it. Tonight's blocked
+`systemctl --user restart` is the worked example.
+
+**D22 — The tolerance band: one, or per-operation?** Also §9. How large a deviation is
+corrected silently versus faulted to a human is the whole design decision, and both ends
+have measured costs.
+
+### Not ours, tracked because we caused or found them
+
+**D23 — The 702 long chunks.** 702 of 43,967,653 exceed ~2048 tokens and already hold
+ollama vectors of *truncated* text. Routing them to TEI makes new ≠ old for exactly those
+documents. Small enough to re-embed rather than manage; lubuntu3's corpus, our capacity.
+
+**D24 — The chunker length assertion.** lubuntu1's close, unowned: while chunks stay under
+~2048 every backend agrees and none of the truncation split matters. Nobody enforces it.
