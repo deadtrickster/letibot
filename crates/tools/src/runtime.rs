@@ -95,6 +95,34 @@ impl Invocation {
         }
     }
 
+    /// **Still running, and here is the handle.** Not finished and not failed.
+    ///
+    /// The fourth constructor exists for the same reason [`Invocation::not_run`]
+    /// became one: a family with three constructors and a fourth outcome is a
+    /// family whose fourth outcome gets spelled as whichever of the three is
+    /// nearest, and every one of the three says something false here. A promotion
+    /// the model does not notice is the same defect as a denial the operator does
+    /// not see — it infers the wrong thing and acts on it.
+    pub fn backgrounded(
+        handle: impl Into<String>,
+        ran_for: std::time::Duration,
+        how: letibot_transcript::Backgrounding,
+        next: impl Into<String>,
+        payload: impl Into<String>,
+    ) -> Self {
+        Invocation {
+            outcome: ToolOutcome::Backgrounded {
+                handle: handle.into(),
+                ran_for_ms: ran_for.as_millis() as u64,
+                how,
+                next: next.into(),
+            },
+            payload: payload.into(),
+            notes: Vec::new(),
+            edit: None,
+        }
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
         self

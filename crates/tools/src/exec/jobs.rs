@@ -230,6 +230,20 @@ impl OutputSlice {
     }
 }
 
+/// Where a job's processes live and what reaps them. Changed by a promotion and
+/// by nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lifetime {
+    /// The job's own cgroup.
+    pub scope: super::scope::ScopeId,
+    /// The scope that reaps it if nobody touches it.
+    pub owner: super::scope::ScopeId,
+    /// How it came to be in the background, once it is. `None` while it is a
+    /// plain foreground command — which is a different fact from
+    /// `Some(Backgrounding::Asked)` and is stored as one.
+    pub background: Option<letibot_transcript::Backgrounding>,
+}
+
 /// One job, shared between the tool that started it and the threads draining it.
 #[derive(Debug)]
 pub struct Job {
@@ -237,27 +251,64 @@ pub struct Job {
     /// What the model asked for, verbatim. Never re-rendered from argv: a command
     /// echoed back in a different spelling is a command the model did not write.
     pub command: String,
-    /// This job's **own** cgroup, which is what `job_kill` ends.
-    pub scope: super::scope::ScopeId,
-    /// The scope that owns this job's lifetime — the turn, the session, or a
-    /// named explicit scope. Distinct from `scope`, and the distinction is the
-    /// one a reader needs: `scope` is `session.job-j4`, which answers "what does
-    /// killing this touch", and `owner` is `session.s12`, which answers "when
-    /// does this die if nobody touches it".
-    pub owner: super::scope::ScopeId,
+    /// This job's **own** cgroup, which is what `job_kill` ends, and the scope
+    /// that owns its lifetime — the turn, the session, or a named explicit
+    /// scope. The distinction is the one a reader needs: `scope` is
+    /// `session.job-j4`, which answers "what does killing this touch", and
+    /// `owner` is `session.s12`, which answers "when does this die if nobody
+    /// touches it".
+    ///
+    /// **Behind a lock because promotion moves both.** They were plain fields
+    /// when a job's owner was decided once at spawn and never again; a promotion
+    /// is exactly the event that changes the answer to "when does this die", and
+    /// a `job_list` still showing the old one would be telling the model a
+    /// lifetime that is no longer true.
+    lifetime: Mutex<Lifetime>,
     pub cwd: String,
     pub started: SystemTime,
     /// The pid of the shell that became the command. Its descendants are in the
     /// same cgroup and are **not** tracked individually — that is the point of
     /// having a cgroup.
     pub pid: u32,
-    pub background: bool,
     pub state: Mutex<JobState>,
     pub finished: Condvar,
     pub capture: Mutex<Capture>,
 }
 
 impl Job {
+    pub fn new(
+        id: JobId,
+        command: String,
+        lifetime: Lifetime,
+        cwd: String,
+        pid: u32,
+        capture_bytes: usize,
+    ) -> Job {
+        Job {
+            id,
+            command,
+            lifetime: Mutex::new(lifetime),
+            cwd,
+            started: SystemTime::now(),
+            pid,
+            state: Mutex::new(JobState::Running),
+            finished: Condvar::new(),
+            capture: Mutex::new(Capture::new(capture_bytes)),
+        }
+    }
+
+    pub fn lifetime(&self) -> Lifetime {
+        self.lifetime.lock().expect("job lifetime").clone()
+    }
+
+    /// Record that this job's processes now live somewhere else.
+    ///
+    /// Called only after the migration is **measured**, never before it is
+    /// attempted: a lifetime updated on intent rather than on effect is the
+    /// announced-but-not-done failure with a job id attached.
+    pub fn relocate(&self, lifetime: Lifetime) {
+        *self.lifetime.lock().expect("job lifetime") = lifetime;
+    }
     /// Wait for the job to finish, or for the deadline. Returns the state as it
     /// stands **after** the wait, which is `Running` when the deadline won.
     pub fn wait_until(&self, deadline: Duration) -> JobState {

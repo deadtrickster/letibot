@@ -24,16 +24,45 @@
 //!
 //! Shell output keeps the **tail**. A build that fails prints the error last.
 //!
-//! # A timeout is not a kill
+//! # Three ways into the background, and a timeout is none of them
 //!
-//! A foreground command that outruns its deadline is **promoted to the session
-//! scope and reported as still running**, with its job id. Killing it would throw
-//! away work the model asked for; blocking would hold the turn. The promotion is
-//! in the result, because a scope change the model was not told about is a
-//! lifetime it cannot reason about.
+//! The operator wanted all three and they are three, not one dressed up:
+//!
+//! | | how |
+//! |---|---|
+//! | the model asks | `background: true` — the job starts in the session scope |
+//! | **the runtime promotes it** | it outlived [`PROMOTE_AFTER_MS`] in the foreground, so it is **moved** into the session scope mid-flight |
+//! | a person promotes it | from a head, through [`ProcessHost::promote`]. See that method for what the head must send |
+//!
+//! ## The promotion is reactive, and that is the whole design
+//!
+//! It fires on **elapsed time**, never on the command text. A predictive rule —
+//! *"`sleep` and `cargo build` are slow, so background them"* — cannot be written
+//! correctly, because `cargo build` is three seconds on a warm tree and four
+//! minutes on a cold one, and the same string is both. Guessing from the string is
+//! `docs/closed-loop.md`'s open-loop stepper in a new costume: a rule with no
+//! feedback path. Measuring elapsed time is the encoder.
+//!
+//! ## And a promotion the model does not notice is the defect, not the promotion
+//!
+//! It comes back as [`letibot_transcript::ToolOutcome::Backgrounded`], which is a
+//! variant and not a wording. The three outcomes it must not be:
+//!
+//! | | what the model would conclude |
+//! |---|---|
+//! | `Ok` with a short body | the command produced nothing |
+//! | `Failed` | retry — and now two builds are running |
+//! | `Timeout` | it was abandoned. `Timeout` means exactly that, and this job is **still running and still recoverable** |
+//!
+//! The old code said *"It is now in the `session` scope"* in a `Failed` result and
+//! nothing had moved: the job's cgroup was still a child of the turn's, so the
+//! turn's end reaped the work the sentence promised would outlive it. The sentence
+//! is now produced by [`ProcessHost::promote`]'s measurement instead of asserted
+//! next to it.
 
 use std::time::Duration;
 
+use letibot_transcript::Backgrounding;
 use serde_json::Value;
 
 use crate::exec::predicate::{Verdict, annotation, refusal};
@@ -46,9 +75,41 @@ pub struct Bash;
 /// What goes inline before the cap bites. Both are reported when they do.
 const MAX_INLINE_BYTES: usize = 30_000;
 const MAX_INLINE_LINES: usize = 400;
-/// The default deadline for a foreground command.
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-/// The longest one may be asked for. Past this the honest answer is `background`.
+
+/// **How long a command stays in the foreground before the runtime backgrounds
+/// it.** 15 seconds.
+///
+/// Chosen from a measurement rather than from taste. Every command the tool set
+/// exists to run was timed on this box, warm, while it was under an ordinary
+/// working load (load average 1.4):
+///
+/// | command | wall |
+/// |---|---|
+/// | `ls -R crates`, `find`, `grep -rn`, `wc` | < 0.02 s |
+/// | `cargo check -p letibot-tools` | 1.9 s |
+/// | `cargo check --workspace` | 2.1 s |
+/// | `cargo clippy --workspace --all-targets` | 2.5 s |
+/// | `cargo test -p letibot-tools` | 5.7 s |
+/// | `python3 tests/fidelity/run_gate.py` | 6.5 s |
+///
+/// So the routine set tops out at 6.5 s, and 15 s clears the slowest of them by
+/// **2.3×** — enough headroom that a busy box does not start promoting the
+/// ordinary work, which is the failure mode of a threshold set too tight. The
+/// other end is the operator's own example: *"if model does something like `sleep
+/// 90` it is a background no matter what"*. 15 s is 6× under that, so the case
+/// that motivated this promotes with room to spare.
+///
+/// What the number trades is legible in both directions and neither cost is
+/// hidden: too low and a command that would have finished inline costs the model
+/// an extra `job_wait` round trip; too high and the turn blocks. The previous
+/// default was 120 s, which would have let `sleep 90` block the turn for a minute
+/// and a half and never promote at all.
+///
+/// `timeout_ms` overrides it per call, which is the model saying how much
+/// foreground patience it has for this one command.
+pub const PROMOTE_AFTER_MS: u64 = 15_000;
+/// The longest a foreground wait may be asked for. Past this the honest answer is
+/// to let it go to the background and come back for it.
 const MAX_TIMEOUT_MS: u64 = 600_000;
 
 impl Tool for Bash {
@@ -58,9 +119,13 @@ impl Tool for Bash {
             "Run a shell command in the session's workspace and return its output. \
              Give `command`; optionally `cwd` (relative to the workspace), \
              `timeout_ms`, and `background: true` to start it and return \
-             immediately. Every run is a job with an id: output is capped inline and \
-             the rest is read with `job_output`, a running job is watched with \
-             `job_wait` and stopped with `job_kill`. Every process lands in a cgroup \
+             immediately. A command you did NOT mark background is moved to the \
+             background by the runtime once it has run longer than `timeout_ms`, and \
+             the result says so, names its job id and says which call gets its \
+             output — it is still running, it did not fail, and starting it again \
+             would give you two. Every run is a job with an id: output is capped \
+             inline and the rest is read with `job_output`, a running job is watched \
+             with `job_wait` and stopped with `job_kill`. Every process lands in a cgroup \
              owned by a scope, so a foreground command dies with the turn and a \
              background one with the session unless you name an `scope`. Do not \
              write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
@@ -75,7 +140,7 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long to wait before returning with the job still running. Ignored when background is true."},
+                    "timeout_ms": {"type": "integer", "description": "How long to keep this command in the foreground before the runtime moves it to the background and returns its job id. Ignored when background is true."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."}
@@ -196,10 +261,13 @@ impl Tool for Bash {
             );
         }
 
+        // The foreground deadline **is** the promotion point. One number and one
+        // name: two thresholds with overlapping meaning is how a model ends up
+        // reasoning about the wrong one.
         let timeout = Duration::from_millis(
             args.get("timeout_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .unwrap_or(PROMOTE_AFTER_MS)
                 .clamp(1, MAX_TIMEOUT_MS),
         );
 
@@ -223,17 +291,33 @@ impl Tool for Bash {
 
         if background {
             let view = host.job(&id);
-            let mut inv = Invocation::ok(format!(
-                "started `{id}` in the background.\n  command: {command}\n  \
-                 pid: {}\n  scope: {} — {}\n\nIt is running now. `job_wait` with \
-                 job=\"{id}\" blocks until it finishes (a deadline is required, and \
-                 its expiry is reported as its own outcome, not as completion); \
-                 `job_output` with job=\"{id}\" reads what it has written so far; \
-                 `job_kill` stops it.",
-                view.as_ref().map(|v| v.pid).unwrap_or(0),
-                scope.as_str(),
-                scope.reaped_when(),
-            ));
+            // **`Backgrounded`, not `Ok`, even though the model asked.** The
+            // outcome names a fact about the world — *this command is running and
+            // has not answered yet* — and that fact does not depend on who wanted
+            // it. Reporting `Ok` here would make a `bash --background` result
+            // grounding for an answer nothing has produced, which is exactly what
+            // `is_grounded` exists to prevent, and it would leave a head with two
+            // shapes to render for one situation.
+            let mut inv = Invocation::backgrounded(
+                id.0.clone(),
+                Duration::ZERO,
+                Backgrounding::Asked,
+                format!(
+                    "call `job_wait` with job=\"{id}\" and a `timeout_ms`, or \
+                     `job_output` with job=\"{id}\""
+                ),
+                format!(
+                    "started `{id}` in the background.\n  command: {command}\n  \
+                     pid: {}\n  scope: {} — {}\n\nIt is running now. `job_wait` with \
+                     job=\"{id}\" blocks until it finishes (a deadline is required, and \
+                     its expiry is reported as its own outcome, not as completion); \
+                     `job_output` with job=\"{id}\" reads what it has written so far; \
+                     `job_kill` stops it.",
+                    view.as_ref().map(|v| v.pid).unwrap_or(0),
+                    scope.as_str(),
+                    scope.reaped_when(),
+                ),
+            );
             for n in notes {
                 inv = inv.with_note(n);
             }
@@ -280,22 +364,69 @@ impl Tool for Bash {
         }
 
         let mut inv = match &state {
+            // **The promotion.** Reactive: it fired because the command outlived
+            // the threshold, and the threshold knows nothing about what the
+            // command is. Nothing is killed — killing would throw away work the
+            // model asked for — and nothing blocks, because the turn is what the
+            // operator is waiting on.
             JobState::Running => {
-                // Not a failure and not a success: it is a fact, and it is the fact
-                // F5 says must not be reported as either.
-                Invocation::failed(
-                    format!("`{id}` is still running after {:?}", timeout),
-                    format!(
-                        "{}\n\nThe command did not finish inside its deadline and was \
-                         NOT killed — killing it would throw away work you asked for. \
-                         It is now in the `{}` scope, so it outlives this turn and is \
-                         reaped when the session ends. Call `job_wait` with \
-                         job=\"{id}\" and a deadline, or `job_output` with \
-                         job=\"{id}\", or `job_kill` with job=\"{id}\".",
-                        body,
-                        ScopeKind::Session.as_str()
+                let promoted =
+                    host.promote(&id, ScopeKind::Session, None, Backgrounding::Promoted);
+                let next = format!(
+                    "call `job_wait` with job=\"{id}\" and a `timeout_ms` to block \
+                     until it finishes, or `job_output` with job=\"{id}\" to read what \
+                     it has written so far"
+                );
+                match promoted {
+                    Ok(p) => {
+                        let mut inv = Invocation::backgrounded(
+                            id.0.clone(),
+                            p.ran_for,
+                            Backgrounding::Promoted,
+                            &next,
+                            format!(
+                                "{body}\n\n[this is what `{id}` had written when it was \
+                                 moved, not its finished output]\n\
+                                 command:  {command}\n\
+                                 owned by: {} — {}\n",
+                                p.to,
+                                p.to.kind.reaped_when()
+                            ),
+                        );
+                        // **A partial migration is said out loud.** Some processes
+                        // still being reaped by the turn is precisely the case
+                        // where "it outlives this turn" would be a false sentence,
+                        // and it is the sentence the old code asserted without
+                        // measuring anything.
+                        if !p.complete() {
+                            inv = inv.with_note(format!(
+                                "the promotion is PARTIAL. {} Those processes are \
+                                 still reaped when this turn ends; the rest outlive \
+                                 it.",
+                                p.summary()
+                            ));
+                        }
+                        inv
+                    }
+                    // The move failed, so the job is still owned by the turn and
+                    // WILL die with it. Reporting `Backgrounded` here would be the
+                    // announced-but-not-done failure: a handle the model would keep
+                    // for a process about to be reaped.
+                    Err(e) => Invocation::failed(
+                        format!(
+                            "`{id}` outran its {:.0}s foreground deadline and could \
+                             NOT be moved out of the turn scope",
+                            timeout.as_secs_f32()
+                        ),
+                        format!(
+                            "{body}\n\n{e}\n\nIt is still running, and it is still \
+                             owned by this turn — so it is reaped when the turn ends \
+                             and the handle `{id}` will stop being useful. Read what \
+                             it has now with `job_output` job=\"{id}\", or stop it \
+                             with `job_kill`."
+                        ),
                     ),
-                )
+                }
             }
             JobState::NotScoped => Invocation::failed(
                 format!("`{id}` could not join its scope, so the command was NOT run"),

@@ -219,6 +219,81 @@ fn first_word(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or("(unidentified)")
 }
 
+/// What moving a scope's processes into another scope actually did. **Not a
+/// boolean**, and for the same reason [`Reaping`] is not one.
+///
+/// A promotion is a claim about *lifetime*: after it, this work is reaped by a
+/// different scope. If some process did not move, the claim is false for that
+/// process — it will still die when the old scope ends — and a `promoted: true`
+/// that hid it would be the unfalsifiable zero in the other direction. So the
+/// three numbers travel together: what was there, what is in the new scope, and
+/// what is still in the old one.
+///
+/// `observed.len() != moved.len() + left_behind.len()` is a real and benign case:
+/// a process can exit between the read and the write. It is stated in [`Migration::note`]
+/// rather than papered over, because "vanished" and "would not move" are different
+/// facts and only the second is a defect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Migration {
+    pub from: ScopeId,
+    pub to: ScopeId,
+    /// Members read out of `from` **before** anything moved. The denominator.
+    pub observed: Vec<Reaped>,
+    /// Pids found in `to` afterwards.
+    pub moved: Vec<u32>,
+    /// Pids still in `from` afterwards. Non-empty means the promotion is
+    /// **partial**, and those processes still die with the old scope.
+    pub left_behind: Vec<u32>,
+    /// How many passes it took. More than one means something forked mid-move,
+    /// which is the case a single pass gets wrong.
+    pub passes: usize,
+    pub waited: Duration,
+    /// Whether `from`'s directory is gone afterwards.
+    pub removed: bool,
+    pub mechanism: &'static str,
+    pub note: Option<String>,
+}
+
+impl Migration {
+    /// Did every process that still existed end up in the new scope?
+    ///
+    /// Deliberately does **not** require `removed`: a cgroup directory that
+    /// would not go away is debris, and debris is [`Migration::note`]'s business,
+    /// but it is not a process whose lifetime is now owned by the wrong scope.
+    pub fn complete(&self) -> bool {
+        self.left_behind.is_empty()
+    }
+
+    /// Processes that were there at the start and are in neither scope now.
+    pub fn vanished(&self) -> usize {
+        self.observed
+            .len()
+            .saturating_sub(self.moved.len() + self.left_behind.len())
+    }
+
+    pub fn summary(&self) -> String {
+        let mut s = format!(
+            "{} → {}: observed {} process(es), {} moved, {} left behind, {} pass(es)",
+            self.from,
+            self.to,
+            self.observed.len(),
+            self.moved.len(),
+            self.left_behind.len(),
+            self.passes
+        );
+        if self.vanished() > 0 {
+            s.push_str(&format!(
+                ", {} exited while the move was happening",
+                self.vanished()
+            ));
+        }
+        if let Some(n) = &self.note {
+            s.push_str(&format!(" — {n}"));
+        }
+        s
+    }
+}
+
 /// The lifetime mechanism, as a seam.
 ///
 /// A trait for the same reason [`crate::backend::ExecBackend`] is one: a firecode
@@ -250,6 +325,16 @@ pub trait ScopeTree: Send + Sync {
     /// Takes the observation before the kill and the survivor check after, so the
     /// caller cannot accidentally record only one of them.
     fn end(&self, scope: &ScopeId) -> Reaping;
+
+    /// **Move every process in `from` into `to`**, so that a different scope
+    /// reaps them from now on. This is what promotion is, underneath.
+    ///
+    /// No default implementation on purpose. A tree that cannot migrate must say
+    /// so ([`NoScopes`] does), because a default that silently returned "moved 0
+    /// of 0" would let a caller announce a promotion that never happened — and
+    /// the process would then die with the turn while the model held a handle it
+    /// believed outlived one.
+    fn migrate(&self, from: &ScopeId, to: &ScopeId) -> Result<Migration, ExecError>;
 
     /// Every scope this tree has open, for a listing that can show what is
     /// watching and for whom. *"An invisible watcher is an unreapable one."*
@@ -314,6 +399,9 @@ impl ScopeTree for NoScopes {
     }
     fn list(&self) -> Vec<ScopeId> {
         vec![]
+    }
+    fn migrate(&self, _from: &ScopeId, _to: &ScopeId) -> Result<Migration, ExecError> {
+        Err(ExecError::NoScopes(self.why.clone()))
     }
 }
 
@@ -600,6 +688,119 @@ impl ScopeTree for Cgroup2 {
             removed,
             note,
         }
+    }
+
+    /// **Presence, then the move, then presence again — and both counts kept.**
+    ///
+    /// cgroup v2 moves a process by writing its pid into the target's
+    /// `cgroup.procs`, one pid per write. Two things follow and both are handled
+    /// here rather than assumed away:
+    ///
+    /// 1. **A write can fail for a benign reason.** `ESRCH` means the process
+    ///    exited between the read and the write, which is not a failed migration;
+    ///    it is a process that is no longer anybody's to own. Counted as
+    ///    [`Migration::vanished`], not as `left_behind`.
+    /// 2. **A process can fork while the move is happening.** A child forked
+    ///    before its parent moved is in the OLD cgroup and stays there, so one
+    ///    pass is not enough. The loop repeats until a pass finds the source
+    ///    empty or the budget runs out — and if the budget runs out it reports
+    ///    what is still there rather than claiming the move finished.
+    ///
+    /// Membership is checked by reading the cgroups afterwards, never by counting
+    /// successful writes: a write that returned `Ok` and a process that is in the
+    /// new cgroup are two facts, and only the second is the one being claimed.
+    fn migrate(&self, from: &ScopeId, to: &ScopeId) -> Result<Migration, ExecError> {
+        if std::fs::metadata(&from.path).is_err() {
+            return Err(ExecError::NoSuchScope(from.to_string()));
+        }
+        if std::fs::metadata(&to.path).is_err() {
+            return Err(ExecError::NoSuchScope(to.to_string()));
+        }
+        let started = Instant::now();
+
+        // 1. PRESENCE, before anything moves. The denominator.
+        let mut observed_pids = Vec::new();
+        members_at(&from.path, &mut observed_pids);
+        observed_pids.sort_unstable();
+        observed_pids.dedup();
+        let observed: Vec<Reaped> = observed_pids.iter().map(|p| Reaped::observe(*p)).collect();
+
+        // 2. THE MOVE, repeated until the source is empty or the budget is spent.
+        let procs = to.path.join("cgroup.procs");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut passes = 0usize;
+        let mut last_err: Option<String> = None;
+        loop {
+            let mut pids = Vec::new();
+            members_at(&from.path, &mut pids);
+            pids.sort_unstable();
+            pids.dedup();
+            if pids.is_empty() {
+                break;
+            }
+            passes += 1;
+            for pid in &pids {
+                let w = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&procs)
+                    .and_then(|mut f| writeln!(f, "{pid}"));
+                if let Err(e) = w {
+                    // ESRCH is "it exited", which is not a failure to migrate.
+                    // Anything else is worth a sentence, and the LAST one is kept
+                    // rather than the first: a first error from a pid that then
+                    // exited would name the least interesting of them.
+                    if e.raw_os_error() != Some(3) {
+                        last_err = Some(format!("pid {pid}: {e}"));
+                    }
+                }
+            }
+            if Instant::now() >= deadline || passes >= 8 {
+                break;
+            }
+        }
+
+        // 3. ABSENCE, and only now — read out of the kernel rather than inferred
+        //    from how many writes returned Ok.
+        let mut left_behind = Vec::new();
+        members_at(&from.path, &mut left_behind);
+        left_behind.sort_unstable();
+        left_behind.dedup();
+        let mut moved = Vec::new();
+        members_at(&to.path, &mut moved);
+        moved.sort_unstable();
+        moved.dedup();
+        // Only the ones this migration is about. The target scope may already have
+        // held processes of its own, and counting those as "moved" would inflate
+        // the number with work somebody else did.
+        moved.retain(|p| observed_pids.contains(p));
+
+        let mut note = last_err.map(|e| format!("a pid could not be written into the target: {e}"));
+        let removed = if left_behind.is_empty() {
+            remove_tree(&from.path)
+        } else {
+            false
+        };
+        if !left_behind.is_empty() && note.is_none() {
+            note = Some(format!(
+                "{} process(es) would not move after {passes} pass(es); they are STILL \
+                 owned by `{from}` and die when it does",
+                left_behind.len()
+            ));
+        }
+        self.open.lock().expect("scope list").retain(|s| s != from);
+
+        Ok(Migration {
+            from: from.clone(),
+            to: to.clone(),
+            observed,
+            moved,
+            left_behind,
+            passes,
+            waited: started.elapsed(),
+            removed,
+            mechanism: "write pid to cgroup.procs",
+            note,
+        })
     }
 
     fn list(&self) -> Vec<ScopeId> {

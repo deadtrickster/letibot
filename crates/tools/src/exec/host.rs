@@ -41,8 +41,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
-use super::jobs::{Capture, Job, JobId, JobState, OutputSlice};
-use super::scope::{Cgroup2, EXIT_NOT_SCOPED, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree, cmdline_of, join_script};
+use super::jobs::{Job, JobId, JobState, Lifetime, OutputSlice};
+use super::scope::{
+    Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree, cmdline_of,
+    join_script,
+};
+use letibot_transcript::Backgrounding;
 
 /// A process the harness manages and the model must not be allowed to reason
 /// about by pattern.
@@ -114,11 +118,67 @@ pub struct JobView {
     pub owner: ScopeId,
     pub cwd: String,
     pub pid: u32,
-    pub background: bool,
+    /// How this job came to be in the background, or `None` if it never was.
+    /// **Not a bool**: "the model asked" and "the runtime moved it" are the
+    /// difference between a listing the model recognises and one it does not.
+    pub background: Option<Backgrounding>,
     pub state: JobState,
     pub elapsed: Duration,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
+}
+
+/// One job moved from one scope's ownership to another's, with the measurement
+/// that says whether the move is true of every process it claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Promotion {
+    pub job: JobId,
+    /// The command, kept here because a promotion record read an hour later has
+    /// to identify something. `/proc` will not still say.
+    pub command: String,
+    /// The scope that owned its lifetime before.
+    pub from: ScopeId,
+    /// The scope that owns it now.
+    pub to: ScopeId,
+    /// How long it ran in the foreground first. The number the model is shown.
+    pub ran_for: Duration,
+    pub how: Backgrounding,
+    /// `None` when there was nothing to move — a job that had already finished.
+    /// Distinguished from a migration that moved zero of three.
+    pub migration: Option<Migration>,
+    pub at: SystemTime,
+    pub note: Option<String>,
+}
+
+impl Promotion {
+    /// Is every process this job still has now owned by the new scope?
+    ///
+    /// A promotion with nothing to move is **not** complete in the sense that
+    /// matters and is not reported as one: the honest reading of "the job had
+    /// already exited" is that the promotion did nothing, which
+    /// [`Promotion::note`] says.
+    pub fn complete(&self) -> bool {
+        self.migration.as_ref().is_some_and(|m| m.complete())
+    }
+
+    pub fn summary(&self) -> String {
+        let mut s = format!(
+            "`{}` promoted from {} to {} after {:.1}s — {}",
+            self.job,
+            self.from,
+            self.to,
+            self.ran_for.as_secs_f32(),
+            self.how.phrasing()
+        );
+        match &self.migration {
+            Some(m) => s.push_str(&format!("; {}", m.summary())),
+            None => s.push_str("; nothing was moved"),
+        }
+        if let Some(n) = &self.note {
+            s.push_str(&format!(" — {n}"));
+        }
+        s
+    }
 }
 
 /// The seam. Host today; a firecode guest owns its processes by owning the VM,
@@ -144,6 +204,34 @@ pub trait ProcessHost: Send + Sync {
     fn kill_job(&self, job: &JobId) -> Result<Reaping, ExecError>;
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
+
+    /// **Move a running job into a scope that outlives the turn**, and record
+    /// what actually moved.
+    ///
+    /// This is the one verb behind all three ways into the background. The model
+    /// asking for `background: true` never reaches it — that job is started in
+    /// the session scope and has nothing to move — but the runtime's threshold
+    /// and a person promoting from a head are the same operation with a
+    /// different [`Backgrounding`] on it, which is why `how` is an argument
+    /// rather than something the caller writes into prose afterwards.
+    ///
+    /// Returns a [`Promotion`], never a bool, for the reason
+    /// [`super::scope::Migration`] gives: a promotion is a claim about which
+    /// scope reaps this work, and a process that did not move makes that claim
+    /// false for that process.
+    fn promote(
+        &self,
+        job: &JobId,
+        to: ScopeKind,
+        name: Option<&str>,
+        how: Backgrounding,
+    ) -> Result<Promotion, ExecError>;
+
+    /// **Every promotion this session made.** The same falsifier as
+    /// [`ProcessHost::reap_log`], one verb over: a promotion that silently moved
+    /// nothing and a job that was already where it needed to be are different
+    /// facts, and a listing that shows neither cannot tell them apart.
+    fn promotions(&self) -> Vec<Promotion>;
 
     /// Every scope open right now, so a listing can show what is running and for
     /// whom. *"An invisible watcher is an unreapable one."*
@@ -191,6 +279,9 @@ pub struct HostProcesses {
     turn: Mutex<Option<ScopeId>>,
     jobs: Mutex<Vec<Arc<Job>>>,
     reaps: Mutex<Vec<Reaping>>,
+    /// Every promotion, for the same reason `reaps` exists: a lifetime that
+    /// changed under the model is a fact somebody has to be able to read back.
+    promotions: Mutex<Vec<Promotion>>,
     protected: Mutex<Vec<Protected>>,
     /// Bytes retained per job. Beyond this the ring drops from the front and says
     /// so — see [`super::jobs::OutputSlice::denominator`].
@@ -270,6 +361,7 @@ impl HostProcesses {
             turn: Mutex::new(None),
             jobs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
+            promotions: Mutex::new(Vec::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
             shell: vec!["/bin/sh".into(), "-c".into()],
@@ -388,14 +480,15 @@ impl HostProcesses {
 
     fn view(job: &Job) -> JobView {
         let cap = job.capture.lock().expect("capture");
+        let life = job.lifetime();
         JobView {
             id: job.id.clone(),
             command: job.command.clone(),
-            scope: job.scope.clone(),
-            owner: job.owner.clone(),
+            scope: life.scope,
+            owner: life.owner,
             cwd: job.cwd.clone(),
             pid: job.pid,
-            background: job.background,
+            background: life.background,
             state: job.state(),
             elapsed: job.elapsed(),
             produced: cap.produced(),
@@ -416,6 +509,11 @@ impl HostProcesses {
     fn record(&self, r: Reaping) -> Reaping {
         self.reaps.lock().expect("reaps").push(r.clone());
         r
+    }
+
+    fn record_promotion(&self, p: Promotion) -> Promotion {
+        self.promotions.lock().expect("promotions").push(p.clone());
+        p
     }
 }
 
@@ -536,19 +634,22 @@ impl ProcessHost for HostProcesses {
         })?;
         let pid = child.id();
 
-        let job = Arc::new(Job {
-            id: id.clone(),
-            command: req.command.clone(),
-            scope: cgroup,
-            owner: parent.clone(),
-            cwd: req.cwd.clone(),
-            started: SystemTime::now(),
+        let job = Arc::new(Job::new(
+            id.clone(),
+            req.command.clone(),
+            Lifetime {
+                scope: cgroup,
+                owner: parent.clone(),
+                // **`Asked` only when the model asked.** A foreground command
+                // starts with `None`, and a promotion is what fills this in —
+                // so a job that was moved by the runtime can never be read back
+                // as one the model requested.
+                background: req.background.then_some(Backgrounding::Asked),
+            },
+            req.cwd.clone(),
             pid,
-            background: req.background,
-            state: Mutex::new(JobState::Running),
-            finished: std::sync::Condvar::new(),
-            capture: Mutex::new(Capture::new(self.capture_bytes)),
-        });
+            self.capture_bytes,
+        ));
 
         let out = child.stdout.take();
         let err = child.stderr.take();
@@ -608,7 +709,7 @@ impl ProcessHost for HostProcesses {
         let joined = loop {
             if self
                 .tree
-                .members(&job.scope)
+                .members(&job.lifetime().scope)
                 .map(|m| m.contains(&pid))
                 .unwrap_or(false)
             {
@@ -630,7 +731,7 @@ impl ProcessHost for HostProcesses {
                 .arg("-KILL")
                 .arg(pid.to_string())
                 .status();
-            let _ = self.tree.end(&job.scope);
+            let _ = self.tree.end(&job.lifetime().scope);
             return Err(ExecError::Spawn(format!(
                 "pid {pid} started but was still not a member of its cgroup after 5s; \
                  it was killed rather than left running outside any scope"
@@ -725,7 +826,7 @@ impl ProcessHost for HostProcesses {
                 by: "job_kill".into(),
             });
         }
-        let mut r = self.tree.end(&job.scope);
+        let mut r = self.tree.end(&job.lifetime().scope);
         if !running && r.observed.is_empty() {
             r.note = Some(format!(
                 "`{id}` had already {} when the kill arrived; nothing was running to kill",
@@ -740,7 +841,7 @@ impl ProcessHost for HostProcesses {
         // Every job whose cgroup was under this scope stopped because we stopped
         // it, and its state must say that rather than `signalled 9`.
         for j in self.jobs.lock().expect("jobs").iter() {
-            if j.scope.path.starts_with(&scope.path) && j.state().is_running() {
+            if j.lifetime().scope.path.starts_with(&scope.path) && j.state().is_running() {
                 j.settle(JobState::Killed {
                     by: format!("the {} scope ending", scope.kind.as_str()),
                 });
@@ -754,6 +855,112 @@ impl ProcessHost for HostProcesses {
             *self.turn.lock().expect("turn scope") = None;
         }
         Ok(self.record(r))
+    }
+
+    /// **The order is load-bearing, and it is not the obvious one.**
+    ///
+    /// Open the new cgroup, migrate into it, *measure*, and only then change the
+    /// job's recorded lifetime. Updating the bookkeeping first and migrating
+    /// afterwards would produce the announced-but-not-done failure with a job id
+    /// on it: `job_list` saying `session` about processes the turn scope is
+    /// about to kill.
+    ///
+    /// A job whose processes could not all be moved is **still recorded as
+    /// promoted**, because the ones that did move really are owned by the new
+    /// scope now — and the residue is in the record and in the note rather than
+    /// hidden behind a rollback that would have to kill work to be honest.
+    fn promote(
+        &self,
+        id: &JobId,
+        to: ScopeKind,
+        name: Option<&str>,
+        how: Backgrounding,
+    ) -> Result<Promotion, ExecError> {
+        let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
+        let life = job.lifetime();
+        let ran_for = job.elapsed();
+        let target = self.scope_for(to, name)?;
+
+        // Already there. Not an error and not a no-op worth hiding: a caller that
+        // promoted the same job twice should be told that the second call moved
+        // nothing, rather than shown a record that looks like a second move.
+        if life.owner == target {
+            return Ok(self.record_promotion(Promotion {
+                job: id.clone(),
+                command: job.command.clone(),
+                from: life.owner.clone(),
+                to: target,
+                ran_for,
+                how,
+                migration: None,
+                at: SystemTime::now(),
+                note: Some(format!(
+                    "`{id}` was already owned by that scope, so nothing moved"
+                )),
+            }));
+        }
+
+        if !job.state().is_running() {
+            return Ok(self.record_promotion(Promotion {
+                job: id.clone(),
+                command: job.command.clone(),
+                from: life.owner.clone(),
+                to: target,
+                ran_for,
+                how,
+                migration: None,
+                at: SystemTime::now(),
+                note: Some(format!(
+                    "`{id}` had already {} when the promotion arrived; there was no \
+                     process left to move, and its output is still readable",
+                    job.state().word()
+                )),
+            }));
+        }
+
+        let fresh = self
+            .tree
+            .open(to, &format!("job-{id}"), Some(&target))?;
+        let migration = match self.tree.migrate(&life.scope, &fresh) {
+            Ok(m) => m,
+            Err(e) => {
+                // The new cgroup was made and nothing joined it. Take it back
+                // rather than leave a directory a later listing reads as work.
+                let _ = self.tree.end(&fresh);
+                return Err(e);
+            }
+        };
+
+        // Only now. The bookkeeping follows the measurement.
+        job.relocate(Lifetime {
+            scope: fresh.clone(),
+            owner: target.clone(),
+            background: Some(how.clone()),
+        });
+
+        let note = (!migration.complete()).then(|| {
+            format!(
+                "PARTIAL: {} process(es) would not leave `{}` and are still reaped by \
+                 it. The promotion is true of the rest.",
+                migration.left_behind.len(),
+                life.owner
+            )
+        });
+        Ok(self.record_promotion(Promotion {
+            job: id.clone(),
+            command: job.command.clone(),
+            from: life.owner,
+            to: target,
+            ran_for,
+            how,
+            migration: Some(migration),
+            at: SystemTime::now(),
+            note,
+        }))
+    }
+
+    fn promotions(&self) -> Vec<Promotion> {
+        self.promotions.lock().expect("promotions").clone()
     }
 
     fn scopes(&self) -> Vec<ScopeId> {
