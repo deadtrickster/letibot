@@ -46,6 +46,18 @@ use std::sync::{Arc, Mutex};
 use crate::config::Config;
 use crate::harness::{Harness, HarnessError, Parts, Reply};
 
+/// How long a monitor waiter blocks before re-checking whether the daemon is
+/// shutting down.
+///
+/// **Not a poll interval.** Delivery is the condvar inside
+/// [`letibot_tools::exec::monitor::Monitors::wait_for_any`], which returns the
+/// instant something settles. This is the only thing a thread blocked in that
+/// condvar can do about `Bell::close`, which notifies a *different* condvar. Five
+/// seconds because the cost of the delay is a thread that outlives a shutdown by
+/// up to five seconds, and the cost of making it shorter is a wake-up that does
+/// nothing, several times a minute, forever.
+const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What the worker did with one command.
 pub enum Outcome {
     Replied(Box<Reply>),
@@ -62,6 +74,11 @@ pub struct Sessions<'a> {
     base: Config,
     registry: Arc<Registry>,
     open: HashMap<String, Harness<'a>>,
+    /// Sessions whose monitor waiter is already running. **One waiter per name**,
+    /// which is T24 requirement 4 — the fleet has already paid for what two
+    /// processes under one reader costs: the roster shows a seat attached while the
+    /// real one hears nothing.
+    armed: std::collections::HashSet<String>,
 }
 
 impl<'a> Sessions<'a> {
@@ -84,6 +101,7 @@ impl<'a> Sessions<'a> {
             base: cfg,
             registry,
             open,
+            armed: std::collections::HashSet::new(),
         })
     }
 
@@ -214,6 +232,7 @@ impl<'a> Sessions<'a> {
         let harness = self.harness(session_id)?;
         let out = harness.submit(text);
         self.publish_title(session_id);
+        self.arm_wake(session_id);
         match out {
             Ok(r) => Ok(r),
             Err(e) => {
@@ -234,6 +253,132 @@ impl<'a> Sessions<'a> {
     /// or the prefix. `None` for a session nothing has run in yet.
     pub fn harness_of(&self, session_id: &str) -> Option<&Harness<'a>> {
         self.open.get(session_id)
+    }
+
+    /// **Arm the monitor wake for a session that has declared one.** T24's
+    /// *"wakes the loop when it fires"*, which had no caller.
+    ///
+    /// # Why a thread, and why it is not a poll
+    ///
+    /// `Monitors::wait_for_any` is a `Condvar`: a waiter costs nothing while
+    /// nothing is happening, and it returns the monitors that settled **during the
+    /// call**, which is why it takes a cursor — a caller that asked twice would
+    /// otherwise be handed the same firing twice and act on it twice. The thread
+    /// blocks in it and rings the bell. `Registry::next_work` is already blocked on
+    /// that bell, so the worker wakes on the firing itself rather than on a clock.
+    ///
+    /// The deadline the waiter passes is **not** message delivery — the condvar is.
+    /// It is how a blocked thread notices the registry closing, because
+    /// `Bell::close` notifies the bell's condvar and not the monitors'. That is a
+    /// shutdown re-check, and it is worth naming because "no timer, no poll loop"
+    /// is a property this daemon states about itself (§18.1-I12) and a re-check
+    /// that went undescribed would read as a violation of it.
+    ///
+    /// # Why it is lazy
+    ///
+    /// **No monitors, no thread** — the same rule `Monitors`' own poller keeps, and
+    /// the same rule T24 exists to enforce: this entry is about watchers that
+    /// accumulate. A session with an exec backend and nothing watching gets no
+    /// waiter; the first `monitor` call gets it one, and it lives until the daemon
+    /// stops.
+    ///
+    /// **One waiter per name**, tracked in `armed`. Two waiters on one registry
+    /// would each ring for the same firing, and the second wake would find the
+    /// cursor already advanced and run nothing — a wasted `next_work` round rather
+    /// than a duplicated turn, but it is the shape of defect this fleet has paid
+    /// for and it is cheap to make unspellable.
+    pub fn arm_wake(&mut self, session_id: &str) {
+        if self.armed.contains(session_id) {
+            return;
+        }
+        let Some(h) = self.open.get_mut(session_id) else {
+            return;
+        };
+        let Some(monitors) = h.monitors().cloned() else {
+            return;
+        };
+        // Read, not assumed: arm only once something is actually watching.
+        if monitors.live_names().is_empty() {
+            return;
+        }
+        h.declare_monitor_wake();
+        let bell = self.registry.bell().clone();
+        let id = session_id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
+            .spawn(move || {
+                // The waiter's **own** cursor, advanced by what it has already rung
+                // for. The harness has a second one, shared with that session's
+                // steering source, which decides what is actually delivered — a
+                // firing picked up mid-turn is not delivered again by the wake.
+                // Two cursors because they answer two questions: "have I rung for
+                // this?" and "has the model seen this?"
+                let mut notified = monitors.settled_count();
+                while !bell.is_closed() {
+                    let fired = monitors.wait_for_any(notified, SHUTDOWN_RECHECK);
+                    if bell.is_closed() {
+                        break;
+                    }
+                    if fired.is_empty() {
+                        continue;
+                    }
+                    notified += fired.len();
+                    bell.ring_wake(&id);
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                self.armed.insert(session_id.to_string());
+            }
+            Err(e) => {
+                // Not fatal and not silent. A session whose wake could not be armed
+                // still has monitors and `job_list` still shows them; what it does
+                // not have is the wake, and saying so is the difference between a
+                // poll and a poll nobody was told about.
+                if let Some(hub) = self.registry.get(session_id) {
+                    hub.publish(SessionEvent::Warning {
+                        code: "monitor_wake_not_armed".into(),
+                        detail: format!(
+                            "this session's monitors will be POLLED, not woken: the waiter \
+                             thread could not be started ({e}). A condition that fires \
+                             between turns reaches the model only when something calls \
+                             `job_list`."
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    /// **Something fired while nothing was running.** The worker's half of the wake.
+    ///
+    /// `Outcome::Ignored` is the honest answer to a wake that raced a mid-turn
+    /// pickup: the steering source and the harness share a cursor, so the firing
+    /// had already reached the model and running a turn about it again would be
+    /// telling the model the same thing twice.
+    pub fn wake(&mut self, session_id: &str) -> Outcome {
+        let hub = self.registry.get(session_id);
+        let Some(harness) = self.open.get_mut(session_id) else {
+            return Outcome::Ignored;
+        };
+        match harness.wake() {
+            Ok(None) => Outcome::Ignored,
+            Ok(Some(reply)) => {
+                self.publish_title(session_id);
+                Outcome::Replied(Box::new(reply))
+            }
+            Err(e) => {
+                let turn_id = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.last_turn_id().to_string())
+                    .unwrap_or_default();
+                if let Some(hub) = &hub {
+                    publish_failure(hub, &turn_id, &e);
+                }
+                Outcome::Failed(e.to_string())
+            }
+        }
     }
 
     /// Run one command against its session.
@@ -270,6 +415,10 @@ impl<'a> Sessions<'a> {
                 // so the name has to reach it here or the row stays an id until the
                 // daemon restarts.
                 self.publish_title(session_id);
+                // A turn is the only thing that can declare a monitor, so it is the
+                // only place worth asking whether this session now needs a waiter.
+                // Idempotent and cheap: one `HashSet` lookup on the common path.
+                self.arm_wake(session_id);
                 out
             }
             // Between turns there is nothing to interrupt. Announced rather than
