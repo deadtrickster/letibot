@@ -159,17 +159,31 @@ pub fn writable_harness_with_budget(spiller: Spiller) -> Harness {
 /// feature, and the fail-closed default is what ships.
 pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
     use crate::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
-    Box::new(AdjudicatedGate::new(Box::new(AskAdjudicator::new(
-        "test",
-        |req: &crate::adjudicate::AdjudicationRequest| {
-            Some(AdjudicationDecision::selected(
-                req,
-                "allow_once",
-                "human:test",
-                "the test harness allows every gated call",
-            ))
-        },
-    ))))
+    // The shell trust is declared here, and the declaration is the point.
+    // [`crate::intent::ShellTrust`] defaults to `Unknown`, under which a bare command
+    // name is unresolved — it may be an alias or a shell function, and a grammar cannot
+    // see the table that would say. These harnesses assert about tools rather than
+    // about the shell, so they state the assumption out loud instead of inheriting a
+    // permissive default: a fixture that got the answer by default would stop testing
+    // the property the moment the default moved.
+    let surroundings = crate::intent::Surroundings::default().with_pinned_shell(
+        "test fixture: these harnesses assert about tools, not about whether a command \
+         name can be shadowed",
+    );
+    Box::new(
+        AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "test",
+            |req: &crate::adjudicate::AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "the test harness allows every gated call",
+                ))
+            },
+        )))
+        .with_surroundings(surroundings),
+    )
 }
 
 /// A session that can run commands, or the reason it cannot.

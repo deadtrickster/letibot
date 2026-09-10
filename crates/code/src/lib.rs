@@ -35,6 +35,17 @@
 //! IS supported. It never returns an empty outline for a `.tf` file, because an
 //! empty outline and an unparsed file are different facts and this repo has just
 //! spent a night on the class of bug that reports them identically.
+//!
+//! # The second reader of these grammars
+//!
+//! [`shell`] normalises a shell command through the same `tree-sitter-bash` that
+//! `outline` uses, for `docs/boundary-and-adjudication.md` §4's layer 2: a
+//! permission decision made on a string the shell has not expanded yet is a
+//! decision about a meaning that does not exist. Same crate, same reason — the
+//! grammars are C and this is where the `cc` build lives — and the same discipline:
+//! a construct the grammar cannot resolve is *named*, never assumed harmless.
+
+pub mod shell;
 
 use std::fmt;
 

@@ -432,7 +432,14 @@ fn a_capped_result_says_it_capped_and_job_output_has_the_rest() {
     let r = h.call(
         "bash",
         &serde_json::json!({
-            "command": "i=0; while [ $i -lt 3000 ]; do echo \"line $i padding padding padding\"; i=$((i+1)); done"
+            // Was `i=0; while [ $i -lt 3000 ]; do echo "line $i ..."; i=$((i+1)); done`,
+            // and layer 2's normaliser now refuses that with `NotRun`: `$i` and
+            // `$((i+1))` are values that do not exist until the shell runs, so nothing
+            // could decide about the command. That refusal is correct and this test is
+            // not about it — it is about the output cap — so the command is respelled
+            // with the same volume and no unresolvable construct. `seq` does the
+            // counting the shell variable was doing.
+            "command": "seq 0 2999 | sed 's/^/line /; s/$/ padding padding padding/'"
         })
         .to_string(),
     );

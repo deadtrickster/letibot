@@ -33,6 +33,39 @@
 //! The third is the "instrument before you restrict" half of `docs/closed-loop.md`
 //! §1. A read-only probe that self-matches produces a wrong number, not a dead
 //! server, and a refusal there would buy nothing the note does not.
+//!
+//! # SUPERSEDED as a parser, kept as a diagnosis
+//!
+//! `letibot_code::shell` is now the mechanism for reading a command, and it is a real
+//! grammar. This module's own confession — *"not a shell parser… `eval`, here-docs,
+//! aliases, `$(...)` nesting past one level are unhandled"* — was quoted in
+//! `docs/boundary-and-adjudication.md` §4 as the reason layer 2 had to exist, and it is
+//! now measurably out of date: the normaliser resolves nested substitutions to any
+//! depth, distinguishes a quoted here-document from an expanded one, reports what it
+//! cannot resolve with a position, and refuses to treat a bare name as itself in a
+//! shell nobody declared fixed.
+//!
+//! **It is deliberately left in place and still wired.** Two reasons, and neither is
+//! inertia:
+//!
+//! 1. What it does is not what the normaliser does. The normaliser answers *what is
+//!    this command*; this answers *what does this command's predicate currently match
+//!    on this box*, from `/proc` and from what the daemon declared it manages. That is
+//!    the encoder half of `docs/closed-loop.md` — a fact about the running machine that
+//!    no parser can supply — and its `Verdict::Annotate` path is a clause-1 recovery
+//!    with no equivalent above.
+//! 2. Removing a guard in the same change that adds one is how a safety property goes
+//!    missing. The two run in series: the gate refuses an unresolvable command before
+//!    `examine` is reached, and `examine` still refuses a resolvable `pkill` whose
+//!    pattern matches the harness.
+//!
+//! **What should change, and is not this change's to do:** [`predicates`] should take
+//! `letibot_code::shell::Normalised` instead of a `&str` and drop [`words`], so the
+//! predicate finder reads the same tree the gate decided on rather than re-lexing the
+//! text. That is a mechanical refactor with one risk worth stating — `examine` is
+//! reached for commands the gate has already resolved, so re-lexing and parsing agree
+//! today, and they would stop agreeing silently if either side changed. Filed here
+//! rather than in a doc because this is where somebody will look.
 
 use super::host::Protected;
 
