@@ -253,6 +253,37 @@ This is the closed loop pointed at the classifier itself — the audit log is th
 the operator's overrides are the error signal, a fine-tune is the correction. Same shape as
 the fidelity gate standing between the harness and its own source.
 
+### The corpus is global, and the disagreements are the signal
+
+Operator: *"the harness can dump global inputs and outputs, especially when users doesn't
+agree. And then we will use it for fine tuning. It is not a full PFN after all."*
+
+So the corpus is **not per-session and not per-project**. One durable, dumpable record
+across every session on a seat, in a shape a trainer can read without reconstruction.
+
+**The overrides carry the signal.** Every time the operator contradicts a verdict, that is
+a labelled example of the classifier being wrong *in a named direction* — over-refusing
+(which produces §4b's workaround loop) or over-allowing. Produced by working, not by a
+labelling project.
+
+**But the agreements are the denominator, and a corpus of only overrides is a biased
+sample.** Train on disagreements alone and the model learns the shape of its own mistakes
+with no idea how often it is right — the same defect as a hazard rate reported without its
+denominator, one layer up. So the dump keeps agreements too, sampled if volume demands it,
+and says which it did.
+
+**And the tractability note matters.** This is a narrower problem than the PFN attempt on
+this box, which produced an honest negative on its classifier. Here the input is a
+normalised action plus a short trail, the output is one of four tiers, and the labels come
+from a person who was there. That does not guarantee it works — it means a negative here
+would be a different negative, and the cheap version (§4h: read the rows back at decision
+time) needs no training at all.
+
+**What the row must therefore carry**, beyond §4c's four fields: a timestamp, the model
+build that produced the verdict, and the after-the-fact outcome where one exists. The
+adjudication work already lists all three as missing. A corpus assembled later from rows
+that kept only the decision is not recoverable.
+
 ## 4d. Neither layer is trustworthy alone, so four outcomes and earned authority
 
 Operator, on being shown the 7-of-7 probe:
