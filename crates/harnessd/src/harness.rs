@@ -419,8 +419,17 @@ impl TrailMirror {
 /// It publishes rather than returning, because the gate calls it from inside the
 /// tool path and the operator may be somewhere else entirely. The log is the one
 /// place both a live head and a late one look.
-struct HubDenials {
+/// Public because it is the *only* implementation of `DenialSink` that reaches a
+/// person, and a seam whose one real implementation is private is a seam nobody
+/// else can check.
+pub struct HubDenials {
     hub: Arc<Hub>,
+}
+
+impl HubDenials {
+    pub fn new(hub: Arc<Hub>) -> Self {
+        HubDenials { hub }
+    }
 }
 
 impl DenialSink for HubDenials {
@@ -932,7 +941,7 @@ impl<'a> Harness<'a> {
                     // looked*, which is not the same fact as an empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())
                     // §4b. Without this a denial reaches the model and stops there.
-                    .with_denial_sink(Box::new(HubDenials { hub: hub.clone() }));
+                    .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
                 (Box::new(g), true, true)
             }
         };
@@ -1673,11 +1682,22 @@ impl<'a> Harness<'a> {
     /// used `todo` or `goal`, and those are seated only by a role that names them.
     /// A default `letibot` session is behaviourally identical.
     fn close_the_turn(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        if self.cfg.intent_prose {
-            intent_tools::close_the_turn(&self.intent, turn_id, items)
-        } else {
-            self.intent.reconcile(turn_id, "").steering()
-        }
+        steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items)
+    }
+
+    /// The authorisation trail this session would show an adjudicator right now.
+    ///
+    /// Public because it is the input to a decision taken on the operator's behalf,
+    /// and §4c wants the trail stored as **what was actually shown to the model**
+    /// rather than as a later reconstruction — which means something has to be able
+    /// to read it without going through a denial.
+    pub fn trail(&self) -> AuthorisationTrail {
+        self.trail.trail()
+    }
+
+    /// The intent ledger, for a head that wants to draw the board.
+    pub fn intent(&self) -> &Arc<IntentLedger> {
+        &self.intent
     }
 
     fn append_notice(&mut self, text: &str) -> Result<(), HarnessError> {
@@ -1798,6 +1818,41 @@ fn visible_text(items: &[TranscriptItem]) -> String {
     out
 }
 
+/// **The intent diff at a turn boundary**, or `None` when there is nothing to say
+/// — which is the common case and is meant to be.
+///
+/// A free function because the choice it makes is the one worth testing on its own,
+/// and testing it through a `Harness` would need a model server to produce a turn.
+///
+/// Two functions, and the difference is `prose`:
+///
+/// * [`letibot_tools::builtins::intent::close_the_turn`] reads the assistant's own
+///   text for the `commitments` heuristic **as well as** the tool-declared half.
+/// * `IntentLedger::reconcile(turn_id, "")` is the tool-declared half alone, which
+///   that method's own doc calls *"the deterministic one"*.
+///
+/// The deterministic half is the default because of the rule this whole strand is
+/// under: **nothing widens by default.** The prose heuristic can only fire on a turn
+/// that ran nothing at all, which for a plain answer is the normal case, so switching
+/// it on for every existing session would put *"you said you would X"* into
+/// conversations that were working.
+///
+/// The deterministic half needs no flag because it cannot fire unless the model used
+/// `todo` or `goal`, and those are seated only by a role that names them. A default
+/// `letibot` session is behaviourally identical with it on.
+fn steer_for_turn(
+    ledger: &IntentLedger,
+    prose: bool,
+    turn_id: &str,
+    items: &[TranscriptItem],
+) -> Option<String> {
+    if prose {
+        intent_tools::close_the_turn(ledger, turn_id, items)
+    } else {
+        ledger.reconcile(turn_id, "").steering()
+    }
+}
+
 /// The role a seat resolves to, with `bash` removed when it was not asked for.
 ///
 /// The removal is here rather than in `letibot_tools::roles` because it is a
@@ -1867,4 +1922,228 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
         ),
     };
     Ok(Spiller::new(budget, store))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letibot_tools::authorise::TrailProvenance;
+
+    fn user(text: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            parts: vec![UserPart::Text { text: text.into() }],
+        }
+    }
+
+    /// A ledger with an encoder attached, which is what every session has.
+    ///
+    /// Constructing the decorator is the *only* way to say so — the flag is
+    /// `pub(crate)` in `letibot-tools` precisely so that "an encoder was declared"
+    /// and "an encoder was wired" cannot be two different facts. The sink is
+    /// dropped; the attachment is not.
+    fn encoded() -> IntentLedger {
+        let l = IntentLedger::new();
+        let l = Arc::new(l);
+        drop(IntentSink::new(l.clone(), letibot_tools::NullToolSink));
+        Arc::try_unwrap(l).expect("the sink was just dropped")
+    }
+
+    /// **An unattached encoder is loud, not silent.** The state this is asserting
+    /// is the one a session must never be in quietly: a diff computed against
+    /// nothing would report every completion as verified, which is exactly the
+    /// announced-but-not-done failure wearing the check's own clothes.
+    #[test]
+    fn a_ledger_with_no_encoder_says_so_in_the_diff_itself() {
+        let bare = IntentLedger::new();
+        let steer = steer_for_turn(&bare, false, "t1", &[])
+            .expect("no encoder is itself a finding, on every turn");
+        assert!(steer.contains("effect log"), "{steer}");
+        assert!(
+            steer_for_turn(&encoded(), false, "t1", &[]).is_none(),
+            "an encoded ledger with nothing declared has nothing to say"
+        );
+    }
+
+    // -- the authorisation trail --------------------------------------------
+
+    /// **The harness must not be able to authorise itself.**
+    ///
+    /// Everything a session appends as a `User` item looks identical in the
+    /// transcript: the operator's prompt, a head's steering, §5.7's salvage notice
+    /// and the intent check's own *"you said you would X"*. A trail walked over the
+    /// transcript would read all four as the operator's words, and an agent whose
+    /// own text can authorise an action is the shape a prompt injection would most
+    /// like to take. This is the assertion that keeps the four apart.
+    #[test]
+    fn an_injected_notice_is_never_read_back_as_the_operator() {
+        let m = TrailMirror::default();
+        m.begin_turn();
+        m.say(Speaker::Operator, "ssh to lubuntu2 and check the build", None);
+        m.say(Speaker::Agent, "[intent check] you said you would ssh", None);
+
+        let t = m.trail();
+        let words: Vec<&str> = t.operator_words().iter().map(|u| u.text.as_str()).collect();
+        assert_eq!(words, vec!["ssh to lubuntu2 and check the build"]);
+        assert_eq!(t.utterances.len(), 2, "both are carried, with their speakers");
+        assert!(
+            t.utterances.iter().any(|u| u.speaker == Speaker::Agent),
+            "the agent's own line is carried as context and never as authority"
+        );
+    }
+
+    /// The denominator is what was **looked at**, and it is not derived from what
+    /// came back.
+    ///
+    /// `docs/tool-design-brief.md` §2.2 applied to a security input: an adjudicator
+    /// told *"the operator said nothing"* when nobody looked would deny the thing
+    /// that was asked for. `0 of 41` is a measurement; `0` is not.
+    #[test]
+    fn a_trail_with_no_operator_words_still_carries_its_denominator() {
+        let m = TrailMirror::default();
+        m.note_items(41);
+        let t = m.trail();
+        assert!(t.was_collected(), "somebody looked; this is not `NotCollected`");
+        assert!(t.operator_words().is_empty());
+        match t.provenance {
+            TrailProvenance::Scanned {
+                messages_scanned,
+                operator_messages,
+            } => {
+                assert_eq!(operator_messages, 0);
+                assert!(
+                    messages_scanned > 0,
+                    "a scan of 41 items reported a denominator of {messages_scanned}"
+                );
+            }
+            TrailProvenance::NotCollected { .. } => panic!("something looked"),
+        }
+    }
+
+    /// A gate with no trail source installed reports `NotCollected` — **not** an
+    /// empty trail. This is the state the whole seam exists to leave behind, and it
+    /// is asserted here so that "the default is safe" is a fact rather than a
+    /// recollection.
+    #[test]
+    fn an_uninstalled_trail_is_not_collected_rather_than_empty() {
+        let t = AuthorisationTrail::default();
+        assert!(!t.was_collected());
+        assert!(t.render().contains("NOT COLLECTED"), "{}", t.render());
+    }
+
+    /// Distance is half the evidence: a *"yeah restart"* from six turns ago is not
+    /// the same fact as one from this turn, and a trail that dropped the distance
+    /// would present them as identical.
+    #[test]
+    fn recency_is_carried_and_the_clock_is_absent_rather_than_invented() {
+        let m = TrailMirror::default();
+        m.begin_turn();
+        m.say(Speaker::Operator, "old", None);
+        for _ in 0..5 {
+            m.begin_turn();
+        }
+        m.say(Speaker::Operator, "recent", Some(Instant::now()));
+
+        let t = m.trail();
+        let by = |s: &str| {
+            t.utterances
+                .iter()
+                .find(|u| u.text == s)
+                .unwrap_or_else(|| panic!("{s} is missing"))
+        };
+        assert_eq!(by("recent").turns_ago, 0);
+        assert_eq!(by("old").turns_ago, 5);
+        // `None` reads as *not recorded*, never as *just now* — which is why the
+        // rebuilt-from-store rows keep it.
+        assert_eq!(by("old").seconds_ago, None);
+        assert!(by("recent").seconds_ago.is_some());
+    }
+
+    /// A rebuilt transcript seeds the trail, and the reading is the permissive one.
+    /// Asserted so that the resume note beside it is describing something true.
+    #[test]
+    fn a_resumed_trail_is_seeded_with_no_clock() {
+        let m = TrailMirror::default();
+        m.seed(&[
+            user("first"),
+            TranscriptItem::Assistant {
+                text: "an answer".into(),
+                tool_calls: vec![],
+            },
+            user("second"),
+        ]);
+        let t = m.trail();
+        assert_eq!(t.operator_words().len(), 2);
+        assert!(
+            t.utterances.iter().all(|u| u.seconds_ago.is_none()),
+            "nothing recorded when a stored row was said; a reconstructed clock \
+             would be a guess presented as a measurement"
+        );
+    }
+
+    // -- the intent diff -----------------------------------------------------
+
+    /// **T21.3, closed.** An item declared in a turn that then ran nothing is the
+    /// acceptance case, and the steering text is what the model is handed.
+    #[test]
+    fn an_intent_declared_and_not_acted_on_produces_steering() {
+        let l = encoded();
+        l.declare("t1", "restart the model server", intent_tools::Source::Todo);
+        let steer = steer_for_turn(&l, false, "t1", &[]).expect("a declared item and no effect");
+        assert!(steer.contains("intent check"), "{steer}");
+        assert!(steer.contains("restart the model server"), "{steer}");
+    }
+
+    /// **The default does not fire on prose**, which is the whole reason the prose
+    /// half is a flag. A turn that says "I'll check the file" and calls nothing is
+    /// the *normal* shape of a plain answer, and nudging it would put the check into
+    /// conversations that were working.
+    #[test]
+    fn the_prose_heuristic_is_off_unless_it_is_asked_for() {
+        let l = encoded();
+        let items = [TranscriptItem::Assistant {
+            text: "I'll check the file and get back to you.".into(),
+            tool_calls: vec![],
+        }];
+        assert_eq!(
+            steer_for_turn(&l, false, "t1", &items),
+            None,
+            "the deterministic half must not read prose"
+        );
+        let with_prose = steer_for_turn(&l, true, "t2", &items)
+            .expect("the prose half is what --intent-prose buys");
+        assert!(with_prose.contains("check the file"), "{with_prose}");
+    }
+
+    /// The diff is idempotent per turn. A turn boundary that fires twice is a thing
+    /// that happens, and a diff that grows each time it is read is not a
+    /// measurement.
+    #[test]
+    fn reading_the_same_turn_twice_says_the_same_thing() {
+        let l = encoded();
+        l.declare("t1", "write the report", intent_tools::Source::Todo);
+        let a = steer_for_turn(&l, false, "t1", &[]);
+        let b = steer_for_turn(&l, false, "t1", &[]);
+        assert_eq!(a, b);
+    }
+
+    // -- the monitor notice --------------------------------------------------
+
+    /// A monitor that expired is **not** a monitor that fired, and the sentence the
+    /// model gets has to keep them apart — reporting a deadline as a completion is
+    /// F5 one primitive over.
+    #[test]
+    fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
+        let monitors = Monitors::new();
+        assert_eq!(monitors.settled_count(), 0);
+        // Nothing declared, so nothing settles: the notice builder is exercised
+        // through the empty case here and through the real one in `background.rs`,
+        // which owns the four endings. What matters at this layer is that the
+        // sentence carries `word()` rather than a boolean.
+        let text = monitor_notice(&[]);
+        assert!(text.contains("FIRED"), "{text}");
+        assert!(
+            text.contains("expiry") || text.contains("stopped existing"),
+            "the notice must distinguish a firing from a watch that merely ended: {text}"
+        );
+    }
 }

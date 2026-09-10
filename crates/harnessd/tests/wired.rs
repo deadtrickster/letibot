@@ -369,3 +369,121 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
         .join("\n");
     assert!(all.contains("web"), "{all}");
 }
+
+// ---------------------------------------------------------------------------
+// 5. A denial the operator can see
+// ---------------------------------------------------------------------------
+
+/// **§4b, end to end through the parts that will actually carry it.**
+///
+/// `docs/boundary-and-adjudication.md` §4b is a requirement, and the chain is what
+/// makes it one: the gate denies, the operator is not told, the model infers *the
+/// approach was wrong* rather than *the action was forbidden*, tries a variant, and
+/// the task dies with the operator seeing only a dead task. Step 2 is what this
+/// closes.
+///
+/// The gate, the sink and the hub are the real ones. Only the adjudicator is a stub,
+/// and it is `NoAdjudicator` — the honest worst case, where nobody decided at all.
+#[test]
+fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
+    use letibot_harnessd::harness::HubDenials;
+    use letibot_sessionlog::SessionEvent;
+    use letibot_tools::{Access, AdjudicatedGate, Gate, GateCall, GateDecision, NoAdjudicator};
+
+    let hub = Hub::new("s-denial");
+    let mut gate = AdjudicatedGate::new(Box::new(NoAdjudicator))
+        .with_identity("s-denial", "dead")
+        .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
+
+    let args = serde_json::json!({"command": "rm -rf /home/dead/Projects/letibot/target"});
+    let decision = gate.admit(&GateCall {
+        name: "bash",
+        access: Access::Exec,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: None,
+    });
+    assert!(
+        matches!(decision, GateDecision::Refuse { .. }),
+        "a gate with nothing behind it must refuse"
+    );
+
+    let denials: Vec<(String, String, String, String)> = hub
+        .retained()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            SessionEvent::DenialRaised {
+                tool,
+                outcome,
+                grant,
+                by,
+                ..
+            } => Some((tool, outcome, grant, by)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        denials.len(),
+        1,
+        "before this seam was wired the refusal reached the model and nobody else, \
+         which is the whole defect"
+    );
+    let (tool, outcome, grant, by) = &denials[0];
+    assert_eq!(tool, "bash");
+    // **`not_run` and `denied` must never collapse.** Nobody decided here, and
+    // reporting it as a denial would claim a decision that was not made.
+    assert_eq!(
+        outcome, "not_run",
+        "`NoAdjudicator` answers `Unavailable`; calling that a denial claims \
+         somebody decided"
+    );
+    assert!(
+        !by.is_empty(),
+        "a refusal that does not say who decided is the one that costs an hour"
+    );
+    // The grant path arrives WITH the denial, not after the task has died: a
+    // refusal that can only be routed around teaches people to route around
+    // refusals, and one whose grant arrives late is that with an extra step.
+    assert!(
+        grant.contains("adj-"),
+        "the operator must be able to grant it by name: {grant}"
+    );
+}
+
+/// The denial is **durable**: a head attaching after the refusal replays it, rather
+/// than joining a session where a task stopped for no visible reason.
+#[test]
+fn a_denial_is_replayed_to_a_head_that_was_not_there() {
+    use letibot_sessionlog::SessionEvent;
+    let hub = Hub::new("s-late");
+    hub.publish(SessionEvent::DenialRaised {
+        request_id: "adj-1".into(),
+        turn_id: "t1".into(),
+        call_id: "c1".into(),
+        tool: "write".into(),
+        summary: "write(path: /etc/hosts)".into(),
+        baseline: "1 path; outside the workspace".into(),
+        by: "human:dead".into(),
+        basis: "outside the project".into(),
+        tier: "always_ask".into(),
+        outcome: "denied".into(),
+        repeat_count: 1,
+        breaker_open: false,
+        grant: "grant `adj-1` (write) for this session".into(),
+    });
+
+    let retained = hub.retained();
+    let mut scrub = letibot_sessionlog::StoredProjection::of(retained.iter());
+    let kept = retained
+        .iter()
+        .filter_map(|e| scrub.keep(e))
+        .filter(|e| matches!(e.event, SessionEvent::DenialRaised { .. }))
+        .count();
+    assert_eq!(
+        kept, 1,
+        "scrubbing a denial puts back the hole §4b was written against, one head \
+         later: somebody who joined after the refusal sees only a dead task"
+    );
+}
