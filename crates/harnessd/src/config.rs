@@ -462,14 +462,18 @@ impl Config {
             ));
         }
         let (state, detail, active) =
-            letibot_tools::adjudicate::startup_disclosure_with_surfacing(
+            letibot_tools::adjudicate::startup_disclosure_for(
                 &wiring.adjudicator,
                 wiring.backend_writable,
-                // The gate is reachable from any class that is not unattended, not
-                // from `write` alone. A seat with `say` and no writes still has a
-                // code path to a question, and a disclosure that only counted
-                // writes would call that session unattended.
-                wiring.has_write_tools || wiring.has_exec_tools || wiring.has_network_tools,
+                // **The classes travel, rather than a bool that means "write".**
+                // The gate is reachable from any class that is not unattended, so a
+                // disclosure counting only writes would call a planner (`say`) or a
+                // runner (the job verbs) unattended. Passing `true` for "something
+                // is gated" fixed the on/off logic and produced a sentence saying
+                // *"Write tools are callable"* about a session with no write tools —
+                // correct about the boundary and wrong about the session, which is
+                // this defect rather than a smaller version of it.
+                &gated_classes(wiring),
                 wiring.denials_surfaced,
             );
         out.push(Disclosure {
@@ -542,6 +546,25 @@ impl Config {
         }
         out
     }
+}
+
+/// The access classes this session seated that can reach the gate, in prompt order.
+///
+/// Read off the wiring's booleans, which were themselves read off the seated schemas.
+/// `Read` and `Session` are absent because they are unattended — a read-only tool has
+/// no code path to a question (clause 4).
+fn gated_classes(wiring: &GateWiring) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if wiring.has_write_tools {
+        out.push("write");
+    }
+    if wiring.has_exec_tools {
+        out.push("exec");
+    }
+    if wiring.has_network_tools {
+        out.push("network");
+    }
+    out
 }
 
 /// What the session actually wired, read from it rather than asserted about it.

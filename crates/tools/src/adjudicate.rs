@@ -1630,9 +1630,41 @@ pub fn startup_disclosure_with_surfacing(
     has_write_tools: bool,
     denials_surfaced: bool,
 ) -> (&'static str, String, bool) {
+    startup_disclosure_for(
+        adjudicator,
+        backend_writable,
+        if has_write_tools { &["write"] } else { &[] },
+        denials_surfaced,
+    )
+}
+
+/// As [`startup_disclosure_with_surfacing`], and it says **which** classes can reach
+/// the gate rather than assuming they are writes.
+///
+/// # The defect this exists to stop, which is the one this whole seam exists to stop
+///
+/// The two functions above take `has_write_tools: bool`, and a caller with a session
+/// whose gated tools are `Access::Exec` — the runner role's five job verbs and
+/// `monitor`, no `write` anywhere — has to pass `true` to get the on/off logic right,
+/// and then the sentence says *"Write tools are callable"* about a session with no
+/// write tools. The banner was correct about the boundary and wrong about the
+/// session, which is the same shape as the four instances this crate's `GateWiring`
+/// sibling already paid for: a disclosure that reads a wiring and then paraphrases it
+/// from memory.
+///
+/// So the classes travel. `classes` is the set of non-unattended
+/// [`Access`](crate::schema::Access) names actually seated — `["write"]`, `["exec"]`,
+/// `["write", "network"]` — read off the schemas by the caller. Empty means nothing
+/// can reach the gate.
+pub fn startup_disclosure_for(
+    adjudicator: &str,
+    backend_writable: bool,
+    classes: &[&str],
+    denials_surfaced: bool,
+) -> (&'static str, String, bool) {
     let (state, mut detail, active) =
-        startup_disclosure_inner(adjudicator, backend_writable, has_write_tools);
-    if has_write_tools && !denials_surfaced {
+        startup_disclosure_inner(adjudicator, backend_writable, classes);
+    if !classes.is_empty() && !denials_surfaced {
         detail.push_str(
             " DENIALS ARE NOT SURFACED: no denial sink is attached, so a refusal reaches              the model and stops there. The operator will see a task that stopped rather              than the decision that stopped it, which is the failure mode that makes a              model try a variant instead of asking. Attach one with              `AdjudicatedGate::with_denial_sink`.",
         );
@@ -1644,9 +1676,9 @@ pub fn startup_disclosure_with_surfacing(
 fn startup_disclosure_inner(
     adjudicator: &str,
     backend_writable: bool,
-    has_write_tools: bool,
+    classes: &[&str],
 ) -> (&'static str, String, bool) {
-    if !has_write_tools {
+    if classes.is_empty() {
         return (
             "N/A",
             "this session has only read-only tools, which never prompt (clause 4). \
@@ -1655,19 +1687,32 @@ fn startup_disclosure_inner(
             false,
         );
     }
+    // What the session actually seated, in its own words. `WRITE` for a coder,
+    // `EXEC` for a runner, `WRITE + NETWORK` for a planner — never the first of
+    // those about all three.
+    let shout = classes
+        .iter()
+        .map(|c| c.to_uppercase())
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let quiet = classes.join(" + ");
+    let writes = classes.contains(&"write");
     let attached = !adjudicator.starts_with("none");
     match (attached, backend_writable) {
         (false, _) => (
             "NONE",
             format!(
-                "this session has WRITE TOOLS and no adjudicator ({adjudicator}). Every \
-                 `write` and `edit` call will refuse with NotRun and change nothing. \
-                 That is the fail-closed default and not a fault; attach an adjudicator \
-                 to make them callable."
+                "this session has {shout} TOOLS and no adjudicator ({adjudicator}). Every \
+                 {quiet} call will refuse with NotRun and change nothing. That is the \
+                 fail-closed default and not a fault; attach an adjudicator to make them \
+                 callable."
             ),
             false,
         ),
-        (true, false) => (
+        // Only a *write* class is stopped by a read-only backend. An `exec` or
+        // `network` tool over one is a different, and worse, mismatch — so this arm
+        // says which it is rather than describing every seat as a blocked write.
+        (true, false) if writes => (
             "GATE ONLY",
             format!(
                 "an adjudicator is attached ({adjudicator}), but the execution backend was \
@@ -1676,11 +1721,21 @@ fn startup_disclosure_inner(
             ),
             false,
         ),
+        (true, false) => (
+            "GATE ONLY",
+            format!(
+                "an adjudicator is attached ({adjudicator}) over {quiet} tools, and the \
+                 backend was opened READ-ONLY. Nothing here can change a file; whether the \
+                 tools work at all depends on what each needs from the backend, and a tool \
+                 that needs more than it has refuses naming the backend."
+            ),
+            false,
+        ),
         (true, true) => (
             "",
             format!(
-                "{adjudicator}. Write tools are callable: an admitted call reaches the \
-                 disk. Read-only tools still never prompt (clause 4)."
+                "{adjudicator}. {shout} tools are callable: an admitted call takes effect. \
+                 Read-only tools still never prompt (clause 4)."
             ),
             true,
         ),
@@ -1941,12 +1996,56 @@ mod tests {
 
         let (_, detail, active) = startup_disclosure("console ask", true, true);
         assert!(active);
-        assert!(detail.contains("reaches the disk"), "{detail}");
+        assert!(detail.contains("takes effect"), "{detail}");
 
         // And the M1 sentence stays true for an M1 session.
         let (state, _, active) = startup_disclosure("none attached", false, false);
         assert_eq!(state, "N/A");
         assert!(!active);
+    }
+
+    /// **The sentence names the classes the session actually seated.**
+    ///
+    /// The defect this replaced: a caller whose gated tools were `Access::Exec` —
+    /// the runner role's five job verbs and `monitor`, no `write` anywhere — had to
+    /// pass `has_write_tools: true` to get the on/off logic right, and the banner
+    /// then said *"Write tools are callable"* about a session with no write tools.
+    /// Correct about the boundary and wrong about the session, which is the same
+    /// shape as the four instances `harnessd`'s `GateWiring` already paid for.
+    ///
+    /// Nothing here pins a wording. What it pins is that the wording **moves** with
+    /// the classes, and that a class the session does not have never appears.
+    #[test]
+    fn the_disclosure_names_the_classes_seated_and_not_write_by_default() {
+        let exec = startup_disclosure_for("console ask", true, &["exec"], true).1;
+        assert!(exec.contains("EXEC"), "{exec}");
+        assert!(
+            !exec.to_lowercase().contains("write"),
+            "a session with no write tools was told its write tools are callable: {exec}"
+        );
+
+        let both = startup_disclosure_for("console ask", true, &["write", "network"], true).1;
+        assert!(both.contains("WRITE"), "{both}");
+        assert!(both.contains("NETWORK"), "{both}");
+        assert_ne!(both, exec);
+
+        // A read-only backend stops a *write* and says so in those terms; for an
+        // exec or network seat it is a different mismatch and must not be described
+        // as a blocked write.
+        let shut_write = startup_disclosure_for("console ask", false, &["write"], true).1;
+        assert!(shut_write.contains("cannot reach the disk"), "{shut_write}");
+        let shut_exec = startup_disclosure_for("console ask", false, &["exec"], true).1;
+        assert_ne!(
+            shut_exec, shut_write,
+            "an exec seat over a read-only backend is not a blocked write"
+        );
+
+        // Empty classes is still the M1 sentence, and it is the only state that
+        // may claim nothing can reach the gate.
+        assert_eq!(
+            startup_disclosure_for("none attached", false, &[], true).0,
+            "N/A"
+        );
     }
 
 
