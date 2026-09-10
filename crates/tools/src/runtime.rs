@@ -151,6 +151,15 @@ impl InvokeCtx<'_> {
     pub fn call_id(&self) -> &str {
         self.call_id
     }
+
+    /// The turn this call belongs to.
+    ///
+    /// Needed by any tool whose result is a fact *about the turn* rather than
+    /// about the tree — the intent ledger keys on it, because "declared this turn
+    /// and nothing ran this turn" is the whole of T21.3.
+    pub fn turn_id(&self) -> &str {
+        self.turn_id
+    }
 }
 
 /// One tool.
@@ -413,6 +422,35 @@ pub mod roles {
                 "read",
                 "grep",
                 "read_spill",
+            ],
+        )
+    }
+
+    /// What a session in plan mode seats: nothing that can change **the work**.
+    ///
+    /// Plan mode is a **capability boundary**, so this is a role and not a flag —
+    /// `write` and `edit` are absent from `tools_json` rather than refused at call
+    /// time. [`crate::builtins::intent::plan::seating`] derives the same answer
+    /// from an arbitrary base role; this is the named one.
+    ///
+    /// D9: it keeps `write_plan` (a write scoped to plan documents by taking a
+    /// name rather than a path) and `say` (the fabric's chat verb), because a
+    /// planner that can neither record nor discuss its plan has to carry the plan
+    /// in the context it is about to hand over. Eight tools, which is exactly
+    /// [`DEFAULT_MAX_TOOLS`] — this role has no spare seat, and `outline` is what
+    /// it gave up to get one.
+    pub fn planner() -> Role {
+        Role::new(
+            "planner",
+            &[
+                "read",
+                "grep",
+                "glob",
+                "todo",
+                "goal",
+                "write_plan",
+                "say",
+                "exit_plan_mode",
             ],
         )
     }

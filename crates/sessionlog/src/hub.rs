@@ -85,7 +85,37 @@ pub struct QueuedCommand {
 pub enum CommandKind {
     Prompt { text: String },
     Interrupt { reason: String },
-    Answer { req_id: String, option_id: String },
+    /// A head settled an open request. **Which kind** it settled is [`Reply`], and
+    /// it is an enum rather than two variants here because every consumer that only
+    /// cares "an answer arrived for `req_id`" already destructures this variant with
+    /// `..` — a second variant would have silently skipped those arms.
+    Answer { req_id: String, reply: Reply },
+}
+
+/// What a head sent back, and the two things it can be.
+///
+/// §11.6 says a permission and a question are one mechanism differing in `kind`.
+/// This is that difference, made a type: one `req_id`, two payloads, and no way to
+/// pass one where the other is read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    /// An adjudication grant or denial, by option id — `AllowOnce`, `RejectOnce`
+    /// and the rest live behind that id.
+    Permission { option_id: String },
+    /// A person's answer to a question: a choice, a note on it, or typed text
+    /// (`PROTOCOL_VERSION` 5). Deliberately **not** expressed with
+    /// [`crate::event::OptionKind`] — see `crates/sessionlog/src/question.rs`.
+    Question(crate::question::QuestionAnswer),
+}
+
+impl Reply {
+    /// For the `CommandIssued` announcement and the counters.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Reply::Permission { .. } => "permission",
+            Reply::Question(_) => "question",
+        }
+    }
 }
 
 impl CommandKind {
@@ -476,7 +506,7 @@ impl Hub {
             let identity = h.identity.clone();
             let can_decide = h.caps.can_decide;
 
-            if let CommandKind::Answer { req_id, .. } = &kind {
+            if let CommandKind::Answer { req_id, reply } = &kind {
                 if !can_decide {
                     return ServerFrame::Rejected {
                         client_request_id,
@@ -485,10 +515,29 @@ impl Hub {
                         actual_seq: actual,
                     };
                 }
-                if !g.view.open_decisions().iter().any(|d| &d.req_id == req_id) {
+                let Some(open) = g.view.open_decisions().iter().find(|d| &d.req_id == req_id)
+                else {
                     return ServerFrame::Rejected {
                         client_request_id,
                         reason: REJECT_UNKNOWN_DECISION.into(),
+                        expected_seq,
+                        actual_seq: actual,
+                    };
+                };
+                // A malformed answer is refused **here**, before it reaches anything
+                // that would act on it, and the question stays open. Accepting it and
+                // letting the tool sort it out would leave a settled decision behind
+                // an unanswered question, which is the one state the view must never
+                // hold.
+                if let Reply::Question(a) = reply
+                    && let Err(defect) = a.validate(open.options.len())
+                {
+                    return ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!(
+                            "{}: {defect}",
+                            crate::question::REJECT_MALFORMED_ANSWER
+                        ),
                         expected_seq,
                         actual_seq: actual,
                     };
@@ -502,7 +551,9 @@ impl Hub {
                 }
                 (CommandKind::Prompt { .. }, false) => crate::protocol::NOTE_PROMPT_QUEUED.into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
-                (CommandKind::Answer { .. }, _) => "decision answered".into(),
+                (CommandKind::Answer { reply, .. }, _) => {
+                    format!("{} answered", reply.as_str())
+                }
             };
 
             let verb = kind.verb();
@@ -760,7 +811,9 @@ mod tests {
             0,
             CommandKind::Answer {
                 req_id: "r1".into(),
-                option_id: "allow".into(),
+                reply: Reply::Permission {
+                    option_id: "allow".into(),
+                },
             },
         );
         assert!(matches!(
@@ -827,11 +880,81 @@ mod tests {
             0,
             CommandKind::Answer {
                 req_id: "r1".into(),
-                option_id: "allow".into(),
+                reply: Reply::Permission {
+                    option_id: "allow".into(),
+                },
             },
         );
         assert!(
             matches!(f, ServerFrame::Rejected { ref reason, .. } if reason == REJECT_READ_ONLY)
+        );
+    }
+
+    #[test]
+    fn a_question_answer_settles_the_same_request_a_permission_would() {
+        let hub = Hub::new("s");
+        let a = attach(&hub, 64);
+        hub.publish(requested("r1", "which approach?"));
+        let f = hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: "r1".into(),
+                reply: Reply::Question(
+                    crate::question::QuestionAnswer::choosing(1).with_note("only on CUDA"),
+                ),
+            },
+        );
+        match f {
+            ServerFrame::Accepted { note, .. } => assert_eq!(note, "question answered"),
+            other => panic!("expected acceptance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_question_answer_leaves_the_question_open() {
+        // D10: an answer that does not conform is refused HERE, before anything acts
+        // on it. Accepting it would leave a settled decision behind an unanswered
+        // question, which is the one state the view must never hold.
+        let hub = Hub::new("s");
+        let a = attach(&hub, 64);
+        hub.publish(requested("r1", "which approach?")); // two options
+        for bad in [
+            crate::question::QuestionAnswer::default(),
+            crate::question::QuestionAnswer::choosing(9),
+            crate::question::QuestionAnswer {
+                note: Some("hmm".into()),
+                ..Default::default()
+            },
+        ] {
+            let f = hub.submit(
+                &a.head_id,
+                "c1",
+                0,
+                CommandKind::Answer {
+                    req_id: "r1".into(),
+                    reply: Reply::Question(bad.clone()),
+                },
+            );
+            match f {
+                ServerFrame::Rejected { reason, .. } => {
+                    assert!(
+                        reason.starts_with(crate::question::REJECT_MALFORMED_ANSWER),
+                        "{reason}"
+                    );
+                    assert!(reason.contains("still open"), "{reason}");
+                }
+                other => panic!("{bad:?} was accepted: {other:?}"),
+            }
+        }
+        // And it really is still open, so the person can be asked again.
+        assert!(
+            hub.snapshot()
+                .open_decisions
+                .iter()
+                .any(|d| d.req_id == "r1"),
+            "the question must survive a malformed answer"
         );
     }
 }

@@ -24,6 +24,7 @@
 //! | [`bash`] | a command whose process predicate matches the process that would run it is refused with the pids it matches and the handle-shaped call that does what was meant |
 //! | [`jobs`] | an unknown job id comes back with the jobs there are and the nearest; an unknown scope with the scopes there are and the three kinds |
 //! | [`external`] | a tool whose infrastructure is not attached names what is missing, what would attach it, and what still works here — and returns `NotRun`, because nothing ran |
+//! | [`intent`] | a completion with nothing measured behind it is reported as *claimed*, with the counts and what would settle it; an unmounted board, a headless `ask_user_question` and a lost row-claim each name what is missing rather than defaulting |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
@@ -37,6 +38,7 @@ pub mod external;
 pub mod glob;
 pub mod grep;
 pub mod jobs;
+pub mod intent;
 pub mod outline;
 pub mod pattern;
 pub mod read;

@@ -141,12 +141,34 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Answer {
             client_request_id: client_request_id.clone(),
             req_id: req_id.to_string(),
             option_id: option_id.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// Answer an open **question** with what the person actually did: chose an
+    /// option, chose one and qualified it, or typed a reply (`PROTOCOL_VERSION` 5).
+    ///
+    /// There is deliberately no `defer` here. A head that wants to come back to a
+    /// question simply does not call this, and the question stays open — a deferral
+    /// that travelled as an answer is how a turn continues on an assumption nobody
+    /// made.
+    pub fn answer_question(
+        &mut self,
+        req_id: &str,
+        answer: crate::question::QuestionAnswer,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::AnswerQuestion {
+            client_request_id: client_request_id.clone(),
+            req_id: req_id.to_string(),
+            answer,
         })?;
         Ok(client_request_id)
     }
