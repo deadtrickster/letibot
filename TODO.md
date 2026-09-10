@@ -690,6 +690,13 @@ read of an unchanged file. The repeated call is kept for the *evidence*.
 producing genuinely new results forever — with a sentence that no longer accuses.
 `--stall-rounds N` (default 5) is the band, `0` is off and disclosed.
 
+**The operator's own prompt was replayed at the new defaults.** *"Look at the
+project and suggest improvements."*, the session that was cut, ran to completion:
+**28 rounds, 55 tool calls, exit 0**, ending in a ranked list with an ordering
+argument. Every round produced at least one `Ok` carrying bytes the turn had not
+seen, so the progress check never came within four rounds of firing. The old cap
+stopped this turn less than half way through it.
+
 **The false positive is measured, not assumed.** Live against the running server: a
 turn told to run three searches one per step, each correctly finding nothing, is a run
 of stalled rounds even though every query was new and every answer was right. At the
