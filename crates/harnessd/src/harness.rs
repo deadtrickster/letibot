@@ -859,19 +859,40 @@ impl<'a> Harness<'a> {
         // **The refusal that has to come before the banner.**
         //
         // A seat that can reach the gate and has nobody behind it is not a safe
-        // default; it is a session that starts, prints, and then refuses every call
-        // — one wasted turn to discover, and to the model it reads as a broken
-        // harness rather than as a boundary.
-        if gated && adjudicator.is_none() && cfg.adjudicator == AdjudicatorChoice::None {
-            // Chosen, not omitted. Allowed, and disclosed by
-            // `startup_disclosure_with_surfacing` as `NONE`.
-        } else if gated && adjudicator.is_none() && cfg.adjudicator != AdjudicatorChoice::Console {
+        // default. It is a session that starts, prints, and then refuses every call
+        // with `not_run` — one wasted turn to discover — while the model carries
+        // tool definitions for capabilities it cannot use, which is the harness
+        // lying to it in the stable prefix.
+        //
+        // The check is on the adjudicator's **own answer**, not on how it was
+        // chosen: `NoAdjudicator::describe` begins `none`, and so does anything else
+        // that has nothing behind it. A caller reaching `open_with` directly with
+        // `NoAdjudicator` is the same state as an operator who attached nothing, and
+        // making the two spellings one check is what keeps this from being routed
+        // around by a test helper. `AdjudicatorChoice` has no value that means
+        // nobody — see its `parse`, where `none` is refused with the reason.
+        if gated
+            && let Some(adj) = &adjudicator
+            && adj.describe().starts_with("none")
+        {
+            let gated_tools: Vec<&str> = schemas
+                .iter()
+                .filter(|s| !s.access.is_unattended())
+                .map(|s| s.name.as_str())
+                .collect();
             return Err(HarnessError::Setup(format!(
-                "the `{}` role seats tools that must be adjudicated ({}) and no adjudicator \
-                 is attached. Attach one with --adjudicator console, or say --adjudicator \
-                 none if a session where every such call refuses is what you want.",
+                "the `{}` role seats {} tool(s) that must be adjudicated — {} — and the \
+                 adjudicator attached is `{}`.\n\nThis refuses to open rather than \
+                 opening and refusing every call. Failing closed is right and it is not \
+                 a substitute for saying so before anything runs: a session in that \
+                 state prints a banner, takes a prompt, and returns `not_run` — nobody \
+                 decided — one turn later, having meanwhile told the model in its stable \
+                 prefix that it has tools it cannot use.\n\nAttach an adjudicator, or \
+                 seat `--role orchestrator`, which does not carry these tools at all.",
                 cfg.seat.as_str(),
-                seated.join(", ")
+                gated_tools.len(),
+                gated_tools.join(", "),
+                adj.describe()
             )));
         }
 
@@ -882,20 +903,21 @@ impl<'a> Harness<'a> {
         // **The gate, built here so the three seams cannot be skipped.** See
         // `open_with`'s docs for why this is not a parameter.
         let (gate, trail_installed, denials_surfaced): (Box<dyn Gate>, bool, bool) = match (
-            adjudicator,
-            gated,
-            cfg.adjudicator,
+            adjudicator, gated,
         ) {
             // Nothing can reach it. `NoBoundary` is what every session that exists
             // today has, and keeping it means this file changed nothing for them.
-            (None, false, _) => (Box::new(NoBoundary), false, false),
-            (None, true, AdjudicatorChoice::None) => {
-                (Box::new(letibot_tools::AdjudicatedGate::closed()), false, false)
-            }
-            (adj, _, _) => {
-                let adj: Box<dyn Adjudicator> = adj.unwrap_or_else(|| {
-                    Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
-                });
+            // A caller who attached an adjudicator to a read-only seat meant it, so
+            // that falls through to the arm below and gets a real gate that nothing
+            // ever calls.
+            (None, false) => (Box::new(NoBoundary), false, false),
+            (adj, _) => {
+                let adj: Box<dyn Adjudicator> = match (adj, cfg.adjudicator) {
+                    (Some(a), _) => a,
+                    (None, AdjudicatorChoice::Console) => {
+                        Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
+                    }
+                };
                 let trail_for_gate = trail.clone();
                 let g = AdjudicatedGate::new(adj)
                     .with_identity(cfg.session_id.clone(), cfg.owner.clone())

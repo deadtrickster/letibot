@@ -221,39 +221,55 @@ pub struct Config {
 /// The operator finds out one wasted turn later.
 ///
 /// So a seat whose tools declare `Write`, `Exec` or `Network` gets
-/// [`AdjudicatorChoice::Console`] by default, and a session that genuinely wants
-/// the fail-closed state has to **say so** — which is [`AdjudicatorChoice::None`],
-/// and is the difference between a decision and an omission.
+/// [`AdjudicatorChoice::Console`], and there is **no value that means nobody**.
+/// That is not an oversight; see [`AdjudicatorChoice::parse`].
+///
+/// One variant today, and it is still an enum: this is the seam a second one lands
+/// on, and [`AdjudicatorChoice::parse`] is where the two refusals live with their
+/// reasons, which is the part that has to exist whether or not there is a choice
+/// to make yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdjudicatorChoice {
     /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr.
     ///
     /// **The default for any seat that can reach the gate.** Its honest limit is
-    /// where it reads from: this works for `harnessd --prompt …` and `letibot-m1`
-    /// in a foreground terminal, and a head attached over the socket has no way to
-    /// answer it — the head's answer affordance is T25/D10 and is not built. The
+    /// where it reads from: this works for `harnessd --prompt …` and for a daemon
+    /// run in a foreground terminal, and a head attached over the socket has no way
+    /// to answer it — the head's answer affordance is T25/D10 and is not built. The
     /// startup disclosure says so rather than letting somebody discover it by
     /// watching a daemon block on a closed stdin.
     #[default]
     Console,
-    /// **Nobody decides, chosen deliberately.** Every gated call refuses with
-    /// `NotRun` — *nobody decided* — and changes nothing.
-    ///
-    /// A separate value rather than the absence of one, because the absence is what
-    /// [`crate::harness::Harness`] refuses to start on. `--adjudicator none` on a
-    /// write seat is a state somebody asked for and can be disclosed as such; a
-    /// write seat that reached the same state by nobody thinking about it is the
-    /// one this harness will not open.
-    None,
 }
 
 impl AdjudicatorChoice {
+    /// The two values this refuses are the interesting part.
+    ///
+    /// **`none`** would be a session with `write` or `bash` seated and nothing that
+    /// can approve a call: every gated call returns `NotRun`, the model is told
+    /// nobody decided, and the operator has a harness that looks wired and does
+    /// nothing. There is no use for that state — a session that wants no writes is
+    /// spelled `--role orchestrator`, which does not seat the tools in the first
+    /// place, so the model is not told it has a capability it cannot use. The two
+    /// spellings are not equivalent and the difference is which one lies to the
+    /// model.
+    ///
+    /// **`model`** is the one somebody reaches for after reading
+    /// `docs/boundary-and-adjudication.md`, and "unknown adjudicator" would read as
+    /// this build not having the concept. It has the concept and no oracle behind
+    /// it, which is a different fact and the one worth saying.
     pub fn parse(s: &str) -> Result<AdjudicatorChoice, String> {
         match s {
             "console" => Ok(AdjudicatorChoice::Console),
-            "none" => Ok(AdjudicatorChoice::None),
-            // Named, not silently unsupported: `model` is the one somebody will
-            // reach for and T25/D13 is why it is not here.
+            "none" => Err(
+                "there is no `none`. A seat with write, exec or network tools and \
+                 nobody to decide is a session that starts, prints a banner, and \
+                 refuses every call with `not_run` — and the model is meanwhile \
+                 carrying tool definitions for capabilities it does not have. If you \
+                 want a session that cannot write, pass `--role orchestrator`: it \
+                 does not seat the tools, so nothing is claimed and nothing refuses."
+                    .into(),
+            ),
             "model" => Err(
                 "the model adjudicator is not wired: `ModelAdjudicator` takes an \
                  `AuthorisationOracle` and this build has no oracle behind it, and its \
@@ -262,7 +278,7 @@ impl AdjudicatorChoice {
                     .into(),
             ),
             other => Err(format!(
-                "unknown adjudicator `{other}`; this build has console, none"
+                "unknown adjudicator `{other}`; this build has console"
             )),
         }
     }
@@ -270,7 +286,6 @@ impl AdjudicatorChoice {
     pub fn as_str(self) -> &'static str {
         match self {
             AdjudicatorChoice::Console => "console",
-            AdjudicatorChoice::None => "none",
         }
     }
 }

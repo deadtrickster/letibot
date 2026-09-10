@@ -54,10 +54,13 @@ fn usage() -> String {
      \x20                           exist yet, so the boundary keeps secret bytes out\n\
      \x20                           of the VIEW and nothing stops a tool result\n\
      \x20                           carrying them into the transcript\n\
-     \x20 --adjudicator console|none  who decides a gated call. `console` reads this\n\
-     \x20                           daemon's own stdin, so it works in the foreground\n\
-     \x20                           and an attached head cannot answer it. A write or\n\
-     \x20                           exec role with neither refuses to start\n\
+     \x20 --adjudicator console     who decides a gated call, and the default for any\n\
+     \x20                           role that can reach the gate. Reads this daemon's\n\
+     \x20                           own stdin, so it works in the foreground and an\n\
+     \x20                           attached head cannot answer it (T25/D10). There is\n\
+     \x20                           no `none`: a role with nobody to decide refuses to\n\
+     \x20                           start, because --role orchestrator is the honest\n\
+     \x20                           spelling of a session that cannot write\n\
      \x20 --intent-prose            also read the assistant's prose for commitments\n\
      \x20                           it did not act on. The tool-declared half is\n\
      \x20                           always on; this half has false positives\n\
