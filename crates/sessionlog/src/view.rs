@@ -84,7 +84,16 @@ pub struct OpenDecision {
     pub kind: String,
     pub call_id: Option<String>,
     pub summary: String,
+    /// The allow/deny ladder, for a permission. Empty for a question.
     pub options: Vec<DecisionOption>,
+    /// The model's own plain-text choices, for a question (T25/D10). Empty for a
+    /// permission. See [`crate::event::SessionEvent::DecisionRequested`] for why the
+    /// two do not share a field.
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// Why the model is stuck, for a question.
+    #[serde(default)]
+    pub because: String,
     pub deadline: Option<u64>,
     pub on_timeout: OnTimeout,
     /// When it was asked, so a head can show how long it has been waiting rather
@@ -364,6 +373,8 @@ impl SessionView {
                 call_id,
                 summary,
                 options,
+                choices,
+                because,
                 deadline,
                 on_timeout,
             } => {
@@ -374,6 +385,8 @@ impl SessionView {
                     call_id: call_id.clone(),
                     summary: summary.clone(),
                     options: options.clone(),
+                    choices: choices.clone(),
+                    because: because.clone(),
                     deadline: *deadline,
                     on_timeout: *on_timeout,
                     asked_ts: env.ts,
