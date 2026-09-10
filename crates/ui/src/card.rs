@@ -171,6 +171,14 @@ pub enum Outcome {
     Denied(String),
     /// The turn was interrupted while this call was in flight.
     Interrupted,
+    /// **Still running, in the background, and reachable.** Carries the handle.
+    ///
+    /// Its own variant for the same reason `Abstained` is one: a backgrounded
+    /// call rendered as `Failed` reads as something to retry, and rendered as
+    /// `Ok` reads as something that finished with nothing to say. Both are wrong
+    /// about a process that is still working, and the operator acts on what the
+    /// card says.
+    Backgrounded(String),
 }
 
 impl Outcome {
@@ -181,6 +189,9 @@ impl Outcome {
             Outcome::Denied(_) => Role::Attention,
             Outcome::Failed(_) => Role::Failure,
             Outcome::Interrupted => Role::Failure,
+            // Attention, never Failure: something is happening and the operator
+            // may want to look, but nothing has gone wrong.
+            Outcome::Backgrounded(_) => Role::Attention,
         }
     }
 
@@ -192,13 +203,17 @@ impl Outcome {
             Outcome::Failed(_) => "failed",
             Outcome::Denied(_) => "refused",
             Outcome::Interrupted => "interrupted",
+            Outcome::Backgrounded(_) => "STILL RUNNING",
         }
     }
 
     fn reason(&self) -> Option<&str> {
         match self {
             Outcome::Ok | Outcome::Interrupted => None,
-            Outcome::Abstained(r) | Outcome::Failed(r) | Outcome::Denied(r) => Some(r),
+            Outcome::Abstained(r)
+            | Outcome::Failed(r)
+            | Outcome::Denied(r)
+            | Outcome::Backgrounded(r) => Some(r),
         }
     }
 }

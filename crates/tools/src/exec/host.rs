@@ -220,6 +220,43 @@ pub trait ProcessHost: Send + Sync {
     /// [`super::scope::Migration`] gives: a promotion is a claim about which
     /// scope reaps this work, and a process that did not move makes that claim
     /// false for that process.
+    ///
+    /// # What the head must send, and why it is not sent yet
+    ///
+    /// This is the daemon-side verb. The operator-facing third of the
+    /// requirement needs one frame, and it is specified here rather than added,
+    /// because adding it costs more than it can currently buy:
+    ///
+    /// ```text
+    /// ClientFrame::PromoteJob {
+    ///     client_request_id: String,   // as every other acting frame carries
+    ///     expected_seq: u64,           // as Prompt and Interrupt do
+    ///     job: String,                 // the job id, from ToolEvent::Progress
+    ///     identity: String,            // WHO — this becomes Backgrounding::Operator
+    /// }
+    /// ```
+    ///
+    /// It goes through the command queue (it acts on a session), it is
+    /// **idempotent** — promoting an already-promoted job is answered with the
+    /// record saying nothing moved, never refused — and the daemon answers it by
+    /// calling this method with [`Backgrounding::Operator`]. The head learns the
+    /// job id the same way it learns everything else about a running call: from
+    /// the `ToolEvent::Progress` notes `bash` already emits, which name the job.
+    ///
+    /// **Why it is not in `protocol.rs` on this branch.** A new `ClientFrame`
+    /// variant is a wire change, so `PROTOCOL_VERSION` has to go 5 → 6, and both
+    /// sides refuse a mismatch by name. Two things follow. First, landing a bump
+    /// costs the running daemon its live session (`TODO.md` D11 priced exactly
+    /// this for 3 → 4). Second, the constant is a single line that every branch
+    /// touching the wire edits, and it was already coordinated once — D10's note
+    /// says 5 was taken deliberately *"to coordinate rather than race"*. Racing
+    /// it for a verb that **nothing in production can call** would be a
+    /// guaranteed conflict buying nothing: `harnessd` seats
+    /// [`crate::runtime::roles::m1_orchestrator`], which has no `bash`, no jobs
+    /// and therefore no job to promote.
+    ///
+    /// So the seam is here and tested, and the wire change is one variant and one
+    /// integer whenever a head is ready to send it.
     fn promote(
         &self,
         job: &JobId,

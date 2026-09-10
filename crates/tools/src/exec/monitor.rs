@@ -594,19 +594,19 @@ impl Monitors {
         job: Option<Arc<Job>>,
         declared_by: &str,
         ttl: Duration,
-    ) -> Result<Arc<Monitor>, MonitorError> {
+    ) -> Result<Arc<Monitor>, Box<MonitorError>> {
         if ttl > MAX_TTL {
-            return Err(MonitorError::Unbounded {
+            return Err(Box::new(MonitorError::Unbounded {
                 asked: ttl,
                 cap: MAX_TTL,
-            });
+            }));
         }
         let probe = match (&watch, job) {
             (Watch::Job(_), Some(j)) => Probe::Job(j),
             (Watch::Job(id), None) => {
-                return Err(MonitorError::NoSuchJob {
+                return Err(Box::new(MonitorError::NoSuchJob {
                     name: id.0.clone(),
-                });
+                }));
             }
             (Watch::Scope(s), _) => Probe::Scope(s.clone()),
             (Watch::Path(p), _) => Probe::Path {
@@ -624,13 +624,13 @@ impl Monitors {
 
         let mut reg = self.inner.lock().expect("monitors");
         if let Some(existing) = reg.live.get(name) {
-            return Err(MonitorError::NameTaken {
+            return Err(Box::new(MonitorError::NameTaken {
                 name: name.to_string(),
                 watching: existing.watch.describe(),
                 owner: existing.owner.clone(),
                 declared_by: existing.declared_by.clone(),
                 age: existing.age(),
-            });
+            }));
         }
         let m = Arc::new(Monitor::new(
             name.to_string(),
@@ -651,19 +651,19 @@ impl Monitors {
     }
 
     /// Extend a monitor's TTL. T24 requirement 5's explicit renewal.
-    pub fn renew(&self, name: &str, ttl: Duration) -> Result<Arc<Monitor>, MonitorError> {
+    pub fn renew(&self, name: &str, ttl: Duration) -> Result<Arc<Monitor>, Box<MonitorError>> {
         if ttl > MAX_TTL {
-            return Err(MonitorError::Unbounded {
+            return Err(Box::new(MonitorError::Unbounded {
                 asked: ttl,
                 cap: MAX_TTL,
-            });
+            }));
         }
         let reg = self.inner.lock().expect("monitors");
         let Some(m) = reg.live.get(name).cloned() else {
-            return Err(MonitorError::NoSuchMonitor {
+            return Err(Box::new(MonitorError::NoSuchMonitor {
                 name: name.to_string(),
                 live: reg.live.keys().cloned().collect(),
-            });
+            }));
         };
         m.renew(ttl);
         Ok(m)

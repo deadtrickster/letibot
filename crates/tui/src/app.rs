@@ -2833,6 +2833,16 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
         // word is kept in the reason rather than mapped onto one that would read
         // as something else.
         O::NotRun { why } => card::Outcome::Failed(format!("not run — {why}")),
+        // Not `Failed`, which would put a retry in front of the operator for a
+        // command that is still working, and not `Ok`, which would read as a
+        // finish. The handle is in the reason because the handle is what makes
+        // it reachable.
+        O::Backgrounded {
+            handle, ran_for_ms, ..
+        } => card::Outcome::Backgrounded(format!(
+            "in the background as `{handle}` after {:.1}s",
+            *ran_for_ms as f64 / 1000.0
+        )),
     }
 }
 
@@ -2968,6 +2978,9 @@ fn outcome_str(o: &letibot_transcript::ToolOutcome) -> String {
         O::Denied { req_id } => format!("REFUSED — the call was denied ({req_id})"),
         O::Timeout => "timeout".into(),
         O::NotRun { why } => format!("not run — {why}"),
+        O::Backgrounded { handle, next, .. } => {
+            format!("STILL RUNNING as `{handle}` — {next}")
+        }
     }
 }
 

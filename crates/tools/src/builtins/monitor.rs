@@ -142,7 +142,7 @@ impl Tool for Monitor {
             "renew" => {
                 let ttl = match ttl_of(args) {
                     Ok(t) => t,
-                    Err(inv) => return inv,
+                    Err(inv) => return *inv,
                 };
                 return match monitors.renew(name, ttl) {
                     Ok(m) => Invocation::ok(format!(
@@ -168,7 +168,7 @@ impl Tool for Monitor {
 
         let ttl = match ttl_of(args) {
             Ok(t) => t,
-            Err(inv) => return inv,
+            Err(inv) => return *inv,
         };
 
         // Exactly one condition. Two would be one monitor with one firing for two
@@ -342,7 +342,7 @@ impl Tool for Monitor {
                 }
                 inv
             }
-            Err(e @ MonitorError::NameTaken { .. }) => {
+            Err(e) if matches!(*e, MonitorError::NameTaken { .. }) => {
                 Invocation::failed(format!("`{name}` is taken"), e.to_string())
             }
             Err(e) => Invocation::failed(format!("`{name}` was not declared"), e.to_string()),
@@ -381,13 +381,13 @@ fn inside(path: &str) -> bool {
 /// Clamping would leave the caller believing a number the monitor does not have,
 /// which is the silent-rewrite failure clause 1 forbids. The refusal names the
 /// cap so the retry succeeds.
-fn ttl_of(args: &Value) -> Result<Duration, Invocation> {
+fn ttl_of(args: &Value) -> Result<Duration, Box<Invocation>> {
     let Some(ms) = args.get("ttl_ms").and_then(|v| v.as_u64()) else {
         return Ok(DEFAULT_TTL);
     };
     let d = Duration::from_millis(ms.max(1));
     if d > MAX_TTL {
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             format!("a ttl of {:.0}s is past the cap", d.as_secs_f32()),
             format!(
                 "the cap is {:.0}s and nothing was declared. A monitor is bounded so \
@@ -397,7 +397,7 @@ fn ttl_of(args: &Value) -> Result<Duration, Invocation> {
                 MAX_TTL.as_secs_f32(),
                 MAX_TTL.as_millis()
             ),
-        ));
+        )));
     }
     Ok(d)
 }
