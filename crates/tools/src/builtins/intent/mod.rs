@@ -51,20 +51,26 @@
 
 pub mod ask;
 pub mod board;
+pub mod chat;
 pub mod ledger;
 pub mod plan;
 pub mod queue;
 pub mod tools;
+pub mod write_plan;
 
-pub use ask::{AskError, AskUserQuestion, Answer, Headless, Question, Questioner};
+pub use ask::{
+    AskError, AskUserQuestion, Headless, Question, QuestionAnswer, Questioner,
+};
 pub use board::Todo;
+pub use chat::{Chat, ChatError, Message, NoFabric, Posted, Say};
 pub use ledger::{
     Board, Effect, Finding, Goal, Intent, IntentLedger, IntentSink, LedgerError, Reconciliation,
     Source, Status, Verification, commitments,
 };
-pub use plan::{PlanGate, PlanMode, PlanState, seating};
+pub use plan::{PLAN_MODE_TOOLS, PlanGate, PlanMode, PlanState, seating};
 pub use queue::{NewRow, NoMount, Queue, QueueError, Row};
 pub use tools::{EnterPlanMode, ExitPlanMode, GoalTool};
+pub use write_plan::{PLAN_DIR, PLAN_EXT, WritePlan};
 
 use crate::runtime::{RegisterError, Registry};
 
@@ -105,29 +111,96 @@ pub fn close_the_turn(
     ledger.reconcile(turn_id, &said).steering()
 }
 
-/// Register the five intent tools into a registry.
+/// Everything this module needs from the session it is registered into.
+///
+/// A struct rather than five arguments because two of the five are mounts whose
+/// `None` is meaningful, and a positional `None` at a call site is the kind of thing
+/// that gets passed in the wrong slot exactly once.
+pub struct Wiring {
+    pub ledger: std::sync::Arc<IntentLedger>,
+    pub plan: std::sync::Arc<PlanMode>,
+    pub questioner: std::sync::Arc<dyn Questioner>,
+    /// The shared board. `None` is the default and not an error state: the list is
+    /// this session's own, needs no node, no token and no network, and every result
+    /// says so.
+    pub queue: Option<std::sync::Arc<dyn Queue>>,
+    /// The fabric's rooms, for `say`. `None` is likewise a configuration.
+    pub chat: Option<std::sync::Arc<dyn Chat>>,
+}
+
+impl Wiring {
+    /// A session with no fabric at all: no board, no rooms, no head. Everything
+    /// local works; everything shared refuses with `not_run` naming what is
+    /// missing.
+    pub fn standalone() -> Self {
+        Wiring {
+            ledger: std::sync::Arc::new(IntentLedger::new()),
+            plan: std::sync::Arc::new(PlanMode::new()),
+            questioner: std::sync::Arc::new(Headless),
+            queue: None,
+            chat: None,
+        }
+    }
+
+    /// The lines a startup banner wants. Same shape `harnessd`'s `Disclosure`
+    /// already consumes for `retrieval`, so wiring it is a `push` per row.
+    pub fn disclosures(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "board",
+                self.queue
+                    .as_ref()
+                    .map(|q| q.describe())
+                    .unwrap_or_else(|| NoMount.describe()),
+            ),
+            (
+                "fabric",
+                self.chat
+                    .as_ref()
+                    .map(|c| c.describe())
+                    .unwrap_or_else(|| NoFabric.describe()),
+            ),
+            ("questions", self.questioner.describe()),
+            (
+                "intent-encoder",
+                if self.ledger.encoder() {
+                    "attached — completions are checked against what ran".into()
+                } else {
+                    "NOT attached — completions cannot be checked either way; wire an \
+                     IntentSink"
+                        .into()
+                },
+            ),
+        ]
+    }
+}
+
+/// Register the seven intent tools into a registry.
 ///
 /// A function rather than a `Vec` so that the *order* is written down once: order
 /// is part of the stable prefix and reordering it re-prefills the conversation.
 ///
-/// `queue` is the mount. `None` is the default and is not an error state: the list
-/// is this session's own, needs no node, no token and no network, and every result
-/// says so.
-pub fn register_into(
-    reg: &mut Registry,
-    ledger: std::sync::Arc<IntentLedger>,
-    plan: std::sync::Arc<PlanMode>,
-    questioner: std::sync::Arc<dyn Questioner>,
-    queue: Option<std::sync::Arc<dyn Queue>>,
-) -> Result<(), RegisterError> {
-    reg.register(Box::new(match queue {
-        Some(q) => Todo::mounted(ledger.clone(), q),
-        None => Todo::local(ledger.clone()),
+/// `write_plan` and `say` are registered whether or not plan mode is ever entered:
+/// [`plan::seating`] decides what is *seated*, and a tool that had to be registered
+/// on entering plan mode would make the registry itself mode-dependent.
+pub fn register_into(reg: &mut Registry, w: &Wiring) -> Result<(), RegisterError> {
+    reg.register(Box::new(match &w.queue {
+        Some(q) => Todo::mounted(w.ledger.clone(), q.clone()),
+        None => Todo::local(w.ledger.clone()),
     }))?;
-    reg.register(Box::new(GoalTool::new(ledger.clone())))?;
-    reg.register(Box::new(EnterPlanMode::new(plan.clone())))?;
-    reg.register(Box::new(ExitPlanMode::new(plan, ledger)))?;
-    reg.register(Box::new(AskUserQuestion::new(questioner)))?;
+    reg.register(Box::new(GoalTool::new(w.ledger.clone())))?;
+    reg.register(Box::new(EnterPlanMode::new(w.plan.clone())))?;
+    reg.register(Box::new(ExitPlanMode::new(
+        w.plan.clone(),
+        w.ledger.clone(),
+    )))?;
+    reg.register(Box::new(WritePlan))?;
+    reg.register(Box::new(Say::new(
+        w.chat
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(NoFabric)),
+    )))?;
+    reg.register(Box::new(AskUserQuestion::new(w.questioner.clone())))?;
     Ok(())
 }
 
@@ -141,19 +214,12 @@ mod tests {
     fn reg(mounted: bool) -> Registry {
         let mut r =
             crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
-        let q: Option<Arc<dyn Queue>> = if mounted {
-            Some(Arc::new(queue::FakeQueue::new("seat")))
-        } else {
-            None
-        };
-        register_into(
-            &mut r,
-            Arc::new(IntentLedger::new()),
-            Arc::new(PlanMode::new()),
-            Arc::new(Headless),
-            q,
-        )
-        .unwrap();
+        let mut w = Wiring::standalone();
+        if mounted {
+            w.queue = Some(Arc::new(queue::FakeQueue::new("seat")));
+            w.chat = Some(Arc::new(chat::FakeChat::new("seat", &["general"])));
+        }
+        register_into(&mut r, &w).unwrap();
         r
     }
 
@@ -169,6 +235,71 @@ mod tests {
         assert_eq!(by("ask_user_question"), Access::Session);
         // Leaving plan mode restores the ability to write.
         assert_eq!(by("exit_plan_mode"), Access::Write);
+        // D9's two: a scoped write is still a write, and a room is off the box.
+        // Scope is what makes them cheap to approve, not a smaller class.
+        assert_eq!(by("write_plan"), Access::Write);
+        assert_eq!(by("say"), Access::Network);
+    }
+
+    #[test]
+    fn plan_mode_keeps_the_plan_and_drops_the_work() {
+        // D9: plan mode is no writes to the WORK.
+        let r = reg(false);
+        let base = crate::runtime::Role::new(
+            "coder",
+            &["read", "write", "edit", "todo", "exit_plan_mode"],
+        );
+        let s = seating(&r, &base, true);
+        assert!(!s.tools.contains(&"write".to_string()), "{:?}", s.tools);
+        assert!(!s.tools.contains(&"edit".to_string()), "{:?}", s.tools);
+        // …and gains the two that make a plan a plan, even though the base role
+        // never named them.
+        assert!(s.tools.contains(&"write_plan".to_string()), "{:?}", s.tools);
+        assert!(s.tools.contains(&"say".to_string()), "{:?}", s.tools);
+        let seated = r.resolve_role(&s).expect("the plan role resolves");
+        let json = seated.tools_json().join("\n");
+        assert!(!json.contains("\"name\":\"write\""), "{json}");
+        assert!(json.contains("\"name\":\"write_plan\""), "{json}");
+    }
+
+    #[test]
+    fn a_plan_mode_tool_the_registry_lacks_is_not_invented() {
+        // A session with no fabric still registers `say` (it refuses at the seam),
+        // but a build that dropped the tool entirely must not get a role naming it —
+        // that role would fail to resolve and a session that merely lacks chat
+        // should still be able to plan.
+        let mut bare =
+            crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
+        bare.register(Box::new(WritePlan)).unwrap();
+        let base = crate::runtime::Role::new("coder", &["read", "write"]);
+        let s = seating(&bare, &base, true);
+        assert!(s.tools.contains(&"write_plan".to_string()), "{:?}", s.tools);
+        assert!(!s.tools.contains(&"say".to_string()), "{:?}", s.tools);
+        bare.resolve_role(&s).expect("resolves without `say`");
+    }
+
+    #[test]
+    fn the_disclosures_name_every_absence_as_a_configuration() {
+        let w = Wiring::standalone();
+        let d = w.disclosures();
+        let by = |s: &str| {
+            d.iter()
+                .find(|(k, _)| *k == s)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert!(by("board").starts_with("not mounted"), "{}", by("board"));
+        assert!(by("fabric").starts_with("not attached"), "{}", by("fabric"));
+        assert!(by("questions").starts_with("none attached"), "{}", by("questions"));
+        // And the one that is a defect rather than a configuration says so.
+        assert!(by("intent-encoder").contains("NOT attached"), "{}", by("intent-encoder"));
+        let w2 = Wiring::standalone();
+        let _s = IntentSink::new(w2.ledger.clone(), crate::events::NullToolSink);
+        assert!(
+            w2.disclosures()
+                .iter()
+                .any(|(k, v)| *k == "intent-encoder" && v.starts_with("attached")),
+        );
     }
 
     #[test]
@@ -208,7 +339,13 @@ mod tests {
         // `todo` is Network here because a board is mounted, so plan mode drops it
         // too. That is the boundary doing its job rather than a special case:
         // filing a row on the shared queue changes the world outside the session.
-        assert_eq!(s.tools, vec!["read", "exit_plan_mode"], "{:?}", s.tools);
+        // What is left is the base's read tools plus D9's three.
+        assert_eq!(
+            s.tools,
+            vec!["read", "exit_plan_mode", "write_plan", "say"],
+            "{:?}",
+            s.tools
+        );
     }
 
     #[test]

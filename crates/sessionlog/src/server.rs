@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::hub::{CommandKind, Delivery, Hub};
+use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
     ClientFrame, PROTOCOL_VERSION, REJECT_UNKNOWN_SESSION, ServerFrame,
 };
@@ -366,7 +366,29 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     &seat.head_id,
                     client_request_id,
                     0,
-                    CommandKind::Answer { req_id, option_id },
+                    CommandKind::Answer {
+                        req_id,
+                        reply: Reply::Permission { option_id },
+                    },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
+            // A question's answer, not a permission's (`PROTOCOL_VERSION` 5). Same
+            // command, same `req_id`, different payload — and `Hub::submit` refuses a
+            // malformed one by name rather than letting it settle the question.
+            Ok(ClientFrame::AnswerQuestion {
+                client_request_id,
+                req_id,
+                answer,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    0,
+                    CommandKind::Answer {
+                        req_id,
+                        reply: Reply::Question(answer),
+                    },
                 );
                 writer.lock().unwrap().write(&f)?;
             }

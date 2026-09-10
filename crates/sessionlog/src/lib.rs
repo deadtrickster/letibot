@@ -50,6 +50,7 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod protocol;
+pub mod question;
 pub mod registry;
 pub mod scrub;
 pub mod server;
@@ -68,7 +69,8 @@ pub use event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason, OnTimeout,
     OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES, Timings, Usage, display_target,
 };
-pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, SessionStatus};
+pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
+pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{Bell, CreateError, Registry, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};

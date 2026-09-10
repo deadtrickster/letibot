@@ -52,7 +52,35 @@ use crate::view::Snapshot;
 /// head is attached *to* (§4.4) and the session list a picker is drawn from,
 /// `Attach`'s `session_id` naming one of several rather than being checked against
 /// the only one, and `ToolCallProposed` carrying a display target (§4.1).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// # 3 → 5, and why it skips 4
+///
+/// 4 is the `session-resume` branch's, landing separately. D10 asked for the
+/// question-answer vocabulary to **coordinate to 5 rather than race it**, so this
+/// takes 5 and leaves 4 where it was going. Both sides already refuse a mismatch by
+/// name (`crates/sessionlog/src/server.rs` compares this constant and says both
+/// numbers), so a head built against 3 or 4 is told which version it is speaking to
+/// rather than failing on the first frame it does not understand.
+///
+/// What 5 adds: [`ClientFrame::AnswerQuestion`] and
+/// [`crate::question::QuestionAnswer`] — a head answering a **question** rather than
+/// granting a **permission**. See `crates/sessionlog/src/question.rs` for why those
+/// are two vocabularies and not one.
+pub const PROTOCOL_VERSION: u32 = 5;
+
+/// A `Caps.features` string: this head can render a question with model-provided
+/// options, let a person attach a note to a choice, and let them type a free answer.
+///
+/// It rides on the existing `features` list rather than a new `Caps` field, because
+/// that list exists for exactly this and adding a bool per affordance is how a
+/// capability struct becomes a changelog.
+///
+/// A head that does **not** advertise it can still be sent a question — and the
+/// honest thing then is that it will not answer, which becomes `not_run` (*nobody
+/// answered*) rather than a default. That is the same rule `Caps::can_decide`
+/// already states: a head that cannot answer must say so, or a question routed to
+/// it waits for its deadline and then times out, *"which is a real answer given for
+/// a fake reason."*
+pub const FEATURE_QUESTION_ANSWERS: &str = "question_answers_v1";
 
 /// What a head can do and what it wants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,11 +146,29 @@ pub enum ClientFrame {
         expected_seq: u64,
         reason: String,
     },
-    /// Answer an open decision.
+    /// Answer an open **permission**: grant or deny, by option id.
+    ///
+    /// This is the adjudication half. A question's answer is
+    /// [`ClientFrame::AnswerQuestion`], and they are two frames because they are two
+    /// vocabularies with different consequences — a permission that goes wrong runs
+    /// something, an answer that goes wrong is attributed to a person.
     Answer {
         client_request_id: String,
         req_id: String,
         option_id: String,
+    },
+    /// Answer an open **question**: a choice, a note on that choice, a typed reply,
+    /// or a choice and a note together (§D10). Added at `PROTOCOL_VERSION` 5.
+    ///
+    /// There is no variant for *"not now"*. A head that wants to defer simply does
+    /// not send this, and the question stays open until its deadline, at which point
+    /// the tool reports `not_run` — *nobody answered*. Claude Code's *"chat later"*
+    /// is the thing this absence is designed as: a deferral that travels as an
+    /// answer is how a turn continues on an assumption nobody made.
+    AnswerQuestion {
+        client_request_id: String,
+        req_id: String,
+        answer: crate::question::QuestionAnswer,
     },
     /// What sessions does this daemon hold? Answered with [`ServerFrame::Sessions`].
     ///

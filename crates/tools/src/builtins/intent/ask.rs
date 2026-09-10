@@ -26,26 +26,63 @@
 //! an unanswered question becomes `"q" = "Unanswered"` inside a successful result
 //! (`question.ts:31`).
 //!
-//! # Four ways this refuses, and all four are `not_run`
+//! **This is operator-backed policy, not a preference.** D10: *"we need user
+//! questions claude code style - model provided options with user notes and then
+//! opencode style free user reply input, not claude code 'chat later'"*, with the
+//! unanswered case staying `not_run` and never becoming a default.
+//!
+//! # Six ways this refuses, and all six are `not_run`
 //!
 //! | | what happened | why not something else |
 //! |---|---|---|
 //! | [`AskError::NoHead`] | nothing is attached that could be asked | not `Abstained`: an abstention is a claim about the world, and nobody looked at the world |
-//! | [`AskError::Unanswered`] | the question reached a head and nobody answered before the deadline | a deadline is not a decision |
-//! | [`AskError::Nonconforming`] | an answer came back naming no offered option | the same rule [`crate::adjudicate::AskAdjudicator`] applies: a non-conforming answerer never opens the gate |
+//! | [`AskError::Unanswered`] | the question reached a head and nobody answered before the deadline | a deadline is not a decision, and *"chat later"* is not an answer |
+//! | [`AskError::Nonconforming`] | an answer chose an option that was never offered | the same rule [`crate::adjudicate::AskAdjudicator`] applies: a non-conforming answerer never opens the gate |
+//! | [`AskError::Empty`] | an answer arrived with no option, no note and no free text | there is nothing in it to attribute to anybody |
+//! | [`AskError::NoteQualifiesNothing`] | a note arrived with no option chosen | reading it as free text would be the harness reinterpreting what a person said, which is the one thing this module must never do |
 //! | [`AskError::Anonymous`] | an answer came back with nobody attached to it | an attribution to nobody is the failure this whole module exists to prevent |
 //!
-//! # What is not built here
+//! # The answer vocabulary (D10)
 //!
-//! **No wire.** `crates/sessionlog` already carries `DecisionRequested` /
-//! `DecisionAnswered` and a `ClientFrame::Answer`, and §11.6 of the design brief
-//! says a permission and a question are one mechanism differing in `kind` —
-//! [`crate::adjudicate::RequestKind::Question`] exists for exactly this. What does
-//! **not** exist is an option vocabulary that can carry a free-form answer:
-//! `sessionlog`'s `OptionKind` is `AllowOnce | AllowAlways | RejectOnce |
-//! RejectAlways`, which cannot express *"option C: use the second approach"*.
-//! Extending the wire is a protocol change and the protocol is contested this
-//! session, so this module stops at the trait and says so. [`Headless`] is what
+//! Three things **together**, and the fields are separate because folding them
+//! loses information:
+//!
+//! ```text
+//!   QuestionAnswer { option: Option<usize>, note: Option<String>, free: Option<String> }
+//! ```
+//!
+//! * `option` — a model-provided choice, so the common case is one keystroke.
+//! * `note` — a qualification **on that choice**. Folding it into free text loses
+//!   *which option* it qualifies, which is usually the load-bearing half of
+//!   *"option B, but only for the CUDA box"*.
+//! * `free` — a first-class answer on its own. A person who wants to type a
+//!   sentence has answered the question; they have not deferred it.
+//!
+//! At least one of `option` or `free` must be present, and `note` needs an
+//! `option` to qualify. [`QuestionAnswer::validate`] is where those hold, and it is
+//! the only door into an `Ok`.
+//!
+//! # This vocabulary is deliberately NOT `OptionKind`
+//!
+//! `crates/sessionlog`'s `OptionKind` is `AllowOnce | AllowAlways | RejectOnce |
+//! RejectAlways` and [`crate::adjudicate::OptionKind`] is its five-way cousin. Both
+//! are **adjudication** vocabularies: they answer *may this run*. A question answers
+//! *which way should I go*, and the consequences differ — an adjudication that goes
+//! wrong runs something, an answer that goes wrong is attributed to a person.
+//! Overloading one into the other would put a free-form sentence where a policy
+//! engine reads a grant, so they stay two types.
+//!
+//! # What the wire has, and what it still needs
+//!
+//! `PROTOCOL_VERSION` is 5 and [`crate::builtins::intent::ask::QuestionAnswer`] is
+//! what `ClientFrame::AnswerQuestion` carries head → daemon. What is **not** wired
+//! is the daemon → head direction: posing a question rides on
+//! `SessionEvent::DecisionRequested`'s existing `kind` field (§11.6 — *"a permission
+//! and a question are one mechanism, differing in `kind`"*), but that event's
+//! `options` are `DecisionOption`s carrying `OptionKind`, so a question's plain-text
+//! choices have nowhere to sit. Adding a `SessionEvent` variant touches nine files,
+//! two of which are under concurrent rewrite, so it is reported rather than done.
+//! See the crate report for exactly what the head must grow. [`Headless`] is what
 //! ships, and it refuses.
 
 use letibot_transcript::ToolOutcome;
@@ -65,15 +102,94 @@ pub struct Question {
     pub because: String,
 }
 
-/// What a person said, and **who**.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Answer {
-    pub text: String,
-    /// The head or seat identity that answered. Never empty in a valid answer —
-    /// see [`AskError::Anonymous`].
-    pub by: String,
-    /// Which offered option, when options were offered.
-    pub option: Option<String>,
+/// **What a person said** — D10's shape, and the type that goes on the wire.
+///
+/// Three independent fields, because the three things they carry are independent:
+/// a choice, a qualification *on that choice*, and a sentence typed instead of
+/// choosing. See the module docs for why none of them collapses into another.
+///
+/// `Serialize`/`Deserialize` because `letibot_sessionlog`'s
+/// `ClientFrame::AnswerQuestion` carries exactly this, head → daemon.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QuestionAnswer {
+    /// Index into the question's `options`. One keystroke, which is the point of
+    /// offering options at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option: Option<usize>,
+    /// A qualification on the chosen option. Requires `option`: a note qualifying
+    /// nothing is not a note, and silently promoting it to free text would be the
+    /// harness deciding what a person meant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// A typed answer, and **a first-class one**. Named explicitly against Claude
+    /// Code's *"chat later"*, which turns a question into a suspended turn rather
+    /// than an answered one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<String>,
+}
+
+impl QuestionAnswer {
+    pub fn choosing(option: usize) -> Self {
+        QuestionAnswer {
+            option: Some(option),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    pub fn free(text: impl Into<String>) -> Self {
+        QuestionAnswer {
+            free: Some(text.into()),
+            ..Default::default()
+        }
+    }
+
+    /// **The only door into an `Ok`.** Every rule D10 states is here, and each
+    /// failure is a `not_run` rather than a repair.
+    pub fn validate(&self, offered: usize) -> Result<(), AskError> {
+        let has_free = self.free.as_deref().is_some_and(|f| !f.trim().is_empty());
+        let has_note = self.note.as_deref().is_some_and(|n| !n.trim().is_empty());
+        if self.option.is_none() && !has_free {
+            if has_note {
+                return Err(AskError::NoteQualifiesNothing);
+            }
+            return Err(AskError::Empty);
+        }
+        if has_note && self.option.is_none() {
+            return Err(AskError::NoteQualifiesNothing);
+        }
+        if let Some(i) = self.option
+            && i >= offered
+        {
+            return Err(AskError::Nonconforming {
+                chose: i,
+                offered,
+            });
+        }
+        Ok(())
+    }
+
+    /// How it reads back to the model, given the question it answers.
+    pub fn render(&self, q: &Question) -> String {
+        let mut s = String::new();
+        if let Some(i) = self.option {
+            let label = q.options.get(i).map(|s| s.as_str()).unwrap_or("(unknown)");
+            s.push_str(&format!("chose option {i}: {label}\n"));
+            if let Some(n) = &self.note {
+                // On its own line and labelled, because a note that reads as part
+                // of the option label is a note that changes what the option said.
+                s.push_str(&format!("with the note: {}\n", n.trim()));
+            }
+        }
+        if let Some(f) = &self.free {
+            s.push_str(&format!("and said: {}\n", f.trim()));
+        }
+        s
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +198,12 @@ pub enum AskError {
     NoHead(String),
     /// It was posted and nobody answered.
     Unanswered(String),
-    /// An answer came back that names none of the offered options.
-    Nonconforming { answer: String, options: Vec<String> },
+    /// An answer chose an option index the question never offered.
+    Nonconforming { chose: usize, offered: usize },
+    /// An answer arrived with nothing in it.
+    Empty,
+    /// A note arrived with no option chosen, so it qualifies nothing.
+    NoteQualifiesNothing,
     /// An answer came back with no answerer.
     Anonymous,
     /// The head was there and the ask itself broke.
@@ -107,13 +227,23 @@ impl std::fmt::Display for AskError {
         match self {
             AskError::NoHead(w) => write!(f, "{w}"),
             AskError::Unanswered(w) => write!(f, "{w}"),
-            AskError::Nonconforming { answer, options } => write!(
+            AskError::Nonconforming { chose, offered } => write!(
                 f,
-                "an answer came back naming none of the {} option(s) offered ({}), so it \
-                 was not accepted and NOBODY has answered this question. The reply was: \
-                 {answer:?}",
-                options.len(),
-                options.join(", ")
+                "an answer chose option {chose} and only {offered} option(s) were offered, \
+                 so it was not accepted and NOBODY has answered this question."
+            ),
+            AskError::Empty => write!(
+                f,
+                "an answer arrived with no option chosen, no note and no text, so there is \
+                 nothing in it and NOBODY has answered this question. An empty answer is \
+                 not a shrug the harness may interpret."
+            ),
+            AskError::NoteQualifiesNothing => write!(
+                f,
+                "a note arrived with no option chosen, so it qualifies nothing and was not \
+                 accepted; NOBODY has answered this question. A note goes WITH a choice. \
+                 Reading it as a free-form answer instead would be the harness deciding \
+                 what a person meant, which it does not do."
             ),
             AskError::Anonymous => write!(
                 f,
@@ -138,7 +268,14 @@ pub trait Questioner: Send + Sync {
     /// Blocking is the implementation's business, and so is its deadline: this
     /// crate has no async runtime and a deadline that expired is
     /// [`AskError::Unanswered`], which is the same fact one layer in.
-    fn ask(&self, q: &Question) -> Result<Answer, AskError>;
+    ///
+    /// The `String` is **who answered**, read from the head that answered and never
+    /// from the answer itself. A tuple rather than a field on
+    /// [`QuestionAnswer`] on purpose: `QuestionAnswer` is what a *person types* and
+    /// goes on the wire from their head; the identity is what the *daemon knows*
+    /// about the connection it arrived on. An answer that could name its own
+    /// answerer is an answer that could name somebody else.
+    fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError>;
 
     /// For `EXPLAIN`: who could actually be asked in this session.
     fn describe(&self) -> String;
@@ -153,7 +290,7 @@ pub trait Questioner: Send + Sync {
 pub struct Headless;
 
 impl Questioner for Headless {
-    fn ask(&self, _q: &Question) -> Result<Answer, AskError> {
+    fn ask(&self, _q: &Question) -> Result<(QuestionAnswer, String), AskError> {
         Err(AskError::NoHead(
             "no head is attached to this session, so NOBODY was asked and nobody \
              answered. This is not a refusal and it is not permission to proceed on an \
@@ -263,7 +400,7 @@ impl Tool for AskUserQuestion {
                     edit: None,
                 }
             }
-            Ok(a) => accept(&q, a),
+            Ok((a, by)) => accept(&q, a, by),
         };
         if let Some(n) = trimmed {
             inv = inv.with_note(format!(
@@ -275,47 +412,27 @@ impl Tool for AskUserQuestion {
     }
 }
 
-/// Turn an answer into a result, refusing the two shapes that would attribute a
-/// sentence to nobody.
-fn accept(q: &Question, a: Answer) -> Invocation {
-    if a.by.trim().is_empty() {
-        let e = AskError::Anonymous;
-        return Invocation {
-            outcome: e.outcome(),
-            payload: format!("question: {}\n{e}", q.text),
-            notes: vec![],
-            edit: None,
-        };
+/// Turn an answer into a result, refusing every shape that would attribute
+/// something to nobody or reinterpret what a person said.
+fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
+    let refuse = |e: AskError| Invocation {
+        outcome: e.outcome(),
+        payload: format!("question: {}\n{e}", q.text),
+        notes: vec![],
+        edit: None,
+    };
+    if by.trim().is_empty() {
+        return refuse(AskError::Anonymous);
     }
-    if !q.options.is_empty() {
-        let named = a
-            .option
-            .as_deref()
-            .map(|o| q.options.iter().any(|x| x == o))
-            .unwrap_or(false)
-            || q.options.iter().any(|x| x == a.text.trim());
-        if !named {
-            let e = AskError::Nonconforming {
-                answer: a.text.clone(),
-                options: q.options.clone(),
-            };
-            return Invocation {
-                outcome: e.outcome(),
-                payload: format!("question: {}\n{e}", q.text),
-                notes: vec![],
-                edit: None,
-            };
-        }
+    if let Err(e) = a.validate(q.options.len()) {
+        return refuse(e);
     }
-    let mut body = format!("question: {}\n", q.text);
-    body.push_str(&format!("{} answered: {}\n", a.by, a.text.trim()));
-    if let Some(o) = &a.option {
-        body.push_str(&format!("option chosen: {o}\n"));
-    }
+    let mut body = format!("question: {}\n{by} ", q.text);
+    body.push_str(a.render(q).trim_start());
     Invocation::ok(body).with_note(format!(
-        "this answer is attributed to {}; it is what they said, not what the harness \
-         inferred",
-        a.by
+        "this answer is attributed to {by}; it is what they said, not what the harness \
+         inferred. A note qualifies the option it came with — do not read it as a \
+         separate instruction."
     ))
 }
 
@@ -326,55 +443,64 @@ pub use scripted::ScriptedQuestioner;
 mod scripted {
     use super::*;
 
-    /// A questioner that answers from a script. The five cases are the five
-    /// branches, and none of them needs a head, a socket or a person.
-    pub struct ScriptedQuestioner(pub Result<Answer, AskError>);
+    /// A questioner that answers from a script. Every case D10 names is a
+    /// constructor, and none of them needs a head, a socket or a person.
+    pub struct ScriptedQuestioner(pub Result<(QuestionAnswer, String), AskError>);
 
     impl ScriptedQuestioner {
-        pub fn answering(by: &str, text: &str) -> Self {
-            ScriptedQuestioner(Ok(Answer {
-                text: text.into(),
-                by: by.into(),
-                option: None,
-            }))
+        /// The opencode case: a typed sentence, and a real answer.
+        pub fn free(by: &str, text: &str) -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::free(text), by.into())))
         }
 
-        pub fn choosing(by: &str, option: &str) -> Self {
-            ScriptedQuestioner(Ok(Answer {
-                text: option.into(),
-                by: by.into(),
-                option: Some(option.into()),
-            }))
+        /// The Claude Code case: one keystroke.
+        pub fn choosing(by: &str, option: usize) -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::choosing(option), by.into())))
         }
 
-        pub fn anonymous(text: &str) -> Self {
-            ScriptedQuestioner(Ok(Answer {
-                text: text.into(),
-                by: String::new(),
-                option: None,
-            }))
+        /// D10's third thing: a choice **and** a qualification on it.
+        pub fn choosing_with_note(by: &str, option: usize, note: &str) -> Self {
+            ScriptedQuestioner(Ok((
+                QuestionAnswer::choosing(option).with_note(note),
+                by.into(),
+            )))
         }
 
-        pub fn nonconforming(by: &str, text: &str) -> Self {
-            ScriptedQuestioner(Ok(Answer {
-                text: text.into(),
-                by: by.into(),
-                option: Some("something-nobody-offered".into()),
-            }))
+        pub fn anonymous() -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::free("go with b"), String::new())))
+        }
+
+        pub fn nonconforming(by: &str, option: usize) -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::choosing(option), by.into())))
+        }
+
+        pub fn empty(by: &str) -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::default(), by.into())))
+        }
+
+        pub fn note_only(by: &str, note: &str) -> Self {
+            ScriptedQuestioner(Ok((
+                QuestionAnswer {
+                    note: Some(note.into()),
+                    ..Default::default()
+                },
+                by.into(),
+            )))
         }
 
         pub fn silent() -> Self {
             ScriptedQuestioner(Err(AskError::Unanswered(
                 "the question was posted to the attached head and nobody answered before \
                  the deadline, so NOBODY has answered it. A deadline passing is not a \
-                 decision and not a declining: the question is still open."
+                 decision, not a declining, and not a `chat later`: the question is still \
+                 open."
                     .into(),
             )))
         }
     }
 
     impl Questioner for ScriptedQuestioner {
-        fn ask(&self, _q: &Question) -> Result<Answer, AskError> {
+        fn ask(&self, _q: &Question) -> Result<(QuestionAnswer, String), AskError> {
             self.0.clone()
         }
 
@@ -423,37 +549,138 @@ mod tests {
 
     #[test]
     fn an_answer_with_nobody_behind_it_is_refused() {
-        let r = ask(Arc::new(ScriptedQuestioner::anonymous("a")), Q);
+        let r = ask(Arc::new(ScriptedQuestioner::anonymous()), Q);
         assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }));
         assert!(r.render().contains("no answerer"), "{}", r.render());
     }
 
     #[test]
-    fn an_answer_naming_no_offered_option_is_refused() {
-        let r = ask(
-            Arc::new(ScriptedQuestioner::nonconforming("deadtrickster", "c")),
-            Q,
-        );
+    fn an_answer_choosing_an_option_nobody_offered_is_refused() {
+        let r = ask(Arc::new(ScriptedQuestioner::nonconforming("deadtrickster", 7)), Q);
         assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }));
-        assert!(r.render().contains("NOBODY has answered"), "{}", r.render());
+        let out = r.render();
+        assert!(out.contains("NOBODY has answered"), "{out}");
+        assert!(out.contains("only 2 option"), "{out}");
     }
 
+    // ---- D10: the three things, together -------------------------------
+
     #[test]
-    fn a_real_answer_is_ok_and_carries_who_said_it() {
-        let r = ask(Arc::new(ScriptedQuestioner::choosing("deadtrickster", "b")), Q);
+    fn d10_one_keystroke_is_an_answer() {
+        let r = ask(Arc::new(ScriptedQuestioner::choosing("deadtrickster", 1)), Q);
         assert_eq!(r.outcome, ToolOutcome::Ok);
         let out = r.render();
-        assert!(out.contains("deadtrickster answered"), "{out}");
+        assert!(out.contains("chose option 1: b"), "{out}");
         assert!(out.contains("attributed to deadtrickster"), "{out}");
     }
 
     #[test]
-    fn an_open_question_does_not_need_an_option() {
+    fn d10_a_note_stays_attached_to_the_option_it_qualifies() {
+        // The load-bearing half of "option B, but only for the CUDA box" is WHICH
+        // option it qualifies. Folding the note into free text loses that, which is
+        // why they are two fields.
         let r = ask(
-            Arc::new(ScriptedQuestioner::answering("deadtrickster", "use the second one")),
+            Arc::new(ScriptedQuestioner::choosing_with_note(
+                "deadtrickster",
+                1,
+                "only for the CUDA box",
+            )),
+            Q,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok);
+        let out = r.render();
+        assert!(out.contains("chose option 1: b"), "{out}");
+        assert!(out.contains("with the note: only for the CUDA box"), "{out}");
+        assert!(out.contains("qualifies the option it came with"), "{out}");
+    }
+
+    #[test]
+    fn d10_free_text_is_a_first_class_answer_and_not_a_chat_later() {
+        let r = ask(
+            Arc::new(ScriptedQuestioner::free("deadtrickster", "neither — split it in two")),
+            Q,
+        );
+        assert_eq!(
+            r.outcome,
+            ToolOutcome::Ok,
+            "a typed answer answers the question; it does not defer it"
+        );
+        assert!(r.render().contains("split it in two"), "{}", r.render());
+    }
+
+    #[test]
+    fn d10_an_empty_answer_is_not_a_shrug_the_harness_may_read() {
+        let r = ask(Arc::new(ScriptedQuestioner::empty("deadtrickster")), Q);
+        assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }), "{r:?}");
+        assert!(r.render().contains("not a shrug"), "{}", r.render());
+    }
+
+    #[test]
+    fn d10_a_note_qualifying_nothing_is_not_promoted_to_free_text() {
+        let r = ask(
+            Arc::new(ScriptedQuestioner::note_only("deadtrickster", "hmm, maybe")),
+            Q,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }), "{r:?}");
+        assert!(
+            r.render().contains("deciding what a person meant"),
+            "{}",
+            r.render()
+        );
+    }
+
+    #[test]
+    fn an_open_question_is_answered_by_free_text_alone() {
+        let r = ask(
+            Arc::new(ScriptedQuestioner::free("deadtrickster", "use the second one")),
             r#"{"question":"which approach?"}"#,
         );
         assert_eq!(r.outcome, ToolOutcome::Ok);
+    }
+
+    #[test]
+    fn the_answer_vocabulary_round_trips_on_the_wire() {
+        // `ClientFrame::AnswerQuestion` carries exactly this, so a field that does
+        // not survive serde is a field a head cannot send.
+        let a = QuestionAnswer::choosing(1).with_note("only for the CUDA box");
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(serde_json::from_str::<QuestionAnswer>(&json).unwrap(), a);
+        // Absent fields are absent, not null: a head that chose an option sends
+        // three keys, not five.
+        assert!(!json.contains("free"), "{json}");
+        let free = QuestionAnswer::free("split it");
+        let j2 = serde_json::to_string(&free).unwrap();
+        assert!(!j2.contains("option") && !j2.contains("note"), "{j2}");
+    }
+
+    #[test]
+    fn validation_is_the_only_door_and_it_is_not_a_repair() {
+        // Two options offered.
+        assert!(QuestionAnswer::choosing(0).validate(2).is_ok());
+        assert!(QuestionAnswer::free("x").validate(2).is_ok());
+        assert!(QuestionAnswer::choosing(1).with_note("y").validate(2).is_ok());
+        assert_eq!(
+            QuestionAnswer::choosing(2).validate(2),
+            Err(AskError::Nonconforming { chose: 2, offered: 2 })
+        );
+        assert_eq!(QuestionAnswer::default().validate(2), Err(AskError::Empty));
+        assert_eq!(
+            QuestionAnswer {
+                note: Some("m".into()),
+                ..Default::default()
+            }
+            .validate(2),
+            Err(AskError::NoteQualifiesNothing)
+        );
+        // Every one of those is `not_run`. There is no repair path.
+        for e in [
+            AskError::Empty,
+            AskError::NoteQualifiesNothing,
+            AskError::Nonconforming { chose: 9, offered: 2 },
+            AskError::Anonymous,
+        ] {
+            assert!(matches!(e.outcome(), ToolOutcome::NotRun { .. }), "{e:?}");
+        }
     }
 
     #[test]

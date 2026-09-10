@@ -27,6 +27,28 @@
 //! this names who and when. Compare [`crate::runtime::NoBoundary`], which is
 //! `NotRun` precisely because nobody decided there.
 //!
+//! # Plan mode is *no writes to the work*, not *no writes* (D9)
+//!
+//! The first cut of this module dropped every non-read tool, which made plan mode
+//! mean "no writes". The operator's correction, and it removes an absurdity nobody
+//! had spotted:
+//!
+//! > *"plan mode must be able to write plan markdowns and chat in flowy"*
+//!
+//! A planner that cannot record its plan has to carry the plan in the context it is
+//! about to hand over. Writing the plan and discussing it **are what a plan is**.
+//! So the boundary moved from the *verb* to the *target*, and three tools stay
+//! seated regardless of their declared access — [`PLAN_MODE_TOOLS`]:
+//!
+//! | tool | access | why it survives |
+//! |---|---|---|
+//! | `write_plan` | `Write` | a scoped write: it takes a NAME, not a path, so `src/` is unspellable — see [`super::write_plan`] |
+//! | `say` | `Network` | a plan discussed with the fleet while it is still a plan — [`super::chat`] |
+//! | `exit_plan_mode` | `Write` | a plan mode you cannot ask to leave is a trap |
+//!
+//! Each is still adjudicated on its own terms: staying seated means the *schema is
+//! in the prompt*, not that the gate stops deciding.
+//!
 //! # Leaving plan mode is a gated write
 //!
 //! Entering plan mode narrows what the session can do; leaving it *widens* that
@@ -104,34 +126,48 @@ impl PlanMode {
     }
 }
 
+/// The tools that stay seated in plan mode **whatever their declared access**.
+///
+/// D9: plan mode is no writes *to the work*. These three are not the work — they
+/// are the plan. Order is the order they are appended in, and it is part of the
+/// stable prefix, so it is written down once here.
+pub const PLAN_MODE_TOOLS: &[&str] = &["write_plan", "say", "exit_plan_mode"];
+
 /// The role to seat for the next turn.
 ///
-/// In plan mode the returned role contains only the tools whose declared access is
-/// [`Access::Read`] or [`Access::Session`]. Everything that can change the
-/// operator's tree, run a command, or reach the network is **absent from the tool
-/// list the model is shown**.
+/// In plan mode the returned role keeps the tools whose declared access is
+/// [`Access::Read`] or [`Access::Session`], plus [`PLAN_MODE_TOOLS`]. Everything
+/// else that can change the operator's tree, run a command or reach the network is
+/// **absent from the tool list the model is shown** — not refused, absent.
 ///
-/// `exit_plan_mode` is kept even though it declares `Write`, and that is the one
-/// deliberate exception: a plan mode you cannot ask to leave is a trap rather than
-/// a boundary, and its own gate still decides whether the ask succeeds.
+/// A plan-mode tool the registry does not have is not added, because a role naming
+/// a tool that does not exist fails to resolve and a session that merely lacks
+/// `say` should still be able to plan. One that the *base role* named is kept
+/// either way, so a mis-wired base still refuses loudly at
+/// [`Registry::resolve_role`] rather than quietly shrinking.
 ///
-/// # The cost, stated
+/// # Two costs, stated
 ///
 /// The tool list is part of the stable prefix. Entering or leaving plan mode
-/// changes `tools_json`, which **re-prefills the conversation**. That is real and
-/// it is the price of the boundary being structural rather than advisory; it is
-/// also why this returns a role for the *next* turn instead of mutating a
-/// registry mid-turn.
+/// changes `tools_json`, which **re-prefills the conversation**. That is the price
+/// of the boundary being structural rather than advisory, and it is why this
+/// returns a role for the *next* turn instead of mutating a registry mid-turn.
+///
+/// And adding to a base role can push it over [`Role::max_tools`]. This does not
+/// silently trim: the over-budget role is returned and `resolve_role` refuses it
+/// by name with the overflow listed, which is the established loud path. A base
+/// role that is already at the ceiling cannot enter plan mode without losing
+/// something, and that is a fact worth a refusal rather than a quiet drop.
 pub fn seating(registry: &Registry, base: &Role, plan_active: bool) -> Role {
     if !plan_active {
         return base.clone();
     }
     let schemas = registry.schemas();
-    let keep: Vec<String> = base
+    let mut keep: Vec<String> = base
         .tools
         .iter()
         .filter(|name| {
-            if name.as_str() == "exit_plan_mode" {
+            if PLAN_MODE_TOOLS.contains(&name.as_str()) {
                 return true;
             }
             schemas
@@ -145,6 +181,11 @@ pub fn seating(registry: &Registry, base: &Role, plan_active: bool) -> Role {
         })
         .cloned()
         .collect();
+    for t in PLAN_MODE_TOOLS {
+        if !keep.iter().any(|k| k == t) && schemas.iter().any(|s| s.name == *t) {
+            keep.push((*t).to_string());
+        }
+    }
     Role {
         name: format!("{}+plan", base.name),
         tools: keep,
@@ -172,7 +213,7 @@ impl PlanGate {
 impl Gate for PlanGate {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
         let s = self.plan.state();
-        if s.active && call.name != "exit_plan_mode" {
+        if s.active && !PLAN_MODE_TOOLS.contains(&call.name) {
             return GateDecision::refuse_and_tell(
                 ToolOutcome::Denied {
                     // Somebody decided, and this is which call.
@@ -183,9 +224,11 @@ impl Gate for PlanGate {
                 },
                 format!(
                     "this session is in plan mode, so `{}` ({} access) is not seated and \
-                     nothing ran. Plan mode was entered by call {}{}. Finish the plan and \
-                     call `exit_plan_mode` with it; that call is adjudicated, and it is \
-                     the only way back to the write tools.",
+                     nothing ran. Plan mode was entered by call {}{}. What IS seated: \
+                     `write_plan`, to write the plan itself, and `say`, to discuss it \
+                     with the fleet — plan mode is no writes to the WORK, not no writes. \
+                     When the plan is done, `exit_plan_mode` with it; that call is \
+                     adjudicated, and it is the only way back to the work.",
                     call.name,
                     call.access.as_str(),
                     s.entered_by.as_deref().unwrap_or("(unknown)"),
