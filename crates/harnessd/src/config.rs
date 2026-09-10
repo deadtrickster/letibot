@@ -218,11 +218,34 @@ pub struct Config {
     pub intent_prose: bool,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
-    /// How many times one user turn may go round the tool loop before the daemon
-    /// stops and says so. Not a token cap — §5.7 removed those — a *loop* bound, so
-    /// a model that calls `read` on the same file forever is a reported failure
-    /// rather than a session that never returns.
+    /// **The backstop, and only the backstop.** How many times one user turn may go
+    /// round the tool loop before the daemon stops and says so.
+    ///
+    /// This used to be the *only* stop, at 12, and it cut two legitimate sessions —
+    /// one asked to *"look at the project and suggest improvements"* and stopped
+    /// mid-investigation, one two rounds from finishing with every round doing new
+    /// work. A count of rounds measures **effort**, not progress: it is an open-loop
+    /// guard in `docs/closed-loop.md`'s terms, and it cannot tell a model that is
+    /// working hard from one that is stuck.
+    ///
+    /// [`Config::stall_rounds`] is the closed-loop half and is what actually stops a
+    /// looping turn now, so this is set far out — a real investigation of a codebase
+    /// is dozens of rounds and the old value was inside that range. What is left for
+    /// this number to catch is a turn that keeps producing genuinely new results
+    /// forever, which is a different failure and wants a different sentence.
     pub max_tool_rounds: usize,
+    /// **How many consecutive rounds may produce nothing new before the turn stops.**
+    ///
+    /// A round counts as producing nothing new when none of its calls returned `Ok`
+    /// with a result this turn had not already seen — see [`crate::progress`]. One
+    /// round before this the model is told what the harness sees, once, so a turn
+    /// that was in fact working can say so and carry on.
+    ///
+    /// `0` turns the check off and leaves [`Config::max_tool_rounds`] as the only
+    /// stop, which is the state that cost the two sessions. It is reachable because
+    /// a refusal that can only be routed around teaches people to route around
+    /// refusals, and it is **disclosed** rather than silent.
+    pub stall_rounds: usize,
 }
 
 /// **Who decides a gated call.**
@@ -370,7 +393,10 @@ impl Config {
             intent_prose: false,
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
-            max_tool_rounds: 12,
+            // Far out on purpose: the progress detector is the stop, and this is the
+            // thing that catches a turn which never stops making new results.
+            max_tool_rounds: 200,
+            stall_rounds: 5,
         }
     }
 
@@ -406,6 +432,27 @@ impl Config {
                     ));
                 }
             }
+        }
+        // **The stop condition, said out loud.** A turn that can only be stopped by a
+        // round count is the state that cut two working sessions, and an operator who
+        // does not know which of the two guards is armed cannot read a stop.
+        if self.stall_rounds == 0 {
+            out.push(Disclosure::off(
+                "progress check",
+                "OFF",
+                &format!(
+                    "nothing measures whether a turn is getting anywhere; the only stop                      is the {}-round backstop, which counts effort rather than progress.                      Pass --stall-rounds N.",
+                    self.max_tool_rounds
+                ),
+            ));
+        } else {
+            out.push(Disclosure::on(
+                "progress check",
+                format!(
+                    "stops after {} consecutive rounds producing nothing new; the round                      backstop is {}",
+                    self.stall_rounds, self.max_tool_rounds
+                ),
+            ));
         }
         if self.store.is_none() {
             out.push(Disclosure::off(
@@ -789,6 +836,53 @@ pub fn now_ns() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The round count is a backstop now, not the stop.**
+    ///
+    /// The defect this replaced: `max_tool_rounds: 12` was the only thing that could
+    /// end a runaway turn, so it also ended two working ones. What is asserted is the
+    /// *relationship* — a progress check is armed, and the count sits far enough out
+    /// that a real investigation of a codebase does not reach it — rather than either
+    /// number, because a test pinning 200 would have to be edited to change it and
+    /// would then be pinning nothing.
+    #[test]
+    fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
+        let c = Config::for_this_box("/tmp");
+        assert!(c.stall_rounds > 0, "a session with no progress check is the defect");
+        assert!(
+            c.max_tool_rounds >= 100,
+            "a real investigation is dozens of rounds; {} is inside that range and \
+             would cut one",
+            c.max_tool_rounds
+        );
+        let d = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "progress check")
+            .expect("which guard is armed is not something an operator should guess");
+        assert!(d.active);
+        assert!(d.to_string().contains(&c.stall_rounds.to_string()));
+    }
+
+    /// Off is reachable and is **said out loud**, because a refusal that can only be
+    /// routed around teaches people to route around refusals.
+    #[test]
+    fn turning_the_progress_check_off_is_a_declared_state() {
+        let mut c = Config::for_this_box("/tmp");
+        c.stall_rounds = 0;
+        let d = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "progress check")
+            .expect("still disclosed when off — especially when off");
+        assert!(!d.active);
+        let line = d.to_string();
+        assert!(line.contains("OFF"), "{line}");
+        assert!(
+            line.contains("--stall-rounds"),
+            "the disclosure carries the way back on: {line}"
+        );
+    }
 
     #[test]
     fn the_default_is_no_spill_and_it_says_so() {

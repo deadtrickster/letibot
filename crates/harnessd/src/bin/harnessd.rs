@@ -5,7 +5,7 @@
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
 //!          [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]
 //!          [--spill-inline BYTES] [--spill-dir DIR]
-//!          [--max-tool-rounds N] [--session ID] [--title NAME]
+//!          [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
 //!
 //! store queries — no socket, no vocabulary, no model:
@@ -44,7 +44,7 @@ fn usage() -> String {
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
      \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]\n\
+     \x20        [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]\n\
      \n\
      what this session may do — every one of these is off unless you pass it:\n\
      \x20 --role NAME               orchestrator (default, read-only) | planner |\n\
@@ -127,6 +127,11 @@ fn run() -> Result<i32, String> {
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
+            }
+            // The progress check's tolerance band. `0` turns it off, and the daemon
+            // says so at startup — see `Config::disclosures`.
+            "--stall-rounds" => {
+                cfg.stall_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
             "--spill-inline" => {
                 cfg.spill =

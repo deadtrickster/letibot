@@ -91,6 +91,7 @@ pub mod daemon;
 pub mod dialect;
 pub mod harness;
 pub mod modes;
+pub mod progress;
 pub mod sessions;
 
 pub use answers::{Answers, HeadAdjudicator};
