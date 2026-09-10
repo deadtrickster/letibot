@@ -497,7 +497,13 @@ impl Cgroup2 {
     }
 }
 
-fn populated_at(dir: &Path) -> bool {
+/// Whether a cgroup directory, or anything under it, holds a process.
+///
+/// `pub(crate)` because [`super::monitor`] is the other caller: a scope monitor
+/// asks exactly this question, and asking it through the kernel's own
+/// `cgroup.events` is what makes the monitor's predicate unable to match its own
+/// waiter.
+pub(crate) fn populated_at(dir: &Path) -> bool {
     match std::fs::read_to_string(dir.join("cgroup.events")) {
         Ok(s) => s
             .lines()

@@ -42,6 +42,7 @@ use std::time::{Duration, Instant, SystemTime};
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
 use super::jobs::{Job, JobId, JobState, Lifetime, OutputSlice};
+use super::monitor::Monitors;
 use super::scope::{
     Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree, cmdline_of,
     join_script,
@@ -241,6 +242,27 @@ pub trait ProcessHost: Send + Sync {
     /// unfalsifiable is the empty-haystack bug one layer up.
     fn reap_log(&self) -> Vec<Reaping>;
 
+    /// This session's monitors, or `None` on a host with no monitor mechanism.
+    ///
+    /// `None` is an honest absence and not an empty list, the same distinction
+    /// [`ProcessHost::confinement`] keeps: *"there are no monitors"* and *"this
+    /// host cannot watch anything"* are different answers, and a tool that
+    /// rendered the second as the first would be reporting a capability the
+    /// session does not have.
+    fn monitors(&self) -> Option<&Arc<Monitors>> {
+        None
+    }
+
+    /// The live handle for a job, so a monitor can be declared against the job
+    /// itself rather than against an id it would have to look up every tick.
+    ///
+    /// An id can be re-used by a different host; a handle cannot. A monitor that
+    /// silently re-targeted would be watching something nobody asked about.
+    fn job_handle(&self, job: &JobId) -> Option<Arc<Job>> {
+        let _ = job;
+        None
+    }
+
     /// The pids the harness manages, which the model cannot see.
     fn protected(&self) -> Vec<Protected>;
 
@@ -282,6 +304,10 @@ pub struct HostProcesses {
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
     promotions: Mutex<Vec<Promotion>>,
+    /// The monitors this session declared. **On the host, not beside it**,
+    /// because a monitor's owner is one of this host's scopes and the reaping
+    /// path has to be able to take its watchers with it.
+    monitors: Arc<Monitors>,
     protected: Mutex<Vec<Protected>>,
     /// Bytes retained per job. Beyond this the ring drops from the front and says
     /// so — see [`super::jobs::OutputSlice::denominator`].
@@ -362,6 +388,7 @@ impl HostProcesses {
             jobs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
             promotions: Mutex::new(Vec::new()),
+            monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
             shell: vec!["/bin/sh".into(), "-c".into()],
@@ -847,6 +874,11 @@ impl ProcessHost for HostProcesses {
                 });
             }
         }
+        // **The watchers go with the scope, and the record says which scope took
+        // them.** A monitor that merely stopped being polled would be a watcher
+        // that went quiet, and a watcher that goes quiet looks exactly like one
+        // whose condition never fired.
+        self.monitors.retire_under(scope);
         if scope.kind == ScopeKind::Turn {
             *self.turn.lock().expect("turn scope") = None;
         }
@@ -971,6 +1003,14 @@ impl ProcessHost for HostProcesses {
         self.reaps.lock().expect("reaps").clone()
     }
 
+    fn monitors(&self) -> Option<&Arc<Monitors>> {
+        Some(&self.monitors)
+    }
+
+    fn job_handle(&self, job: &JobId) -> Option<Arc<Job>> {
+        self.find(job)
+    }
+
     fn protected(&self) -> Vec<Protected> {
         self.protected.lock().expect("protected").clone()
     }
@@ -1054,15 +1094,16 @@ pub(crate) fn parent_of(pid: u32) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// The pid holding a listening TCP socket on `port`, by inode.
+/// The socket inodes LISTENing on `port`, from `/proc/net/tcp{,6}`.
 ///
-/// Two steps, and the second is the one that can legitimately fail: find the
-/// socket's inode in `/proc/net/tcp{,6}`, then find the process whose `/proc/<pid>/fd`
-/// contains a link to `socket:[<inode>]`. Reading another user's `fd` directory is
-/// refused by the kernel, so `None` genuinely means *not resolvable from here* and
-/// never *nothing is listening*.
-pub fn listener_pid(port: u16) -> Option<u32> {
-    let mut inodes: Vec<String> = Vec::new();
+/// Split out of [`listener_pid`] because the two questions have different
+/// answers when they fail. *Is anything listening* is answerable from
+/// `/proc/net/tcp` alone, which every process may read; *which pid holds it*
+/// needs `/proc/<pid>/fd`, which the kernel refuses for another user. A monitor
+/// wants the first, and folding it into the second would have made a port watch
+/// report "not listening" about somebody else's server.
+fn listen_inodes(port: u16) -> Vec<String> {
+    let mut inodes = Vec::new();
     for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
         let Ok(text) = std::fs::read_to_string(f) else {
             continue;
@@ -1085,6 +1126,27 @@ pub fn listener_pid(port: u16) -> Option<u32> {
             inodes.push(cols[9].to_string());
         }
     }
+    inodes
+}
+
+/// **Is anything listening on this TCP port?**
+///
+/// What [`super::monitor::Watch::Port`] asks each tick. Reads the kernel's own
+/// socket table and never a process name, so there is no string here that could
+/// match the shell asking.
+pub fn port_is_listening(port: u16) -> bool {
+    !listen_inodes(port).is_empty()
+}
+
+/// The pid holding a listening TCP socket on `port`, by inode.
+///
+/// Two steps, and the second is the one that can legitimately fail: find the
+/// socket's inode in `/proc/net/tcp{,6}`, then find the process whose `/proc/<pid>/fd`
+/// contains a link to `socket:[<inode>]`. Reading another user's `fd` directory is
+/// refused by the kernel, so `None` genuinely means *not resolvable from here* and
+/// never *nothing is listening*.
+pub fn listener_pid(port: u16) -> Option<u32> {
+    let inodes = listen_inodes(port);
     if inodes.is_empty() {
         return None;
     }

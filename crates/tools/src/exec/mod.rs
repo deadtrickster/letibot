@@ -68,12 +68,14 @@
 //! | [`confine`] | the namespaces: the mount view, the measured [`Boundary`], and the refusal when there is none |
 //! | [`scope`] | the cgroup tree, the three scopes, and [`Reaping`] |
 //! | [`jobs`] | one running command: its capture ring, its state, its denominator |
+//! | [`monitor`] | a condition watched ACROSS turns, keyed on a handle and never on a pattern (T24) |
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
 //! | [`predicate`] | T21.1 and T21.2 — what the harness knows that the model cannot |
 
 pub mod confine;
 pub mod host;
 pub mod jobs;
+pub mod monitor;
 pub mod predicate;
 pub mod scope;
 
@@ -81,10 +83,11 @@ pub use confine::{
     Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, NoConfinement, Namespace,
     NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
 };
-pub use host::{HostProcesses, JobView, ProcessHost, Protected, SpawnRequest, Waited};
+pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
+pub use monitor::{Fired, Monitor, MonitorError, Monitors, PortState, Watch};
 pub use jobs::{JobId, JobState, OutputSlice};
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
-pub use scope::{Cgroup2, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
+pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
 
 /// Why an exec request did not become a process.
 ///
