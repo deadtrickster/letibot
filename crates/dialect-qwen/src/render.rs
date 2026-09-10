@@ -306,7 +306,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 open_assistant(st, out, text);
             }
 
-            TranscriptItem::Assistant { text, tool_calls } => {
+            TranscriptItem::Assistant { text, tool_calls, .. } => {
                 if !st.assistant_open {
                     open_assistant(st, out, "");
                 }
@@ -573,6 +573,7 @@ mod tests {
                     name: "read".into(),
                     arguments: r#"{"path":"a.txt","limit":40}"#.into(),
                 }],
+                truncated: false,
             },
         ];
         let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
@@ -596,6 +597,7 @@ mod tests {
                 name: "read".into(),
                 arguments: r#"{"path":"a"}"#.into(),
             }],
+            truncated: false,
         }];
         let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
         assert!(got.contains("Reading it now.\n\n<tool_call>"), "{got}");
@@ -606,6 +608,7 @@ mod tests {
         let items = vec![TranscriptItem::Assistant {
             text: "4.".into(),
             tool_calls: vec![],
+            truncated: false,
         }];
         let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
         assert!(got.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n4."), "{got}");
@@ -635,6 +638,7 @@ mod tests {
                         arguments: r#"{"path":"b"}"#.into(),
                     },
                 ],
+                truncated: false,
             },
             TranscriptItem::ToolResult {
                 call_id: "c1".into(),
@@ -657,6 +661,7 @@ mod tests {
             TranscriptItem::Assistant {
                 text: "They differ.".into(),
                 tool_calls: vec![],
+                truncated: false,
             },
             user("Thanks."),
         ];

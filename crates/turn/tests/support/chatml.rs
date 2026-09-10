@@ -188,6 +188,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             TranscriptItem::Assistant {
                 text: s,
                 tool_calls,
+                ..
             } => {
                 open_assistant(st, out);
                 if st.think == Think::None {

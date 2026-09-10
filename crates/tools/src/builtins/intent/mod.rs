@@ -382,6 +382,7 @@ mod tests {
         let items = vec![TranscriptItem::Assistant {
             text: "I'll restart the service now.".into(),
             tool_calls: vec![],
+            truncated: false,
         }];
         let steer = close_the_turn(&l, "turn_1", &items).expect("a commitment with no calls");
         assert!(steer.contains("restart the service"), "{steer}");
@@ -422,6 +423,7 @@ mod tests {
         let items = vec![TranscriptItem::Assistant {
             text: "I'll restart the service now.".into(),
             tool_calls: vec![],
+            truncated: false,
         }];
         assert_eq!(close_the_turn(&l, "turn_1", &items), None);
     }

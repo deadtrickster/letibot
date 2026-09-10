@@ -377,7 +377,7 @@ mod tests {
                 RenderSpan::Text(text.clone()),
                 ctl(ControlRole::ThinkClose),
             ],
-            TranscriptItem::Assistant { text, tool_calls } => {
+            TranscriptItem::Assistant { text, tool_calls, .. } => {
                 let mut spans = vec![
                     ctl(ControlRole::TurnStartUser),
                     RenderSpan::Text(format!("assistant\n{text}")),
@@ -430,6 +430,7 @@ mod tests {
             items.push(TranscriptItem::Assistant {
                 text: format!("answer {k}"),
                 tool_calls: vec![],
+                truncated: false,
             });
         }
         items
@@ -584,7 +585,8 @@ mod tests {
                 dialect_sha: "cc".repeat(32),
                 workspace_root: "/w".into(),
                 owner: "deadtrickster".into(),
-                approvers: vec![],
+                role: None,
+            approvers: vec![],
             })
             .unwrap();
         store.put_transcript("t", "s", &prefix_id).unwrap();
@@ -623,6 +625,31 @@ mod tests {
     #[test]
     fn we_agree_with_the_server_oracle_where_one_is_running() {
         let v = vocab();
+
+        // **Three facts, not two.** The doc above splits "the oracle is not running"
+        // from "we disagree with the oracle". There is a third and it looks exactly
+        // like the second: *the oracle is a DIFFERENT MODEL*. One port on this box
+        // serves three models by rotation, and the ids of one vocabulary are not the
+        // ids of another — so with GLM loaded and the Qwen GGUF here, this test
+        // reported `disagreed with the server on "hello world"`, left [14556, 1814]
+        // right [14978, 1879], which reads as a tokenizer bug and is not one.
+        //
+        // Ask what the server loaded before believing anything it says about ids.
+        if let Some(props) = post_get("/props") {
+            let served = serde_json::from_str::<serde_json::Value>(&props)
+                .ok()
+                .and_then(|d| d["model_path"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let ours = vocab_path().display().to_string();
+            if !served.is_empty() && served != ours {
+                eprintln!(
+                    "the server on 127.0.0.1:8080 is serving a different model, so its \
+                     token ids are not comparable to ours; skipping the oracle \
+                     cross-check.\n  ours:   {ours}\n  theirs: {served}"
+                );
+                return;
+            }
+        }
 
         let probes = [
             "hello world",
@@ -702,6 +729,32 @@ mod tests {
     /// A four-line HTTP/1.1 POST. Enough for one JSON round trip against
     /// localhost, and it keeps a network client out of this crate's dependency
     /// list for a test the crate does not depend on.
+    /// `GET`, for `/props`. Same framing tolerance as [`post`]; a `None` means
+    /// "could not ask", which the caller must not read as "the answer was no".
+    fn post_get(path: &str) -> Option<String> {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let addr = std::env::var("LETIBOT_ORACLE").unwrap_or_else(|_| "127.0.0.1:8080".into());
+        let mut s = TcpStream::connect(&addr).ok()?;
+        s.set_read_timeout(Some(Duration::from_secs(20))).ok()?;
+        write!(
+            s,
+            "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).ok()?;
+        let (head, tail) = raw.split_once("\r\n\r\n")?;
+        if !head.starts_with("HTTP/1.1 200") {
+            return None;
+        }
+        let start = tail.find('{')?;
+        let end = tail.rfind('}')?;
+        Some(tail[start..=end].to_string())
+    }
+
     fn post(path: &str, body: &str) -> Option<String> {
         use std::io::{Read, Write};
         use std::net::TcpStream;

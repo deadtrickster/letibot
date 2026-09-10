@@ -323,6 +323,7 @@ mod tests {
                     name: "grep".into(),
                     arguments: r#"{"pattern": "fn main", "glob": "*.rs"}"#.into(),
                 }],
+                truncated: false,
             },
         ];
         let r = QwenRenderer::new();

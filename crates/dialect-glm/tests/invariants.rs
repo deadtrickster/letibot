@@ -42,6 +42,7 @@ fn assistant(t: &str) -> TranscriptItem {
     TranscriptItem::Assistant {
         text: t.into(),
         tool_calls: vec![],
+        truncated: false,
     }
 }
 fn calls(ids: &[&str]) -> TranscriptItem {
@@ -55,6 +56,7 @@ fn calls(ids: &[&str]) -> TranscriptItem {
                 arguments: format!(r#"{{"path":"{id}.txt"}}"#),
             })
             .collect(),
+        truncated: false,
     }
 }
 fn result(id: &str) -> TranscriptItem {
@@ -240,6 +242,7 @@ fn parse_round_trips_reasoning_and_two_tool_calls() {
                     arguments: r#"{"path":"b.txt","limit":40}"#.into(),
                 },
             ],
+            truncated: false,
         },
     ];
 
@@ -279,6 +282,7 @@ fn argument_key_order_is_preserved_through_the_round_trip() {
             name: "f".into(),
             arguments: r#"{"z":1,"a":2,"m":3}"#.into(),
         }],
+        truncated: false,
     }];
     let spans = GlmRenderer::new().render_incremental(&[user("go")], &turn);
     let (tokens, decoder) = tokenize(&spans);
@@ -303,6 +307,7 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
             name: "f".into(),
             arguments: r#"{"n":"3"}"#.into(),
         }],
+        truncated: false,
     }];
     let spans = GlmRenderer::new().render_incremental(&[user("go")], &turn);
     let (tokens, decoder) = tokenize(&spans);
@@ -434,6 +439,7 @@ fn non_object_arguments_are_reported() {
                 name: "f".into(),
                 arguments: "not json at all".into(),
             }],
+            truncated: false,
         },
     ];
     assert_eq!(

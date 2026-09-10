@@ -40,6 +40,11 @@ pub enum TranscriptItem {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
+        /// The turn was cut short rather than finished naturally: §5.7's
+        /// `length` with usable text, or §5.8's kept partial. Absent on the wire
+        /// means `false`, so rows written before the field existed still read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
     ToolResult {
         call_id: String,
@@ -211,6 +216,7 @@ mod tests {
                     name: "read".into(),
                     arguments: r#"{"path":"a"}"#.into(),
                 }],
+                truncated: false,
             },
             TranscriptItem::Reasoning {
                 text: "second".into(),
@@ -219,11 +225,43 @@ mod tests {
             TranscriptItem::Assistant {
                 text: "done".into(),
                 tool_calls: vec![],
+                truncated: false,
             },
         ];
         let json = serde_json::to_string(&turn).unwrap();
         let back: Vec<TranscriptItem> = serde_json::from_str(&json).unwrap();
         assert_eq!(turn, back, "interleaved order must survive serialisation");
+    }
+
+    #[test]
+    fn truncated_survives_a_round_trip() {
+        // The flag is the transcript's own record that §5.7's kept text or §5.8's
+        // kept partial did not finish naturally. If it were dropped on the way out,
+        // the row would read back as a completed turn — the exact defect §5.7
+        // exists to abolish.
+        let item = TranscriptItem::Assistant {
+            text: "the part that made it out".into(),
+            tool_calls: vec![],
+            truncated: true,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("\"truncated\":true"), "{json}");
+        let back: TranscriptItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, item);
+    }
+
+    #[test]
+    fn a_row_written_before_the_field_existed_reads_as_not_truncated() {
+        let old = r#"{"type":"assistant","text":"done"}"#;
+        let back: TranscriptItem = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            back,
+            TranscriptItem::Assistant {
+                text: "done".into(),
+                tool_calls: vec![],
+                truncated: false,
+            }
+        );
     }
 
     #[test]

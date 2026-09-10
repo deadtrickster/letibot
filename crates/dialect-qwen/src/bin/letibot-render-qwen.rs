@@ -253,7 +253,7 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 flush(&mut turn, &mut msgs);
                 turn = Some((Some(text.clone()), String::new(), Vec::new()));
             }
-            TranscriptItem::Assistant { text, tool_calls } => {
+            TranscriptItem::Assistant { text, tool_calls, .. } => {
                 let t = turn.get_or_insert((None, String::new(), Vec::new()));
                 t.1.push_str(text);
                 t.2.extend(tool_calls.iter().cloned());

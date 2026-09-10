@@ -586,7 +586,7 @@ fn judge(
     let mut c6_total = 0;
     let mut c6_bad = 0;
     for (i, item) in harness.items().iter().enumerate() {
-        if let letibot_transcript::TranscriptItem::Assistant { text, tool_calls } = item
+        if let letibot_transcript::TranscriptItem::Assistant { text, tool_calls, .. } = item
             && text.is_empty()
             && !tool_calls.is_empty()
         {

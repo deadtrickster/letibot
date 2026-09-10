@@ -3963,7 +3963,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             }
             (RowClass::Activity, out)
         }
-        TranscriptItem::Assistant { text, tool_calls } => {
+        TranscriptItem::Assistant { text, tool_calls, .. } => {
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
@@ -5100,6 +5100,7 @@ mod tests {
             TranscriptItem::Assistant {
                 text: "because reasoning_content was replayed into the wrong field".into(),
                 tool_calls: vec![],
+                truncated: false,
             },
         );
         hub.publish(testing::turn_finished("t1"));
@@ -5299,6 +5300,7 @@ mod tests {
                         name: "read".into(),
                         arguments: r#"{"path":"crates/ui/src/style.rs"}"#.into(),
                     }],
+                    truncated: false,
                 }),
             },
         )));
@@ -5338,10 +5340,11 @@ mod tests {
                 seq + 1,
                 SessionEvent::TranscriptContent {
                     item_id: id.into(),
-                    item: Box::new(TranscriptItem::Assistant {
-                        text: String::new(),
-                        tool_calls: calls,
-                    }),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: calls,
+                    truncated: false,
+                }),
                 },
             )));
         }
@@ -5420,6 +5423,7 @@ mod tests {
                         name: "read".into(),
                         arguments: r#"{"path":"TODO.md"}"#.into(),
                     }],
+                    truncated: false,
                 }),
             },
         )));
@@ -5499,6 +5503,7 @@ mod tests {
                         name: "read".into(),
                         arguments: r#"{"path":"TODO.md"}"#.into(),
                     }],
+                    truncated: false,
                 }),
             },
         )));
@@ -5576,6 +5581,7 @@ mod tests {
                 item: Box::new(TranscriptItem::Assistant {
                     text: "There are twelve.".into(),
                     tool_calls: vec![],
+                    truncated: false,
                 }),
             },
         )));
@@ -5792,6 +5798,7 @@ mod tests {
                 item: Box::new(TranscriptItem::Assistant {
                     text: "I'll take a look at the tree first.".into(),
                     tool_calls: vec![],
+                    truncated: false,
                 }),
             },
         )));
@@ -5832,6 +5839,7 @@ mod tests {
                         name: "read".into(),
                         arguments: r#"{"path":"TODO.md"}"#.into(),
                     }],
+                    truncated: false,
                 }),
             },
         )));

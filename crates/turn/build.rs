@@ -9,6 +9,8 @@
 //! The alternative is asking every developer and every CI job to export
 //! `LD_LIBRARY_PATH`, which is the kind of environmental precondition that works
 //! until somebody runs the tests a different way.
+//!
+//! The note every crate-adder should read first: `docs/build-notes.md`.
 
 use std::path::PathBuf;
 

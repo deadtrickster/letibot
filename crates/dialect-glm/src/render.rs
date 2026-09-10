@@ -250,7 +250,7 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             st.think = Think::Closed;
         }
 
-        TranscriptItem::Assistant { text: t, tool_calls } => {
+        TranscriptItem::Assistant { text: t, tool_calls, .. } => {
             st.prev_was_tool_result = false;
             if st.think != Think::Closed {
                 ensure_think_open(st, out);

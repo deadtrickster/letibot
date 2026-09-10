@@ -886,7 +886,35 @@ impl<'a> Harness<'a> {
                 .map_err(|e| HarnessError::Setup(format!("registering an extra tool: {e}")))?;
         }
 
-        let role = role_for(&cfg);
+        // **The role comes from the SESSION when the session has one.**
+        //
+        // A daemon holds several sessions (`Sessions` keeps one `Harness` each, and a
+        // `ToolRuntime` is per-`Harness`), so different tool sets in one process were
+        // always expressible — every session resolved from the same `--role` only
+        // because the store had nowhere to record anything else. `session.role` is
+        // that place as of store v2.
+        //
+        // What this fixes today, before anything can *choose* a per-session role:
+        // resuming a conversation used to re-seat it from whatever `--role` the
+        // daemon happened to be started with. A coder session reopened by a daemon
+        // started `--role planner` came back without `write`, and the only symptom
+        // was a tool that was not there.
+        //
+        // An unparseable stored name is an ERROR and not a fallback. Falling back to
+        // the daemon's role would re-seat the conversation silently, which is the
+        // exact failure this column exists to remove.
+        let role = match stored.as_ref().and_then(|st| st.role.clone()) {
+            Some(name) => {
+                let seat = Seat::parse(&name).map_err(|e| {
+                    HarnessError::Setup(format!(
+                        "session {} records the role `{name}`, which this build does not                          know: {e}. Refusing rather than re-seating the conversation with                          the daemon's own role, which would change its tools without                          saying so.",
+                        cfg.session_id
+                    ))
+                })?;
+                role_for_seat(seat, &cfg)
+            }
+            None => role_for(&cfg),
+        };
         let registry = registry.resolve_role(&role).map_err(|e| {
             HarnessError::Setup(format!("seating the `{}` role: {e}", cfg.seat.as_str()))
         })?;
@@ -1240,6 +1268,10 @@ impl<'a> Harness<'a> {
                             dialect_sha,
                             workspace_root: cfg.workspace.display().to_string(),
                             owner: cfg.owner.clone(),
+                            // Record it, so a later resume seats what this
+                            // conversation was built with rather than whatever the
+                            // daemon is running as then.
+                            role: Some(cfg.seat.as_str().to_string()),
                             approvers: vec![],
                         })
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
@@ -2015,7 +2047,16 @@ fn steer_for_turn(
 /// without a shell — leaving it in and hoping the tool refuses would put `bash` in
 /// the prompt, which is the model being told it has a capability it does not.
 fn role_for(cfg: &Config) -> Role {
-    match cfg.seat {
+    role_for_seat(cfg.seat, cfg)
+}
+
+/// The same table, reached from a seat the store named rather than from `cfg`.
+///
+/// `cfg` is still needed for [`Config::allow_bash`], which is a daemon-wide flag and
+/// deliberately not per session: a shell is the one capability that is not the
+/// session's to record.
+fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
+    match seat {
         Seat::Orchestrator => roles::m1_orchestrator(),
         Seat::Planner => roles::planner(),
         Seat::Researcher => roles::m3_researcher(),
@@ -2263,6 +2304,7 @@ mod tests {
             TranscriptItem::Assistant {
                 text: "an answer".into(),
                 tool_calls: vec![],
+                truncated: false,
             },
             user("second"),
         ]);
@@ -2298,6 +2340,7 @@ mod tests {
         let items = [TranscriptItem::Assistant {
             text: "I'll check the file and get back to you.".into(),
             tool_calls: vec![],
+            truncated: false,
         }];
         assert_eq!(
             steer_for_turn(&l, false, "t1", &items),

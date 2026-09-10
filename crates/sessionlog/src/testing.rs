@@ -343,6 +343,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
                     name: "read".into(),
                     arguments: r#"{"path":"/home/dead/Projects/letibot/TODO.md"}"#.into(),
                 }],
+                truncated: false,
             },
         ),
         (
@@ -359,6 +360,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
             TranscriptItem::Assistant {
                 text: MARKDOWN.into(),
                 tool_calls: vec![],
+                truncated: false,
             },
         ),
     ]

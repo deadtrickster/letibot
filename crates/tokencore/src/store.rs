@@ -79,7 +79,27 @@ use sha2::{Digest, Sha256};
 use crate::ledger::LedgerRow;
 use crate::vocab::TokenId;
 
-pub const SCHEMA_VERSION: i64 = 1;
+/// Why `session.role` is nullable, and why the comment is here and not in the DDL.
+///
+/// A role belongs to the SESSION and not to the process. The runtime was already
+/// shaped for that: `Sessions` holds one `Harness` per session and a `ToolRuntime`
+/// is per-`Harness`, so two sessions in one daemon can already carry different tool
+/// sets — they all resolved from the same `--role` flag only because there was
+/// nowhere to record anything else. `stable_prefix` has keyed on `tools_json` since
+/// v1, so two roles in one daemon get two content-addressed prefix rows with no
+/// coordination needed.
+///
+/// **NULL is not `coder`.** It means *unrecorded*, which is what every session
+/// written before v2 is, and it has to keep meaning "the daemon's own role" or a
+/// resume would silently re-seat an old conversation.
+///
+/// The prose lives in Rust because SQLite's `ALTER TABLE ... DROP COLUMN` rewrites
+/// the stored `CREATE TABLE` text and fails with `incomplete input` when a
+/// multi-line comment sits inside the parens. That is not hypothetical: it broke
+/// the migration test's fixture, which builds a v1 store by dropping this column.
+pub const ROLE_COLUMN: () = ();
+
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -110,7 +130,8 @@ CREATE TABLE IF NOT EXISTS session (
     workspace_root TEXT NOT NULL,
     owner          TEXT NOT NULL,
     approvers_json TEXT NOT NULL,    -- JSON array of identities
-    created_at     INTEGER NOT NULL
+    created_at     INTEGER NOT NULL,
+    role           TEXT              -- v2; see ROLE_COLUMN below. NULL = unrecorded
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -308,6 +329,8 @@ pub struct SessionRecord {
     pub workspace_root: String,
     pub owner: String,
     pub approvers: Vec<String>,
+    /// The role to seat, or `None` for the daemon's own.
+    pub role: Option<String>,
 }
 
 /// A session as the store holds it: enough to list it, pick it and resume it.
@@ -326,6 +349,9 @@ pub struct StoredSession {
     pub dialect_sha: String,
     pub workspace_root: String,
     pub owner: String,
+    /// The role this session was opened with, or `None` if it predates v2 or was
+    /// opened without one. `None` means the daemon's `--role`, not `coder`.
+    pub role: Option<String>,
     pub created_ms: i64,
     /// The newest transcript for this session, or `None` if it has none at all.
     pub transcript_id: Option<String>,
@@ -413,6 +439,20 @@ impl Store {
                     known: SCHEMA_VERSION,
                 });
             }
+            // An older store is MIGRATED, not left alone and not rebuilt. Before v2
+            // this arm was `Some(_) => return Ok(())`, so `SCHEMA_SQL` only ever ran
+            // on an empty file and there was no way to add a column to a store that
+            // already held conversations. The rows are append-only and cannot be
+            // recreated, so a migration is the only shape this can take.
+            Some(v) if v < SCHEMA_VERSION => {
+                self.migrate_from(v)?;
+                self.conn.execute("DELETE FROM schema_version", [])?;
+                self.conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![SCHEMA_VERSION],
+                )?;
+                return Ok(());
+            }
             Some(_) => return Ok(()),
             None => {}
         }
@@ -421,6 +461,25 @@ impl Store {
             .execute("DELETE FROM schema_version", [])?;
         self.conn
             .execute("INSERT INTO schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
+        Ok(())
+    }
+
+    /// Apply the steps from `from` up to [`SCHEMA_VERSION`].
+    ///
+    /// One arm per version, each idempotent on its own, so a store two versions
+    /// behind is carried forward by running both rather than by a special case.
+    ///
+    /// **A step may add and it may not destroy.** `transcript_item` carries a
+    /// `BEFORE DELETE` trigger that raises, so a migration that wanted to rewrite
+    /// rows could not, and that is the guarantee rather than a convention here.
+    fn migrate_from(&self, from: i64) -> Result<()> {
+        if from < 2 {
+            // v2: a session records its own role. `ALTER TABLE ... ADD COLUMN` with
+            // no default writes NULL into every existing row, which is exactly the
+            // "unrecorded, use the daemon default" case the column documents.
+            self.conn
+                .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
+        }
         Ok(())
     }
 
@@ -463,8 +522,9 @@ impl Store {
     pub fn put_session(&self, rec: &SessionRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO session
-               (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+               (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
+                created_at, role)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 rec.id,
                 rec.title,
@@ -474,6 +534,7 @@ impl Store {
                 rec.owner,
                 serde_json::to_string(&rec.approvers)?,
                 now_ms(),
+                rec.role,
             ],
         )?;
         Ok(())
@@ -653,7 +714,8 @@ impl Store {
                       WHERE t.session_id = s.id),
                     (SELECT MAX(i.created_at) FROM transcript_item i
                        JOIN transcript t ON t.id = i.transcript_id
-                      WHERE t.session_id = s.id)
+                      WHERE t.session_id = s.id),
+                    s.role
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -671,6 +733,7 @@ impl Store {
                     transcript_id: r.get(7)?,
                     items: r.get::<_, i64>(8)? as u32,
                     last_activity_ms: last.unwrap_or(created_ms),
+                    role: r.get(10)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -812,6 +875,7 @@ mod tests {
             dialect_sha: p.dialect_sha.clone(),
             workspace_root: "/w".into(),
             owner: "deadtrickster".into(),
+            role: None,
             approvers: vec!["deadtrickster".into()],
         })
         .unwrap();
@@ -941,7 +1005,7 @@ mod tests {
                 kind: "k".into(),
                 edge: letibot_transcript::SegmentEdge::Open,
             },
-            TranscriptItem::Assistant { text: "hi".into(), tool_calls: vec![] },
+            TranscriptItem::Assistant { text: "hi".into(), tool_calls: vec![], truncated: false },
         ];
         // The SegmentMark renders to nothing; every other item to something.
         let payloads: Vec<Vec<u32>> =
@@ -997,5 +1061,106 @@ mod tests {
         // Abstained must survive the round trip as itself, not as Ok.
         let back = s.load_transcript(&tr).unwrap();
         assert_eq!(back.items[0].0, item);
+    }
+
+    /// A v1 store — one written before a session could record its role — is carried
+    /// forward, and every row in it reads back as "unrecorded".
+    ///
+    /// This is the test the operator's ten live sessions depend on. `migrate()` used
+    /// to return `Ok(())` for any version it already knew, so a column added to
+    /// `SCHEMA_SQL` reached a fresh file and nothing else; the failure would have been
+    /// a `no such column: role` on the first list, after the daemon had already
+    /// started.
+    #[test]
+    fn a_v1_store_is_migrated_and_its_rows_read_as_unrecorded() {
+        // A file, not `open_in_memory`, because the point is a store that already
+        // exists on disk at an older version. No dev-dependency for one test.
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v1-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        // Make a REAL store, then reverse the v2 step on it. Hand-writing the v1
+        // DDL was the first attempt and it was wrong: the fixture lacked
+        // `transcript`, which `list_sessions` joins, so the test failed on a table
+        // the migration never touches. Reversing a real store keeps every other
+        // table exactly as v1 had it and cannot drift from `SCHEMA_SQL`.
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-old".into(),
+                title: Some("a title".into()),
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+            })
+            .unwrap();
+        }
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "ALTER TABLE session DROP COLUMN role;
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version (version) VALUES (1);",
+            )
+            .unwrap();
+            // Prove the fixture really is v1: the column is gone.
+            assert!(
+                c.query_row("SELECT role FROM session", [], |r| r.get::<_, Option<String>>(0))
+                    .is_err(),
+                "the fixture still has a role column, so it is not a v1 store"
+            );
+        }
+
+        // Opening it runs the migration.
+        let s = Store::open(&path).unwrap();
+        let got = s.session("s-old").unwrap().expect("the v1 row survived");
+        assert_eq!(got.title.as_deref(), Some("a title"));
+        assert_eq!(
+            got.role, None,
+            "a session written before v2 must read as unrecorded, not as some default"
+        );
+
+        // The version moved, and opening again is a no-op rather than a re-migration.
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert!(s.session("s-old").unwrap().is_some(), "reopen is idempotent");
+
+        // And a role written after the migration comes back.
+        s.put_session(&SessionRecord {
+            id: "s-new".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: Some("planner".into()),
+            approvers: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            s.session("s-new").unwrap().unwrap().role.as_deref(),
+            Some("planner")
+        );
     }
 }

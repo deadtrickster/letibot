@@ -76,6 +76,14 @@ impl Produced {
             .flatten()
             .collect()
     }
+
+    pub fn mark_truncated(&mut self, truncated: bool) {
+        for produced in &mut self.items {
+            if let TranscriptItem::Assistant { truncated: cut, .. } = &mut produced.item {
+                *cut = truncated;
+            }
+        }
+    }
 }
 
 /// Remove trailing stop tokens. Returns `(body, stripped)`.
@@ -162,6 +170,11 @@ pub fn lead_opens_reasoning(lead: &[TokenId], decoder: &dyn TokenDecoder) -> boo
 /// `lead` is the generation prompt that was submitted but not committed; it is
 /// prepended so that the first item owns the turn-start tokens the model was
 /// handed. `reasoning_field` is the dialect's replay field for `Reasoning` items.
+///
+/// Assistant items come out with `truncated: false`. Whether the turn was cut
+/// short is decided from the finish reason and any interrupt, which `produce`
+/// does not see; the engine stamps the value via [`Produced::mark_truncated`]
+/// before committing.
 pub fn produce(
     lead: &[TokenId],
     generated: &[TokenId],
@@ -285,6 +298,7 @@ pub fn produce(
                     item: TranscriptItem::Assistant {
                         text,
                         tool_calls: calls,
+                        truncated: false,
                     },
                     range: start..range.end,
                 });
@@ -302,6 +316,7 @@ pub fn produce(
             item: TranscriptItem::Assistant {
                 text: String::new(),
                 tool_calls: Vec::new(),
+                truncated: false,
             },
             range: start..tokens.len(),
         });
@@ -410,7 +425,8 @@ mod tests {
             p.items[1].item,
             TranscriptItem::Assistant {
                 text: "answer".into(),
-                tool_calls: vec![]
+                tool_calls: vec![],
+                truncated: false
             }
         );
         rows_cover_every_token(&p).unwrap();

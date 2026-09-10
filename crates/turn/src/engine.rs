@@ -526,7 +526,7 @@ impl TurnEngine<'_> {
         }
 
         let decoder = self.decoder();
-        let produced = items::produce(
+        let mut produced = items::produce(
             &lead,
             &outcome.ids,
             &self.stop_ids,
@@ -646,6 +646,36 @@ impl TurnEngine<'_> {
         }
         self.salvage.cleared();
 
+        // §5.8's escape hatch fired: generation stopped at the next token and the
+        // partial output was kept. Announced as an interruption, because a kept
+        // partial that reports as a complete turn is §5.7's failure with a
+        // different cause.
+        //
+        // T23 arrives through the same door and for the same reason. A frame that
+        // did not account for itself is still refused — the ids after it never
+        // reach the ledger — but the ids before it were each checked against the
+        // server's own counter and are exactly as trustworthy as they were a frame
+        // earlier. Failing the whole turn over the tail threw away an answer the
+        // operator was waiting on and left `nothing was recorded` behind; keeping
+        // the head and marking the seam is the same trade §5.8 already makes.
+        let interrupt_reason = match &outcome.aborted {
+            Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
+            Some(AbortCause::FrameMismatch {
+                n_decoded,
+                previous,
+                ids,
+            }) => Some(format!(
+                "frame_mismatch: tokens_predicted {previous} -> {n_decoded} carried {ids} id(s)"
+            )),
+            _ => None,
+        };
+        // The same two ways `TurnOk::truncated` counts — §5.7's kept text and
+        // §5.8's kept partial. Stamped onto the rows before they are committed so
+        // the transcript and the turn record answer the question identically.
+        produced.mark_truncated(
+            interrupt_reason.is_some() || matches!(verdict, LengthVerdict::TruncatedText),
+        );
+
         // Commit. The rows are cut out of the id array the server streamed; nothing
         // is re-rendered and nothing is re-tokenized.
         let mut appended = Vec::new();
@@ -705,29 +735,6 @@ impl TurnEngine<'_> {
             check,
         );
 
-        // §5.8's escape hatch fired: generation stopped at the next token and the
-        // partial output was kept. Announced as an interruption, because a kept
-        // partial that reports as a complete turn is §5.7's failure with a
-        // different cause.
-        //
-        // T23 arrives through the same door and for the same reason. A frame that
-        // did not account for itself is still refused — the ids after it never
-        // reach the ledger — but the ids before it were each checked against the
-        // server's own counter and are exactly as trustworthy as they were a frame
-        // earlier. Failing the whole turn over the tail threw away an answer the
-        // operator was waiting on and left `nothing was recorded` behind; keeping
-        // the head and marking the seam is the same trade §5.8 already makes.
-        let interrupt_reason = match &outcome.aborted {
-            Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
-            Some(AbortCause::FrameMismatch {
-                n_decoded,
-                previous,
-                ids,
-            }) => Some(format!(
-                "frame_mismatch: tokens_predicted {previous} -> {n_decoded} carried {ids} id(s)"
-            )),
-            _ => None,
-        };
         let interrupted = interrupt_reason.is_some();
         if let Some(reason) = interrupt_reason {
             sink.emit(TurnEvent::TurnInterrupted {
