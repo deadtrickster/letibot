@@ -564,6 +564,34 @@ project-local binary's `--help` is attacker-controlled content in exactly the wa
 chains). So the classifier reads **system documentation paths**; a program that documents
 itself only from inside the workspace stays **unknown**, and unknown is ungrantable.
 
+### The classifier is not a different kind of decider. It is the same one, automated.
+
+Operator: *"same way as me btw — ideally if I'm not lazy I will read wtf the model wants.
+But if I know that `git commit` is ok I will do globs."*
+
+That is the design, stated from the human side, and the symmetry is exact:
+
+| the operator | the classifier |
+|---|---|
+| reads what the model is actually asking for | reads the documentation, cites the section |
+| already knows `git commit` is fine → writes a glob | hand-written seed entry |
+| is lazy and globs `git *` anyway | an uncited guess |
+
+**All three rows are legitimate.** Laziness is not a defect to be designed out — it is how
+anyone works, and a system that forbids the shortcut gets switched off (§4f). What the
+design owes is not prevention but **legibility**: which of the three you took must be
+visible afterwards.
+
+So the provenance field is not bookkeeping. It is the same taxonomy a person uses on
+themselves — *I knew this* / *I checked this* / *I did not look* — reflected back in a form
+they can audit. An operator reading *"8 derived from man pages, 3 unknown and
+ungrantable"* is reading their own reasoning, which is why it is a better disclosure than
+a confidence score.
+
+And it is why an uncited classification is `not_run` rather than a weak yes: a human who
+globs `git *` without reading has not decided that git is safe. They have decided not to
+find out. Those are different, and the record should say which one happened.
+
 ### And it feeds the corpus
 
 An operator overriding a derived classification is a labelled example of the classifier
