@@ -505,6 +505,71 @@ The difference from every harness in the survey is not that we refuse the glob. 
 `git *` here **tells you it includes the execution vehicles**, and opencode's
 `always: ["*"]` silently disables the operator's own `.env` guard.
 
+## 4g. Automode reads the documentation, and must be made to
+
+Operator: *"the automode can reach to man pages and docs to see wtf that command is
+doing"*, and then: *"in automode the classifier must be **encouraged** to read damn
+documentation."*
+
+The second sentence is the design requirement. A classifier that can read the docs and
+does not is worse than one that cannot, because its guess wears the same clothes as a
+grounded answer — which is §8.2's abstention failure, one layer up.
+
+### Why this dissolves the table's real problem
+
+A hand-written execution-vehicle table always lags: new tools appear constantly and every
+miss reads as permission. But *"does this program have a flag that runs arbitrary code"*
+is a **documentation question**, not a judgement. `man tar` says `--to-command` runs a
+command. That is a fact on the box, not an inference about intent.
+
+Three properties make it work here where a per-call classifier would not:
+
+- **Cacheable per `(program, version)`.** `git` is classified once, not per call. So
+  layer B's millisecond budget does not apply — a slow, careful answer is fine.
+- **Citable.** The verdict carries the section it came from, so an operator can check it.
+  That is a different epistemic object from *"the model thinks this is safe."*
+- **Fails closed naturally.** No documentation, no model, unknown program → ungrantable.
+  Absence still is not permission.
+
+### The rule that makes "encouraged" real
+
+**A classification of an unknown program is not a verdict unless it cites what it read.**
+An uncited guess is `not_run` — *nobody checked* — not a safe default. That is the same
+distinction the whole tool set runs on: `denied ≠ failed`, `unresolvable ≠ safe`,
+`backgrounded ≠ finished`, and now **`unchecked ≠ inert`**.
+
+So the classifier gets documentation reading as a first-class, cached, read-only
+capability, and its output shape *requires* the citation for anything not already in the
+hand-written seed. A program already in the seed needs no reading — that is what the seed
+is for.
+
+### What the table becomes
+
+Not *the* list. **The seed, plus a provenanced cache:**
+
+| provenance | for |
+|---|---|
+| `hand-written` | the ones we cannot afford to get wrong — `git`, `find`, `ssh`, `sudo` |
+| `man(1) §…` | the long tail, derived and cited |
+| *absent* | unknown, and therefore **ungrantable** |
+
+Which lets the disclosure say *"14 programs classified: 6 hand-written, 8 derived, 3
+unknown and ungrantable"* — a sentence with denominators, which is the house standard.
+
+### One trust boundary to build in from the start
+
+**`man git` is not `./tool --help`.** A system man page is part of the OS install. A
+project-local binary's `--help` is attacker-controlled content in exactly the way
+`web_fetch`'s payload is (§4 layer 3, and `docs/tool-survey.md` on prompt-injection
+chains). So the classifier reads **system documentation paths**; a program that documents
+itself only from inside the workspace stays **unknown**, and unknown is ungrantable.
+
+### And it feeds the corpus
+
+An operator overriding a derived classification is a labelled example of the classifier
+being wrong in a named direction — §4c's corpus, produced by working rather than by a
+labelling project.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
