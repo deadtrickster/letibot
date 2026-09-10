@@ -435,14 +435,31 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            // **An answer that got this far had nowhere better to go.** A session
+            // with an adjudicator installs an `AnswerSink`, and `Hub::submit` then
+            // delivers straight to the thread waiting for it rather than queueing —
+            // see `crate::answers` for why the queue is a deadlock. So reaching this
+            // arm means one of two things, and the message says which rather than
+            // repeating a sentence about M1 that stopped being true when roles became
+            // reachable.
             CommandKind::Answer { req_id, .. } => {
                 if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "no_adjudication".into(),
-                        detail: format!(
-                            "an answer to {req_id} arrived, but M1 has no adjudication: \
-                             read-only tools never ask (clause 4)"
+                    let detail = match hub.answer_sink_describes() {
+                        Some(who) => format!(
+                            "an answer to {req_id} reached the command queue even though \
+                             this session can be answered ({who}). That is a defect: the \
+                             answer was not delivered to whatever asked, and the decision \
+                             is still open or has already timed out. Nothing was run."
                         ),
+                        None => format!(
+                            "an answer to {req_id} arrived and this session has nothing \
+                             that asks: its tools are read-only, and a read never prompts \
+                             (clause 4). Nothing was waiting for it and nothing was run."
+                        ),
+                    };
+                    hub.publish(SessionEvent::Warning {
+                        code: "answer_unclaimed".into(),
+                        detail,
                     });
                 }
                 Outcome::Ignored

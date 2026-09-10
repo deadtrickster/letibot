@@ -230,15 +230,25 @@ pub struct Config {
 /// to make yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdjudicatorChoice {
+    /// [`crate::answers::HeadAdjudicator`] over the session socket.
+    ///
+    /// **The default for any seat that can reach the gate**, and the reason is which
+    /// shape people actually run: a daemon in the background with `letibot-tui`
+    /// attached. It posts `DecisionRequested`, which the head already renders, and
+    /// waits on the answer frame the head already has — see [`crate::answers`] for
+    /// why that answer cannot come in through the command queue.
+    ///
+    /// A session with no head that can answer refuses **at once**, naming that fact,
+    /// rather than sitting out a deadline.
+    #[default]
+    Head,
     /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr.
     ///
-    /// **The default for any seat that can reach the gate.** Its honest limit is
-    /// where it reads from: this works for `harnessd --prompt …` and for a daemon
-    /// run in a foreground terminal, and a head attached over the socket has no way
-    /// to answer it — the head's answer affordance is T25/D10 and is not built. The
-    /// startup disclosure says so rather than letting somebody discover it by
-    /// watching a daemon block on a closed stdin.
-    #[default]
+    /// Right for `harnessd --prompt …` and for a daemon run in a foreground
+    /// terminal, and **only** those: a head attached over the socket cannot answer
+    /// it, which is D25. It is no longer the default and it is still selectable,
+    /// because a foreground daemon with no head is a real way to run this and the
+    /// console is the only thing that can reach a person there.
     Console,
 }
 
@@ -260,6 +270,7 @@ impl AdjudicatorChoice {
     /// it, which is a different fact and the one worth saying.
     pub fn parse(s: &str) -> Result<AdjudicatorChoice, String> {
         match s {
+            "head" => Ok(AdjudicatorChoice::Head),
             "console" => Ok(AdjudicatorChoice::Console),
             "none" => Err(
                 "there is no `none`. A seat with write, exec or network tools and \
@@ -278,13 +289,14 @@ impl AdjudicatorChoice {
                     .into(),
             ),
             other => Err(format!(
-                "unknown adjudicator `{other}`; this build has console"
+                "unknown adjudicator `{other}`; this build has head, console"
             )),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
+            AdjudicatorChoice::Head => "head",
             AdjudicatorChoice::Console => "console",
         }
     }

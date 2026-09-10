@@ -148,16 +148,14 @@ pub struct DecisionOption {
 #[serde(rename_all = "snake_case")]
 pub enum OptionKind {
     AllowOnce,
-    /// This class, for the rest of **this session**. Dies with the daemon.
-    AllowSession,
-    /// This class, in **this project**, until the operator drops it
-    /// (`PROTOCOL_VERSION` 7).
+    /// This class, for the rest of **this session** (`PROTOCOL_VERSION` 7).
     ///
-    /// A separate value from [`OptionKind::AllowAlways`] because the two differ in
-    /// the one way an operator cares about — where it stops — and a head that
-    /// rendered both as *"allow always"* would be describing a project-scoped grant
-    /// by a scope it does not have.
-    AllowProject,
+    /// The widest an *answer* goes. Anything standing beyond one session is a
+    /// **mode**, not a grant: the operator moves this project to a named point and
+    /// the disclosure says which one. A grant table keyed by tool and class is a
+    /// thing nobody audits; a per-project point is one value a person can hold in
+    /// their head.
+    AllowSession,
     AllowAlways,
     RejectOnce,
     RejectAlways,

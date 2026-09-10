@@ -85,12 +85,14 @@
 //! vocabulary id where the boundary still exists. The live view and the stored
 //! view carry the same bytes, on channels that agree.
 
+pub mod answers;
 pub mod config;
 pub mod daemon;
 pub mod dialect;
 pub mod harness;
 pub mod sessions;
 
+pub use answers::{Answers, HeadAdjudicator};
 pub use config::{Config, SpillPolicy, SpillStorage};
 pub use daemon::Daemon;
 pub use sessions::{Outcome, Sessions};

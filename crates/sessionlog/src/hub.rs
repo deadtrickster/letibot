@@ -146,6 +146,15 @@ pub trait AnswerSink: Send + Sync {
     /// a call the gate reported as `not_run` is the worst available outcome.
     fn answer(&self, req_id: &str, identity: &str, reply: &Reply) -> bool;
 
+    /// **An interrupt arrived**: stop waiting for anything still open.
+    ///
+    /// A waiter woken this way has *not* been answered — it reports cancellation,
+    /// which the gate fails closed on. Without this an operator who pressed Esc
+    /// twice would watch the session sit out the rest of a decision's deadline,
+    /// because the thread holding the tool call is not the thread that drains
+    /// interrupts.
+    fn cancel(&self, why: &str);
+
     /// For the startup disclosure and `EXPLAIN`: who can actually answer here.
     fn describe(&self) -> String;
 }
@@ -516,6 +525,26 @@ impl Hub {
         self.lock().heads.len()
     }
 
+    /// **Heads that said they will answer a decision**, by identity.
+    ///
+    /// Not `attached_heads`. A flowy connector attaches with `can_decide: false` and
+    /// is a head in every other sense; posting a decision to a session whose only
+    /// head is one of those and then waiting for its deadline is §11.5's *"a real
+    /// answer given for a fake reason"*.
+    ///
+    /// An adjudicator asks this **before** posting, so *nobody is attached* is
+    /// answered in microseconds rather than after a five-minute wait — the
+    /// difference between a session that says why it cannot proceed and one that
+    /// looks hung.
+    pub fn deciding_heads(&self) -> Vec<String> {
+        self.lock()
+            .heads
+            .iter()
+            .filter(|h| h.caps.can_decide)
+            .map(|h| h.identity.clone())
+            .collect()
+    }
+
     pub fn is_closed(&self) -> bool {
         self.lock().closed
     }
@@ -549,6 +578,7 @@ impl Hub {
         // leaves without delivering, and a `None` initialiser would be a value
         // nothing ever reads.
         let delivery: Option<(Arc<dyn AnswerSink>, String, Reply, String)>;
+        let cancellation: Option<(Arc<dyn AnswerSink>, String)>;
         let frame = {
             let mut g = self.lock();
             let actual = g.log.head_seq();
@@ -674,6 +704,15 @@ impl Hub {
                 .bell
                 .clone()
                 .map(|b| (b, g.log.session_id().to_string()));
+            // **An interrupt cancels a decision that is being waited on.** It still
+            // queues — the turn is interrupted the way it always was — and the sink
+            // is told as well, because the thread blocked inside a tool call is not
+            // draining that queue and would otherwise sit out its whole deadline
+            // after the operator asked it to stop.
+            let cancel = match (&kind, g.answers.clone()) {
+                (CommandKind::Interrupt { reason }, Some(sink)) => Some((sink, reason.clone())),
+                _ => None,
+            };
             if deliver.is_none() {
                 g.commands.push_back(QueuedCommand {
                     head_id: head_id.to_string(),
@@ -684,6 +723,7 @@ impl Hub {
                 });
             }
             delivery = deliver.map(|(sink, req_id, reply)| (sink, req_id, reply, identity.clone()));
+            cancellation = cancel;
             // The announcement §13.2 requires: "announced as an event so both heads
             // see it and who did it".
             let env = g.append_and_fan(SessionEvent::CommandIssued {
@@ -710,6 +750,9 @@ impl Hub {
         // a race look like a malformed frame.
         if let Some((sink, req_id, reply, identity)) = delivery {
             sink.answer(&req_id, &identity, &reply);
+        }
+        if let Some((sink, reason)) = cancellation {
+            sink.cancel(&reason);
         }
         if let Some((bell, id)) = ring {
             bell.ring(&id);
@@ -1060,6 +1103,7 @@ mod tests {
                 ));
                 true
             }
+            fn cancel(&self, _why: &str) {}
             fn describe(&self) -> String {
                 "recorder".into()
             }

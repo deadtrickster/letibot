@@ -941,6 +941,16 @@ impl<'a> Harness<'a> {
             (adj, _) => {
                 let adj: Box<dyn Adjudicator> = match (adj, cfg.adjudicator) {
                     (Some(a), _) => a,
+                    // **The answer path, installed as one act.** The sink has to be on
+                    // the hub before the adjudicator can be asked anything, because
+                    // the adjudicator posts to that hub and then waits — so these two
+                    // lines are a pair, and separating them is a session that asks
+                    // questions nothing can answer.
+                    (None, AdjudicatorChoice::Head) => {
+                        let answers = Arc::new(crate::answers::Answers::new());
+                        hub.set_answer_sink(answers.clone());
+                        Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
+                    }
                     (None, AdjudicatorChoice::Console) => {
                         Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
                     }
