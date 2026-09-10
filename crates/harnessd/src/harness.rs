@@ -1394,6 +1394,11 @@ impl<'a> Harness<'a> {
     /// exists not to do.
     pub fn system_update(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.system_updates += 1;
+        // A turn, so distances stay right — but **not** an utterance. A system
+        // update is the operator changing the instructions, not the operator
+        // authorising an action, and letting it into the trail would make
+        // "be helpful with files" readable as consent to touch one.
+        self.trail.begin_turn();
         let item = self
             .cfg
             .dialect
