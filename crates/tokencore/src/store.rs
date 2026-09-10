@@ -177,6 +177,12 @@ pub enum StoreError {
     /// A blob whose byte length is not a whole number of token ids, or a hash
     /// that is not 32 bytes. Means the file was written by something else.
     Corrupt(String),
+    /// The store is fine and the operation is not allowed. Separate from
+    /// [`StoreError::Corrupt`] because they send a reader to opposite places: one is
+    /// "your database is damaged", the other is "the database is doing its job".
+    /// Printing a refused delete as corruption is how an operator ends up running
+    /// `PRAGMA integrity_check` on a healthy file.
+    Refused(String),
     NotFound(String),
     /// The file was written by a newer build.
     SchemaTooNew { found: i64, known: i64 },
@@ -188,6 +194,7 @@ impl std::fmt::Display for StoreError {
             StoreError::Sql(e) => write!(f, "sqlite: {e}"),
             StoreError::Json(e) => write!(f, "json: {e}"),
             StoreError::Corrupt(m) => write!(f, "store is corrupt: {m}"),
+            StoreError::Refused(m) => write!(f, "{m}"),
             StoreError::NotFound(m) => write!(f, "not found: {m}"),
             StoreError::SchemaTooNew { found, known } => write!(
                 f,
@@ -303,6 +310,41 @@ pub struct SessionRecord {
     pub approvers: Vec<String>,
 }
 
+/// A session as the store holds it: enough to list it, pick it and resume it.
+///
+/// Separate from [`SessionRecord`], which is the *write* shape. This one carries
+/// three things that are computed rather than stored — the transcript id, the row
+/// count and the last activity — because every caller that lists sessions needs all
+/// three and would otherwise write the same three subqueries slightly differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSession {
+    pub id: String,
+    /// `None` when nobody has named it. Distinct from `Some("")`, which
+    /// [`Store::set_title`] does not write.
+    pub title: Option<String>,
+    pub model_id: String,
+    pub dialect_sha: String,
+    pub workspace_root: String,
+    pub owner: String,
+    pub created_ms: i64,
+    /// The newest transcript for this session, or `None` if it has none at all.
+    pub transcript_id: Option<String>,
+    /// Rows across every transcript of this session.
+    pub items: u32,
+    /// When the last row was written, falling back to `created_ms` for a session
+    /// nothing ran in. Never `Option`: "never used" is a time, not an absence, and
+    /// an `Option` here would make every caller invent the same fallback.
+    pub last_activity_ms: i64,
+}
+
+/// What a stable prefix was rendered from and by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StablePrefixMeta {
+    pub dialect_sha: String,
+    pub vocab_source: String,
+    pub n_tokens: u32,
+}
+
 /// Everything needed to rebuild a ledger and a transcript after a restart.
 #[derive(Debug, Clone)]
 pub struct LoadedTranscript {
@@ -346,6 +388,13 @@ impl Store {
         // tokens. A lost commit is a lost turn.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", true)?;
+        // WAL lets readers and the writer run at once, but two *writers* still
+        // serialise, and rusqlite's default is to fail immediately rather than wait.
+        // Two connections exist by design — the worker writes rows, a second one
+        // answers a head's list and writes a title — so a rename landing during a
+        // turn's `append_item` must wait a moment rather than come back as
+        // SQLITE_BUSY on a database that is working exactly as intended.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
@@ -579,6 +628,148 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(n as u32)
+    }
+
+    /// Every session in the store, newest activity first: what a picker or
+    /// `letibot --sessions` is drawn from.
+    ///
+    /// Ordered by the **last row written**, not by `session.created_at`. "Which one
+    /// was I just in" is the question this list is asked, and a session created on
+    /// Monday and used ten minutes ago is the answer to it; ordering by creation
+    /// puts it at the bottom.
+    ///
+    /// `LEFT JOIN`, so a session whose transcript row exists but holds nothing still
+    /// appears — with `items: 0` and `last_activity_ms` falling back to its creation
+    /// time. Those are exactly the sessions somebody wants to delete, and a list that
+    /// hides them is a list that cannot be acted on.
+    pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
+                    s.created_at,
+                    (SELECT t.id FROM transcript t
+                      WHERE t.session_id = s.id ORDER BY t.created_at DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM transcript_item i
+                       JOIN transcript t ON t.id = i.transcript_id
+                      WHERE t.session_id = s.id),
+                    (SELECT MAX(i.created_at) FROM transcript_item i
+                       JOIN transcript t ON t.id = i.transcript_id
+                      WHERE t.session_id = s.id)
+               FROM session s",
+        )?;
+        let mut out: Vec<StoredSession> = stmt
+            .query_map([], |r| {
+                let created_ms: i64 = r.get(6)?;
+                let last: Option<i64> = r.get(9)?;
+                Ok(StoredSession {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    model_id: r.get(2)?,
+                    dialect_sha: r.get(3)?,
+                    workspace_root: r.get(4)?,
+                    owner: r.get(5)?,
+                    created_ms,
+                    transcript_id: r.get(7)?,
+                    items: r.get::<_, i64>(8)? as u32,
+                    last_activity_ms: last.unwrap_or(created_ms),
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+        Ok(out)
+    }
+
+    /// The name on disk right now, or `None` for a session nobody has named.
+    ///
+    /// Read rather than remembered: a title can be set by a head through the
+    /// registry's own connection while a harness holds an older idea of it, and a
+    /// derivation that trusted its cached copy would overwrite a name the operator
+    /// had just typed.
+    pub fn title(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT title FROM session WHERE id = ?1", params![id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten()
+            .filter(|t: &String| !t.is_empty()))
+    }
+
+    /// One session, or `None`.
+    pub fn session(&self, id: &str) -> Result<Option<StoredSession>> {
+        Ok(self.list_sessions()?.into_iter().find(|s| s.id == id))
+    }
+
+    /// Name a session, or clear its name with an empty string.
+    ///
+    /// `session` carries no append-only trigger and is not part of the chain: a
+    /// title is metadata *about* a conversation and changing it changes no prompt
+    /// byte. That is the whole reason renaming is allowed here while
+    /// [`Store::append_item`]'s rows cannot be touched at all.
+    pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE session SET title = ?2 WHERE id = ?1",
+            params![id, (!title.is_empty()).then(|| title.to_string())],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// Remove a session that holds no transcript rows.
+    ///
+    /// **A session with rows cannot be deleted, and that is not an omission.**
+    /// `transcript_item` carries a `BEFORE DELETE` trigger that raises — §4.1's
+    /// "immutable, with exactly one mutation: append", said in SQL — so there is no
+    /// statement this method could run that would remove a conversation. Offering a
+    /// `--delete` that quietly left the rows behind and dropped only the `session`
+    /// row would be worse than refusing: the tokens would still be on disk, orphaned
+    /// and unreachable, and the operator would believe they were gone.
+    ///
+    /// What *is* deletable is a session nothing ever ran in — the row a daemon
+    /// writes at startup and a `/new` that was never used. Those accumulate, they
+    /// are the ones a picker is cluttered by, and removing them destroys nothing.
+    pub fn delete_empty_session(&self, id: &str) -> Result<()> {
+        let Some(s) = self.session(id)? else {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        };
+        if s.items > 0 {
+            return Err(StoreError::Refused(format!(
+                "session {id} holds {} transcript row(s) and cannot be deleted: \
+                 transcript_item carries a BEFORE DELETE trigger, because an \
+                 append-only log whose history can be removed is not one. Rename it \
+                 instead.",
+                s.items
+            )));
+        }
+        // Order matters: `transcript.session_id` is a foreign key and
+        // `foreign_keys` is on.
+        self.conn.execute(
+            "DELETE FROM transcript WHERE session_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM session WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// What a stable prefix was rendered from and by. `None` if it is not here.
+    pub fn stable_prefix_meta(&self, id: &str) -> Result<Option<StablePrefixMeta>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT dialect_sha, vocab_source, n_tokens FROM stable_prefix WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(StablePrefixMeta {
+                        dialect_sha: r.get(0)?,
+                        vocab_source: r.get(1)?,
+                        n_tokens: r.get::<_, i64>(2)? as u32,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Escape hatch for the tests below and for `EXPLAIN`. Read-only by

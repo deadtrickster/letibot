@@ -37,7 +37,7 @@ use std::thread::JoinHandle;
 
 use crate::hub::{CommandKind, Delivery, Hub};
 use crate::protocol::{
-    ClientFrame, PROTOCOL_VERSION, REJECT_UNKNOWN_SESSION, ServerFrame,
+    ClientFrame, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
 };
 use crate::registry::Registry;
 use crate::wire::{FrameReader, FrameWriter, WireError};
@@ -273,12 +273,19 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             Ok(ClientFrame::NewSession {
                 client_request_id,
                 title,
+                workspace,
             }) => {
                 // The id is the daemon's to mint: two heads racing to create
                 // "scratch" would otherwise get one success and one confusing
                 // refusal, and neither of them asked for a name collision.
                 let id = mint_session_id(&registry);
-                let wiring = registry.wiring(&seat.hub.session_id());
+                let mut wiring = registry.wiring(&seat.hub.session_id());
+                // The head's tree, when it named one. The model, dialect and endpoint
+                // stay the daemon's: those are what it is talking to and a head does
+                // not get to change them by asking for a session.
+                if !workspace.is_empty() {
+                    wiring.workspace = workspace;
+                }
                 let f = match registry.create(&id, title, wiring) {
                     Ok(_) => ServerFrame::Sessions {
                         sessions: registry.list(),
@@ -291,6 +298,95 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         expected_seq: 0,
                         actual_seq: seat.hub.head_seq(),
                     },
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            // Bring a stored session into this daemon. Idempotent, and refused by
+            // name when nothing anywhere has heard of the id: a typo that silently
+            // created an empty session named after the typo would look exactly like a
+            // resume that found nothing to restore.
+            Ok(ClientFrame::ResumeSession {
+                client_request_id,
+                session_id,
+            }) => {
+                let f = if registry.get(&session_id).is_some() {
+                    ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: seat.hub.session_id(),
+                        created: Some(session_id),
+                    }
+                } else {
+                    match registry.resumable(&session_id) {
+                        None => ServerFrame::Rejected {
+                            client_request_id,
+                            reason: format!("{REJECT_NOT_IN_STORE}: {session_id:?}"),
+                            expected_seq: 0,
+                            actual_seq: seat.hub.head_seq(),
+                        },
+                        Some(brief) => {
+                            // The session's own wiring, from the store — not this
+                            // connection's. A resumed conversation belongs to the
+                            // workspace it was had in, and copying the current
+                            // session's would put the wrong root on the picker row
+                            // for the whole of its life.
+                            match registry.create(&session_id, &brief.title, brief.wiring) {
+                                Ok(_) => ServerFrame::Sessions {
+                                    sessions: registry.list(),
+                                    current: seat.hub.session_id(),
+                                    created: Some(session_id),
+                                },
+                                Err(e) => ServerFrame::Rejected {
+                                    client_request_id,
+                                    reason: e.to_string(),
+                                    expected_seq: 0,
+                                    actual_seq: seat.hub.head_seq(),
+                                },
+                            }
+                        }
+                    }
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            // Naming a session the daemon holds. A session that is only in the store
+            // is refused here rather than renamed behind the daemon's back: the store
+            // is the daemon's to write, and two writers on one row is how a title
+            // set in a picker vanishes when the other daemon exits.
+            Ok(ClientFrame::RenameSession {
+                client_request_id,
+                session_id,
+                title,
+            }) => {
+                let f = if registry.get(&session_id).is_none() {
+                    ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    }
+                } else {
+                    match registry.rename(&session_id, &title) {
+                        Err(e) => ServerFrame::Rejected {
+                            client_request_id,
+                            reason: format!("not renamed: {e}"),
+                            expected_seq: 0,
+                            actual_seq: seat.hub.head_seq(),
+                        },
+                        Ok(()) => {
+                            // On the renamed session's own log, so that every head
+                            // watching *it* is told — not only the head that asked,
+                            // and not only the session this connection is sitting in.
+                            if let Some(hub) = registry.get(&session_id) {
+                                hub.publish(crate::SessionEvent::SessionRenamed {
+                                    title: title.clone(),
+                                });
+                            }
+                            ServerFrame::Sessions {
+                                sessions: registry.list(),
+                                current: seat.hub.session_id(),
+                                created: None,
+                            }
+                        }
+                    }
                 };
                 writer.lock().unwrap().write(&f)?;
             }

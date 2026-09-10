@@ -116,13 +116,29 @@ pub fn tick(
             Action::Resync => client.request_resync()?,
             Action::ListSessions => client.list_sessions()?,
             Action::NewSession(title) => {
-                client.new_session(&title)?;
+                // The head's own working directory, read here rather than carried
+                // through `App`: the app is the same object under `--replay`, where
+                // there is no daemon and no session to make.
+                let cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                client.new_session(&title, &cwd)?;
             }
             // The answer is a second `Hello`, which arrives on the pump and goes
             // through `App::apply` exactly like the first one. Nothing is torn down
             // here: the switch happens inside the daemon, on this same socket, so
             // there is no window in which this head is attached to nothing.
             Action::Switch(id) => client.switch(&id, 0)?,
+            // Same shape as `NewSession`: the daemon answers with `Sessions` naming
+            // it as `created`, and `App::apply` turns that into the `Switch`. One
+            // path for "go to a session that was not here a moment ago", whether it
+            // was minted or restored.
+            Action::ResumeSession(id) => {
+                client.resume_session(&id)?;
+            }
+            Action::Rename { session_id, title } => {
+                client.rename_session(&session_id, &title)?;
+            }
             Action::Quit => {
                 let _ = client.detach();
             }

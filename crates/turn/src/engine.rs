@@ -352,6 +352,38 @@ pub struct Session {
 }
 
 impl Session {
+    /// Seat a session over a ledger that was rebuilt from the store.
+    ///
+    /// `pub(crate)` and not public: the only correct way in is
+    /// [`crate::resume::restore_parts`], which has verified the chain twice before
+    /// it gets here. A public constructor taking a ledger would let a caller seat a
+    /// session over a region nothing checked, which is the one thing the whole
+    /// resume path exists to make impossible.
+    ///
+    /// `witness` is `None` on purpose. A [`PrefixWitness`] records what the *server*
+    /// held after the last turn, and this process has not run one — the slot may
+    /// have been evicted, refilled by another session, or belong to a server that
+    /// has since restarted. So the first turn after a resume reports no `f_keep`
+    /// rather than a number computed against a cache nobody looked at. See
+    /// `crate::prefix`.
+    ///
+    /// `turn_seq` starts at the item count. See [`crate::resume`]'s header: it is a
+    /// watermark that keeps turn ids unique across a restart, not a count of turns.
+    pub(crate) fn from_restored(
+        transcript_id: String,
+        ledger: TokenLedger,
+        items: Vec<TranscriptItem>,
+    ) -> Session {
+        let turn_seq = items.len() as u64;
+        Session {
+            transcript_id,
+            ledger,
+            items,
+            witness: None,
+            turn_seq,
+        }
+    }
+
     /// Append items rendered from the transcript — user turns, tool results,
     /// system updates, steering messages.
     ///

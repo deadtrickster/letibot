@@ -7,10 +7,24 @@
 //!          [--spill-inline BYTES] [--spill-dir DIR]
 //!          [--max-tool-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
+//!
+//! store queries — no socket, no vocabulary, no model:
+//! harnessd --store PATH --list-sessions [--workspace DIR] [--tsv]
+//! harnessd --store PATH --latest-session [--workspace DIR]
+//! harnessd --store PATH --rename ID TITLE
+//! harnessd --store PATH --delete ID
 //! ```
 //!
 //! With no `--prompt` it serves the socket and waits. Attach a head with
 //! `letibot-tui --socket PATH`.
+//!
+//! # The store queries answer before anything is loaded
+//!
+//! `--list-sessions` and its three siblings return **before** `Parts::load`, before
+//! the endpoint health check and before the socket is bound. That is not an
+//! optimisation: `letibot --sessions` has to work when the model server is down, and
+//! a listing that first insisted on a 0.6-second GGUF load and a live `/health`
+//! would be a listing you cannot use to find out what went wrong.
 //!
 //! With one or more `--prompt` it runs them in order and exits — which is what
 //! makes a scripted session a shell command rather than a program, and it is how
@@ -28,7 +42,13 @@ fn usage() -> String {
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
      \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]"
+     \x20        [--max-tool-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]\n\
+     \n\
+     store queries (no socket, no model):\n\
+     \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
+     \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
+     \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
+     \x20 --delete ID               remove a session that has no rows"
         .into()
 }
 
@@ -47,10 +67,28 @@ fn run() -> Result<i32, String> {
     let mut cfg = Config::for_this_box(cwd);
     let mut prompts: Vec<String> = Vec::new();
 
+    let mut query: Option<Query> = None;
+    let mut tsv = false;
+    // `--workspace` defaults to the process's cwd for a daemon, and to *nothing* for
+    // a listing: "every session" and "every session under this directory" are
+    // different questions, and defaulting the second one silently would make
+    // `--list-sessions` hide rows without saying it had.
+    let mut scope: Option<PathBuf> = None;
+
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
+            "--list-sessions" => query = Some(Query::List),
+            "--latest-session" => query = Some(Query::Latest),
+            "--tsv" => tsv = true,
+            "--rename" => {
+                let id = next()?;
+                let title = it.next().unwrap_or_default();
+                query = Some(Query::Rename(id, title));
+            }
+            "--delete" => query = Some(Query::Delete(next()?)),
+            "--scope" => scope = Some(PathBuf::from(next()?)),
             "--workspace" => cfg.workspace = PathBuf::from(next()?),
             "--socket" => cfg.socket = PathBuf::from(next()?),
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
@@ -89,6 +127,12 @@ fn run() -> Result<i32, String> {
         }
     }
 
+    // Before the vocabulary, before the socket, before the model. See the module
+    // header for why that ordering is load-bearing rather than tidy.
+    if let Some(q) = query {
+        return run_query(&cfg, q, scope.as_deref(), tsv);
+    }
+
     let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
 
     // One registry, seeded with the session named on the command line. A head can
@@ -96,6 +140,12 @@ fn run() -> Result<i32, String> {
     // eagerly so that a dialect which does not fit the vocabulary is a startup
     // error rather than a failure on somebody's first prompt.
     let registry = Registry::new();
+    // What is on disk, so a head's picker can show sessions from daemons that are no
+    // longer running and `ResumeSession` can find them. A daemon with no `--store`
+    // sets no source and lists only what it holds, which is what it always did.
+    if let Some(src) = letibot_harnessd::sessions::StoreSessions::open(&cfg) {
+        registry.set_source(src);
+    }
     registry
         .create(
             cfg.session_id.clone(),
@@ -117,6 +167,7 @@ fn run() -> Result<i32, String> {
     let workspace = cfg.workspace.display().to_string();
     let stored = stored_sessions(&cfg);
     let session_id = cfg.session_id.clone();
+    let store_path = cfg.store.clone();
 
     let mut sessions = match Sessions::open_first(&parts, cfg, registry.clone()) {
         Ok(s) => s,
@@ -146,6 +197,26 @@ fn run() -> Result<i32, String> {
     eprintln!("  socket   {socket}");
     eprintln!("  prefix   {prefix_tokens} tokens, head {ledger_head}");
     eprintln!("  sessions 1 open — a head can list them, switch, and make more");
+    // What this session actually is: rebuilt from the store, or new. Printed as
+    // numbers, because "resumed" on its own is the claim and the row count, the token
+    // count and the chain head are the evidence.
+    match sessions.resume_report(&session_id) {
+        Some(r) => {
+            eprintln!(
+                "  RESUMED  {} — {} row(s), {} tokens, head {}",
+                r.transcript_id,
+                r.rows,
+                r.tokens,
+                &r.head[..16.min(r.head.len())]
+            );
+            for note in &r.notes {
+                for line in wrap(note, term_cols().clamp(48, 100).saturating_sub(11)) {
+                    eprintln!("           {line}");
+                }
+            }
+        }
+        None => eprintln!("  new session — nothing in the store to resume under this id"),
+    }
     eprintln!();
     for line in banner(&disclosures, term_cols()) {
         eprintln!("{line}");
@@ -154,7 +225,10 @@ fn run() -> Result<i32, String> {
     // "there is nothing there", which for a store that has been collecting
     // transcripts for weeks is the opposite of true.
     if let Some(n) = stored {
-        for line in banner(&[resume_disclosure(n)], term_cols()).into_iter().skip(1) {
+        for line in banner(&[resume_disclosure(n, store_path.as_deref())], term_cols())
+            .into_iter()
+            .skip(1)
+        {
             eprintln!("{line}");
         }
     }
@@ -225,20 +299,226 @@ fn stored_sessions(cfg: &Config) -> Option<u64> {
         .map(|n| n as u64)
 }
 
-/// The disclosure for a store full of sessions this daemon cannot resume.
-fn resume_disclosure(n: u64) -> Disclosure {
-    Disclosure::off(
-        "resume",
-        &format!("{n} ON DISK"),
-        "the transcript, the ledger rows and the token blobs are all persisted, and \
-         Store::load_transcript plus TokenLedger::restore would rebuild them — what is \
-         missing is a constructor for letibot_turn::Session from a restored ledger. \
-         Replaying the items through append_items instead would RE-RENDER the assistant \
-         rows, and those rows were cut from the ids the server streamed; re-rendering \
-         them reintroduces exactly the renderer non-determinism the hash chain exists to \
-         catch, during recovery, when nobody is looking. So they are counted here and \
-         not resumed approximately.",
-    )
+/// The disclosure for what else is in the store.
+///
+/// **This used to say resume was impossible, and it was right at the time.** The
+/// sentence it carried — that the transcript, the ledger rows and the token blobs
+/// were all persisted, that `Store::load_transcript` plus `TokenLedger::restore`
+/// would rebuild them, and that what was missing was a constructor for
+/// `letibot_turn::Session` from a restored ledger — was an accurate description of a
+/// hole. `letibot_turn::resume` is that constructor, and it takes the assistant rows'
+/// tokens from `transcript_item.tokens` rather than re-rendering them, which is the
+/// one thing the old note said must not happen.
+///
+/// So the count stays and the refusal goes. The count is the part that was never
+/// decoration: a store that has been collecting transcripts for weeks and says
+/// nothing reads as an empty one.
+fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
+    Disclosure {
+        subject: "resume".into(),
+        state: format!("{n} ON DISK"),
+        detail: format!(
+            "every one of them can be brought back: `letibot --sessions` lists them, \
+             `letibot --continue` reopens the newest in this workspace, and ctrl-s in \
+             the head shows them alongside the live ones. A resumed session replays \
+             the stored TOKENS — the assistant rows were cut from the ids the server \
+             streamed and are never re-rendered — and the hash chain is verified twice \
+             on the way in, so a session whose rows do not rebuild refuses by name \
+             instead of continuing approximately.{}",
+            store
+                .map(|p| format!(" Store: {}.", p.display()))
+                .unwrap_or_default()
+        ),
+        active: true,
+    }
+}
+
+/// What a store query was asked for.
+enum Query {
+    List,
+    Latest,
+    Rename(String, String),
+    Delete(String),
+}
+
+/// Answer a question about the store and exit. No socket, no vocabulary, no model.
+fn run_query(
+    cfg: &Config,
+    q: Query,
+    scope: Option<&std::path::Path>,
+    tsv: bool,
+) -> Result<i32, String> {
+    let path = cfg
+        .store
+        .as_ref()
+        .ok_or("no --store, and a question about stored sessions needs one")?;
+    let store = letibot_tokencore::store::Store::open(path)
+        .map_err(|e| format!("opening {}: {e}", path.display()))?;
+
+    match q {
+        Query::Rename(id, title) => {
+            store
+                .set_title(&id, &title)
+                .map_err(|e| format!("renaming {id}: {e}"))?;
+            if title.is_empty() {
+                println!("{id} has no name now");
+            } else {
+                println!("{id} is now {title:?}");
+            }
+            // A daemon holding this session has its own copy of the name in the
+            // registry and will not see this write. Said rather than papered over:
+            // the rename is durable and the running head's header is stale, which is
+            // a different thing from the rename not having happened.
+            eprintln!(
+                "note: a running daemon keeps its own copy of the name. Use /rename in \
+                 the head to change it live."
+            );
+            Ok(0)
+        }
+        Query::Delete(id) => match store.delete_empty_session(&id) {
+            Ok(()) => {
+                println!("{id} deleted");
+                Ok(0)
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        Query::Latest => {
+            let mut all = scoped(&store, scope)?;
+            // An **exact** workspace match beats a descendant of it. Standing in
+            // `~` and asking to continue should not hand back the conversation you
+            // were having in `~/Projects/rano` while a `~` conversation exists; the
+            // subtree match is the fallback that makes `--continue` work from a
+            // subdirectory, not a licence to reach downwards past a closer answer.
+            if let Some(root) = scope {
+                all.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != root);
+            }
+            // **A session with no rows is not a conversation to continue.** Two of
+            // the five sessions in this box's store are exactly that: a daemon wrote
+            // the row at startup and nobody ever prompted into it. They are the
+            // *newest* rows in the table, so picking by time alone answers
+            // `--continue` with an empty screen — which is indistinguishable from
+            // resume being broken, and is how this would have been reported as still
+            // not working.
+            let skipped = all.iter().filter(|s| s.items == 0).count();
+            let rows: Vec<_> = all.into_iter().filter(|s| s.items > 0).collect();
+            if skipped > 0 {
+                eprintln!(
+                    "skipped {skipped} session(s) with no rows: nothing was ever said in them"
+                );
+            }
+            match rows.first() {
+                // Printed on stdout alone, so `$(harnessd --latest-session)` is the
+                // id and nothing else. Which one it picked, and why, goes to stderr —
+                // where the launcher can echo it and a pipeline ignores it.
+                Some(s) => {
+                    println!("{}", s.id);
+                    eprintln!(
+                        "{} — {} · {} row(s) · {}",
+                        s.id,
+                        s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
+                        s.items,
+                        s.workspace_root
+                    );
+                    Ok(0)
+                }
+                None => {
+                    eprintln!(
+                        "no stored session{}",
+                        scope
+                            .map(|p| format!(" under {}", p.display()))
+                            .unwrap_or_default()
+                    );
+                    Ok(1)
+                }
+            }
+        }
+        Query::List => {
+            let rows = scoped(&store, scope)?;
+            if tsv {
+                // id, title, workspace, rows, last-activity-ms. Tab-separated and
+                // unpadded: this is what `~/bin/letibot` reads, and a column layout
+                // that a terminal width can change is not a data format.
+                for s in &rows {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        s.id,
+                        s.title.clone().unwrap_or_default(),
+                        s.workspace_root,
+                        s.items,
+                        s.last_activity_ms
+                    );
+                }
+                return Ok(0);
+            }
+            if rows.is_empty() {
+                println!(
+                    "no sessions{}",
+                    scope
+                        .map(|p| format!(" under {}", p.display()))
+                        .unwrap_or_default()
+                );
+                return Ok(0);
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let wid = rows.iter().map(|s| s.id.len()).max().unwrap_or(8);
+            println!(
+                "{:<wid$}  {:>5}  {:>7}  TITLE / WORKSPACE",
+                "ID", "ROWS", "AGE"
+            );
+            for s in &rows {
+                println!(
+                    "{:<wid$}  {:>5}  {:>7}  {}",
+                    s.id,
+                    s.items,
+                    age(now - s.last_activity_ms),
+                    s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
+                );
+                // The same prefix width as the row above it — `wid + 2 + 5 + 2 + 7 + 2`
+                // — so the workspace lines up under the title rather than three
+                // columns past it.
+                println!("{:<wid$}  {:>16}{}", "", "", s.workspace_root);
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// Every stored session, optionally only those rooted at `scope`.
+///
+/// The scope test is a **path prefix**, not equality: a session opened in
+/// `~/Projects/rano/crates` belongs to `~/Projects/rano` for the purpose of "what was
+/// I doing here". Equality would make `--continue` miss the session you had open in
+/// a subdirectory ten minutes ago and silently resume something older.
+fn scoped(
+    store: &letibot_tokencore::store::Store,
+    scope: Option<&std::path::Path>,
+) -> Result<Vec<letibot_tokencore::store::StoredSession>, String> {
+    let all = store.list_sessions().map_err(|e| e.to_string())?;
+    let Some(root) = scope else { return Ok(all) };
+    Ok(all
+        .into_iter()
+        .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(root))
+        .collect())
+}
+
+/// A duration, in the largest unit that is still a small number.
+fn age(ms: i64) -> String {
+    let s = (ms / 1000).max(0);
+    if s < 90 {
+        return format!("{s}s");
+    }
+    let m = s / 60;
+    if m < 90 {
+        return format!("{m}m");
+    }
+    let h = m / 60;
+    if h < 48 {
+        return format!("{h}h");
+    }
+    format!("{}d", h / 24)
 }
 
 /// The startup disclosures, as something that can be scanned.

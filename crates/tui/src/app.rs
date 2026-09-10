@@ -28,7 +28,7 @@
 
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
-use letibot_sessionlog::registry::{SessionBrief, SessionWiring};
+use letibot_sessionlog::registry::{SessionBrief, SessionWiring, short_id};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, SettledDecision, Snapshot, SnapshotItem, TurnState, Warned,
 };
@@ -97,6 +97,11 @@ pub enum Action {
     NewSession(String),
     /// Move this connection to another session.
     Switch(String),
+    /// Bring a session that is in the store but not in this daemon back to life.
+    /// The head switches to it on the same `Sessions` reply a `NewSession` produces.
+    ResumeSession(String),
+    /// Name a session, or clear its name with an empty title.
+    Rename { session_id: String, title: String },
     Quit,
 }
 
@@ -548,14 +553,51 @@ impl App {
         std::mem::take(&mut self.queued)
     }
 
-    /// How this session should be named on a screen: its title, or its id.
+    /// How this session should be named on a screen: its title, or a short id.
+    ///
+    /// **Never the full id.** `s-1788987496351498881` is twenty-one characters of
+    /// which the first thirteen are the same for every session minted on the same
+    /// afternoon — it costs a fifth of an eighty-column header to say almost nothing,
+    /// and the part that distinguishes two sessions is the part that gets cut when
+    /// the header runs out of room. The last eight characters are where they differ,
+    /// so that is what is shown.
+    ///
+    /// The full id is still reachable: it is on its own line under every named row in
+    /// the picker, and `letibot --sessions` prints it in full. A label is for
+    /// recognising a session; an id is for naming one to a command, and those are
+    /// different jobs done in different places.
     fn session_label(&self, id: &str) -> String {
         self.sessions
             .iter()
             .find(|s| s.session_id == id)
             .filter(|s| !s.title.is_empty())
             .map(|s| s.title.clone())
-            .unwrap_or_else(|| id.to_string())
+            .unwrap_or_else(|| short_id(id))
+    }
+
+    /// Ask the daemon for a session as soon as this head is attached: resume it out
+    /// of the store if it is not live, and switch to it either way.
+    ///
+    /// What `letibot --continue` and `letibot --session ID` turn into. It cannot be
+    /// an `Attach` naming the id, because the daemon refuses an attach to a session
+    /// it does not hold — correctly, since a typo must not seat you somewhere — and
+    /// "not held yet" is exactly the state a resume is for. So the head attaches to
+    /// wherever the daemon puts it and then asks, which is the same two steps the
+    /// picker takes.
+    pub fn request_session(&mut self, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        self.want_new_session = true;
+        self.queued.push(Action::ResumeSession(id.to_string()));
+    }
+
+    /// Make a session and go there, as soon as this head is attached.
+    ///
+    /// `letibot --new [TITLE]` against a daemon that is already running.
+    pub fn request_new_session(&mut self, title: &str) {
+        self.want_new_session = true;
+        self.queued.push(Action::NewSession(title.to_string()));
     }
 
     pub fn open_decisions(&self) -> &[OpenDecision] {
@@ -626,7 +668,14 @@ impl App {
                         self.queued.push(Action::Switch(id));
                     }
                     Some(id) => self.say(&format!("session {id} created")),
-                    None => self.picker = true,
+                    // **Not** `self.picker = true`. A `Sessions` frame is the answer
+                    // to three different questions — a list, a rename, and a switch
+                    // to the session you are already in — and only the first of them
+                    // wants a picker. Opening it here put the session list over the
+                    // screen after `/rename`, which the operator then had to dismiss
+                    // to see the header they had just changed. The key and the
+                    // command that ask for a list already open it themselves.
+                    None => {}
                 }
                 self.redraw = true;
                 Disposition::Control
@@ -782,6 +831,23 @@ impl App {
             t.last_ms = ts.max(t.last_ms);
         }
         match e {
+            // The name of the session this head is *in*. Folded into the row this
+            // head already holds rather than triggering a `ListSessions` round trip:
+            // the event carries the whole of the change, and asking the daemon to
+            // resend a list to learn something it just told us is how a head ends up
+            // one frame behind its own screen.
+            SessionEvent::SessionRenamed { title } => {
+                let id = self.session_id.clone();
+                if let Some(row) = self.sessions.iter_mut().find(|s| s.session_id == id) {
+                    row.title = title.clone();
+                }
+                self.redraw = true;
+                // Said out loud, because the header changes under the operator and an
+                // unexplained change of the one label that identifies where you are
+                // is worse than no label.
+                self.say(&format!("this session is now called {title:?}"));
+                Disposition::Control
+            }
             SessionEvent::TurnStarted {
                 turn_id,
                 model,
@@ -1391,6 +1457,20 @@ impl App {
             self.say("already here");
             return None;
         }
+        // A session that is on disk and not in this daemon has to be brought in
+        // before it can be switched to. Two frames, and the head sends the second
+        // one when the daemon answers the first — the same two steps `/new` takes,
+        // reusing `want_new_session` because "go to the session the daemon just told
+        // me about" is one behaviour and a second flag for it would be a second
+        // behaviour that drifts.
+        if self.sessions.iter().any(|b| b.session_id == id && !b.live) {
+            self.want_new_session = true;
+            self.say(&format!(
+                "resuming {} from the store…",
+                self.session_label(&id)
+            ));
+            return Some(Action::ResumeSession(id));
+        }
         // `since_seq` is not sent: this head has no state for the session it is
         // going to, so a snapshot is the only honest ask. Coming *back* to a
         // session it was watching would be a resume, and this head does not keep
@@ -1411,6 +1491,24 @@ impl App {
         }
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());
+        }
+        // Renames the session this head is **in**. Not an arbitrary one: the picker
+        // is where another session is on screen, and a `/rename` that could reach a
+        // row you were only looking at is one typo away from renaming the wrong
+        // conversation.
+        if let Some(title) = cmd.strip_prefix("rename") {
+            let title = title.trim().to_string();
+            if self.session_id.is_empty() {
+                self.say("not attached to a session yet");
+                return None;
+            }
+            if title.is_empty() {
+                self.say("/rename NAME — or /rename with nothing clears the name");
+            }
+            return Some(Action::Rename {
+                session_id: self.session_id.clone(),
+                title,
+            });
         }
         match cmd {
             "quit" | "q" => {
@@ -2086,15 +2184,18 @@ impl App {
         // Most valuable first: which of several sessions this is, then how big the
         // prompt has got, then how much of it the cache saved.
         let mut right: Vec<String> = Vec::new();
-        if self.sessions.len() > 1 {
-            let at = self
-                .sessions
-                .iter()
-                .position(|s| s.session_id == self.session_id)
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            right.push(format!("{at}/{}", self.sessions.len()));
-        }
+        // Shown for one session too. It used to be gated on `len() > 1`, and the
+        // effect was that the *only* case with no session identity anywhere on the
+        // screen — one untitled session, whose name is therefore an opaque id — was
+        // also the case with no position indicator. Two absences do not add up to a
+        // fact, and "1/1" is a fact: this daemon holds one session and you are in it.
+        let at = self
+            .sessions
+            .iter()
+            .position(|s| s.session_id == self.session_id)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        right.push(format!("{at}/{}", self.sessions.len().max(1)));
         // Live prefill numbers win over the last turn's: while a turn is running,
         // "how big is this prompt" is a question about the prompt being sent.
         let usage = match self.turn.as_ref().and_then(|t| t.progress.as_ref()) {
@@ -2162,7 +2263,7 @@ impl App {
             let here = s.session_id == self.session_id;
             let mark = if here { "▸" } else { " " };
             let name = if s.title.is_empty() {
-                s.session_id.clone()
+                short_id(&s.session_id)
             } else {
                 s.title.clone()
             };
@@ -2178,8 +2279,20 @@ impl App {
             if s.status.running {
                 facts.push("generating".into());
             }
-            if s.status.items > 0 {
-                facts.push(format!("{} rows", s.status.items));
+            if !s.live {
+                // The whole difference between a row that costs one keystroke and a
+                // row that costs a resume. Said in a word rather than implied by an
+                // absent "generating".
+                facts.push("on disk".into());
+            }
+            // The store's count when there is one: the view's `items` is bounded by
+            // `ViewBounds` and is the length of what a head is *holding*, not the
+            // length of the conversation. Reporting the smaller number as "rows"
+            // makes a long session look short.
+            let rows = s.stored_items as usize;
+            let rows = if rows > 0 { rows } else { s.status.items };
+            if rows > 0 {
+                facts.push(format!("{rows} rows"));
             }
             if s.status.heads > 0 {
                 facts.push(format!(
@@ -2200,15 +2313,27 @@ impl App {
                 &facts.join(" · "),
             );
             out.push(trim_to(&split_row(&left, &right, w), w));
-            if !s.title.is_empty() {
-                out.push(dim(&self.cfg, &format!("      {}", s.session_id)));
-            }
+            // The full id under **every** row, not only the named ones. It used to be
+            // printed only when a title had displaced it, so the sessions whose id
+            // you might actually need to type — the unnamed ones, the ones you would
+            // pass to `letibot --session` — were the ones showing a truncation.
+            //
+            // The workspace goes on the same line. For a stored session it is the
+            // only thing on the row that says what the conversation was *about*: an
+            // unnamed session shows a short id and a model alias every other row also
+            // has, and two of those are indistinguishable until you switch into one.
+            let under = if s.wiring.workspace.is_empty() {
+                format!("      {}", s.session_id)
+            } else {
+                format!("      {}  {}", s.session_id, tilde(&s.wiring.workspace))
+            };
+            out.push(trim_to(&dim(&self.cfg, &under), w));
         }
         out.push(String::new());
         out.push(dim(
             &self.cfg,
             "  type a number or part of a name and press enter · /new [title] makes one \
-             · esc closes",
+             · /rename NAME names this one · esc closes",
         ));
         out.push(dim(
             &self.cfg,
@@ -3992,6 +4117,8 @@ mod tests {
             session_id: id.into(),
             title: title.into(),
             created_ms: 0,
+            live: true,
+            stored_items: 0,
             status: letibot_sessionlog::SessionStatus {
                 session_id: id.into(),
                 seq: 4,

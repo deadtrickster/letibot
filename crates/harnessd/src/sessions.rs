@@ -38,9 +38,10 @@
 use std::collections::HashMap;
 
 use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
-use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
 use letibot_sessionlog::{SessionEvent, hub::Hub};
-use std::sync::Arc;
+use letibot_tokencore::store::Store;
+use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
 use crate::harness::{Harness, HarnessError, Parts, Reply};
@@ -100,6 +101,73 @@ impl<'a> Sessions<'a> {
         &self.registry
     }
 
+    /// Open a session now, rather than on its first prompt.
+    ///
+    /// This is what a `ResumeSession` turns into: a resume's chain verification, its
+    /// dialect refusal and its republished transcript all live in `Harness::open`,
+    /// and running them lazily would put all three inside the first prompt — so a
+    /// head that resumed a session and attached to it would see an empty screen, and
+    /// find out it had failed only by typing into it.
+    ///
+    /// The failure is announced on **that session's own log**, which is where the
+    /// head that asked for it is looking, and the daemon keeps serving: one session
+    /// that cannot be rebuilt is not a reason to take down the others.
+    /// `Ok(false)` means it was already open — the daemon's own first session, which
+    /// `open_first` opened eagerly and whose creation also queued a `Work::Open`.
+    /// Reported rather than swallowed so the caller does not print the resume banner
+    /// twice for one session.
+    pub fn open(&mut self, session_id: &str) -> Result<bool, HarnessError> {
+        if self.open.contains_key(session_id) {
+            return Ok(false);
+        }
+        let hub = self.registry.get(session_id);
+        match self.harness(session_id) {
+            Ok(h) => {
+                if let Some(r) = h.resumed() {
+                    let r = r.clone();
+                    if let Some(hub) = &hub {
+                        for note in &r.notes {
+                            hub.publish(SessionEvent::Warning {
+                                code: "resume_note".into(),
+                                detail: note.clone(),
+                            });
+                        }
+                    }
+                }
+                self.publish_title(session_id);
+                Ok(true)
+            }
+            Err(e) => {
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "resume_failed".into(),
+                        detail: e.to_string(),
+                    });
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// What a session was rebuilt from, for the daemon's own banner.
+    pub fn resume_report(&self, session_id: &str) -> Option<crate::harness::ResumeReport> {
+        self.open.get(session_id).and_then(|h| h.resumed().cloned())
+    }
+
+    /// Move a title the harness derived into the registry, where a picker reads it.
+    ///
+    /// The harness holds a `Hub` and not a `Registry` — deliberately, so a `Harness`
+    /// can be built in a test with nothing else — so the handover happens here, at
+    /// the one layer that holds both.
+    fn publish_title(&mut self, session_id: &str) {
+        let Some(h) = self.open.get_mut(session_id) else {
+            return;
+        };
+        if let Some(title) = h.take_new_title() {
+            self.registry.set_title(session_id, title);
+        }
+    }
+
     /// The harness for `session_id`, opening it if a head made the session and
     /// nothing has run in it yet.
     ///
@@ -111,8 +179,18 @@ impl<'a> Sessions<'a> {
             let hub = self.registry.get(session_id).ok_or_else(|| {
                 HarnessError::Setup(format!("no session {session_id} in this daemon"))
             })?;
+            // The session's own tree, when the registry has one — a head that made
+            // this session named the directory it was standing in, and a resumed one
+            // carries the root from the store. `self.base.workspace` is the daemon's
+            // command line, which is a fact about the daemon.
+            let ws = self.registry.wiring(session_id).workspace;
             let cfg = Config {
                 session_id: session_id.to_string(),
+                workspace: if ws.is_empty() {
+                    self.base.workspace.clone()
+                } else {
+                    std::path::PathBuf::from(ws)
+                },
                 ..self.base.clone()
             };
             let h = Harness::open(self.parts, cfg, hub)?;
@@ -134,10 +212,16 @@ impl<'a> Sessions<'a> {
     pub fn submit(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
         let hub = self.registry.get(session_id);
         let harness = self.harness(session_id)?;
-        match harness.submit(text) {
+        let out = harness.submit(text);
+        self.publish_title(session_id);
+        match out {
             Ok(r) => Ok(r),
             Err(e) => {
-                let turn_id = harness.last_turn_id().to_string();
+                let turn_id = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.last_turn_id().to_string())
+                    .unwrap_or_default();
                 if let Some(hub) = &hub {
                     publish_failure(hub, &turn_id, &e);
                 }
@@ -170,16 +254,24 @@ impl<'a> Sessions<'a> {
             }
         };
         match &cmd.kind {
-            CommandKind::Prompt { text } => match harness.submit(text) {
-                Ok(reply) => Outcome::Replied(Box::new(reply)),
-                Err(e) => {
-                    let turn_id = harness.last_turn_id().to_string();
-                    if let Some(hub) = &hub {
-                        publish_failure(hub, &turn_id, &e);
+            CommandKind::Prompt { text } => {
+                let out = match harness.submit(text) {
+                    Ok(reply) => Outcome::Replied(Box::new(reply)),
+                    Err(e) => {
+                        let turn_id = harness.last_turn_id().to_string();
+                        if let Some(hub) = &hub {
+                            publish_failure(hub, &turn_id, &e);
+                        }
+                        Outcome::Failed(e.to_string())
                     }
-                    Outcome::Failed(e.to_string())
-                }
-            },
+                };
+                // A session that had no name has one now, taken from the message
+                // that just opened it. The registry is what a picker is drawn from,
+                // so the name has to reach it here or the row stays an id until the
+                // daemon restarts.
+                self.publish_title(session_id);
+                out
+            }
             // Between turns there is nothing to interrupt. Announced rather than
             // dropped: "I pressed the key and nothing happened" is the report this
             // avoids.
@@ -235,4 +327,61 @@ fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
         code: "turn_failed".into(),
         detail: e.to_string(),
     });
+}
+
+/// The store, as somewhere a registry can find sessions it is not holding.
+///
+/// Its **own** connection, behind a `Mutex`. Not the `Harness`'s: `rusqlite`'s
+/// `Connection` is `Send` and not `Sync`, the registry is shared across every
+/// connection thread, and a head listing sessions must not be able to block a turn
+/// that is writing rows. SQLite in WAL mode is built for exactly this — one writer,
+/// many readers — so a second connection is the cheap answer rather than a
+/// compromise.
+pub struct StoreSessions {
+    store: Mutex<Store>,
+    wiring: SessionWiring,
+}
+
+impl StoreSessions {
+    /// `None` when the daemon has no store: there is then nothing on disk to list,
+    /// and a source that answered "no sessions" would be indistinguishable from a
+    /// store that is empty.
+    pub fn open(cfg: &Config) -> Option<Arc<StoreSessions>> {
+        let path = cfg.store.as_ref()?;
+        let store = Store::open(path).ok()?;
+        Some(Arc::new(StoreSessions {
+            store: Mutex::new(store),
+            wiring: Sessions::wiring(cfg),
+        }))
+    }
+}
+
+impl SessionSource for StoreSessions {
+    fn set_title(&self, session_id: &str, title: &str) -> Result<(), String> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.set_title(session_id, title).map_err(|e| e.to_string())
+    }
+
+    fn list(&self) -> Vec<StoredBrief> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.list_sessions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| StoredBrief {
+                session_id: s.id,
+                title: s.title.unwrap_or_default(),
+                items: s.items,
+                last_activity_ms: s.last_activity_ms.max(0) as u64,
+                wiring: SessionWiring {
+                    // The session's own model and workspace, from its row. The
+                    // dialect and endpoint are this daemon's — they are not stored
+                    // per session, and a plausible guess on a picker row is a guess
+                    // somebody quotes.
+                    model: s.model_id,
+                    workspace: s.workspace_root,
+                    ..self.wiring.clone()
+                },
+            })
+            .collect()
+    }
 }

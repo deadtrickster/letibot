@@ -36,6 +36,7 @@
 //! Keeping call order makes the template's sort a no-op and both properties hold at
 //! once.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use letibot_dialect::StablePrefix;
@@ -253,6 +254,48 @@ pub struct Harness<'a> {
     /// Read at open time from the backend, the gate and the seated schemas, so the
     /// adjudication disclosure is a reading rather than a claim. See [`GateWiring`].
     wiring: GateWiring,
+    /// `Some` when this harness was rebuilt from the store rather than opened fresh.
+    /// The daemon prints it; a head is told through the log, by the rows themselves.
+    resumed: Option<ResumeReport>,
+    /// A title this harness derived and the daemon has not yet published. See
+    /// [`Harness::take_new_title`].
+    new_title: Option<String>,
+}
+
+/// What a resume actually rebuilt.
+///
+/// Reported rather than assumed, and reported as *numbers*: "resumed" on its own is
+/// the claim, and the row count, the token count and the chain head are the evidence.
+/// The head in particular is what makes two resumes of the same session comparable —
+/// if it differs, one of them is not the conversation the other was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeReport {
+    pub transcript_id: String,
+    pub rows: usize,
+    pub tokens: usize,
+    pub head: String,
+    /// Where the tools are confined — this session's own root, which is not
+    /// necessarily the directory the daemon was started in.
+    pub workspace: String,
+    /// Anything about this resume the operator would otherwise find out later: a
+    /// workspace that moved, a stable prefix that no longer matches the daemon's.
+    pub notes: Vec<String>,
+}
+
+/// Whether the store already holds this transcript row.
+///
+/// A `SELECT` through the escape hatch, for the same reason `stored_sessions` in the
+/// binary uses one: the append-only guarantees are triggers, so a read here cannot
+/// weaken them.
+fn transcript_exists(store: &Store, transcript_id: &str) -> bool {
+    store
+        .connection()
+        .query_row(
+            "SELECT 1 FROM transcript WHERE id = ?1",
+            [transcript_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .is_ok()
 }
 
 impl<'a> Harness<'a> {
@@ -273,11 +316,50 @@ impl<'a> Harness<'a> {
     /// that only ever had one implementation is a seam nobody checked.
     pub fn open_with(
         parts: &'a Parts,
-        cfg: Config,
+        mut cfg: Config,
         hub: Arc<Hub>,
         gate: Box<dyn Gate>,
         extra_tool: Option<Box<dyn Tool>>,
     ) -> Result<Self, HarnessError> {
+        // **The store is opened before anything else, because it may change the
+        // configuration.** A session that is already in the store carries its own
+        // workspace root, and the tools of a resumed session must be confined to
+        // *its* tree, not to whichever directory this daemon happened to start in.
+        // Seating a `/home/dead/Projects/rano` conversation with a `/home/dead`
+        // backend reads as working — every path resolves — right up to the answer
+        // about the wrong file.
+        let store = match &cfg.store {
+            None => None,
+            Some(path) => Some(
+                Store::open(path)
+                    .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
+            ),
+        };
+        let stored = match &store {
+            None => None,
+            Some(s) => s
+                .session(&cfg.session_id)
+                .map_err(|e| HarnessError::Store(e.to_string()))?,
+        };
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(st) = &stored {
+            if !st.workspace_root.is_empty()
+                && std::path::Path::new(&st.workspace_root) != cfg.workspace
+            {
+                notes.push(format!(
+                    "the workspace is {} — this session's own, from the store — not {}, \
+                     which is where this daemon was started. A resumed session's tools \
+                     are confined to the tree the conversation is about.",
+                    st.workspace_root,
+                    cfg.workspace.display()
+                ));
+                cfg.workspace = PathBuf::from(&st.workspace_root);
+            }
+            if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
+                cfg.title = t.clone();
+            }
+        }
+
         let backend = HostBackend::new(&cfg.workspace)
             .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?;
 
@@ -341,45 +423,139 @@ impl<'a> Harness<'a> {
             system: cfg.system.clone(),
             tools_json: parts.wiring.tools_json(&schemas),
         };
-        let transcript_id = format!("{}#t0", cfg.session_id);
-        let session = engine
-            .open(&transcript_id, &prefix)
-            .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
+        let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        let store = match &cfg.store {
-            None => None,
-            Some(path) => {
-                let s = Store::open(path)
-                    .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?;
-                let dialect_sha = hex32(&parts.wiring.spec().template_sha);
-                let rec = StablePrefixRecord {
-                    dialect_sha: dialect_sha.clone(),
-                    system: prefix.system.clone(),
-                    tools_json: prefix.tools_json.clone(),
-                    tokens: session.ledger.prefix_tokens().to_vec(),
-                    h_init: session.ledger.h_init(),
-                    vocab_source: cfg.vocab_gguf.display().to_string(),
+        // A session already in the store is **resumed**, not opened a second time.
+        //
+        // Deciding it here rather than on a flag is what makes the two entry points
+        // agree: `harnessd --session X` on a restart, and a head asking a running
+        // daemon to resume X, are the same act and used to be two — the first of
+        // which failed with a UNIQUE constraint on `session.id` after doing the
+        // whole vocabulary load.
+        let resumed = match (&store, &stored) {
+            (Some(s), Some(st)) if st.items > 0 => {
+                let transcript_id = st.transcript_id.clone().ok_or_else(|| {
+                    HarnessError::Store(format!(
+                        "session {} has {} row(s) but no transcript row to hang them on; \
+                         this store was written by something else",
+                        st.id, st.items
+                    ))
+                })?;
+                Some((s, transcript_id))
+            }
+            _ => None,
+        };
+
+        let (transcript_id, session, persisted, resume) = match resumed {
+            Some((s, transcript_id)) => {
+                let loaded = s
+                    .load_transcript(&transcript_id)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                // **The refusal that has to stay.** The tokens in this transcript
+                // were produced by one renderer against one vocabulary. Appending to
+                // them with a different dialect would put two templates' bytes in
+                // one prompt, and nothing downstream can see it: the chain still
+                // verifies, because every row was hashed by whoever wrote it.
+                let stored_sha = s
+                    .stable_prefix_meta(&loaded.stable_prefix_id)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?
+                    .map(|m| m.dialect_sha)
+                    .unwrap_or_default();
+                if stored_sha != dialect_sha {
+                    return Err(HarnessError::Setup(format!(
+                        "session {} was recorded under dialect template {stored_sha} and \
+                         this daemon renders {dialect_sha}. It was NOT resumed: the stored \
+                         tokens came out of the other renderer, and appending this one's \
+                         bytes to them would build a prompt no model was ever trained on \
+                         — which the hash chain cannot catch, because every row is \
+                         correctly hashed by whoever wrote it. Start the daemon with the \
+                         dialect this session was recorded under.",
+                        cfg.session_id
+                    )));
+                }
+
+                let session = Session::restore(&loaded).map_err(|e| {
+                    HarnessError::Store(format!("session {}: {e}", cfg.session_id))
+                })?;
+
+                // The *fact*, not a proxy for it: render this daemon's stable prefix
+                // and compare the tokens with the ones the session is carrying. Equal
+                // means the vocabulary and the renderer agree, whatever the recorded
+                // GGUF path says; different means they do not, and the session keeps
+                // the prefix it was created with — which is correct and has to be
+                // said, because the operator's `--system` change did not take effect
+                // in this session and nothing else would tell them.
+                let fresh = engine
+                    .open(&format!("{transcript_id}#probe"), &prefix)
+                    .map_err(|e| HarnessError::Setup(format!("rendering the prefix: {e}")))?;
+                if fresh.ledger.prefix_tokens() != session.ledger.prefix_tokens() {
+                    notes.push(format!(
+                        "this session keeps the stable prefix it was created with \
+                         ({} tokens, h_init {}). The prefix this daemon would render now \
+                         is {} tokens — a changed system prompt, tool set or effort level. \
+                         Rewriting message 0 is what forces a full cold re-prefill, so it \
+                         is not done; start a new session to pick up the change.",
+                        session.ledger.prefix_len(),
+                        &hex32(&session.ledger.h_init())[..16],
+                        fresh.ledger.prefix_len(),
+                    ));
+                }
+
+                let rows = session.ledger.rows().len();
+                let report = ResumeReport {
+                    transcript_id: transcript_id.clone(),
+                    rows,
+                    tokens: session.ledger.len(),
+                    head: session.ledger_head(),
+                    workspace: cfg.workspace.display().to_string(),
+                    notes: std::mem::take(&mut notes),
                 };
-                let prefix_id = s
-                    .put_stable_prefix(&rec)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?;
-                s.put_session(&SessionRecord {
-                    id: cfg.session_id.clone(),
-                    title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
-                    model_id: cfg.model.clone(),
-                    dialect_sha,
-                    workspace_root: cfg.workspace.display().to_string(),
-                    owner: cfg.owner.clone(),
-                    approvers: vec![],
-                })
-                .map_err(|e| HarnessError::Store(e.to_string()))?;
-                s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?;
-                Some(s)
+                (transcript_id, session, rows, Some(report))
+            }
+            None => {
+                let transcript_id = format!("{}#t0", cfg.session_id);
+                let session = engine
+                    .open(&transcript_id, &prefix)
+                    .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
+                if let Some(s) = &store {
+                    let rec = StablePrefixRecord {
+                        dialect_sha: dialect_sha.clone(),
+                        system: prefix.system.clone(),
+                        tools_json: prefix.tools_json.clone(),
+                        tokens: session.ledger.prefix_tokens().to_vec(),
+                        h_init: session.ledger.h_init(),
+                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                    };
+                    let prefix_id = s
+                        .put_stable_prefix(&rec)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    // `INSERT OR IGNORE`-shaped by hand: a session row may already be
+                    // here with no rows behind it — the daemon that made it never got
+                    // a prompt — and re-opening it is a resume of an empty
+                    // conversation, not a collision.
+                    if stored.is_none() {
+                        s.put_session(&SessionRecord {
+                            id: cfg.session_id.clone(),
+                            title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
+                            model_id: cfg.model.clone(),
+                            dialect_sha,
+                            workspace_root: cfg.workspace.display().to_string(),
+                            owner: cfg.owner.clone(),
+                            approvers: vec![],
+                        })
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    }
+                    if !transcript_exists(s, &transcript_id) {
+                        s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    }
+                }
+                (transcript_id, session, 0, None)
             }
         };
 
-        Ok(Harness {
+        let h = Harness {
             wiring,
             cfg,
             engine,
@@ -388,10 +564,44 @@ impl<'a> Harness<'a> {
             hub,
             store,
             transcript_id,
-            persisted: 0,
+            persisted,
             system_updates: 0,
             last_turn_id: String::new(),
-        })
+            resumed: resume,
+            new_title: None,
+        };
+        if h.resumed.is_some() {
+            h.republish();
+        }
+        Ok(h)
+    }
+
+    /// Put the restored conversation back on the session's log.
+    ///
+    /// A resumed harness holds the transcript; the **hub** does not, and a head
+    /// attaching to it would be told it had joined an empty session with a 39,384-token
+    /// prompt. So each restored row is announced exactly as a live one is —
+    /// `TranscriptAppended`, then the body through `Hub::record_item` — and both the
+    /// snapshot path and the already-attached path get it for free, because they are
+    /// the paths a live append already takes.
+    ///
+    /// These are **not** re-renders and not re-runs: no turn events, no metrics, no
+    /// `TurnFinished`. What a head shows after a resume is the conversation, not a
+    /// replay of the turns that produced it, and inventing turn boundaries here would
+    /// put timings on the screen that no clock measured.
+    fn republish(&self) {
+        for (i, row) in self.session.ledger.rows().iter().enumerate() {
+            let Some(item) = self.session.items.get(i) else {
+                continue;
+            };
+            self.hub
+                .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
+                    item_id: row.item_id.clone(),
+                    kind: letibot_tokencore::store::item_kind(item).to_string(),
+                    ledger_head: hex32(&row.h_k),
+                });
+            self.hub.record_item(&row.item_id, item.clone());
+        }
     }
 
     /// The turn this harness last started, or empty before the first one.
@@ -444,6 +654,21 @@ impl<'a> Harness<'a> {
         self.session.ledger.prefix_tokens()
     }
 
+    /// The ledger row ids, in order.
+    ///
+    /// What pairs an announcement with its body: `TranscriptAppended` carries an id
+    /// and `Hub::record_item` fills the row it names, and a second minting rule
+    /// anywhere would go stale against `Session::append_items`. A caller checking
+    /// that pairing needs to read the ids rather than recompute them.
+    pub fn row_ids(&self) -> Vec<&str> {
+        self.session
+            .ledger
+            .rows()
+            .iter()
+            .map(|r| r.item_id.as_str())
+            .collect()
+    }
+
     /// How many tokens item `i` owns. Zero would mean an item that renders to
     /// nothing, which for an assistant turn is the `content: null` defect one layer
     /// down (C6).
@@ -485,7 +710,100 @@ impl<'a> Harness<'a> {
             .append_items(&self.engine, std::slice::from_ref(&item), &mut sink)?;
         self.reconcile(&mut sink, std::slice::from_ref(&item));
         self.persist()?;
+        self.name_from_first_message();
         self.run_rounds()
+    }
+
+    /// Give an unnamed session a name, **once**, from the message that opened it.
+    ///
+    /// `Config::title`'s note said a title must not be derived from a prompt, and the
+    /// reason it gave is the one this respects: *"a title guessed from content is a
+    /// title that changes under you, and a session picker whose rows rename
+    /// themselves is a picker you cannot learn."* The defect there is the **changing**,
+    /// not the deriving. This fires on the first user item of a session that has no
+    /// title, writes it to the store, and can never fire again — a second user message
+    /// finds a title already set and leaves it alone. So a row's name is stable from
+    /// the moment it first has one, which is the property that made the objection.
+    ///
+    /// It is a default, not a decision: `/rename` and `letibot --rename` overwrite it,
+    /// and an operator who names a session up front never sees this run at all.
+    fn name_from_first_message(&mut self) {
+        if !self.cfg.title.is_empty() {
+            return;
+        }
+        // Read, not remembered. A head can name this session through the registry's
+        // own connection at any moment, and this harness's `cfg.title` would still be
+        // empty — so a derivation that trusted its own copy would overwrite the name
+        // the operator had just typed, with a few words from a message they sent
+        // before they typed it.
+        if let Some(store) = &self.store
+            && let Ok(Some(t)) = store.title(&self.cfg.session_id)
+        {
+            self.cfg.title = t;
+            return;
+        }
+        let first_user = self.session.items.iter().find_map(|i| match i {
+            TranscriptItem::User { parts } => parts.iter().find_map(|p| match p {
+                UserPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            }),
+            _ => None,
+        });
+        let Some(text) = first_user else { return };
+        let title = derive_title(text);
+        if title.is_empty() {
+            return;
+        }
+        if let Some(store) = &self.store
+            && let Err(e) = store.set_title(&self.cfg.session_id, &title)
+        {
+            {
+                // Not fatal and not silent: an unnamed session is usable, and a
+                // store that refused a title is a fact about the store.
+                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "title_not_stored".into(),
+                    detail: format!("this session could not be named in the store: {e}"),
+                });
+                return;
+            }
+        }
+        self.cfg.title = title.clone();
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::SessionRenamed {
+                title: title.clone(),
+            });
+        self.new_title = Some(title);
+    }
+
+    /// A title this harness has just derived, for the daemon to put in the registry.
+    ///
+    /// The registry is what a head's picker is drawn from and the harness does not
+    /// hold one — `Sessions` does. Handing it over rather than reaching for it keeps
+    /// the harness free of the registry, which is what lets a `Harness` be built in a
+    /// test with nothing but a `Hub`.
+    pub fn take_new_title(&mut self) -> Option<String> {
+        self.new_title.take()
+    }
+
+    /// Rename this session: the store, the log and this harness's own config.
+    pub fn rename(&mut self, title: &str) -> Result<(), HarnessError> {
+        if let Some(store) = &self.store {
+            store
+                .set_title(&self.cfg.session_id, title)
+                .map_err(|e| HarnessError::Store(e.to_string()))?;
+        }
+        self.cfg.title = title.to_string();
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::SessionRenamed {
+                title: title.to_string(),
+            });
+        self.new_title = Some(title.to_string());
+        Ok(())
+    }
+
+    /// What a resume rebuilt, or `None` for a session opened fresh.
+    pub fn resumed(&self) -> Option<&ResumeReport> {
+        self.resumed.as_ref()
     }
 
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
@@ -647,6 +965,33 @@ impl<'a> Harness<'a> {
         }
         Ok(())
     }
+}
+
+/// A few words from the first message, as a session name.
+///
+/// Deliberately dumb: the first line, first six words, no model call, no
+/// summarisation. A name is an **address** — the operator has to recognise it in a
+/// list a week later — and a paraphrase is a worse address than the words that were
+/// actually typed. A model-written title would also be a turn that costs a slot and
+/// can fail, on the path where somebody is waiting for an answer.
+///
+/// Empty for a message with no words in it, and the caller then leaves the session
+/// unnamed rather than storing a blank.
+pub fn derive_title(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let words: Vec<&str> = line.split_whitespace().take(6).collect();
+    let mut out = words.join(" ");
+    // Long enough to recognise, short enough for a picker row and a header.
+    const MAX: usize = 48;
+    if out.chars().count() > MAX {
+        out = out.chars().take(MAX - 1).collect::<String>();
+        out.push('…');
+    }
+    out
 }
 
 /// The visible text of a batch of appended items.
