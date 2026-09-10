@@ -406,14 +406,32 @@ fn the_read_only_and_coder_roles_did_not_gain_an_exec_path() {
         letibot_tools::builtins::retrieval::Unavailable,
     ))
     .unwrap();
-    // The runner role seats exactly eight, at the ceiling.
-    let seated = reg.resolve_role(&roles::m2_runner()).unwrap();
-    assert_eq!(seated.len(), 8);
+    // The runner role seats nine, one over the default ceiling, and it says so
+    // in its own `max_tools` rather than raising the ceiling for everybody. If
+    // this number moves, the trade in `m2_runner`'s doc has to move with it.
+    let role = roles::m2_runner();
+    assert_eq!(role.max_tools, 9, "the overrun is declared, not absorbed");
+    assert_eq!(
+        letibot_tools::runtime::DEFAULT_MAX_TOOLS,
+        8,
+        "the ceiling itself must not have been raised for every role"
+    );
+    for other in [roles::m1_orchestrator(), roles::m2_coder(), roles::planner()] {
+        assert_eq!(
+            other.max_tools,
+            letibot_tools::runtime::DEFAULT_MAX_TOOLS,
+            "`{}` must still be at the default ceiling",
+            other.name
+        );
+    }
+    let seated = reg.resolve_role(&role).unwrap();
+    assert_eq!(seated.len(), 9);
     assert!(seated.names().contains(&"bash".to_string()));
+    assert!(seated.names().contains(&"monitor".to_string()));
 
     // And the two roles that shipped before this work name no exec tool at all.
     for role in [roles::m1_orchestrator(), roles::m2_coder()] {
-        for name in ["bash", "job_kill", "job_wait", "job_list", "job_output"] {
+        for name in ["bash", "job_kill", "job_wait", "job_list", "job_output", "monitor"] {
             assert!(
                 !role.tools.contains(&name.to_string()),
                 "`{}` gained `{name}` — an exec path must arrive by decision, not by \

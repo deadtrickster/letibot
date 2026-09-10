@@ -38,6 +38,7 @@ pub mod external;
 pub mod glob;
 pub mod grep;
 pub mod jobs;
+pub mod monitor;
 pub mod intent;
 pub mod outline;
 pub mod pattern;

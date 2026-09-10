@@ -102,6 +102,41 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// How a command came to be running in the background rather than inline.
+///
+/// Three ways in and no fourth, because a fourth would be a promotion nobody
+/// decided the rule for. The distinction is not bookkeeping: *"the model asked"*
+/// and *"the runtime decided"* differ in whether the model already knows, and
+/// *"a person decided"* differs from both in that there is somebody to attribute
+/// it to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "how", rename_all = "snake_case")]
+pub enum Backgrounding {
+    /// The model asked for it: `background: true`.
+    Asked,
+    /// **The runtime promoted it**, because it outlived the foreground threshold.
+    /// Reactive on elapsed time, never predicted from the command text.
+    Promoted,
+    /// A person promoted it mid-flight from a head, and this is who.
+    Operator { identity: String },
+}
+
+impl Backgrounding {
+    /// The clause a result puts in front of the model. Never "backgrounded",
+    /// which does not say who did it.
+    pub fn phrasing(&self) -> String {
+        match self {
+            Backgrounding::Asked => "you asked for this to run in the background".into(),
+            Backgrounding::Promoted => {
+                "the RUNTIME moved this to the background — you did not ask for it".into()
+            }
+            Backgrounding::Operator { identity } => {
+                format!("`{identity}` moved this to the background from the head")
+            }
+        }
+    }
+}
+
 /// A **closed** vocabulary. Adding a variant is a deliberate act.
 ///
 /// `Abstained` is not a flavour of `Ok`, and that distinction is the whole reason
@@ -109,6 +144,22 @@ pub struct ToolCall {
 /// retrieval honestly reported that the corpus did not cover the question, and the
 /// model wrote a confident answer on top of it anyway. A tool runtime that collapses
 /// "no answer" into "success with empty payload" makes that failure invisible.
+///
+/// # `Backgrounded` is here for the same reason `Abstained` is
+///
+/// A command that was moved to the background is **still running and still
+/// recoverable**, and every outcome that already existed says something false
+/// about it:
+///
+/// | reported as | what the model concludes |
+/// |---|---|
+/// | `Ok` with an empty payload | the command produced nothing |
+/// | `Failed` | retry — and now there are two of them |
+/// | `Timeout` | it was abandoned; `Timeout` means exactly that |
+///
+/// So it is its own variant rather than a sentence in a payload, and it carries
+/// the handle and the recovery verb, because a fact the model has to guess the
+/// next action from is a fact it will guess wrong.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ToolOutcome {
@@ -118,6 +169,18 @@ pub enum ToolOutcome {
     Denied { req_id: String },
     Timeout,
     NotRun { why: String },
+    /// **Still running.** Not finished, not failed, not abandoned.
+    Backgrounded {
+        /// The job id, spelled as the recovery verbs take it.
+        handle: String,
+        /// How long it ran in the foreground before it went to the background.
+        /// The number that makes a promotion legible rather than mysterious.
+        ran_for_ms: u64,
+        how: Backgrounding,
+        /// The call that gets its output, ready to make. "Errors carry the fix",
+        /// applied to something that is not an error.
+        next: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,5 +236,42 @@ mod tests {
             serde_json::from_str::<ToolOutcome>(&a).unwrap(),
             ToolOutcome::Ok
         );
+    }
+
+    #[test]
+    fn backgrounded_is_none_of_the_three_it_would_otherwise_be_mistaken_for() {
+        // `backgrounded != finished != failed`, as a round trip rather than as a
+        // convention: a transcript re-rendered a turn later must still be able to
+        // tell "still running" from "produced nothing" and from "abandoned".
+        let b = ToolOutcome::Backgrounded {
+            handle: "j4".into(),
+            ran_for_ms: 15_000,
+            how: Backgrounding::Promoted,
+            next: "job_output with job=\"j4\"".into(),
+        };
+        let back: ToolOutcome = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back, b);
+        assert_ne!(back, ToolOutcome::Ok);
+        assert_ne!(back, ToolOutcome::Timeout);
+        assert!(!matches!(back, ToolOutcome::Failed { .. }));
+        // And the handle survives, because a result whose handle was lost is a
+        // process nobody can reach.
+        assert!(serde_json::to_string(&b).unwrap().contains("\"j4\""));
+    }
+
+    #[test]
+    fn the_three_ways_into_the_background_are_three_different_sentences() {
+        // A promotion the model reads as its own request is a promotion it did not
+        // notice, which is the defect this variant exists to make impossible.
+        let asked = Backgrounding::Asked.phrasing();
+        let promoted = Backgrounding::Promoted.phrasing();
+        let operator = Backgrounding::Operator {
+            identity: "deadtrickster".into(),
+        }
+        .phrasing();
+        assert_ne!(asked, promoted);
+        assert_ne!(promoted, operator);
+        assert!(promoted.contains("did not ask"), "{promoted}");
+        assert!(operator.contains("deadtrickster"), "{operator}");
     }
 }

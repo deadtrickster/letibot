@@ -80,6 +80,8 @@ impl ToolResult {
     /// - `Ok` — the body, with a `[note]` block above it when there is one.
     /// - `Abstained` — the `NO_RESULT` envelope. **Nothing inside it is an
     ///   answer**, and the envelope says so in the same bytes every time.
+    /// - `Backgrounded` — the `STILL_RUNNING` envelope. Not an error and not a
+    ///   result: the work is happening and the body says how to reach it.
     /// - everything else — the `TOOL_ERROR` envelope, which still carries the
     ///   corrective body, because clause 1 does not stop applying when a call
     ///   fails.
@@ -113,6 +115,28 @@ impl ToolResult {
                      question, and nothing above may be cited as one.",
                 self.name, self.payload
             )),
+            // **Its own envelope, and the reason is the whole point of the
+            // variant.** Wrapped in `TOOL_ERROR` this reads as a failure and the
+            // model retries — and now there are two of the command running. Left
+            // as `Ok` with a short body it reads as a command that produced
+            // nothing. Neither is true: it is running, and the handle reaches it.
+            ToolOutcome::Backgrounded {
+                handle,
+                ran_for_ms,
+                how,
+                next,
+            } => Envelope::still_running(&self.call_id).wrap(&format!(
+                "tool: {}\njob: {handle}\nran in the foreground for: {} before it went \
+                 to the background\nhow: {}\n{head}{}\n\n\
+                 THIS COMMAND IS STILL RUNNING. It did not fail, it was not \
+                 abandoned, and nothing above is its finished output. Do NOT start it \
+                 again — that would give you two. To get its output when it is done: \
+                 {next}",
+                self.name,
+                human_ms(*ran_for_ms),
+                how.phrasing(),
+                self.payload
+            )),
             other => Envelope::error(&self.call_id).wrap(&format!(
                 "tool: {}\noutcome: {}\n{head}{}",
                 self.name,
@@ -123,6 +147,17 @@ impl ToolResult {
     }
 }
 
+/// Milliseconds as something a reader can compare against their own patience.
+fn human_ms(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    if ms < 60_000 {
+        return format!("{:.1}s", ms as f64 / 1000.0);
+    }
+    format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+}
+
 fn outcome_word(o: &ToolOutcome) -> String {
     match o {
         ToolOutcome::Ok => "ok".into(),
@@ -131,6 +166,9 @@ fn outcome_word(o: &ToolOutcome) -> String {
         ToolOutcome::Denied { req_id } => format!("denied (decision {req_id})"),
         ToolOutcome::Timeout => "timeout".into(),
         ToolOutcome::NotRun { why } => format!("not run — {why}"),
+        ToolOutcome::Backgrounded { handle, .. } => {
+            format!("backgrounded (still running as `{handle}`)")
+        }
     }
 }
 
@@ -162,6 +200,21 @@ impl Envelope {
     pub fn error(call_id: &str) -> Self {
         Envelope {
             kind: "TOOL_ERROR",
+            mark: mark_of(call_id),
+        }
+    }
+
+    /// A command that is **still running**, wrapped so it cannot be read as
+    /// either of the two things it is not.
+    ///
+    /// A third kind rather than a wording inside one of the existing two, for the
+    /// same structural reason §8.2 gives `NO_RESULT`: the model sees a distinct
+    /// token sequence and not prose it can paraphrase around. A backgrounded
+    /// result rendered inside `TOOL_ERROR` is a retry waiting to happen, and a
+    /// duplicate `cargo build` is not a cosmetic defect.
+    pub fn still_running(call_id: &str) -> Self {
+        Envelope {
+            kind: "STILL_RUNNING",
             mark: mark_of(call_id),
         }
     }
@@ -254,7 +307,7 @@ impl Envelope {
     /// claim in §8.2 is decoration.
     pub fn classify(rendered: &str) -> Option<&'static str> {
         let first = rendered.lines().next()?;
-        for kind in ["NO_RESULT", "TOOL_ERROR"] {
+        for kind in ["NO_RESULT", "TOOL_ERROR", "STILL_RUNNING"] {
             if first.starts_with(&format!("<<<{kind} ")) {
                 return Some(kind);
             }
@@ -313,6 +366,33 @@ pub fn propagate(children: &[ToolOutcome]) -> Propagation {
                 "all {} tool call(s) abstained: {}",
                 children.len(),
                 abstentions.join("; ")
+            ),
+        });
+    }
+
+    // **A caller whose work is all still running has not failed.** It also has not
+    // abstained: an abstention is a claim about the world — *the thing is not
+    // there* — and nothing here has looked yet. `not_run` is the only honest one:
+    // nothing was decided, and the handles say where the answer will be. Falling
+    // through to the `Failed` below would be `denied ≠ failed` in its third
+    // costume, one layer up from the tool that got it right.
+    let running: Vec<&str> = children
+        .iter()
+        .filter_map(|o| match o {
+            ToolOutcome::Backgrounded { handle, .. } => Some(handle.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !running.is_empty() && running.len() + abstentions.len() == children.len() {
+        return Propagation::Must(ToolOutcome::NotRun {
+            why: format!(
+                "{} of {} tool call(s) are STILL RUNNING in the background and none \
+                 has produced a result yet — nothing failed and nothing is missing. \
+                 The handles are: {}. Wait on them, or read what they have written, \
+                 before reporting anything as an answer.",
+                running.len(),
+                children.len(),
+                running.join(", ")
             ),
         });
     }
@@ -412,5 +492,80 @@ mod tests {
     #[test]
     fn no_tool_calls_is_not_an_abstention() {
         assert_eq!(propagate(&[]), Propagation::Unconstrained);
+    }
+
+    #[test]
+    fn a_backgrounded_result_is_not_wrapped_as_an_error_or_as_a_success() {
+        use letibot_transcript::Backgrounding;
+        let r = ToolResult::new(
+            "c1",
+            "bash",
+            ToolOutcome::Backgrounded {
+                handle: "j4".into(),
+                ran_for_ms: 15_000,
+                how: Backgrounding::Promoted,
+                next: "call `job_output` with job=\"j4\"".into(),
+            },
+        )
+        .with_payload("cargo build\n   Compiling letibot-tools");
+        let out = r.render();
+        assert_eq!(Envelope::classify(&out), Some("STILL_RUNNING"));
+        // The three readings it must not produce.
+        assert_ne!(Envelope::classify(&out), Some("TOOL_ERROR"));
+        assert_ne!(Envelope::classify(&out), Some("NO_RESULT"));
+        // And everything the model needs to act without guessing.
+        assert!(out.contains("j4"), "{out}");
+        assert!(out.contains("15.0s"), "{out}");
+        assert!(out.contains("job_output"), "{out}");
+        assert!(out.contains("Do NOT start it again"), "{out}");
+        assert!(out.contains("did not ask"), "{out}");
+        // It is not grounding: there is no answer yet to be grounded in.
+        assert!(!r.is_grounded());
+    }
+
+    #[test]
+    fn calls_that_are_all_still_running_are_not_a_failure() {
+        let children = vec![
+            ToolOutcome::Backgrounded {
+                handle: "j1".into(),
+                ran_for_ms: 15_000,
+                how: letibot_transcript::Backgrounding::Promoted,
+                next: "job_output".into(),
+            },
+            ToolOutcome::Backgrounded {
+                handle: "j2".into(),
+                ran_for_ms: 15_000,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "job_output".into(),
+            },
+        ];
+        match propagate(&children) {
+            Propagation::Must(ToolOutcome::NotRun { why }) => {
+                assert!(why.contains("j1") && why.contains("j2"), "{why}");
+                assert!(why.contains("STILL RUNNING"), "{why}");
+            }
+            other => panic!("still-running must not propagate as a failure: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_failure_alongside_a_running_job_is_still_a_failure() {
+        // The branch above must not swallow a genuine error just because
+        // something else happens to be running.
+        let children = vec![
+            ToolOutcome::Backgrounded {
+                handle: "j1".into(),
+                ran_for_ms: 1,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "job_output".into(),
+            },
+            ToolOutcome::Failed {
+                reason: "no such path".into(),
+            },
+        ];
+        assert!(matches!(
+            propagate(&children),
+            Propagation::Must(ToolOutcome::Failed { .. })
+        ));
     }
 }

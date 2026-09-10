@@ -477,6 +477,22 @@ pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
         ToolOutcome::Denied { req_id } => format!("NO_RESULT\noutcome: denied\nrequest: {req_id}"),
         ToolOutcome::Timeout => "NO_RESULT\noutcome: timeout".to_string(),
         ToolOutcome::NotRun { why } => format!("NO_RESULT\noutcome: not_run\nreason: {why}"),
+        // **Not `NO_RESULT`.** The other five non-`Ok` classes all say the same
+        // thing at bottom — there is nothing here to build on — and this one says
+        // the opposite: the work is still happening and the handle reaches it. A
+        // shared envelope would put "still running" in the same visual class as
+        // "abandoned", which is exactly the reading `ToolOutcome::Timeout` already
+        // means and this variant exists not to be.
+        ToolOutcome::Backgrounded {
+            handle,
+            ran_for_ms,
+            how,
+            next,
+        } => format!(
+            "STILL_RUNNING\noutcome: backgrounded\njob: {handle}\nran in the \
+             foreground for: {ran_for_ms} ms\nhow: {}\nnext: {next}",
+            how.phrasing()
+        ),
     };
     if payload.is_empty() {
         head

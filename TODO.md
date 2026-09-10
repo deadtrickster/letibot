@@ -1078,6 +1078,65 @@ than after**: the leak measured above came from subagents the harness does not y
 run by an agent that does. The requirement was discovered before the feature, which is the
 rare ordering.
 
+### Landed, 2026-09-10 — monitors and background promotion
+
+`crates/tools/src/exec/monitor.rs`, `crates/tools/src/builtins/monitor.rs`,
+`crates/tools/tests/background.rs`. All five requirements above are mechanised and each
+has a test. What is worth recording is the three decisions that were **not** obvious.
+
+**The promotion threshold is 15 s and it is reactive.** Measured, warm, on `.79` at load
+1.4: the whole routine set — `find`, `grep -rn`, `cargo check -p`, `cargo check
+--workspace`, `cargo clippy --workspace --all-targets`, `cargo test -p letibot-tools`, the
+fidelity gate — tops out at **6.5 s**. 15 s clears the slowest by 2.3×, and is 6× under the
+`sleep 90` the operator named as the case that must promote. The previous default was 120 s,
+which would have let `sleep 90` block the turn for a minute and a half and never promote.
+The threshold fires on **elapsed time and never on the command text**: `cargo build` is 3 s
+warm and 4 minutes cold and the string is the same both times, so a predictive rule is
+`docs/closed-loop.md`'s open-loop stepper in a new costume.
+
+**`m2_runner` is nine tools, one over §8.4's ceiling, and it says so in its own
+`max_tools`.** The ceiling's evidence is about confusion between *similar* choices, so the
+monitor surface was cut twice before it was allowed to cost a seat: declare/renew/retire are
+one tool taking an `action` because all three act on one named handle, and **listing is not a
+tool at all** — monitors are in `job_list` beside the jobs, the scopes, the promotions and
+the reap log, because "what is running and what is watching" is one question and a second
+listing nobody opens is how a watcher becomes invisible without anybody hiding it. What is
+left cannot fold into `job_wait`: that blocks *inside* the turn, and a flag switching between
+the two would make "I believed I had waited" spellable. A ceiling quietly raised for
+everybody is not a ceiling; one role declaring its own number with the trade written down is
+a decision somebody can reverse, and a test pins both numbers.
+
+**A port watch has no `host` argument, and that omission is load-bearing.** A monitor that
+could reach an arbitrary address would have to declare `Access::Network` on *every* call,
+including the ones watching a cgroup — which is D12's shape (a network declaration making an
+unrelated capability refuse entirely). Loopback-only keeps the whole tool at `Access::Exec`,
+which is also the honest class: it leaves something watching after the turn ends.
+
+### Still open — the head cannot promote a job yet
+
+Requirement 3 of the operator's three (*"the operator promotes it, mid-flight, from the
+head"*) is **half done**: the daemon-side verb is `ProcessHost::promote`, it is tested with
+`Backgrounding::Operator`, and the frame the head must send is specified verbatim in that
+method's doc comment — `ClientFrame::PromoteJob { client_request_id, expected_seq, job,
+identity }`, queued, idempotent, answered by calling `promote`.
+
+It is **not wired**, deliberately, and the reason belongs with D11. A new `ClientFrame`
+variant is a wire change, so `PROTOCOL_VERSION` goes 5 → 6; both sides refuse a mismatch by
+name; and landing a bump costs the running daemon its live session. Against that, the verb
+buys nothing in production today: `harnessd` seats `m1_orchestrator`, which has no `bash`,
+no jobs, and therefore no job to promote. The constant is also the one line every
+wire-touching branch edits, and 5 was taken deliberately *"to coordinate rather than race"*
+(D10). So: one variant and one integer, whenever a head is ready to send it.
+
+### Still open — nothing calls the monitor wake seam
+
+`Monitors::wait_for_any(since, deadline)` is a `Condvar` that returns the monitors which
+settled during the call, and it is the "wakes the loop when it fires" half of the sentence
+above. **The loop does not call it yet.** Until it does, a fired monitor reaches the model
+when something asks — `job_list` shows it, with why — which is a poll, not a wake. That is
+honest and it is not the whole requirement, and the gap is named here rather than left to be
+discovered as a silence.
+
 ---
 
 ## T25 — Everything waiting on the operator, as of 2026-09-10 01:00
