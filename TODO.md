@@ -661,6 +661,46 @@ why it is off. Measuring it needs a corpus of turns labelled *"did this commitme
 and the honest source for one is the same as §4c's: run with it on and record the
 overrides.
 
+### T21.4 — **DONE 2026-09-10.** The round counter was an open-loop guard and it cut working turns twice
+
+`max_tool_rounds: 12` was the only thing that could end a runaway turn, so it also
+ended two legitimate ones — a session asked to *"look at the project and suggest
+improvements"*, cut mid-investigation, and before that a session doing genuine
+exploration two rounds from finishing, every round of it new work.
+
+**A count of rounds measures effort.** It never looks at the effect, only at the
+command, which is `docs/closed-loop.md` §1 exactly. And the message blamed the model
+for working — *"the model called tools 12 times without answering"* — when it was
+answering and had not finished. Same defect as `grep` reporting absence having opened
+no files.
+
+`crates/harnessd/src/progress.rs` is the encoder. **A round made progress when at
+least one of its calls returned `Ok` with a result this turn had not already seen.**
+Every input is a fact the harness already computed: `args_digest` for the repeated
+call, `payload_digest` for the repeated result, and `intent::ledger::is_effect` —
+lifted out of `record_effect` so the ledger and the detector cannot come to hold two
+nearly-identical predicates that disagree silently.
+
+**Why payload novelty and not the repeated call**, which is the stronger raw signal: a
+model that edits a file and reads it back makes a byte-identical call and gets a
+different answer, and that is progress. Only the payload separates it from the third
+read of an unchanged file. The repeated call is kept for the *evidence*.
+
+`max_tool_rounds` moves to 200 and is now a backstop for a different failure — a turn
+producing genuinely new results forever — with a sentence that no longer accuses.
+`--stall-rounds N` (default 5) is the band, `0` is off and disclosed.
+
+**The false positive is measured, not assumed.** Live against the running server: a
+turn told to run three searches one per step, each correctly finding nothing, is a run
+of stalled rounds even though every query was new and every answer was right. At the
+default it survives (3 < 5); at `--stall-rounds 2` it was cut. The nudge at N-1 is the
+mitigation and it now names *which* case it saw — repeated calls, or new questions
+nothing could answer — so the operator can tell the two apart in the stop.
+
+**Still open:** whether a run of *distinct* fruitless queries should get a longer band
+than a run of repeats. It is one threshold today and they are plainly not the same
+failure. Nobody has measured how often either occurs.
+
 ---
 
 ## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other
