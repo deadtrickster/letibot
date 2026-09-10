@@ -279,6 +279,25 @@ from a person who was there. That does not guarantee it works — it means a neg
 would be a different negative, and the cheap version (§4h: read the rows back at decision
 time) needs no training at all.
 
+### Where it goes, and why this is urgent rather than eventual
+
+Operator, clarifying: *"global inputs — I mean to the storage shared between sessions."*
+
+**Today the rows are in memory and die with the session.** `AdjudicatedGate.log:
+Vec<AdjudicationRow>`, with its own comment saying the durable journal belongs to
+`letibot-sessionlog` and wiring it there was deferred. So **nothing has ever been
+persisted** — every adjudication made while building this, including the first live grant,
+is gone.
+
+`~/.local/share/letibot/sessions.db` is already the store shared between sessions (8 in it
+today) and already carries append-only triggers. A sibling table there is the small
+version of this.
+
+The consequence worth acting on: **a corpus is created by writing, and nothing is
+writing.** Every day without the table is a day of decisions that cannot be recovered
+afterwards — unlike a schema mistake, which can be migrated. This is the cheapest item in
+this document and the only one whose cost grows while it waits.
+
 **What the row must therefore carry**, beyond §4c's four fields: a timestamp, the model
 build that produced the verdict, and the after-the-fact outcome where one exists. The
 adjudication work already lists all three as missing. A corpus assembled later from rows
