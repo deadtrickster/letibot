@@ -175,31 +175,60 @@ llama.cpp reported a normal stop. opencode recorded `completed: true`.
 largest generation 7150 tokens, `truncated = 0` on every release, no `--n-predict`
 and no `--reasoning-budget` on the process.
 
-### Why it happened, reproducible in one call
+### Why it happened, reproducible in SEVEN tokens
 
-The agents were reasoning about llama.cpp's chat templates, so their reasoning
-necessarily contained control-token NAMES. GLM emits those as control tokens, not
-as text:
+GLM's end-of-generation set, from its own load log:
+
+    EOS = 154820 '<|endoftext|>'
+    EOT = 154827 '<|user|>'         <- end-of-turn IS the user role opener
+    EOM = 154829 '<|observation|>'  <- end-of-message IS the observation opener
+
+So the token that means "this turn is over" is also the NAME of a thing an agent
+working on chat templates has to write. Asked to output a line containing that
+name, GLM ends its own turn instead:
 
     curl -s localhost:8080/v1/chat/completions -d '{"model":"glm-5.3-flash",
+      "max_tokens":2000,"chat_template_kwargs":{"reasoning_effort":"low"},
       "messages":[{"role":"user","content":
-        "Output exactly this line and nothing else: the extra <|assistant|> marker is the problem"}],
-      "max_tokens":3000,"chat_template_kwargs":{"reasoning_effort":"low"}}'
+        "Output exactly this line and nothing else: the token <|user|> ends the turn"}]}'
 
-    -> content: 'the extra " marker is the problem'      (measured)
+    -> finish_reason "stop", content '', completion_tokens 7      (measured)
 
-The literal is GONE from the output. Here the turn survived because
-`<|assistant|>` opens a role rather than ending one; when the emitted token is a
-turn-ender the turn stops where it is. So the hazard is proportional to how much
-the agent must write about control tokens -- which is why it worsened as those
-agents went deeper into template work rather than degrading over time.
+Seven tokens. There is no escape hatch: the tokenizer maps that exact string to
+id 154827, so the model cannot spell it as ordinary characters -- a request that
+survives comes back with a HOLE where the literal was, not with the literal.
 
-This direction is the mirror of what the fidelity gate already covers. That gate
-classifies 3,617 payload-supplied control literals as DATA on the way IN. On the
-way OUT there is no such defence and there cannot be: a generated control token
-IS a control token, and nothing distinguishes "the model means to end the turn"
-from "the model is naming a token". The model cannot be fixed here. The REPORT
-can.
+### What kind of bug this is, since the answer is not the obvious one
+
+NOT the chat template. It renders correctly -- T1 measured 4,132 byte-exact
+renders. NOT a tokenizer misconfiguration either: the `special_eot_id is not in
+special_eog_ids` warnings at load are a red herring, all three tokens ARE in the
+printed EOG set.
+
+It is a CONFLATION in the vocabulary: one symbol carries both a structural
+meaning ("turn over") and a lexical one (the name of that structure). Any format
+whose terminator is a nameable string has it. The class is INJECTION, the same
+shape as GuardFall -- text is inspected in one frame and reinterpreted as control
+in another -- except self-inflicted, with the boundary at the sampler rather than
+a renderer.
+
+That last point is why the fidelity gate cannot help. It classifies inbound
+payload-supplied control literals as DATA; outbound there is no equivalent,
+because by the time a token id exists the DATA/CONTROL distinction is already
+gone.
+
+### REFUTED: --logit-bias is not the fix. Do not try it again.
+
+Banning the two role-opening EOG tokens per request looks like the obvious
+mitigation and it MEASURABLY BREAKS THE MODEL:
+
+    logit_bias {154827:-100, 154829:-100}, prompt "What is 17 times 3?"
+      -> "17 times 3 is 51." then 2000 tokens of rambling, finish "length"
+
+GLM natively ends its turns by emitting 154827, which is exactly why llama.cpp
+registers it as EOG. Remove it and the model has no ordinary way to stop. Tested
+per-request, so no server flag was harmed; if you are about to add
+`--logit-bias 154827-inf` to a launcher, this paragraph is why not.
 
 ### What to build, and it is F5
 
