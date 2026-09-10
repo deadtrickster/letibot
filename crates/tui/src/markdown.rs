@@ -45,6 +45,23 @@ pub enum Block {
     },
     List {
         ordered: bool,
+        /// The number the **first** item was written with, so an ordered list
+        /// renders the numbers the model wrote.
+        ///
+        /// A blank line between items ends a block — that is what a blank line
+        /// does here and it is right for paragraphs — so a *loose* list, which is
+        /// what a model writes whenever an item runs to more than a sentence,
+        /// arrives as six one-item lists. The renderer numbered from the item's
+        /// index within its block, so all six rendered `1.` and the prose above
+        /// them said "the six points below". Found by reading a real answer on the
+        /// screen; it is the head misquoting the model, which is the same class as
+        /// a card naming the wrong file.
+        ///
+        /// Keeping the written number is the smaller fix and the more honest one:
+        /// a list that says `4.` says `4.` because the model typed `4.`, and a
+        /// model that numbers its own list wrongly is not something a head should
+        /// quietly correct.
+        start: usize,
         items: Vec<String>,
     },
     Quote {
@@ -292,7 +309,8 @@ pub fn lex(s: &str) -> Vec<Block> {
     let mut out = Vec::new();
     let mut lines = s.lines().peekable();
     let mut para: Vec<String> = Vec::new();
-    let mut list: Option<(bool, Vec<String>)> = None;
+    // `(ordered, first written number, items)`.
+    let mut list: Option<(bool, usize, Vec<String>)> = None;
     let mut quote: Vec<String> = Vec::new();
 
     macro_rules! flush {
@@ -302,8 +320,12 @@ pub fn lex(s: &str) -> Vec<Block> {
                     lines: std::mem::take(&mut para),
                 });
             }
-            if let Some((ordered, items)) = list.take() {
-                out.push(Block::List { ordered, items });
+            if let Some((ordered, start, items)) = list.take() {
+                out.push(Block::List {
+                    ordered,
+                    start,
+                    items,
+                });
             }
             if !quote.is_empty() {
                 out.push(Block::Quote {
@@ -362,22 +384,27 @@ pub fn lex(s: &str) -> Vec<Block> {
             quote.push(rest.to_string());
             continue;
         }
-        if let Some((ordered, item)) = list_item(t) {
+        if let Some((num, item)) = list_item(t) {
+            let ordered = num.is_some();
             if !para.is_empty() || !quote.is_empty() {
                 flush!();
             }
             match &mut list {
-                Some((o, items)) if *o == ordered => items.push(item),
+                Some((o, _, items)) if *o == ordered => items.push(item),
                 _ => {
-                    if let Some((o, items)) = list.take() {
-                        out.push(Block::List { ordered: o, items });
+                    if let Some((o, start, items)) = list.take() {
+                        out.push(Block::List {
+                            ordered: o,
+                            start,
+                            items,
+                        });
                     }
-                    list = Some((ordered, vec![item]));
+                    list = Some((ordered, num.unwrap_or(1), vec![item]));
                 }
             }
             continue;
         }
-        if let Some((_, items)) = list.as_mut() {
+        if let Some((_, _, items)) = list.as_mut() {
             // A lazy continuation of the last list item.
             if let Some(last) = items.last_mut() {
                 last.push(' ');
@@ -403,17 +430,20 @@ fn is_rule(t: &str) -> bool {
             || t.chars().all(|c| c == '_'))
 }
 
-fn list_item(t: &str) -> Option<(bool, String)> {
+/// One list item: the number it was written with (`None` for a bullet) and its
+/// text.
+fn list_item(t: &str) -> Option<(Option<usize>, String)> {
     for m in ["- ", "* ", "+ "] {
         if let Some(rest) = t.strip_prefix(m) {
-            return Some((false, rest.to_string()));
+            return Some((None, rest.to_string()));
         }
     }
     let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
     if !digits.is_empty() && digits.len() <= 9 {
         let rest = &t[digits.len()..];
         if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
-            return Some((true, r.to_string()));
+            // A parse that cannot fail: at most nine ascii digits.
+            return Some((digits.parse::<usize>().ok(), r.to_string()));
         }
     }
     None
@@ -508,6 +538,51 @@ mod tests {
         let b = stable_boundary(doc).unwrap();
         assert_eq!(&doc[..b], "- a\n\n- b\n\n");
         assert!(stable_boundary("- a\n\n- b\n").is_none());
+    }
+
+    /// A loose list keeps the numbers the model wrote.
+    ///
+    /// From a real answer: six numbered points, each two or three sentences and
+    /// therefore separated by blank lines, every one of which rendered `1.` while
+    /// the paragraph above them called them "the six points below". A blank line
+    /// ends a block here — which is right, and is what makes each item its own
+    /// one-item list — so the number cannot come from the index inside the block.
+    #[test]
+    fn a_loose_ordered_list_keeps_the_numbers_it_was_written_with() {
+        let doc = "1. first\n\n2. second\n\n3. third\n\ntail\n";
+        let mut md = IncrementalMarkdown::new();
+        md.push(doc);
+        let all: Vec<&Block> = md.blocks().collect();
+        let starts: Vec<usize> = all
+            .iter()
+            .filter_map(|b| match b {
+                Block::List {
+                    ordered: true,
+                    start,
+                    ..
+                } => Some(*start),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, vec![1, 2, 3], "{all:?}");
+        // A bullet list has no written number and starts at one.
+        let mut md = IncrementalMarkdown::new();
+        md.push("- a\n- b\n");
+        assert!(matches!(
+            md.blocks().next(),
+            Some(Block::List {
+                ordered: false,
+                start: 1,
+                ..
+            })
+        ));
+        // A list the model started at seven stays at seven.
+        let mut md = IncrementalMarkdown::new();
+        md.push("7. seven\n8. eight\n\ntail\n");
+        assert!(matches!(
+            md.blocks().next(),
+            Some(Block::List { start: 7, .. })
+        ));
     }
 
     #[test]

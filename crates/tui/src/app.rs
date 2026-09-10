@@ -352,6 +352,10 @@ pub struct App {
     hist_lines: Vec<String>,
     hist_upto: usize,
     hist_width: usize,
+    /// The class of the last row the walk actually drew, so the next one knows
+    /// whether a blank line belongs between them. The walk is incremental across
+    /// frames, so this has to survive the frame that set it.
+    hist_class: Option<RowClass>,
     turn: Option<TurnPane>,
     open: Vec<OpenDecision>,
     /// Things that happened *between* transcript rows and belong in the
@@ -546,6 +550,7 @@ impl App {
             hist_upto: 0,
             note_upto: 0,
             hist_width: 0,
+            hist_class: None,
             turn: None,
             open: Vec::new(),
             notes: Vec::new(),
@@ -1711,6 +1716,7 @@ impl App {
         self.hist_lines.clear();
         self.hist_upto = 0;
         self.note_upto = 0;
+        self.hist_class = None;
         // The target table is the walk's own state — the round it is currently
         // inside — so it is thrown away with the lines it labelled. Leaving it
         // behind is what let a rebuild start at row 0 holding round 14's paths.
@@ -1977,7 +1983,11 @@ impl App {
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();
             out.push(if boxed {
-                let wall = colour(&self.cfg, sgr::GREY, "│");
+                // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright
+                // black*, which `style.rs` measured landing within a hair of the
+                // background on several light themes; the attribute de-emphasises
+                // whatever foreground the reader has already chosen.
+                let wall = self.cfg.palette().paint(Role::Faint, "│");
                 format!("{wall} {}{wall}", width::fit(&body, inner + 1))
             } else {
                 trim_to(&body, w)
@@ -2001,16 +2011,15 @@ impl App {
         // inlaid into. So the border reopens itself on the far side of it. Same
         // defect and same fix as `style::Painter::inside`, one layer up: a reset
         // is not a restore.
-        let reopen = if self.cfg.color { sgr::GREY } else { "" };
+        let reopen = self.cfg.palette().open(Role::Faint);
         let text = if legend.is_empty() || inner < 10 {
             String::new()
         } else {
             format!("─ {}{reopen} ", trim_to(legend, inner - 4))
         };
         let fill = inner.saturating_sub(visible_width(&text));
-        colour(
-            &self.cfg,
-            sgr::GREY,
+        self.cfg.palette().paint(
+            Role::Faint,
             &format!("{open}{text}{}{close}", "─".repeat(fill)),
         )
     }
@@ -2104,6 +2113,7 @@ impl App {
                 notes,
                 call_targets,
                 call_ms,
+                hist_class,
                 ..
             } = self;
             loop {
@@ -2111,8 +2121,11 @@ impl App {
                     .get(*note_upto)
                     .is_some_and(|(at, _)| *at <= *hist_upto);
                 if note_next {
+                    if !hist_lines.is_empty() {
+                        hist_lines.push(String::new());
+                    }
                     hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
-                    hist_lines.push(String::new());
+                    *hist_class = Some(RowClass::Other);
                     *note_upto += 1;
                 } else if *hist_upto < items.len() {
                     // An assistant row carries the arguments for the calls it
@@ -2142,7 +2155,7 @@ impl App {
                         }
                         answered = round_results(items, *hist_upto);
                     }
-                    let rows = item_lines(
+                    let (class, rows) = item_lines(
                         &items[*hist_upto],
                         &ItemCtx {
                             cfg: &cfg,
@@ -2161,8 +2174,18 @@ impl App {
                     // it is what a tool-calling round looks like — and paying two
                     // blank lines for it puts a hole in the transcript.
                     if !rows.iter().all(|l| l.trim().is_empty()) {
+                        // Air where the KIND changes, not between every pair of
+                        // rows. Two tool cards in a row are one block and read as
+                        // one; a blank between each of them was a third of the
+                        // vertical budget spent separating things a glyph in the
+                        // first column already separates.
+                        let pack = *hist_class == Some(RowClass::Activity)
+                            && class == RowClass::Activity;
+                        if !hist_lines.is_empty() && !pack {
+                            hist_lines.push(String::new());
+                        }
                         hist_lines.extend(rows);
-                        hist_lines.push(String::new());
+                        *hist_class = Some(class);
                     }
                     *hist_upto += 1;
                 } else {
@@ -2193,6 +2216,13 @@ impl App {
             hist_lines, turn, ..
         } = self;
         let mut segs: Vec<Seg<'_>> = vec![Seg::Borrowed(hist_lines)];
+        // The history no longer ends with a blank — separators go *before* a row
+        // now, so the last row of the transcript is the last line of it. The live
+        // pane therefore brings its own.
+        let gap = vec![String::new()];
+        if !hist_lines.is_empty() {
+            segs.push(Seg::Borrowed(&gap));
+        }
 
         if let Some(t) = turn {
             let running = matches!(t.state, Some(TurnState::Running));
@@ -2214,21 +2244,24 @@ impl App {
                 state,
                 ..
             } = t;
+            let ind = activity_indent(cfg.width);
             if !superseded && !reasoning.is_empty() {
-                // Two columns narrower, because the rail is two columns wide.
-                // Getting this wrong makes the block one row taller than the space
-                // reserved for it, which moves everything below it by a line every
-                // frame — which is one of the things being called flicker.
-                let mut rcfg = cfg.inside(Role::Reasoning);
-                rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
+                // Narrower by the rail and by the step it is set in. Getting this
+                // wrong makes the block one row taller than the space reserved for
+                // it, which moves everything below it by a line every frame — which
+                // is one of the things being called flicker.
+                let rcfg = reasoning_cfg(&cfg);
                 reasoning_cache.set_decor(reasoning_decor(&cfg));
-                segs.push(Seg::Owned(vec![thinking_header(
-                    &cfg,
-                    reasoning.raw(),
-                    think.is_open(),
-                    running,
-                    think_elapsed,
-                )]));
+                segs.push(Seg::Owned(step_in(
+                    vec![thinking_header(
+                        &cfg,
+                        reasoning.raw(),
+                        think.is_open(),
+                        running,
+                        think_elapsed,
+                    )],
+                    ind,
+                )));
                 if think.is_open() {
                     let (stable, tail) =
                         reasoning_cache.split(reasoning, &rcfg, cfg.budget.reasoning_lines);
@@ -2254,7 +2287,7 @@ impl App {
                 if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live.iter() {
-                        owned.extend(call_card(c, &cfg, now_ms, tool));
+                        owned.extend(step_in(call_card(c, &cfg, now_ms, tool), ind));
                     }
                     owned.push(String::new());
                     segs.push(Seg::Owned(owned));
@@ -2269,7 +2302,10 @@ impl App {
                 // written, which is the fact the raw text was accidentally
                 // conveying and the only part of it a reader wanted.
                 if *writing_call {
-                    segs.push(Seg::Owned(vec![writing_call_line(&cfg, now_ms)]));
+                    segs.push(Seg::Owned(step_in(
+                        vec![writing_call_line(&cfg, now_ms)],
+                        ind,
+                    )));
                 }
                 if raw && !raw_call.is_empty() {
                     segs.push(Seg::Owned(raw_call_lines(&cfg, raw_call)));
@@ -2877,8 +2913,26 @@ fn fold_word(f: Fold) -> &'static str {
 /// Handing it to the `BlockCache` as a `Decor` rather than mapping over the lines
 /// per frame is what keeps §13.3: the rail is applied once, when the line enters
 /// the cache, not once per line per frame.
+/// The width the reasoning body wraps to, and the style it wraps inside.
+///
+/// One place, because two call sites computing it and one of them forgetting the
+/// step makes the block a row taller than the space reserved for it, which moves
+/// everything below it every frame.
+fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
+    let mut r = cfg.inside(Role::Reasoning);
+    r.width = cfg
+        .width
+        .saturating_sub(activity_indent(cfg.width) + card::REASONING_RAIL_WIDTH)
+        .max(20);
+    r
+}
+
 fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     let p = cfg.palette();
+    // The step the whole of the model's working is set in, carried on the same
+    // prefix as the rail so it is applied once per line as the line enters the
+    // cache — not once per line per frame, which is what §13.3 forbids.
+    let step = " ".repeat(activity_indent(cfg.width));
     // The rail is painted **inside** the block too, so that the row obeys one
     // invariant end to end: every reset in a reasoning row either ends the row or
     // hands the reasoning style straight back. That is what the test asserts, and
@@ -2887,7 +2941,7 @@ fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     // which a terminal collapses to nothing.
     let rail = Painter::inside(p, Role::Reasoning);
     Decor {
-        prefix: format!("{} ", rail.paint(Role::Faint, "┃")),
+        prefix: format!("{step}{} ", rail.paint(Role::Faint, "┃")),
         open: p.open(Role::Reasoning).to_string(),
     }
 }
@@ -2999,10 +3053,14 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
             } else {
                 0.0
             };
+            // `23.8k`, the same way the header and the prefill line say it. The
+            // footer said `23800` and the header two rows up said `23.8k ctx`, so
+            // one screen carried one number in two notations — which is a thing a
+            // reader stops to reconcile.
             let stats = format!(
                 "{} in ({keep}) · {} out · {rate:.0} tok/s · {}",
-                usage.prompt_tokens,
-                usage.predicted_tokens,
+                progress::thousands(usage.prompt_tokens),
+                progress::thousands(usage.predicted_tokens),
                 dur_human(timings.wall_ms),
             );
             match finish_reason {
@@ -3267,19 +3325,38 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
     })
 }
 
-fn outcome_str(o: &letibot_transcript::ToolOutcome) -> String {
+/// How a call ended, in one word.
+///
+/// Split from its reason on purpose. The two used to be one string on the card's
+/// header, and a header is trimmed from the right — so a `not run` whose reason
+/// ran to a hundred and forty characters pushed **the word itself** off the end
+/// of the line and the row read `▸ ask_code "Give an overview of the crate…`,
+/// with no sign anywhere on it that the call had not run. A reason is prose and
+/// belongs on a line that wraps; the word is the fact and must not be able to
+/// vanish.
+fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str {
     use letibot_transcript::ToolOutcome as O;
     match o {
-        O::Ok => "ok".into(),
+        O::Ok => "ok",
         // §8.2: abstention is not a flavour of success and must not read like one.
-        O::Abstained { reason } => format!("ABSTAINED — {reason}"),
-        O::Failed { reason } => format!("failed — {reason}"),
-        O::Denied { req_id } => format!("REFUSED — the call was denied ({req_id})"),
-        O::Timeout => "timeout".into(),
-        O::NotRun { why } => format!("not run — {why}"),
-        O::Backgrounded { handle, next, .. } => {
-            format!("STILL RUNNING as `{handle}` — {next}")
-        }
+        O::Abstained { .. } => "ABSTAINED",
+        O::Failed { .. } => "failed",
+        O::Denied { .. } => "REFUSED",
+        O::Timeout => "timeout",
+        O::NotRun { .. } => "not run",
+        O::Backgrounded { .. } => "STILL RUNNING",
+    }
+}
+
+/// Why it ended that way, when there is a why. Goes in the body, where it wraps.
+fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
+    use letibot_transcript::ToolOutcome as O;
+    match o {
+        O::Ok | O::Timeout => None,
+        O::Abstained { reason } | O::Failed { reason } => Some(reason.clone()),
+        O::Denied { req_id } => Some(format!("the call was denied ({req_id})")),
+        O::NotRun { why } => Some(why.clone()),
+        O::Backgrounded { handle, next, .. } => Some(format!("as `{handle}` — {next}")),
     }
 }
 
@@ -3360,6 +3437,25 @@ fn ellipsise_left(s: &str, max: usize) -> String {
     if visible_width(s) <= max || max < 2 {
         return s.to_string();
     }
+    // **At a separator, not at a character.** `…/1f0655c6-…/scratchpad` was the
+    // operator's example and it is two lies in twenty-two columns: the first
+    // ellipsis says a prefix was dropped, which is true, and the second says a
+    // directory has a shorter name than it does, which is not — and neither
+    // segment can be pasted back into a shell. Dropping *whole* segments leaves a
+    // suffix that is a real path, which is what a person compares against.
+    //
+    // `match_indices` runs left to right, so the first candidate that fits is the
+    // longest suffix that fits.
+    if s.contains('/') {
+        for (i, _) in s.match_indices('/') {
+            let cand = format!("…{}", &s[i..]);
+            if visible_width(&cand) <= max {
+                return cand;
+            }
+        }
+    }
+    // A single segment longer than the whole allowance, or no separator at all.
+    // Then there is nothing to cut on and the characters are all there is.
     let keep = max - 1;
     let mut out = String::new();
     let mut cols = 0usize;
@@ -3372,6 +3468,30 @@ fn ellipsise_left(s: &str, max: usize) -> String {
         cols += cw;
     }
     format!("…{}", out.chars().rev().collect::<String>())
+}
+
+/// Shorten a tool call's subject to `max` columns, cutting at the end a reader
+/// does not need.
+///
+/// A **path** loses its left, at a separator: `…/crates/tui/src/app.rs` is still
+/// a file you can recognise and `crates/tui/src/ap…` is not. Anything else — a
+/// regex, a command line, a glob — loses its **right**, because those are read
+/// from the start and the first token is the one that says what it is.
+///
+/// The test for "path" is a separator **and no glob metacharacter**. Measured at
+/// 60 columns: `**/*.{md,json,toml,yaml,yml} 40` has a slash in it and cutting
+/// its left gave `…json,toml,yaml,yml} 40`, which has lost the fact that it is a
+/// glob at all. Cutting its right gives `**/*.{md,json,tom…`, which has not.
+fn shorten_subject(s: &str, max: usize) -> String {
+    if visible_width(s) <= max {
+        return s.to_string();
+    }
+    let globbish = s.contains(['*', '?', '{', '[']);
+    if s.contains('/') && !globbish {
+        ellipsise_left(s, max)
+    } else {
+        trim_to(s, max)
+    }
 }
 
 /// A path with `$HOME` written as `~`. Twelve columns of an eighty-column header
@@ -3410,6 +3530,88 @@ fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet
     out
 }
 
+/// The columns everything the model *does* is set in, under everything anybody
+/// *says*.
+///
+/// # A turn had no shape
+///
+/// The operator's words: *"user message, then a flat wall of cards. Nothing says
+/// this is one assistant turn, nothing separates thinking from acting from
+/// answering, and assistant prose has no home of its own."* Every row started in
+/// the same column, so a question, a file listing and the answer were three
+/// things of equal weight in a stack.
+///
+/// What separates them here is a **step**, not a new glyph. The operator's
+/// question and the model's answer sit at the body's own column — they are the
+/// conversation. Thinking and acting are indented one step under them: they are
+/// how the answer was arrived at, and they are subordinate to it. The turn's
+/// footer rule closes the block at the outer column again.
+///
+/// That gives a turn four readable levels out of the vocabulary already on the
+/// screen — `▌` for the question, a step in for the working, the answer flush
+/// left, `──` to close — and costs no colour, so it survives [`Palette::None`]
+/// and a copy-paste, which is the same argument the reasoning rail makes.
+///
+/// **Two columns, matching the reasoning rail's width** (`card::REASONING_RAIL_WIDTH`)
+/// and the frame's own gutter, so the page reads as one repeated step rather than
+/// as three unrelated indents. Given up below sixty columns, where two columns
+/// out of every line is a bigger fraction than the hierarchy is worth — the same
+/// trade `App::gutter` makes at forty.
+fn activity_indent(w: usize) -> usize {
+    if w >= 60 { card::REASONING_RAIL_WIDTH } else { 0 }
+}
+
+/// Drop a leading line-number gutter — `     1| ` — from one line of tool output.
+///
+/// Only ever applied to a **one-line preview inlaid on a header**, never to a
+/// body: a body's gutter is how a reader refers to a line, and taking it away
+/// there would lose a fact. On a header it is `1|` before the only line there is,
+/// which is three columns saying "this is line one of one".
+///
+/// A prefix match rather than a parse of any tool's format. It matches what
+/// `read` emits and nothing that is not shaped exactly like it; a tool whose
+/// output happens to begin `12| ` gets three columns back and loses nothing.
+fn strip_gutter(l: &str) -> String {
+    let t = l.trim_start();
+    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    match t[digits..].strip_prefix("| ") {
+        Some(rest) if digits > 0 => rest.trim_end().to_string(),
+        _ => l.trim().to_string(),
+    }
+}
+
+/// Set `lines` one step in. Empty rows stay empty: trailing spaces on a blank
+/// line are invisible until something copies them.
+fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
+    if n == 0 {
+        return lines;
+    }
+    let pad = " ".repeat(n);
+    lines
+        .into_iter()
+        .map(|l| if l.is_empty() { l } else { format!("{pad}{l}") })
+        .collect()
+}
+
+/// What kind of row this is, for the one question the layout asks about its
+/// neighbours: does a blank line belong between them.
+///
+/// Activity rows **pack**. A run of tool cards is one block and reads as one; a
+/// blank line between each of them was costing a third of the vertical budget to
+/// separate things that are already separated by a glyph in the first column. Air
+/// goes where the *kind* changes — around the question, around the answer, around
+/// a warning — because that is where the reader's attention has to move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowClass {
+    /// Somebody said something: the operator's question, the model's answer.
+    Speech,
+    /// The model working: reasoning, and tool calls.
+    Activity,
+    /// Anything else — a system row, a segment mark, an announcement with no
+    /// body yet.
+    Other,
+}
+
 /// Everything one transcript row needs to know about where it sits.
 ///
 /// A struct rather than seven positional parameters because two of the seven are
@@ -3432,7 +3634,7 @@ struct ItemCtx<'a> {
     elapsed_ms: Option<u64>,
 }
 
-fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
+fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
     let ItemCtx {
         cfg,
         think,
@@ -3443,20 +3645,24 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
         drawn_live,
         elapsed_ms,
     } = *ctx;
+    let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
         // The event arrived and the body has not — which, since the body now
         // travels on the log too, is a real in-flight state and no longer a
         // permanent one. It says so.
-        return vec![dim(
-            cfg,
-            &format!("[{} — waiting for the body of {}]", it.kind, it.item_id),
-        )];
+        return (
+            RowClass::Other,
+            vec![dim(
+                cfg,
+                &format!("[{} — waiting for the body of {}]", it.kind, it.item_id),
+            )],
+        );
     };
     match item {
         TranscriptItem::System { text, origin } => {
             let mut out = vec![dim(cfg, &format!("system ({origin:?})"))];
             out.extend(wrap(text, cfg.width).into_iter().map(|l| dim(cfg, &l)));
-            out
+            (RowClass::Other, out)
         }
         TranscriptItem::User { parts } => {
             let text = parts
@@ -3468,28 +3674,36 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            user_block(&text, it.ts, cfg)
+            (RowClass::Speech, user_block(&text, it.ts, cfg))
         }
         TranscriptItem::Reasoning { text, .. } => {
             // A settled row: `Thought`, with no duration. The head can compute one
             // for a *live* turn from the delta timestamps, and a transcript row
             // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
-            let mut out = vec![thinking_header(cfg, text, think.is_open(), false, None)];
+            let mut out = step_in(
+                vec![thinking_header(cfg, text, think.is_open(), false, None)],
+                ind,
+            );
             if think.is_open() {
-                let mut rcfg = cfg.inside(Role::Reasoning);
-                rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
+                let rcfg = reasoning_cfg(cfg);
                 let mut md = IncrementalMarkdown::new();
                 md.push(text);
                 let mut cache = BlockCache::decorated(reasoning_decor(cfg));
                 out.extend(cache.lines(&md, &rcfg, cfg.budget.reasoning_lines));
             }
-            out
+            (RowClass::Activity, out)
         }
         TranscriptItem::Assistant { text, tool_calls } => {
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
-            let mut out = cache.lines(&md, cfg, cfg.budget.body_lines);
+            // The answer sits at the body's own column, with the question. It is
+            // the one thing on the screen that is not subordinate to something
+            // else, and that is what says so.
+            let prose = cache.lines(&md, cfg, cfg.budget.body_lines);
+            let spoke = !prose.iter().all(|l| l.trim().is_empty());
+            let mut out = prose;
+            let mut acted = false;
             let p = cfg.palette();
             for c in tool_calls {
                 // ONE ROW PER CALL. A call whose result is on the screen is drawn
@@ -3540,7 +3754,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
                 // and quietly has no output is the shape a person reads straight
                 // past. It is the only thing this row now means.
                 line.push_str(" · no result");
-                out.push(trim_to(&p.paint(Role::Attention, &line), cfg.width));
+                acted = true;
+                out.push(trim_to(
+                    &format!("{}{}", " ".repeat(ind), p.paint(Role::Attention, &line)),
+                    cfg.width,
+                ));
                 // The settled row's half of `ctrl-x`. A live turn shows the raw
                 // markup from the `ToolCall` deltas; once the row is committed the
                 // markup is gone and the arguments the parser read out of it are
@@ -3554,7 +3772,17 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
                     ));
                 }
             }
-            out
+            // A row that says something is speech; a row that only names calls is
+            // working. A row that does both is speech, because the sentence is
+            // what the reader's eye is going to land on.
+            let class = if spoke {
+                RowClass::Speech
+            } else if acted {
+                RowClass::Activity
+            } else {
+                RowClass::Other
+            };
+            (class, out)
         }
         TranscriptItem::ToolResult {
             name,
@@ -3583,17 +3811,110 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
                 Some(ms) => format!(" · {}", letibot_ui::progress::duration(ms)),
                 None => String::new(),
             };
-            let head = colour(
-                cfg,
-                if bad { sgr::RED } else { sgr::GREY },
+            // # Everything used to be the same weight
+            //
+            // A one-line `ls` and a two-hundred-line search rendered identically:
+            // one grey header, one dim body. The operator's words — *"size,
+            // indentation and rule-weight should tell you what matters before you
+            // read a word"*.
+            //
+            // The header is now built out of roles rather than painted one colour,
+            // and the roles are chosen so the **scan** works with no reading at
+            // all:
+            //
+            // - The subject — the path, the pattern — is [`Role::Plain`], i.e. no
+            //   sequence at all, so it is the brightest thing on the row. It is
+            //   what a person is looking for.
+            // - Everything structural around it is [`Role::Faint`]: the glyph, the
+            //   verb, the separators, the chord. Present, skippable.
+            // - `ok` is faint too. It is the boring case and it is most of them;
+            //   anything else keeps its own loud role, which is §8.2's rule
+            //   (abstention must not read like success) and is now the *only*
+            //   coloured thing on an ordinary row.
+            // - The line count is [`Role::Strong`] once the output is big enough
+            //   to be worth a fold — that is the size signal, and it is an
+            //   attribute rather than a second colour, so it survives a
+            //   terminal-native theme.
+            //
+            // Under [`Palette::None`] the words are unchanged and the count is
+            // still a number, which is the whole reason the weighting is carried
+            // by *which* field rather than by a decoration.
+            const BIG: usize = 40;
+            let p = cfg.palette();
+            let w = cfg.width.saturating_sub(ind).max(20);
+            let outcome_role = if bad { Role::Failure } else { Role::Faint };
+            let size_role = if lines.len() >= BIG {
+                Role::Strong
+            } else {
+                Role::Faint
+            };
+            // # It degrades by shortening the subject, never by losing the tail
+            //
+            // The same rule `header_line` had to learn, and for the same reason:
+            // this row was built left to right and trimmed at the right, so a long
+            // target ate the outcome. Measured on the operator's session — an
+            // `ask_code` call that did not run rendered
+            // `▸ ask_code "Give an overview of the crate architecture: what each…`
+            // with the word `not run` cut off the end, which is a failed call
+            // wearing the shape of a successful one.
+            //
+            // So the tail is measured first and the subject is given what is left.
+            // A path is shortened from its LEFT at a separator — the end of a path
+            // is what identifies it, and `crates/tui/src/…` names nothing.
+            let word = outcome_word(outcome);
+            let tail_cols = 3 + visible_width(word)
+                + visible_width(&took)
+                + 3 + 6 + lines.len().to_string().len();
+            let lead = format!("{mark} {verb} ");
+            let subject = shorten_subject(
+                &subject,
+                w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
+            );
+            let mut head = p.paint(if bad { Role::Failure } else { Role::Faint }, mark);
+            head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
+            head.push_str(&p.paint(Role::Plain, &subject));
+            head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
+            head.push_str(&p.paint(Role::Faint, &took));
+
+            // A result of one line goes ON the header. `▸ Read .gitignore · ok ·
+            // 1.1s · /target` is one row where `▸ Read .gitignore · ok · 1 line ·
+            // ctrl-t` over `  /target` was two, and the second of them carried the
+            // count and the chord for a fold that has nothing to fold. At 34 rows
+            // that halving is the difference between four calls fitting and eight.
+            let inline = (!bad && lines.len() == 1)
+                .then(|| strip_gutter(lines[0]))
+                .filter(|l| !l.is_empty())
+                .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
+            if let Some(l) = inline {
+                head.push_str(&p.paint(Role::Faint, " · "));
+                head.push_str(&p.paint(Role::Plain, &l));
+                return (RowClass::Activity, step_in(vec![trim_to(&head, w)], ind));
+            }
+
+            head.push_str(&p.paint(
+                size_role,
                 &format!(
-                    "{mark} {verb} {subject} · {}{took} · {} line{} · ctrl-t",
-                    outcome_str(outcome),
+                    " · {} line{}",
                     lines.len(),
                     if lines.len() == 1 { "" } else { "s" }
                 ),
-            );
-            let mut out = vec![head];
+            ));
+            // No `· ctrl-t` here. The chord belongs on the elision row below, which
+            // exists exactly when something is hidden — an affordance on a card
+            // with nothing folded is eight columns of every row spent advertising
+            // a key that would do nothing, and the hint bar already teaches it.
+            let mut out = vec![trim_to(&head, w)];
+            // The reason, on its own wrapping line rather than in the header's
+            // tail. Never folded, never truncated, and in the outcome's own role:
+            // a call that abstained or was refused said *why*, and that sentence
+            // is the whole content of the row.
+            if let Some(why) = outcome_why(outcome) {
+                out.extend(
+                    wrap(&why, w.saturating_sub(2))
+                        .into_iter()
+                        .map(|l| p.paint(outcome_role, &format!("  {l}"))),
+                );
+            }
             // Folded shows the first line, which is where a tool puts what it did.
             // A failure is never folded: an error nobody can read is an error
             // nobody acts on.
@@ -3608,19 +3929,26 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
                         .iter()
                         .map(|l| dim(cfg, &format!("  {l}"))),
                 );
-                out.push(colour(
-                    cfg,
-                    sgr::GREY,
-                    &format!("  … {} more lines …", lines.len() - (limit - 1)),
+                // grok-build's `execute.rs:549` form: `… +{n} lines`, and it is a
+                // separator row rather than a sentence — it is not content, it is
+                // the seam where content was taken out. The chord goes here, where
+                // there is something for it to do.
+                out.push(p.paint(
+                    Role::Faint,
+                    &format!("  … +{} lines · ctrl-t", lines.len() - (limit - 1)),
                 ));
             } else {
                 out.extend(lines.iter().map(|l| dim(cfg, &format!("  {l}"))));
             }
-            out
+            (
+                RowClass::Activity,
+                step_in(out.into_iter().map(|l| trim_to(&l, w)).collect(), ind),
+            )
         }
-        TranscriptItem::SegmentMark { label, .. } => {
-            vec![dim(cfg, &format!("─── {label} ───"))]
-        }
+        TranscriptItem::SegmentMark { label, .. } => (
+            RowClass::Other,
+            vec![dim(cfg, &format!("─── {label} ───"))],
+        ),
     }
 }
 
@@ -4720,9 +5048,12 @@ mod tests {
 
         let mut a = app();
         assistant(&mut a, 1, "r1.a", vec![call("call_0", "read", r#"{"path":"README.md"}"#)]);
-        result(&mut a, 3, "r1.t", "call_0", "read", "FIRST-ROUND-PAYLOAD\n");
+        // Two lines each, so the payload is a body under a header rather than
+        // inlined onto it — the pairing is what is under test, and it is only
+        // visible when the two are separate rows.
+        result(&mut a, 3, "r1.t", "call_0", "read", "FIRST-ROUND-PAYLOAD\nmore\n");
         assistant(&mut a, 5, "r2.a", vec![call("call_0", "read", r#"{"path":"TODO.md"}"#)]);
-        result(&mut a, 7, "r2.t", "call_0", "read", "SECOND-ROUND-PAYLOAD\n");
+        result(&mut a, 7, "r2.t", "call_0", "read", "SECOND-ROUND-PAYLOAD\nmore\n");
 
         // A tall enough screen that both rounds are on it at once, which is the
         // only way the pairing is visible at all.
@@ -4809,6 +5140,230 @@ mod tests {
             !after.contains("no result"),
             "a call that returned does not still read as one that did not:\n{after}"
         );
+    }
+
+    /// One turn, with all four of its levels on the screen at once.
+    ///
+    /// The operator's report was that a turn has no shape: *"user message, then a
+    /// flat wall of cards"*. What answers it is a step, not a glyph — the
+    /// question and the answer at the body's own column, the working one step in
+    /// under them.
+    #[test]
+    fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: "what crates are in this workspace".into(),
+                    }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "one\ntwo\nthree\n".into(),
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(5, testing::appended("s", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::TranscriptContent {
+                item_id: "s".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "There are twelve.".into(),
+                    tool_calls: vec![],
+                }),
+            },
+        )));
+        let screen = a.screen(120, 40);
+        let at = |needle: &str| -> usize {
+            let l = screen
+                .iter()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing:\n{}", screen.join("\n")));
+            l.len() - l.trim_start().len()
+        };
+        let question = at("what crates are in this workspace");
+        let working = at("Read (call_0)");
+        let answer = at("There are twelve.");
+        assert_eq!(question, answer, "the question and the answer share a column");
+        assert_eq!(
+            working,
+            question + card::REASONING_RAIL_WIDTH,
+            "and the working is one step in under them:\n{}",
+            screen.join("\n")
+        );
+    }
+
+    /// [`Palette::None`] is not a monochrome theme, it is the `--replay`, pipe and
+    /// CI case: **no sequences at all**. The accent glyphs are what survive it, and
+    /// they are why the hierarchy above is carried by a step and a word rather than
+    /// by a colour.
+    #[test]
+    fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text { text: "hello".into() }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("r", "reasoning"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "r".into(),
+                item: Box::new(TranscriptItem::Reasoning {
+                    text: "working it out".into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(5, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "grep".into(),
+                    outcome: letibot_transcript::ToolOutcome::Failed {
+                        reason: "no such path".into(),
+                    },
+                    payload: "a\nb\n".into(),
+                }),
+            },
+        )));
+        a.reasoning = Fold::Open;
+        let screen = a.screen(120, 40).join("\n");
+        assert!(!screen.contains('\x1b'), "{screen:?}");
+        for glyph in ["▌", "▸", "┃", "╭", "│", "╰"] {
+            assert!(screen.contains(glyph), "{glyph} is missing:\n{screen}");
+        }
+        assert!(screen.contains("failed"), "and the word survives too:\n{screen}");
+        assert!(screen.contains("no such path"), "{screen}");
+    }
+
+    /// Size tells you what matters before you read a word — by **attribute**, so
+    /// it survives a terminal-native theme, and never by a cube colour.
+    #[test]
+    fn a_big_result_weighs_more_than_a_small_one_and_costs_no_cube_colour() {
+        let mut a = App::new(RenderConfig {
+            width: 120,
+            color: true,
+            ..RenderConfig::default()
+        });
+        let mut add = |seq: u64, id: &str, n: usize| {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: "call_0".into(),
+                        name: "grep".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: "x\n".repeat(n),
+                    }),
+                },
+            )));
+        };
+        add(1, "small", 3);
+        add(3, "big", 236);
+        let screen = a.screen(120, 40);
+        let row = |needle: &str| {
+            screen
+                .iter()
+                .find(|l| l.contains(needle))
+                .cloned()
+                .unwrap_or_else(|| panic!("{needle}: {}", screen.join("\n")))
+        };
+        assert!(
+            row("236 lines").contains("\x1b[1m"),
+            "a big result is bold: {:?}",
+            row("236 lines")
+        );
+        assert!(
+            !row("3 lines").contains("\x1b[1m"),
+            "a small one is not: {:?}",
+            row("3 lines")
+        );
+        let joined = screen.join("\n");
+        for cube in ["38;5;", "48;5;", "38;2;"] {
+            assert!(!joined.contains(cube), "{cube} is not a theme slot: {joined:?}");
+        }
+    }
+
+    /// A subject that does not fit takes the shortening, and the outcome does not.
+    #[test]
+    fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "ask_code".into(),
+                    outcome: letibot_transcript::ToolOutcome::NotRun {
+                        why: "no retrieval backend is attached to this session".into(),
+                    },
+                    payload: "a\nb\nc\n".into(),
+                }),
+            },
+        )));
+        // The subject comes from the round's assistant row; here there is none, so
+        // it is the correlation id — long enough to matter once the row narrows.
+        let screen = a.screen(60, 24).join("\n");
+        assert!(screen.contains("not run"), "{screen}");
+        assert!(
+            screen.contains("no retrieval backend"),
+            "the reason wraps in the body rather than being cut off a header:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_path_is_shortened_at_a_separator_and_a_pattern_is_not() {
+        assert_eq!(
+            ellipsise_left("/home/dead/Projects/letibot/crates/tui", 22),
+            "…/letibot/crates/tui",
+            "whole segments, and the longest suffix that fits"
+        );
+        assert_eq!(
+            shorten_subject("crates/tui/src/app.rs", 14),
+            "…/src/app.rs",
+            "a path loses its left"
+        );
+        assert_eq!(
+            shorten_subject("^pub (fn|struct|enum)", 12),
+            "^pub (fn|st…",
+            "a pattern loses its right — it is read from the start"
+        );
+        assert_eq!(
+            shorten_subject("**/*.{md,json,toml,yaml}", 12),
+            "**/*.{md,js…",
+            "and so does a glob, slash or no slash"
+        );
+        // A single segment with no separator to cut on falls back to characters
+        // rather than returning something wider than it was asked for.
+        assert!(letibot_ui::width::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
     }
 
     /// The other half of the same table: a result whose round is not on the screen

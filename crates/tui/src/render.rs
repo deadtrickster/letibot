@@ -268,7 +268,11 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             ));
             out
         }
-        Block::List { ordered, items } => {
+        Block::List {
+            ordered,
+            start,
+            items,
+        } => {
             let p = cfg.painter();
             let mut out = Vec::new();
             for (i, it) in items.iter().enumerate() {
@@ -279,7 +283,12 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 // refers back to — so it is not de-emphasised. A bullet is pure
                 // structure and is.
                 let (marker, marker_role) = if *ordered {
-                    (format!("{}. ", i + 1), Role::Plain)
+                    // `start + i`, not `i + 1`. A loose list — one whose items are
+                    // separated by blank lines, which is what a model writes as
+                    // soon as an item runs past a sentence — arrives as one block
+                    // per item, and numbering from the index inside the block made
+                    // every item of a six-point answer read `1.`.
+                    (format!("{}. ", start + i), Role::Plain)
                 } else {
                     ("· ".to_string(), Role::Faint)
                 };
