@@ -87,7 +87,15 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::CommandIssued { .. }
         // Durable: the session still has that name. A head replaying it re-reads a
         // fact that is still true, which is exactly the test above.
-        | SessionEvent::SessionRenamed { .. } => false,
+        | SessionEvent::SessionRenamed { .. }
+        // **Durable, and deliberately so.** A denial is a decision taken on the
+        // operator's behalf which they alone can lift, and the grant path it
+        // carries is still live for a late head. Scrubbing it would put back
+        // exactly the hole `docs/boundary-and-adjudication.md` §4b was written
+        // against — an operator who joins after the refusal seeing only a task
+        // that stopped. It is not a `DecisionRequested`: nothing is waiting on an
+        // answer, so there is no settled-question hazard to scrub for.
+        | SessionEvent::DenialRaised { .. } => false,
     }
 }
 

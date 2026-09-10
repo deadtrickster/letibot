@@ -571,6 +571,16 @@ impl SessionView {
             // places with two update paths, and the picker and the header would then
             // be able to disagree about what the session is called.
             SessionEvent::SessionRenamed { .. } => {}
+            // **Not folded into the snapshot, and the reason is bounded rather than
+            // absent.** A denial is durable on the log ([`crate::scrub`] keeps it),
+            // so a head that attaches later replays it in the place it happened,
+            // which is where §4b wants it — beside the tool call it refused, not in
+            // a summary pane. What that costs is the retention window: a denial
+            // older than [`LogBounds`] falls out of the log and this snapshot never
+            // held it. That is a real gap and it is written here rather than
+            // covered by a second copy in a second update path, which is how the
+            // picker and the header learned to disagree about a session's name.
+            SessionEvent::DenialRaised { .. } => {}
         }
     }
 

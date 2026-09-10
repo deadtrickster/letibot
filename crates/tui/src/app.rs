@@ -1199,6 +1199,52 @@ impl App {
             }
             // §6's plan is a document; the transcript is not where it goes.
             SessionEvent::Explain { .. } => Disposition::Filtered,
+            // **Always rendered, at every verbosity.**
+            //
+            // `docs/boundary-and-adjudication.md` §4b: a denial the operator cannot
+            // see manufactures the workaround, so there is no verbosity at which
+            // hiding this is correct — it is a decision taken on their behalf and
+            // only they can lift it. It goes into the transcript, in the place it
+            // happened, beside the tool call it refused.
+            //
+            // This reuses `Note::Warned` rather than growing a note kind of its own:
+            // making a denial *look* different from a warning is presentation, this
+            // head is somebody else's this session, and a placeholder that rendered
+            // nothing would be the invisible denial again with a different cause.
+            // The `code` carries the distinction a reader needs, and
+            // `repeat_count`/`breaker_open` are on the event for a head that later
+            // wants to collapse repeats.
+            SessionEvent::DenialRaised {
+                request_id,
+                tool,
+                summary,
+                by,
+                basis,
+                outcome,
+                repeat_count,
+                breaker_open,
+                grant,
+                ..
+            } => {
+                let repeat = if breaker_open {
+                    format!(
+                        " · breaker OPEN after {repeat_count} consecutive refusals; only you \
+                         can lift it"
+                    )
+                } else if repeat_count > 1 {
+                    format!(" · attempt {repeat_count} at the same task direction")
+                } else {
+                    String::new()
+                };
+                self.note(Note::Warned(Warned {
+                    code: format!("denied:{request_id}"),
+                    detail: format!(
+                        "REFUSED {tool} — {summary}. {outcome} by {by}: {basis}{repeat}. {grant}"
+                    ),
+                    ts,
+                }));
+                Disposition::Rendered
+            }
         }
     }
 

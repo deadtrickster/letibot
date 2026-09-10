@@ -533,6 +533,68 @@ pub enum SessionEvent {
         /// Not `Option`: "renamed to nothing" and "no rename" must not be one shape.
         title: String,
     },
+
+    /// **A refusal, delivered the moment it is decided.** `PROTOCOL_VERSION` 6.
+    ///
+    /// `docs/boundary-and-adjudication.md` §4b is the requirement, and it names the
+    /// chain rather than the complaint: the classifier denies, the operator is not
+    /// told, the model sees an unexplained failure and infers *the approach was
+    /// wrong* rather than *the action was forbidden*, so it tries a variant — the
+    /// routing-around every rule in this repo forbids, **induced by the design** —
+    /// and the task dies with the operator seeing only a dead task.
+    ///
+    /// Three parties and three visibilities, and conflating any two is a defect. The
+    /// model already had its half (`ToolOutcome::NotRun`, and the prose
+    /// `letibot_tools::refusal_text` builds); the durable log already had its half
+    /// (§11.5's rows). **The operator had nothing**, and this variant is that.
+    ///
+    /// # Why not a `Warning`
+    ///
+    /// A `Warning` is for §18's post-flight assertions. A denial is not a defect —
+    /// it is a decision taken on the operator's behalf, and they alone can lift it.
+    /// Rendering the two the same way is how a decision becomes noise. Same
+    /// argument as [`SessionEvent::CommandIssued`], one variant along.
+    ///
+    /// # Why the fields are flat scalars
+    ///
+    /// `letibot-tools` is an **optional** dependency of this crate — the log, the
+    /// protocol and the scrub must build with no path into a filesystem a tool can
+    /// read — so `letibot_tools::DenialNotice` cannot appear here. The fields are
+    /// its fields, and the two that are facts rather than prose (`repeat_count`,
+    /// `breaker_open`) travel as facts, so a head can collapse repeats without
+    /// parsing a sentence.
+    DenialRaised {
+        /// The adjudication request id. What an operator grants **by name**.
+        request_id: String,
+        turn_id: String,
+        call_id: String,
+        tool: String,
+        /// The one argument a person reads: a path, a pattern, a command line.
+        summary: String,
+        /// Layer A's deterministic one-line reading of the call.
+        baseline: String,
+        /// Who decided: `boundary:host`, `model:…`, `breaker`, or `none`.
+        by: String,
+        basis: String,
+        /// `inexpressible`, `always_ask`, `adjudicable`, `auto`.
+        tier: String,
+        /// **`denied` (somebody decided) or `not_run` (nobody did).** Never
+        /// collapsed: `not_run` is not a denial, and it is not permission either.
+        outcome: String,
+        /// How many consecutive refusals this task direction has had, this one
+        /// counted. A head seeing more than one is looking at the operator's own
+        /// complaint — *"a second attempt currently looks like a fresh request"* —
+        /// and has what it needs to collapse them.
+        repeat_count: u32,
+        /// The consecutive-denial circuit breaker is open for this direction: no
+        /// adjudicator will be consulted again in this session, and only the
+        /// operator can lift it.
+        breaker_open: bool,
+        /// **What the operator can do about it right now.** A refusal whose grant
+        /// path arrives after the task has died is a refusal that can only be
+        /// routed around, with an extra step.
+        grant: String,
+    },
 }
 
 impl SessionEvent {
@@ -559,6 +621,7 @@ impl SessionEvent {
             SessionEvent::Warning { .. } => "Warning",
             SessionEvent::Explain { .. } => "Explain",
             SessionEvent::CommandIssued { .. } => "CommandIssued",
+            SessionEvent::DenialRaised { .. } => "DenialRaised",
         }
     }
 }
