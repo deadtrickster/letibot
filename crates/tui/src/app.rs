@@ -288,6 +288,19 @@ struct TurnPane {
     /// survives. Without this the answer is on the screen twice, once in the wrong
     /// order, which is what the first run of `--demo` showed.
     appended: Vec<String>,
+    /// How many of `calls` the transcript has already taken over.
+    ///
+    /// A round's tool-result rows are appended **in call order**, after every call
+    /// in the round has been invoked (`harnessd::harness`, the `for call in &calls`
+    /// loop, then one `append_items`). So the *n*th `tool_result` row of this turn
+    /// is about `calls[n-1]`, exactly, with no id matching involved — which is the
+    /// point, because the ids repeat.
+    ///
+    /// Everything below this index is on the screen already as a settled card with
+    /// its payload under it, and drawing it a second time in the live pane is the
+    /// wall the operator was looking at: eight `● Read …` rows above eight
+    /// `▸ Read … · ok · N lines` rows, no added fact between them.
+    settled_calls: usize,
     /// The `ts` of `TurnStarted`, and of the last event seen for this turn. The
     /// difference is how long the turn has been going, taken from the log's own
     /// clock rather than from a wall clock in the head — a head that reads a
@@ -437,6 +450,18 @@ pub struct App {
     /// `Assistant` row, in transcript order, and a `ToolResult` that finds no
     /// entry renders its correlation id rather than a neighbour's path.
     call_targets: std::collections::HashMap<String, String>,
+    /// How long the call behind a settled `tool_result` row took, by **item id**.
+    ///
+    /// The one fact the live card had that the transcript row does not: a
+    /// `TranscriptItem::ToolResult` carries no timestamps at all. Without this the
+    /// only way to keep "that grep took 4.1 s" on the screen was to keep the live
+    /// card beside the settled one, which is the duplication being removed.
+    ///
+    /// Keyed by item id, which is unique per row — unlike the call id, which is
+    /// not. Absent for a row this head did not watch run (a snapshot, a `--replay`
+    /// of a log recorded elsewhere), and the card then shows no duration rather
+    /// than a fabricated one, which is the same rule as `card::Phase::Replayed`.
+    call_ms: std::collections::HashMap<String, u64>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
     /// Where the terminal's caret belongs, from the last frame.
@@ -520,6 +545,7 @@ impl App {
             editor: Editor::new(),
             model: String::new(),
             call_targets: std::collections::HashMap::new(),
+            call_ms: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             raw_calls: false,
@@ -962,7 +988,7 @@ impl App {
             }
             SessionEvent::ToolStarted { call_id, name, .. } => {
                 if let Some(t) = self.turn.as_mut() {
-                    match t.calls.iter_mut().find(|c| c.call_id == call_id) {
+                    match open_call(&mut t.calls, &call_id) {
                         Some(c) => {
                             c.state = CallState::Running;
                             // The clock starts when the tool starts, not when the
@@ -994,7 +1020,7 @@ impl App {
                 match self
                     .turn
                     .as_mut()
-                    .and_then(|t| t.calls.iter_mut().find(|c| c.call_id == call_id))
+                    .and_then(|t| open_call(&mut t.calls, &call_id))
                 {
                     Some(c) => {
                         c.note = Some(note);
@@ -1013,7 +1039,7 @@ impl App {
                 ..
             } => {
                 if let Some(t) = self.turn.as_mut()
-                    && let Some(c) = t.calls.iter_mut().find(|c| c.call_id == call_id)
+                    && let Some(c) = open_call(&mut t.calls, &call_id)
                 {
                     c.ended_ms = ts;
                     c.note = None;
@@ -1134,8 +1160,26 @@ impl App {
                 kind,
                 ledger_head,
             } => {
+                // A tool-result row hands one live card over to the transcript.
+                // Positional, not by id: the engine invokes a round's calls in
+                // order and appends their rows in the same order, and the ids
+                // repeat every round so there is nothing to match on. The duration
+                // is carried across here because it is the only fact the live card
+                // had that the row does not.
+                let mut carried: Option<u64> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
+                    if kind == "tool_result" {
+                        carried = t
+                            .calls
+                            .get(t.settled_calls)
+                            .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
+                            .map(|c| c.ended_ms - c.started_ms);
+                        t.settled_calls += 1;
+                    }
+                }
+                if let Some(ms) = carried {
+                    self.call_ms.insert(item_id.clone(), ms);
                 }
                 self.items.push(SnapshotItem {
                     item_id,
@@ -2014,6 +2058,16 @@ impl App {
         // *while* the rendered lines are being appended and the tool-target table
         // is being read — three disjoint fields, one borrow each, no clone of a row
         // per frame.
+        // The rows that belong to the turn the live pane is still drawing. An
+        // assistant row in this set does **not** draw its own unsettled calls: the
+        // pane below is drawing them, with a spinner and a running clock, and
+        // `→ Read foo.rs · no result` above a `◐ Reading foo.rs` is both a
+        // duplicate and, while the call is still running, false.
+        let in_flight: std::collections::HashSet<&str> = self
+            .turn
+            .as_ref()
+            .map(|t| t.appended.iter().map(String::as_str).collect())
+            .unwrap_or_default();
         {
             let App {
                 hist_lines,
@@ -2022,6 +2076,7 @@ impl App {
                 items,
                 notes,
                 call_targets,
+                call_ms,
                 ..
             } = self;
             loop {
@@ -2046,6 +2101,8 @@ impl App {
                     // calls are the only ones the rows after it can be about; one
                     // with no calls at all opens a round with no calls, and a
                     // stray result then has to say so rather than borrow.
+                    let mut answered: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
                         items[*hist_upto].item.as_ref()
                     {
@@ -2056,16 +2113,30 @@ impl App {
                                 letibot_sessionlog::display_target(&c.arguments),
                             );
                         }
+                        answered = round_results(items, *hist_upto);
                     }
-                    hist_lines.extend(item_lines(
+                    let rows = item_lines(
                         &items[*hist_upto],
-                        &cfg,
-                        think,
-                        tool,
-                        raw,
-                        call_targets,
-                    ));
-                    hist_lines.push(String::new());
+                        &ItemCtx {
+                            cfg: &cfg,
+                            think,
+                            tools: tool,
+                            raw,
+                            targets: call_targets,
+                            answered: &answered,
+                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                        },
+                    );
+                    // A row that rendered nothing gets no separator either. An
+                    // assistant row whose text is `"\n\n\n"` and whose every call
+                    // is drawn by its own result row is a real and common shape —
+                    // it is what a tool-calling round looks like — and paying two
+                    // blank lines for it puts a hole in the transcript.
+                    if !rows.iter().all(|l| l.trim().is_empty()) {
+                        hist_lines.extend(rows);
+                        hist_lines.push(String::new());
+                    }
                     *hist_upto += 1;
                 } else {
                     break;
@@ -2110,6 +2181,7 @@ impl App {
                 text_cache,
                 reasoning_cache,
                 calls,
+                settled_calls,
                 raw_call,
                 writing_call,
                 state,
@@ -2146,9 +2218,15 @@ impl App {
                 segs.push(Seg::Owned(vec![String::new()]));
             }
             if !superseded {
-                if !calls.is_empty() {
+                // Only the calls the transcript has NOT taken over yet. The rest
+                // are already on the screen above as settled cards with their
+                // output under them, and drawing them here as well was the second
+                // half of the doubling: a turn eight calls deep showed eight live
+                // rows under eight settled ones, in the same order, saying less.
+                let live = calls.get(*settled_calls..).unwrap_or(&[]);
+                if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
-                    for c in calls.iter() {
+                    for c in live.iter() {
                         owned.extend(call_card(c, &cfg, now_ms, tool));
                     }
                     owned.push(String::new());
@@ -2619,6 +2697,28 @@ fn match_option(d: &OpenDecision, typed: &str) -> Option<String> {
                 .find(|o| o.option_id.to_ascii_lowercase().starts_with(&t) && !t.is_empty())
         })
         .map(|o| o.option_id.clone())
+}
+
+/// The row a `ToolStarted` / `ToolProgress` / `ToolFinished` is about: the
+/// **last** call with that id that has not finished yet.
+///
+/// Not the first, which is what this used to be. A call id is positional within a
+/// round (`call_0`, `call_1`, …), so a turn that makes fourteen rounds of calls
+/// has fourteen rows called `call_0` in one `TurnPane`, and `find` handed every
+/// one of those events to the first of them. Measured on the operator's own
+/// session, replayed: round one's card was re-finished eight times and wore the
+/// last round's duration, while rounds two onward sat at `○ Reading README.md ·
+/// proposed` for the rest of the turn — a call that had returned twenty seconds
+/// earlier, drawn as one that had not started.
+///
+/// Searching from the back for a row that is still open is exact rather than
+/// heuristic: within a turn the engine proposes and settles in order, so the only
+/// row a start or a finish can be about is the newest unfinished one.
+fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
+    calls
+        .iter_mut()
+        .rev()
+        .find(|c| c.call_id == call_id && !matches!(c.state, CallState::Finished { .. }))
 }
 
 fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
@@ -3158,14 +3258,66 @@ fn tilde(path: &str) -> String {
     }
 }
 
-fn item_lines(
-    it: &SnapshotItem,
-    cfg: &RenderConfig,
+/// The call ids answered by a result row **in this round**: the rows between the
+/// assistant row at `at` and the next assistant or user row.
+///
+/// Bounded by the round for the same reason everything else here is: `call_0` is
+/// reused every round, so "does a result for `call_0` exist anywhere in this
+/// transcript" is a question with the wrong answer in it.
+///
+/// A row whose body has not arrived yet counts as unanswered — the head cannot
+/// read a call id out of an announcement. The proposal line stays until the body
+/// lands, and `record_item` rebuilds the history when it does.
+fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for it in items.iter().skip(at + 1) {
+        match it.item.as_ref() {
+            Some(TranscriptItem::ToolResult { call_id, .. }) => {
+                out.insert(call_id.clone());
+            }
+            Some(TranscriptItem::Assistant { .. }) | Some(TranscriptItem::User { .. }) => break,
+            // An announcement with no body yet, or a reasoning row between the
+            // calls and their results. Neither ends the round.
+            _ if it.kind == "assistant" || it.kind == "user" => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Everything one transcript row needs to know about where it sits.
+///
+/// A struct rather than seven positional parameters because two of the seven are
+/// round-scoped and one is row-scoped, and a caller passing them in the wrong
+/// order is exactly the defect this file has just finished fixing.
+struct ItemCtx<'a> {
+    cfg: &'a RenderConfig,
     think: Fold,
     tools: Fold,
     raw: bool,
-    targets: &std::collections::HashMap<String, String>,
-) -> Vec<String> {
+    /// Display targets for **this row's round**, keyed by call id.
+    targets: &'a std::collections::HashMap<String, String>,
+    /// Call ids in this round that already have a settled result row below.
+    /// Their card is that row; the assistant row does not draw them again.
+    answered: &'a std::collections::HashSet<String>,
+    /// This row belongs to the turn the live pane is still drawing, so the pane
+    /// below owns whatever has not settled and this row draws none of it.
+    drawn_live: bool,
+    /// How long this row's call took, when this head watched it run.
+    elapsed_ms: Option<u64>,
+}
+
+fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> Vec<String> {
+    let ItemCtx {
+        cfg,
+        think,
+        tools,
+        raw,
+        targets,
+        answered,
+        drawn_live,
+        elapsed_ms,
+    } = *ctx;
     let Some(item) = &it.item else {
         // The event arrived and the body has not — which, since the body now
         // travels on the log too, is a real in-flight state and no longer a
@@ -3215,12 +3367,27 @@ fn item_lines(
             let mut out = cache.lines(&md, cfg, cfg.budget.body_lines);
             let p = cfg.palette();
             for c in tool_calls {
-                // `→ Read crates/tui/src/app.rs`, not `→ read(call_7)`. The verb is
-                // the same one the live card used, so a call reads identically
-                // before and after the turn settles; the target comes from the
-                // proposal this head saw, and is **absent rather than guessed** for
-                // a row whose proposal it never saw — a head that attached after
-                // the call, or a log recorded before §4.1 was fixed.
+                // ONE ROW PER CALL. A call whose result is on the screen is drawn
+                // by that result and not here.
+                //
+                // This row used to draw `→ Read foo.rs` for every call it made and
+                // the result row then drew `▸ Read foo.rs · ok · 21 lines` for the
+                // same call three lines below, which is two rows and one fact: the
+                // proposal says a call is coming, and once the result has settled
+                // nothing is coming. That doubling is most of why a turn read as a
+                // wall — four calls cost eight rows of a thirty-four-row screen
+                // before any output was shown.
+                //
+                // What survives is the case the proposal line is actually FOR: a
+                // call with no result. The turn was interrupted, the round is still
+                // running, or the body has not arrived. `→` now means exactly
+                // "asked for, nothing came back", which is a fact worth a row.
+                if answered.contains(&c.id) || drawn_live {
+                    if raw && !c.arguments.is_empty() {
+                        out.extend(raw_call_lines(cfg, &format!("{} {}", c.name, c.arguments)));
+                    }
+                    continue;
+                }
                 let verb = card::Verb::of(&c.name);
                 let mut line = format!("→ {}", verb.label(false));
                 // Derived from the arguments **on this row**, never looked up by
@@ -3244,7 +3411,11 @@ fn item_lines(
                     line.push(' ');
                     line.push_str(&target);
                 }
-                out.push(trim_to(&p.paint(Role::Faint, &line), cfg.width));
+                // Said out loud, because a row that looks like every other tool row
+                // and quietly has no output is the shape a person reads straight
+                // past. It is the only thing this row now means.
+                line.push_str(" · no result");
+                out.push(trim_to(&p.paint(Role::Attention, &line), cfg.width));
                 // The settled row's half of `ctrl-x`. A live turn shows the raw
                 // markup from the `ToolCall` deltas; once the row is committed the
                 // markup is gone and the arguments the parser read out of it are
@@ -3278,11 +3449,20 @@ fn item_lines(
                 Some(t) if !t.is_empty() => t.clone(),
                 _ => format!("({call_id})"),
             };
+            // How long it took, when this head watched it run. Carried from the
+            // live card at the moment the transcript took the call over — a
+            // `TranscriptItem::ToolResult` has no timestamps of its own — and
+            // simply absent for a row read out of a snapshot, which is the same
+            // rule `card::Phase::Replayed` follows and for the same reason.
+            let took = match elapsed_ms {
+                Some(ms) => format!(" · {}", letibot_ui::progress::duration(ms)),
+                None => String::new(),
+            };
             let head = colour(
                 cfg,
                 if bad { sgr::RED } else { sgr::GREY },
                 &format!(
-                    "{mark} {verb} {subject} · {} · {} line{} · ctrl-t",
+                    "{mark} {verb} {subject} · {}{took} · {} line{} · ctrl-t",
                     outcome_str(outcome),
                     lines.len(),
                     if lines.len() == 1 { "" } else { "s" }
@@ -4400,6 +4580,64 @@ mod tests {
             label("SECOND-ROUND-PAYLOAD").contains("TODO.md"),
             "round two's payload is under `{}`:\n{screen}",
             label("SECOND-ROUND-PAYLOAD")
+        );
+    }
+
+    /// A settled call is **one** row, not two.
+    ///
+    /// It used to be two: `→ Read TODO.md` from the assistant row, then
+    /// `▸ Read TODO.md · ok · 129 lines · ctrl-t` from the result row three lines
+    /// below, saying the same thing with an outcome attached. Four calls cost
+    /// eight rows of a thirty-four-row terminal before any output was on it.
+    #[test]
+    fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "r.a".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        let before = a.screen(120, 40).join("\n");
+        assert_eq!(
+            before.matches("TODO.md").count(),
+            1,
+            "a call with no result yet is announced exactly once:\n{before}"
+        );
+        assert!(before.contains("no result"), "and says it has none:\n{before}");
+
+        a.apply(ServerFrame::Event(env(3, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "r.t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "# rano TODO\n".into(),
+                }),
+            },
+        )));
+        let after = a.screen(120, 40).join("\n");
+        assert_eq!(
+            after.matches("TODO.md").count(),
+            1,
+            "and once the result lands the proposal does not stay beside it:\n{after}"
+        );
+        assert!(after.contains("▸ Read TODO.md · ok"), "{after}");
+        assert!(
+            !after.contains("no result"),
+            "a call that returned does not still read as one that did not:\n{after}"
         );
     }
 
