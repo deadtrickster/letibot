@@ -65,7 +65,7 @@ pub use board::Todo;
 pub use chat::{Chat, ChatError, Message, NoFabric, Posted, Say};
 pub use ledger::{
     Board, Effect, Finding, Goal, Intent, IntentLedger, IntentSink, LedgerError, Reconciliation,
-    Source, Status, Verification, commitments,
+    Source, Status, Verification, commitments, is_effect,
 };
 pub use plan::{PLAN_MODE_TOOLS, PlanGate, PlanMode, PlanState, seating};
 pub use queue::{NewRow, NoMount, Queue, QueueError, Row};

@@ -29,6 +29,19 @@
 //! the mode ignore the private sequence, so it costs eight bytes per frame that
 //! writes anything and nothing at all on an idle one.
 //!
+//! # Counting what was written, because a capture cannot
+//!
+//! `tmux capture-pane` shows the *rendered* pane, so it can say what the screen
+//! ended up looking like and never how much was written to get there — and
+//! "how much of the glass did that redraw" is the question a lost mouse
+//! selection asks, since a terminal's selection is over drawn cells. So the
+//! write path counts itself: [`WriteStats`], reported on restore when
+//! `LETIBOT_TUI_WRITE_STATS` names a file (or `-` for stderr).
+//!
+//! ```text
+//! LETIBOT_TUI_WRITE_STATS=/tmp/before letibot-tui --replay session.jsonl
+//! ```
+//!
 //! # Reading is not a single fixed-size read
 //!
 //! It was: one 64-byte buffer, decoded, and anything that did not fit was the
@@ -58,6 +71,15 @@ pub struct Terminal {
     /// is: "is it repainting when nothing changed" is unanswerable after the fact.
     frames: std::cell::Cell<u64>,
     silent: std::cell::Cell<u64>,
+    /// The rest of the encoder: bytes, row rewrites, repeated payloads, screen
+    /// erases. See [`WriteStats`].
+    stats: std::cell::Cell<WriteStats>,
+    /// The previous frame's payload, kept only while `stats_to` is set — a clone
+    /// per frame is not something an uninstrumented head should pay for.
+    prev_payload: std::cell::RefCell<String>,
+    /// `LETIBOT_TUI_WRITE_STATS`: a path to write the line to on restore, or `-`
+    /// for stderr. `None` switches the whole encoder off.
+    stats_to: Option<String>,
     /// Bytes read but not yet decodable: a partial UTF-8 sequence, an escape
     /// that arrived in halves, or a bracketed paste whose terminator has not
     /// come. Carried to the next read rather than dropped.
@@ -77,6 +99,57 @@ const READ_CHUNK: usize = 8192;
 /// never closes it cannot grow this without bound. Past it the carry is decoded
 /// as-is — visibly wrong beats invisibly unbounded.
 const MAX_PENDING: usize = 4 * 1024 * 1024;
+
+/// What one run wrote to the terminal.
+///
+/// `frames` and `silent` were already here and they answer *"is it drawing when
+/// nothing changed"*. They cannot answer the question a lost selection asks,
+/// which is **how much of the glass got rewritten** — a terminal's selection is
+/// over drawn cells, so the quantity that destroys one is `rows`, not `frames`.
+///
+/// `rows` counts row rewrites by counting the `ESC[K` that begins each one.
+/// [`paint_full`] is the only thing in this file that emits that sequence and it
+/// emits exactly one per row it repaints, so the count is the fact rather than a
+/// proxy for it.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteStats {
+    /// Calls to [`Terminal::draw_with_cursor`].
+    pub frames: u64,
+    /// Of those, the ones that wrote no bytes at all.
+    pub silent: u64,
+    /// Bytes written to stdout, the `?2026` wrappers included.
+    pub bytes: u64,
+    /// Row rewrites — the cells a selection would have been sitting on.
+    pub rows: u64,
+    /// Frames whose payload was byte-identical to the previous **written** one.
+    /// The 10 Hz full-repaint regression, in the form it was found in.
+    pub repeats: u64,
+    /// Whole-screen erases (`ESC[2J`): a resize, or Ctrl-L.
+    pub clears: u64,
+}
+
+impl WriteStats {
+    /// One line, so a replay can be diffed against another replay.
+    pub fn line(&self) -> String {
+        let per = if self.frames > self.silent {
+            self.bytes as f64 / (self.frames - self.silent) as f64
+        } else {
+            0.0
+        };
+        format!(
+            "frames={} silent={} written={} bytes={} bytes_per_written={:.1} \
+             rows={} repeats={} clears={}",
+            self.frames,
+            self.silent,
+            self.frames - self.silent,
+            self.bytes,
+            per,
+            self.rows,
+            self.repeats,
+            self.clears,
+        )
+    }
+}
 
 impl Terminal {
     /// Put the terminal in raw mode on the alternate screen.
@@ -128,6 +201,11 @@ impl Terminal {
             cursor: std::cell::Cell::new(None),
             frames: std::cell::Cell::new(0),
             silent: std::cell::Cell::new(0),
+            stats: std::cell::Cell::new(WriteStats::default()),
+            prev_payload: std::cell::RefCell::new(String::new()),
+            stats_to: std::env::var("LETIBOT_TUI_WRITE_STATS")
+                .ok()
+                .filter(|s| !s.is_empty()),
             pending: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((0, 0)),
             full: std::cell::Cell::new(true),
@@ -207,6 +285,8 @@ impl Terminal {
     /// is not listening", and the cursor is free: the terminal already has one.
     pub fn draw_with_cursor(&self, lines: &[String], cursor: Option<(usize, usize)>) {
         self.frames.set(self.frames.get() + 1);
+        let mut st = self.stats.get();
+        st.frames += 1;
         // A resize is the one thing that really does move every row: the terminal
         // reflowed the glass and this head's memory of it is now fiction. A frame
         // that merely changed *height* — which the composer does every time a
@@ -226,8 +306,25 @@ impl Terminal {
         );
         if s.is_empty() {
             self.silent.set(self.silent.get() + 1);
+            st.silent += 1;
+            self.stats.set(st);
             return;
         }
+        // The encoder, before the bytes go out. `?2026h` and `?2026l` are eight
+        // bytes each and they are bytes the terminal really is sent, so they are
+        // counted rather than discounted as chrome.
+        st.bytes += s.len() as u64 + 16;
+        st.rows += s.matches("\x1b[K").count() as u64;
+        st.clears += s.matches("\x1b[2J").count() as u64;
+        if self.stats_to.is_some() {
+            let mut prev = self.prev_payload.borrow_mut();
+            if *prev == s {
+                st.repeats += 1;
+            }
+            prev.clear();
+            prev.push_str(&s);
+        }
+        self.stats.set(st);
         self.cursor.set(cursor);
         let mut out = std::io::stdout();
         // DEC 2026. A frame is a run of absolute cursor moves and erases, and a
@@ -255,12 +352,31 @@ impl Terminal {
     pub fn frame_counts(&self) -> (u64, u64) {
         (self.frames.get(), self.silent.get())
     }
+
+    /// Everything this run wrote. See [`WriteStats`].
+    pub fn write_stats(&self) -> WriteStats {
+        self.stats.get()
+    }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.entered {
             restore(self.fd, &self.original);
+        }
+        // After the restore, so the line lands on a terminal that is out of raw
+        // mode and off the alternate screen — a report printed before it scrolls
+        // away with the screen it was printed on.
+        if let Some(to) = self.stats_to.clone() {
+            let line = format!("letibot-tui write stats: {}\n", self.stats.get().line());
+            if to == "-" || to == "1" {
+                let _ = std::io::stderr().write_all(line.as_bytes());
+            } else {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::File::create(&to) {
+                    let _ = f.write_all(line.as_bytes());
+                }
+            }
         }
     }
 }
@@ -684,6 +800,35 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(paint(&mut shown, &frame, cur, cur), "");
         }
+    }
+
+    /// The encoder's one arithmetic claim, checked against the thing it counts.
+    ///
+    /// [`WriteStats::rows`] counts row rewrites by counting `ESC[K`, on the
+    /// grounds that [`paint_full`] emits exactly one per row it repaints and
+    /// nothing else in this file emits it at all. That is a fact about this file
+    /// and it can rot, so it is asserted rather than asserted-in-a-comment: three
+    /// rows changed of five is three, not five and not one.
+    #[test]
+    fn the_write_counter_counts_rows_and_not_frames() {
+        let a: Vec<String> = ["one", "two", "three", "four", "five"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut shown = Vec::new();
+        let first = paint_full(&mut shown, &a, None, None, true);
+        assert_eq!(first.matches("\x1b[K").count(), 5, "every row, once");
+
+        let mut b = a.clone();
+        b[1] = "TWO".into();
+        b[3] = "FOUR".into();
+        let second = paint_full(&mut shown, &b, None, None, false);
+        assert_eq!(
+            second.matches("\x1b[K").count(),
+            2,
+            "only the rows that changed: {second:?}"
+        );
+        assert_eq!(second.matches("\x1b[2J").count(), 0, "and no erase");
     }
 
     #[test]

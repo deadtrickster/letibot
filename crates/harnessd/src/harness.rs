@@ -125,10 +125,21 @@ pub enum HarnessError {
     Setup(String),
     Turn(TurnFailure),
     Store(String),
-    /// The model went round the tool loop `max_tool_rounds` times without
-    /// producing an answer. Reported, never silently truncated to whatever the
-    /// last round happened to say.
+    /// The model went round the tool loop `max_tool_rounds` times and was still
+    /// producing new results. **The backstop, not a judgement about the work** —
+    /// a turn that was going nowhere would have been stopped by
+    /// [`HarnessError::NoProgress`] long before this.
+    ///
+    /// Reported, never silently truncated to whatever the last round happened to
+    /// say.
     LoopBound { rounds: usize },
+    /// **The progress check fired.** `stall_rounds` consecutive rounds produced
+    /// nothing this turn had not already seen.
+    ///
+    /// `evidence` is a sentence naming what the detector saw — the calls, the
+    /// outcomes and the denominator — because a stop that cites evidence is one an
+    /// operator can contradict and a round count is not. See [`crate::progress`].
+    NoProgress { evidence: String },
 }
 
 impl std::fmt::Display for HarnessError {
@@ -137,11 +148,20 @@ impl std::fmt::Display for HarnessError {
             HarnessError::Setup(s) => write!(f, "{s}"),
             HarnessError::Turn(e) => write!(f, "{e}"),
             HarnessError::Store(s) => write!(f, "store: {s}"),
+            // **Never "the model called tools N times without answering".**
+            // It *was* answering; it had not finished, and that sentence taught an
+            // operator to distrust the model when the harness was at fault — the
+            // same defect as `grep` reporting absence when it had opened no files.
+            // Reaching here now means every round was still producing new results,
+            // which is a fact about the size of the task, not about the model.
             HarnessError::LoopBound { rounds } => write!(
                 f,
-                "the model called tools {rounds} times without answering; \
-                 the loop bound stopped it"
+                "stopped after {rounds} rounds — the round backstop, and it is not a \
+                 judgement about the work: the turn was still producing results it had \
+                 not seen before when the bound was reached. The progress check did not \
+                 fire. Raise --max-tool-rounds if the task is this big."
             ),
+            HarnessError::NoProgress { evidence } => write!(f, "{evidence}"),
         }
     }
 }
@@ -1609,6 +1629,13 @@ impl<'a> Harness<'a> {
         // is a legitimate answer to the check — `docs/closed-loop.md`'s tolerance
         // band, set at its narrowest until somebody measures a better one.
         let mut nudges_left = 1usize;
+        // **The encoder for "is this turn getting anywhere".**
+        //
+        // Per user turn, because "already seen" is a claim about *this* turn — a
+        // file read in an earlier turn is a legitimate thing to read again now.
+        // `max_tool_rounds` below is the backstop it demotes; see `crate::progress`
+        // for why a round count was the wrong instrument and what replaced it.
+        let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
 
         for round in 0..self.cfg.max_tool_rounds {
             let mut sink = CapturingSink::new(self.hub.clone());
@@ -1706,8 +1733,19 @@ impl<'a> Harness<'a> {
                 // and anything else is an attempt, which is the distinction the
                 // diff below is built on.
                 let r = self.runtime.invoke(&turn_id, call, &mut self.tool_sink);
-                results.push(ToolRuntime::transcript_item(&r));
+                let item = ToolRuntime::transcript_item(&r);
+                // The progress encoder reads the *rendered* result, which is the
+                // string the model will actually get to read. Digesting anything
+                // else would measure novelty the model never saw.
+                if let TranscriptItem::ToolResult {
+                    outcome, payload, ..
+                } = &item
+                {
+                    progress.observe(call, outcome, payload);
+                }
+                results.push(item);
             }
+            let round_verdict = progress.end_round();
             let mut sink = CapturingSink::new(self.hub.clone());
             self.session
                 .append_items(&self.engine, &results, &mut sink)?;
@@ -1726,6 +1764,30 @@ impl<'a> Harness<'a> {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push_back(steer);
+            }
+
+            // **The stop, and it is two-stage on purpose.**
+            //
+            // `docs/closed-loop.md` §4: a closed loop corrects inside the tolerance
+            // band and faults outside it. One round before the bound the model is
+            // told what the detector sees — through the same step-boundary injection
+            // T21.3 uses — so a turn that was in fact working can say so and carry
+            // on. Only if the *next* round is also stalled does the turn stop.
+            //
+            // The asymmetry is deliberate. Cutting a working turn has now cost two
+            // sessions; letting a stuck one run one extra round costs one round.
+            if round_verdict == crate::progress::Round::Stalled {
+                if progress.exhausted() {
+                    return Err(HarnessError::NoProgress {
+                        evidence: progress.evidence(round + 1, self.cfg.max_tool_rounds),
+                    });
+                }
+                if let Some(steer) = progress.nudge() {
+                    self.injected
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_back(steer);
+                }
             }
         }
         Err(HarnessError::LoopBound {
@@ -2036,6 +2098,49 @@ mod tests {
         let l = Arc::new(l);
         drop(IntentSink::new(l.clone(), letibot_tools::NullToolSink));
         Arc::try_unwrap(l).expect("the sink was just dropped")
+    }
+
+    /// **The stop must not blame the model for working.**
+    ///
+    /// The sentence this replaced was *"the model called tools 12 times without
+    /// answering"*. It was answering; it had not finished, and an operator who reads
+    /// that learns to distrust the model when the harness was at fault — the same
+    /// defect as `grep` reporting absence when it had opened no files.
+    #[test]
+    fn neither_stop_accuses_the_model_of_not_answering() {
+        let backstop = HarnessError::LoopBound { rounds: 200 }.to_string();
+        assert!(
+            !backstop.contains("without answering"),
+            "the accusation is the defect: {backstop}"
+        );
+        assert!(
+            backstop.contains("--max-tool-rounds"),
+            "errors carry the fix: {backstop}"
+        );
+
+        // The progress stop says what it SAW. Built here the way the loop builds it,
+        // so the wiring and the sentence cannot drift apart.
+        let mut d = crate::progress::ProgressDetector::new(2);
+        for _ in 0..3 {
+            d.observe(
+                &ToolCall {
+                    id: "c0".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"src/main.rs"}"#.into(),
+                },
+                &letibot_transcript::ToolOutcome::Ok,
+                "the same body",
+            );
+            d.end_round();
+        }
+        assert!(d.exhausted());
+        let e = HarnessError::NoProgress {
+            evidence: d.evidence(9, 200),
+        }
+        .to_string();
+        assert!(e.contains("src/main.rs"), "it names the evidence: {e}");
+        assert!(e.contains("0 of 2"), "with its denominator: {e}");
+        assert!(!e.contains("without answering"), "{e}");
     }
 
     /// **An unattached encoder is loud, not silent.** The state this is asserting

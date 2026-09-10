@@ -586,7 +586,7 @@ impl IntentLedger {
             turn_id: turn_id.to_string(),
             call_id: call_id.to_string(),
             name: name.to_string(),
-            ok: matches!(outcome, ToolOutcome::Ok),
+            ok: is_effect(outcome),
         });
     }
 
@@ -723,6 +723,22 @@ fn evidence_since(effects: &[Effect], since: &str) -> Vec<String> {
         .filter(|e| e.ok && e.turn_id.as_str() >= since)
         .map(|e| e.call_id.clone())
         .collect()
+}
+
+/// **Did that call do anything?** The one definition, with more than one reader.
+///
+/// `Ok` is an *effect*; an abstention, a failure, a denial, a timeout, a `not_run`
+/// and a job still running in the background are all *attempts*. The distinction is
+/// the ledger's — `docs/tool-design-brief.md` §2.3 — and it is exactly the one a
+/// progress detector needs, so it is lifted out here rather than restated beside it.
+/// Two instruments with two nearly-identical predicates is how they end up
+/// disagreeing about the same turn, and the disagreement is silent.
+///
+/// `Backgrounded` is deliberately not an effect: the job has not finished, and a
+/// promotion counted as a success is `F5` — a component's "I did not do this"
+/// reported upward as done.
+pub fn is_effect(outcome: &ToolOutcome) -> bool {
+    matches!(outcome, ToolOutcome::Ok)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
