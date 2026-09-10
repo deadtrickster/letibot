@@ -598,6 +598,62 @@ An operator overriding a derived classification is a labelled example of the cla
 being wrong in a named direction — §4c's corpus, produced by working rather than by a
 labelling project.
 
+## 4h. What the classifier is shown — four inputs, and the join between two of them
+
+Operator: *"the challenge for the autoclassifier is to capture intent, and map with what
+it understands about commands. The hardcoded allow/deny lists in harness config and
+previous user answers ideally are inputs too."*
+
+Four inputs, and naming them settles what the seam has to carry:
+
+| # | input | where it comes from | exists |
+|---|---|---|---|
+| 1 | **the normalised action** — intent, scope, program class | layer A (`code::shell::normalise` + the vehicle table) | yes |
+| 2 | **the authorisation trail** — what the operator said, and how long ago | `AuthorisationTrail`, filled from the transcript | yes, uncalled |
+| 3 | **standing config** — `ALWAYS_ASK`, the seed table, the operator's globs, the per-project point | §4e, §4f | partly |
+| 4 | **previous answers** — what was decided on actions of this shape before | the §11.5 audit rows | recorded, never read back |
+
+### The join between 1 and 2 is the actual problem
+
+*"Capture intent, and map with what it understands about commands"* is one sentence
+describing the hard part: `"yeah restart"` and `systemctl --user restart glm.service` have
+to be recognised as the same thing. That is not classification and not parsing — it is
+**alignment between a human utterance and a normalised action**, and it is the only part
+of this that genuinely needs a language model.
+
+Everything else in the four is lookup. This is the join, and it is why the seam takes a
+model rather than a table (§2).
+
+### Previous answers are a RUNTIME input, not only a corpus
+
+§4c filed the audit rows as fine-tuning material. That was too narrow. Read back **at
+decision time**, they make the classifier better with **no retrain**, and its reasoning
+stays legible — *"you allowed this shape twice in this project"* is inspectable in a way a
+weight is not. Given nobody has fine-tuned anything here, this is the difference between
+history being useful now and useful eventually.
+
+### But history is evidence, never precedent
+
+The failure this invites: an answer given once by accident argues for itself forever, and
+the classifier entrenches a mistake it can no longer be talked out of. So the same rule
+`docs/memory.md` §4 already reached for a different reason applies here —
+**surface it, do not apply it**:
+
+- prior answers are **shown to the decision**, not substituted for it
+- they carry their **count and their age**, because *"once, three weeks ago"* and *"nine
+  times this week"* are different facts and a bare *"previously allowed"* hides which
+- **a denial is history too.** A classifier shown only the approvals is being told a
+  one-sided story about its own record.
+- and they never lift a tier: history cannot promote out of `AlwaysAsk` or
+  `Inexpressible`, for the same reason a glob cannot (§4f).
+
+### What this means is buildable now
+
+Inputs 1, 3 and 4 are all deterministic lookups against things that already exist or are
+being built. **The audit rows are written and never read** — closing that loop is the
+cheapest large improvement available, and it does not wait on VRAM. Only the 1↔2 join
+does.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
