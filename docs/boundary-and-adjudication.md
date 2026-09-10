@@ -729,7 +729,22 @@ band **adjacent to harm** is what reaches a person. That is a threshold on conse
 rather than on the model's mood, and it is a better fit for §4d's *earned authority* — the
 band can narrow as the record supports it, which a confidence cutoff cannot express.
 
-**Why it does not replace the model.** The input here is not tabular. Intent, scope,
+**Fine-tuning and in-context learning are not alternatives — they are two timescales.**
+Operator: *"we can do both fine tune and in-context learning too."* Correct, and framing
+them as a choice was my error:
+
+| | learns | scope | changes |
+|---|---|---|---|
+| **fine-tune** | what an intent class *means*, what a program class implies, the general shape of "authorised" | global, across seats | slowly, deliberately |
+| **in-context** | what *this* operator, in *this* project, decided *this month* | one seat | every decision |
+
+A PFN is both by construction — trained on a prior, then conditioned on a dataset handed
+to it at inference. So "both" is not a compromise between two options; it is the shape.
+And the split has a property worth keeping: **the slow half can be trained on aggregated
+structure while the fast half never leaves the seat**, so adapting to an operator does not
+require shipping their decisions anywhere.
+
+**Why neither replaces the language model.** The input here is not tabular. Intent, scope,
 program class, prior-count and age featurise fine; **the authorisation trail does not** —
 recognising *"yeah restart"* as authorising a specific `systemctl` invocation is §4h's
 1↔2 join and needs language. So the honest shape is two stages: a language model answers
