@@ -1726,11 +1726,39 @@ impl App {
 
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
+        let prose = matches!(item, TranscriptItem::Assistant { .. });
         if let Some(r) = self.items.iter_mut().find(|r| r.item_id == item_id) {
             r.item = Some(item);
             // The row's rendered form changed, so the history cache from that row
             // on is stale.
             self.invalidate_history();
+        } else {
+            return;
+        }
+        // The pane's accumulated prose, handed over the same way its calls are.
+        //
+        // `TurnPane::text` is every `Delta { target: Text }` of the whole turn, and
+        // a turn's prose is committed to the transcript one ROUND at a time. So
+        // once a round's assistant row has its body, the sentence the model wrote
+        // before its first tool call is on the screen twice — in history where it
+        // belongs and again in the pane below the cards. Measured at 60x34 on the
+        // operator's session: "I'll take a look at what's in the tree first."
+        // appearing above the round's cards and again under them.
+        //
+        // Clearing rather than counting bytes, because that is what "the
+        // transcript has taken this over" means, and because `IncrementalMarkdown`
+        // is a frozen-prefix lexer — slicing it would mean re-lexing what it has
+        // already frozen, which is the §13.3 rule this head is built around.
+        //
+        // Safe against a race only because the engine appends a round's assistant
+        // row before generating the next round (`harnessd::harness`), so no delta
+        // of round N+1 can arrive before round N's row.
+        if prose
+            && let Some(t) = self.turn.as_mut()
+            && t.appended.iter().any(|a| a == item_id)
+        {
+            t.text = IncrementalMarkdown::new();
+            t.text_cache = BlockCache::new();
         }
     }
 
@@ -5417,6 +5445,52 @@ mod tests {
         // A single segment with no separator to cut on falls back to characters
         // rather than returning something wider than it was asked for.
         assert!(letibot_ui::width::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
+    }
+
+    /// The sentence the model writes before its first tool call is on the screen
+    /// once, before and after its row lands.
+    ///
+    /// `TurnPane::text` accumulates every text delta of the whole turn, and prose
+    /// is committed to the transcript one round at a time — so once round one's
+    /// row had a body, its sentence was in history and still in the pane below the
+    /// cards. Measured at 60x34 on the operator's session.
+    #[test]
+    fn a_rounds_prose_moves_into_the_transcript_rather_than_being_copied_into_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        for w in ["I'll take ", "a look ", "at the tree first."] {
+            a.apply(ServerFrame::Event(env(2, testing::delta("t1", w))));
+        }
+        // Streaming: the pane is the only place it exists, and it is showing.
+        let live = a.screen(120, 30).join("\n");
+        assert_eq!(
+            live.matches("at the tree first.").count(),
+            1,
+            "{live}"
+        );
+        a.apply(ServerFrame::Event(env(3, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "I'll take a look at the tree first.".into(),
+                    tool_calls: vec![],
+                }),
+            },
+        )));
+        // Settled: still once, and now in the transcript where it belongs.
+        let settled = a.screen(120, 30).join("\n");
+        assert_eq!(
+            settled.matches("at the tree first.").count(),
+            1,
+            "the pane kept a copy of what the transcript took over:\n{settled}"
+        );
+        // The next round's prose still streams into the pane.
+        a.apply(ServerFrame::Event(env(5, testing::delta("t1", "And now the answer."))));
+        let next = a.screen(120, 30).join("\n");
+        assert!(next.contains("And now the answer."), "{next}");
+        assert_eq!(next.matches("at the tree first.").count(), 1, "{next}");
     }
 
     /// A call the turn was cut short in the middle of does not leave the screen.
