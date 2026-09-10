@@ -215,7 +215,7 @@ impl ProgressDetector {
             self.window_summary()
         );
         match self.repeats_clause() {
-            Some(r) => msg.push_str(&format!(" Calls {r}.")),
+            Some(r) => msg.push_str(&format!(" Some of them were {r}.")),
             None => msg.push_str(
                 " No call was repeated, so the questions were new and nothing could \
                  answer them.",
