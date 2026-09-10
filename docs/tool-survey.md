@@ -1389,3 +1389,949 @@ Both are in bytes the model reads, both cosmetic, neither blocking:
   Checked in isolation with `rustc --test`: it is a `duplicate_macro_attributes` **warning**,
   not an error, and no `-D warnings` policy was found in the repo — so it compiles, but the
   attribute is duplicated.
+
+---
+
+# Sandboxing and permissions
+
+Written 2026-09-10 on lab2x1, as a second pass over the same six codebases. The first pass covered
+permission **policy** per harness and never searched for sandbox **mechanism**: a grep of this
+document as it stood found zero hits for seatbelt, sandbox-exec, landlock, bubblewrap, firejail,
+seccomp, apparmor, selinux, namespaces-as-isolation, cgroups-as-isolation, chroot, pledge/unveil,
+gVisor, or a container. The one apparent exception — "per-child seccomp" at §1.4 — was a single
+clause with no mechanism behind it. So the honest prior state was **unsearched, not
+searched-and-absent**, and this section exists to close that difference.
+
+`omo/`, `omo-slim/` (Sustainable Use Licence) and `crush/` (Functional Source Licence 1.1) remain
+**excluded**: not opened, not cited, by me or by any subagent, for the reasons in §"Deliberately
+excluded" above. Nothing was built, run, or started; no harness was executed; no port, unit or GPU
+was touched. Every claim is a static read.
+
+## The result, stated first, because it contradicts the working assumption
+
+The assumption going in was that nobody has a real sandbox and it would have to be built from
+primitives. **That is refuted, and by a wide margin.** Two of the five have genuine kernel
+enforcement:
+
+- **deepseek-harness has the real thing** — bubblewrap, a *vendored Landlock launcher with its C
+  source included for audit*, macOS Seatbelt, and a Windows restricted-token runner, arbitrated by
+  functional probes and failing closed when no backend works.
+- **grok-build has the real thing too**, process-wide rather than per-command, via the `nono` crate
+  (Landlock + Seatbelt) plus bubblewrap for the deny-a-subpath case Landlock cannot express, plus
+  two hand-assembled seccomp-BPF filters — one for child network egress, one that locks the mount
+  and namespace API so a confined process cannot unshare its way back out.
+
+The other three have none. pi and opencode both say so in their own security documentation. omp says
+so in its tool docs.
+
+So the question for letibot is not "can this be built" but "which of two working designs to copy",
+and the two differ in a way that matters more than either's details: **dsh confines per spawned
+command and leaves the harness unconfined; grok-build confines the harness once at startup and lets
+children inherit.** That choice is the whole architecture, and §"what letibot would have to build"
+turns on it.
+
+### Two corrections to citations already in this document
+
+- **grok-build's crates all live under `crates/codegen/`.** §1.4 above cites flat paths
+  (`permission/manager/mod.rs`, `xai-grok-sandbox/src/child_net.rs`); the resolvable form is
+  `crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs` and
+  `crates/codegen/xai-grok-sandbox/src/child_net.rs`. Below, each harness's prefix is stated once and
+  then omitted.
+- **§1.4's "per-child seccomp (`child_net.rs:178-222`)" has the wrong lines and understates it.**
+  The entry points are `restrict_child_network` at `child_net.rs:269-281` and
+  `restrict_child_network_std` at `:284-297`; the filter is built at `:200-219`; and there is a
+  *second*, process-wide filter at `:103-127` that §1.4 does not mention at all.
+
+### letibot's own lines are at HEAD, not at the survey's pin
+
+This document pins letibot to `e33cc1b6`. **That pin no longer describes letibot's exec story.**
+HEAD is `2b3a538` ("Merge the outside-world seams"), and `crates/tools/src/builtins/bash.rs` **does
+not exist at `e33cc1b6`** (verified: `git cat-file -e e33cc1b6:crates/tools/src/builtins/bash.rs`
+fails). `crates/tools/src/adjudicate.rs` has moved +93/-17 since the pin. So §5's "letibot has no
+shell tool — all five do" is true at the pin and **false at HEAD**: letibot now has one. Every
+letibot citation in *this* section resolves at **`5452b96`** ("Merge the intent group, and the two
+rulings on top of it"), which is this section's commit's parent — not at `2b3a538`.
+
+**The tree moved again while this pass was running**, which is worth recording rather than smoothing
+over. Four commits landed between the branch point and this one (`449f7de`, `febe6f1`, `c5cec30`,
+`5452b96` — the intent group and the boundary rulings). None touched `docs/tool-survey.md`, and
+`adjudicate.rs`, `backend.rs`, `builtins/bash.rs` and `exec/*` are untouched, so those citations stand
+as first written. `crates/tools/src/runtime.rs` and `crates/tools/src/schema.rs` did move, and one
+**fact** changed with them: `Access` is now **five** variants, because a `Session` class was added for
+tools that change the session's own state and nothing the operator owns. Its doc comment cites this
+document — *"the survey found exactly that hole in grok-build — `todo_write` and `update_goal` declare
+`Read` while mutating session state (§1.4)"* (`crates/tools/src/schema.rs:29-39`). So `is_unattended`
+is now true for `Read | Session` rather than `Read` alone (`:64-66`). The fail-safe property survives
+in a more precise form, because the one session-state tool that *widens* capability, `exit_plan_mode`,
+declares `Write` and goes to the gate. The four citations that moved were re-derived at `5452b96`; the
+rest were confirmed untouched by diffing `2b3a538..5452b96`.
+
+---
+
+## The comparison, mechanism by mechanism
+
+Prefixes: grok-build `crates/codegen/`; opencode `packages/`; pi `packages/`; omp
+`packages/coding-agent/` unless noted; dsh `packages/`. letibot paths are written in full.
+
+| | grok-build | dsh | omp | opencode | pi | **letibot** |
+|---|---|---|---|---|---|---|
+| **OS confinement exists** | **yes** | **yes** | no | no | no (example only) | no |
+| Linux mechanism | Landlock via `nono` 0.53.0 + bwrap + 2× seccomp-BPF | bwrap, else vendored Landlock helper | — | — | bwrap via an unshipped dep | — |
+| macOS mechanism | Seatbelt via `nono` | Seatbelt (`sandbox-exec -p`, generated SBPL) | — | — | sandbox-exec via same dep | — |
+| Windows mechanism | none (`cfg(unix)`) | restricted token + write SIDs, self-reported `partial` | — | — | — | — |
+| **On by default** | **no** — profile resolves to `"off"` | **yes** — the shipped bundle mounts the confining executors | — | — | no | — |
+| **Confines what** | **the harness process**, children inherit | **each spawned child**, harness unconfined | — | — | the bash child only | — |
+| Behaviour when unavailable | built-in profile: **warn, run unconfined**; custom or mount-needing profile: **exit 1** | **`SANDBOX_UNAVAILABLE`, refuse** | — | — | **fail open**, `ui.notify` only | — |
+| Backend selection | platform `cfg` + support probe | **functional probe: runs `true` under the profile** | — | — | platform check | — |
+| **Network egress controlled** | **yes**, per-child seccomp — but only in 2 of 6 profiles, and default profile is off | no (documented gap) | no | no | only via the unshipped example | no |
+| **Child env filtered** | mechanism exists, **default is no-op** | **yes** — regex scrub of `KEY\|PASSWORD\|SECRET\|TOKEN` + all `DSH_*` | no | no, and it **injects** a token | no | no |
+| Bootstrap-env hardening | `PATH`/`LD_*`/`BASH_ENV` classified as injection findings | **yes — a `.env` may not set `PATH`, `LD_PRELOAD`, `BASH_ENV`, …; throws** | no | no | no | no |
+| **Credential paths blocked** | write-side only (`.ssh`, rc files, `/etc`) | **no** — "every mode permits reading" | **no** | `*.env` on the `read` tool only | no | `NEVER_WRITE` string list, 10 entries |
+| **Command parser** | **tree-sitter-bash**, node-kind allowlist | **none, by design** | hand-written scanners | tree-sitter-bash | **none** | **none** |
+| Parser failure direction | **closed** (`Unparseable` → prompt + grant floors) | n/a | strict path closed, **deny path open** | **OPEN** — no patterns ⇒ no prompt | n/a | n/a |
+| **Default for an ungated command** | prompt | **allow** (pre-execute default) | **allow** (`yolo`) | **allow** (`"*": "allow"`) | **allow** (no gate at all) | **refuse** (`NotRun`) |
+| **Grant granularity** | prefix; **exact whole-command for dangerous verbs and exec vehicles** | **one-shot only; no "always" exists** | whole tool | whole tool (`"*"`) / `bash *` | n/a | tool + class |
+| Grant persistence | **per git repo**, `permission.toml`, merge-on-write | mode only, never a grant | hand-edited config | in-memory, **per directory**, all sessions | n/a (project trust is hierarchical + permanent) | in-memory, session |
+| Deny checked before blanket-approve | **yes** | n/a (no deny engine) | **yes** | yes — **but an approved `*` outranks a config deny** | n/a | **yes**, and no adjudicator can override |
+| **Model in the permission path** | **yes — and it fails closed** | no | no | no | no | seam exists, none attached |
+| **Harness itself confined** | **yes, by design** | no | no | no | no | no |
+
+---
+
+## Per harness: the strongest thing, and how it is defeated
+
+### deepseek-harness — the reference implementation, and the one to copy
+
+Prefix `packages/`. The strongest thing is not any single mechanism but the **honesty of the seam**.
+`ctx.sandbox` wraps the child argv in a real kernel boundary chosen per platform
+(`sandbox/sandbox-local/src/index.ts:159-166`): bwrap with `--ro-bind / / --dev /dev --unshare-pid
+--proc /proc --die-with-parent` plus `--bind <workspaceRoot>` under `workspace-write`
+(`sandbox/sandbox-local/src/profiles.ts:16-23`); failing that, a **vendored static-musl helper whose
+C source ships for audit** at `native/system/packages/entry/src/main.c` — raw
+`landlock_create_ruleset`/`add_rule`/`restrict_self` at `main.c:101-104`, ABI negotiated *down* from
+5 at `main.c:94` and `:231-241`, `PR_SET_NO_NEW_PRIVS` before restriction at `main.c:254`, `execvp`
+at `main.c:295`. Three properties make this the model:
+
+1. **It fails closed.** No usable backend is `SandboxUnavailableError` / `SANDBOX_UNAVAILABLE`, never
+   unconfined passthrough (`sandbox-local/src/index.ts:492-510`, consumed at
+   `shell/bash-sandbox/src/index.ts:103-113`).
+2. **Backends are chosen by functional probe** — it actually runs `true` under the candidate profile
+   rather than sniffing a version (`sandbox-local/src/index.ts:68-112`, `:513-539`). That is "guard
+   the fact, not the proxy" implemented.
+3. **Windows enforcement is self-reported as `partial`, with the reasons, in the code**
+   (`sandbox-local/src/index.ts:181-186`).
+
+That it is on by default rests on two independent facts rather than on one config line: the
+catalog generator mounts the **non**-confining `LocalBashExecutor`/`LocalFileSystem`
+(`scripts/gen-tool-catalog.ts:23`, `:27`, mounted `:238`, `:308`, `:324`) and is described as
+therefore understating the shipped surface; and the escalation parameters are advertised **only**
+when the mounted backend reports a `sandboxMode` (`shell/tool-bash/src/index.ts:191-193`,
+`fs/tool-fs/src/sandbox.ts:44-46`), which the shipped bundle does add and the generated catalog
+does not contain. The `bundle/base` row that mounts `bash-sandbox` was not read directly.
+
+It also solves the persistent-shell hazard properly. `shell/tool-bash-persistent` keeps cwd and
+exported variables across calls (`:23`) and injects each call as `eval -- $'…'` between nonce markers
+(`:81`) — normally fatal to any per-call check. Because the PTY is confined **once at spawn**
+(`terminal/terminal-bash/src/index.ts:98-108`, invoked `:194-196`), dsh adds a **fence**: any
+`sandbox/mode` change while a persistent session is open **throws** (`terminal-bash/src/index.ts:
+37-62`). And its "always allow" problem does not exist, because *the vocabulary has no such option*:
+`'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'`
+(`interaction/user-approval/src/types.ts:32`), documented as "`'allowed-once'` is the only grant"
+(`interaction/user-approval/src/index.ts:204`).
+
+**How it is defeated.** Three ways, and the project names all three itself.
+
+- **Reads and network are entirely uncontained.** "File effects are the whole policy vocabulary — the
+  seam expresses no network, process, syscall, device, or credential restrictions"
+  (`sandbox/sandbox/README.md:167`). `bwrapProfileArgs` omits `--unshare-net`
+  (`profiles.ts:17`); the Seatbelt profile is `(allow default)` with only `file-write*` denied
+  (`:52`); Landlock grants are filesystem-only (`:30-36`). `fs-sandbox` states "Reads pass through
+  untouched: every mode permits reading" (`fs/fs-sandbox/src/index.ts:7-10`), and there is no
+  credential denylist anywhere. **So exfiltration needs no bypass at all** — `cat ~/.ssh/id_rsa |
+  curl -T- …` is a fully permitted operation under the default composition. A write fence without a
+  read fence stops damage and not theft.
+- **The harness is unconfined, and a confined child can write what the harness later executes.** Its
+  own settings, an agent preset, a hook command. Since a preset *is* a composition, authoring one
+  "carries the same trust as shell access" (`bundle/web-app/cordis.patch.yml:471-478`).
+- **A shipped preset undoes it.** `minimal` swaps the confining filesystem for the bare local one
+  inside an `isolate: fs: true` group (`preset/agent-presets/presets/minimal/agent.cordis.yml:72-83`),
+  so `str_replace_editor` writes anywhere on disk while its bash stays confined; `sdk-minimal` pins
+  `mode: danger-full-access` with **no approval or permission service mounted at all**
+  (`bundle/sdk-minimal/cordis.patch.yml:41-44`). The shipped default is `standard`
+  (`bundle/web-app/cordis.patch.yml:480-483`), which is the confining one — but the safety of a dsh
+  deployment is a property of its composition, not of the product.
+
+One outright defect: the persistent-bash tool description tells the model "You don't have access to
+the internet via this tool" (`preset/agent-presets/presets/minimal/agent.cordis.yml:44`,
+`bundle/sdk-minimal/cordis.patch.yml:139`). Under the shipped composition **that statement is false**
+and nothing enforces it.
+
+### grok-build — the most developed permission stack in the survey, switched off by default
+
+Prefix `crates/codegen/`. The strongest thing is that **every layer fails closed into the next**, and
+the parser is the load-bearing one. `try_parse_word_only_commands_sequence`
+(`xai-grok-workspace/src/permission/bash_command_splitting.rs:53-138`) walks the tree-sitter-bash
+tree against a **node-kind allowlist** (`:58-87`) and a punctuation allowlist (`:92-94`) and returns
+`None` on the first unrecognised node. Anything unmodelled becomes `SegmentEvaluation::Unparseable`
+(`permission/manager/mod.rs:548`), which forces one conservative whole-script prompt, sets
+`redirect_write: true` (`:617`, `:661`), and inserts `UnparseableShell`/`OpaqueShell` findings
+(`:608-611`, `:649-655`) that act as **grant floors** — so no broad grant can auto-allow them
+(`:1072-1076`). Chains are decomposed and each segment classified independently (`:676-767`), so
+`ls && rm -rf /` cannot ride the safe primary.
+
+Three refinements are better than anything else in the survey:
+
+- **`normalized_command_head` matches on the basename** (`permission/policy.rs:628-636`), so
+  `/bin/rm`, `RM` and `rm.exe` all hit the dangerous list — the absolute-path-versus-bare-name
+  evasion that works against opencode and pi is closed here.
+- **Grant keys must round-trip.** `words_join_unambiguously` re-parses the joined prefix and requires
+  it to yield exactly the same single argv spanning the whole script
+  (`permission/manager/bash_grants.rs:25-32`), and `persist_bash_always_allow` refuses a label that
+  does not re-derive at or above the minimum scope (`:84-105`). That closes the whole "approve
+  `git status`, get a grant string that also matches `git status; rm -rf /`" class.
+- **An exec-vehicle list pins grant scope.** `EXEC_VEHICLE_HEADS` (`policy.rs:609-623`) plus
+  `EXEC_VEHICLE_HEAD_FAMILIES` (`:624`) covers `xargs`, `find`, `sudo`, `ssh`, `docker`, `podman`,
+  `chroot`, `nsenter`, `npx`/`uvx`/`pipx` and versioned interpreters; for those heads a grant is
+  honoured **only as an exact whole-command match** (`manager/mod.rs:718-722`, pinned at `:422-429`)
+  and they never mint standalone segment grants (`bash_grants.rs:60-79`).
+- A separate **shell-operand → file-rule gate** stops `cat ~/.ssh/id_rsa` evading a `Read` deny:
+  `permission/shell_access.rs:38-172` extracts redirect targets and known reader/writer operands from
+  a 40-entry table (`:604-618`), resolves symlinks physically (`:196-215`), and re-evaluates each —
+  **escalation only**, dropping `Allow` so a file allow-rule cannot vouch for a shell read
+  (`:186-191`).
+
+**How it is defeated.** Four ways, in descending order of seriousness.
+
+1. **The OS sandbox is off by default**, so on a default install none of the kernel enforcement runs:
+   `resolve_profile` ends `.unwrap_or_else(|| Resolved::new("off".to_owned(), …))` at
+   `xai-grok-shell/src/agent/config.rs:1117`, and the docs agree
+   (`xai-grok-pager/docs/user-guide/18-sandbox.md:5`). And when a *built-in* profile fails to apply,
+   `SandboxManager::apply` warns and **continues unconfined**, returning `Ok(())`
+   (`xai-grok-sandbox/src/lib.rs:194-206`, `:225-239`). Only an explicitly-requested custom profile
+   or one needing mount-based denies refuses to start
+   (`xai-grok-shell/src/config/mod.rs:1518-1539`).
+2. **Shell aliases and functions from the user's login shell are invisible to the entire stack, and
+   this is the largest gap in the survey.** The persistent backend initialises with `bash -O extglob
+   -ilc <dump_script>` — an *interactive login* shell
+   (`xai-grok-tools/src/computer/local/shell_state.rs:283-284`) — whose dump captures `declare -f`
+   (`:118`) and `alias -p` (`:121-123`) as replayable snippets. Each later command runs in a shell
+   that evals that snapshot, **explicitly re-enables alias expansion** (`builtin shopt -s
+   expand_aliases`, `:401`), and then runs the model's command through `builtin eval
+   "$__grok_user_cmd"` (`:423`). Classification only ever saw the literal text. So `alias ls='rm -rf
+   ~'` in a `.bashrc` yields a request classified as `ls` — which is on `ALWAYS_SAFE_COMMANDS`
+   (`manager/mod.rs:360`) — that executes `rm`. Nothing in the permission path reads the alias table.
+   This is the cleanest demonstration in the survey that **a decision made on a string the shell will
+   reinterpret is theatre**: the parser here is excellent and it is still looking at the wrong object.
+3. **`PATH` shims.** `normalized_command_head` takes the basename and never resolves through `PATH`
+   (`policy.rs:628-636`). A `~/bin/ls` shim is classified as safe `ls`. `PATH` *assigned inside the
+   command* is caught as an injection finding (`permission/auto_mode/mod.rs:920`); the inherited
+   `PATH` is not filtered by default and is replayed from the login-shell snapshot.
+4. **The catch-all classification, which is worse than this document's §"scorecard" lead suggested.**
+   The claim was `_ => Read(None)` at `permission/types.rs:284`. The real line is **`:286`**
+   (`:284` is the `Dynamic` arm), it carries `#[allow(unreachable_patterns)]` at `:285` — and **the
+   match is not exhaustive**: `ToolInput` has ~40 variants (`xai-grok-tools/src/types/tool_io.rs:
+   56-100`) and the impl names 17. Falling through to `Read(None)` are `ImageGen`, `ImageEdit`,
+   `ImageToVideo`, `ReferenceToVideo`, `MemorySearch`, `MemoryGet`, `SearchTool`, `Lsp`,
+   `SchedulerCreate`, `SchedulerDelete`, `SchedulerList`, `UpdateGoal`, `Workflow` and others. There
+   is a **second, more reachable** catch-all at `types.rs:330`: `access_kind_from_dynamic`
+   (`:301-331`) sniffs JSON keys and sends **anything unrecognised** to `Read(None)`. And `Read` is
+   *unconditionally allowed*: `AccessKind::Read(_) => Some((Decision::Allow,
+   reasons::SAFE_COMMAND))` at `manager/mod.rs:2073`, auto-mode fast-path allowlisted
+   (`auto_mode/mod.rs:1064`), and skipped by grant lookup entirely (`manager/mod.rs:1247-1252`).
+   A `Read(None)` carries no path, so a path-patterned operator rule cannot match it either. So the
+   image generators reach the network, `SchedulerCreate` installs a recurring agent and `Workflow`
+   runs a script — each auto-approved with the reason string `SAFE_COMMAND`. **In fairness:** this is
+   a classification gap, not a sandbox bypass — those tools still execute inside whatever ruleset the
+   process holds, and any bash they spawn re-enters as `AccessKind::Bash`.
+
+### omp — the best-designed default that is then turned off
+
+Prefix `packages/coding-agent/`. The strongest thing is the **strict compound parser**, and it
+deserves the credit: `extractLiteralAndChainSegments` (`src/tools/shell-tokenize.ts:217`) returns
+`null` — rejecting the whole analysis — on any of `$` backtick `( ) < > * ? [ ] { } ~ | ; &`, newline
+or `\r` (`:305-327`), on `$`/backtick/newline *inside double quotes* (`:265`), on control characters
+checked twice (`:218-221`, `:328`), on `VAR=` prefixes (`:204`, `:241`), on 14 interpreter names
+including `busybox` (`:186-202`, `:244`), on any `-c`/`-e`-shaped option in any argv position (`:205`,
+`:242`), and on ~90 shell-stateful builtins (`SHELL_STATEFUL_COMMANDS`, `:90-179`). It **normalises
+the basename before the denylist lookups** (`:239`), so `/bin/bash -c` is caught. The comments show
+real adversarial thinking: `printf` is on the list because `printf -v` can write `BASH_CMDS` and
+retarget a later command (`:151`); `test` because `test -v` evaluates array subscripts including
+command substitutions (`:92-93`). `hasBashApprovalShellControl` (`src/tools/bash.ts:86-126`) even
+flags control characters *inside quotes* and names the exact attack it is stopping —
+`git -c alias.x='!...'` (`:121-123`). And `allow` rules are structurally narrower than `deny`: an
+allow must match the **entire** command and may never ride a compound line (`:292-300`), because
+"shell control syntax could smuggle an unsafe segment past a narrow allow".
+
+**How it is defeated: the default configuration, in one line.** `tools.approvalMode` defaults to
+**`yolo`** (`src/config/settings-schema.ts:4123-4126`, prose at `docs/approval-mode.md:22`), and
+`wrapper.ts:198` re-defaults to `yolo` again when settings are absent. Under `yolo` the tier ceiling
+is `exec`, the top rank, so everything auto-approves (`src/tools/approval.ts:156-173`). Worse,
+**bare safety overrides are ignored there**: a `{tier:"exec", override:true, reason:…}` decision
+carries no `policy`, so `if (decision.policy)` at `:157` is false and control reaches `:167-173`
+returning `policy:"allow"`. The docs confirm it — "In `yolo`, a bare critical override is ignored"
+(`docs/approval-mode.md:64`). **Consequence: with default settings, `rm -rf /` matches
+`CRITICAL_BASH_PATTERNS` at `bash.ts:182`, routes through `:635` to `approval.ts:167-173`, and
+executes without a prompt.** And the parser above is only consulted for user-authored
+`bash.patterns` rules, which default to `[]` (`settings-schema.ts:3930-3932`) with
+`bash.allowCompoundCommands` default `false` (`:3908-3910`) — so in a default install **no parsing
+gates anything**.
+
+Three further defeats, for a user who *has* configured rules: the `deny`/`prompt` matcher uses the
+**loose** tokenizer and **fails open** — when it cannot see the structure the rule simply does not
+match and the code falls to `return "exec"` (`bash.ts:283-291`, `:679`), so a `deny rm *` is not
+consulted for `$(echo rm) -rf x`; `eval` is a **separate tool that bypasses `bash.patterns`
+entirely** (`src/tools/eval.ts:259`, consequence spelled out at `docs/approval-mode.md:72`); and a
+genuinely careful containment primitive exists but is **not wired to the model's tools** —
+`confineToWorkspace` (`src/tools/path-utils.ts:640-685`) does lexical `..` rejection, `realpath` of
+both target and deepest existing ancestor, and refuses dangling symlinks (`:667`), and its only
+non-test caller in the entire tree is `src/cursor.ts:824`, for a *remote peer's* download path. Its
+own doc comment explains why (`:625-628`): `resolveToCwd` is "correct for a path a user typed, wrong
+for one a remote peer supplied" — and the model's paths are treated as user-typed.
+
+One thing omp gets right that pi gets wrong: **approval resolves against the post-revision input**
+(`src/extensibility/extensions/wrapper.ts:206-208`, `:246-250`), closing the "approve one thing, run
+another" gap.
+
+### opencode — a real parser whose failure mode is to skip the prompt
+
+Prefix `packages/`. HEAD is `1ee74df` as stated, but on branch `output-budget-visibility` rather than
+an upstream tag (`git describe --tags` finds no names), so this is a fork branch off 1.18.29. Note
+also two parallel stacks: the shipped `opencode` binary uses `packages/opencode/src/`, while a v2
+stack in `packages/core/src/` ships as a *different* binary, `lildax` (`packages/cli/package.json:
+7-9`). Claims below are the shipped v1 stack.
+
+The strongest thing is that the tree-sitter parse genuinely **decomposes**. `commands(node)` is
+`node.descendantsOfType("command")` (`opencode/src/tool/shell.ts:123-125`), so `$(...)`, backticks,
+chains, pipelines, subshells and function bodies defined in the same string each yield their own
+pattern, and each is evaluated independently (`opencode/src/permission/index.ts:72-80`). The repo's
+own test asserts it for `echo $(cat "<external file>")` (`opencode/test/tool/shell.test.ts:359,368`).
+`VAR=x cmd` prefixes are handled correctly by omission — `variable_assignment` is not in the
+collected node types (`shell.ts:88-114`), so `FOO=1 rm x` yields `tokens = ["rm","x"]`. And the
+default TUI **opens no TCP socket at all**: the transport is `http://opencode.internal` over an
+in-process worker `fetch` shim (`opencode/src/cli/cmd/tui.ts:234`, `:238-249`), so there is no
+listening port for a spawned child to reach. That is a genuine and under-advertised mitigation.
+
+**How it is defeated.** Four ways, and the first is the sharpest single finding in this pass.
+
+1. **The parser fails OPEN.** `parse` only errors on a null tree (`shell.ts:259`), but tree-sitter is
+   an error-recovering parser: malformed input yields a tree of `ERROR` nodes instead. If that
+   recovery produces no `command` descendants, `scan.patterns` is empty and
+   `shell.ts:282` — `if (scan.patterns.size === 0) return` — returns from the ask helper **before**
+   `ctx.ask({permission: "bash", …})` at `:283-290`, and control falls to `run()` at `:629-638`,
+   which hands the untouched raw string to the shell. **No parse, no prompt, command executes.** A
+   narrower twin: `argPath` treats any path containing `$` as dynamic (`:369-376`), and `:401` treats
+   "could not resolve" identically to "inside the workspace", so `rm $HOME/.ssh/id_rsa` skips the
+   external-directory prompt.
+2. **`bash` defaults to `allow`.** Line 120 of the default agent ruleset is `"*": "allow"`
+   (`opencode/src/agent/agent.ts:119-137`), and `Wildcard.match(x, "*")` compiles to `^.*$`
+   (`core/src/util/wildcard.ts:6-12`), so the command is materialised, regex-matched, and never
+   inspected. Out of the box opencode runs shell commands with no prompt; the docs say so
+   (`web/src/content/docs/permissions.mdx:170-174`).
+3. **One approval widens to a blanket — and the brief's citation needs refining.** `permission/index.
+   ts:145-151` is the *loop* that copies `existing.info.always` into `approved`, reached only after
+   `if (input.reply === "once") return` at `:143`. The `["*"]` literal comes from the **callers**:
+   `read.ts:258`, `write.ts:57`, `edit.ts:105` and `:148`, `apply_patch.ts:209`, `grep.ts:42`,
+   `glob.ts:31`, `todo.ts:27`, `task.ts:123`, `webfetch.ts:42`, `websearch.ts:122`, `lsp.ts:59`. For
+   bash the arity prefixes are used instead — but `BashArity.prefix` falls back to
+   **`tokens.slice(0,1)`** for any command not in its 130-entry table (`permission/arity.ts:1-9`,
+   `:8`, table `:24-161`), and neither `bash`, `sh`, `eval`, `xargs` nor `find` is in it. So
+   approving `bash -c 'echo hi'` stores the grant **`bash *`** (`shell.ts:409`), and one approval of
+   a benign command becomes arbitrary execution for the life of the process. `find . -exec rm {} \;`
+   is worse: `-exec` payloads are not `command` nodes, so `rm` is never seen at all.
+4. **An approved grant outranks a config `deny`.** `evaluate` does
+   `rulesets.flat().findLast(...)` (`permission/index.ts:29-33`) and the in-memory `approved` array
+   is searched **after** the config ruleset, last-match-wins (`:73`). So with
+   `read: {"*": "allow", "secrets/*": "deny"}`, clicking "Always" on any unrelated read stores
+   `read`/`*` and **silently disables the `secrets/*` deny** for the rest of the process. The same
+   mechanism defeats opencode's own `.env` guard (`agent.ts:129-135`): answer "Always" to the `.env`
+   prompt once and every later `.env` read is silent. Deny *is* correctly checked before `--auto`
+   (`:68-80`, `:74-79`), so the documented claim at `permissions.mdx:36` holds for that path — it is
+   the stored-grant path that breaks it.
+
+Two smaller notes. `cat .env` reads the file with **no prompt** while `read(".env")` prompts, because
+the `.env` rule is on the `read` tool only and `cat` appears in the shell tool's `FILES` set purely
+for path scanning (`shell.ts:38`) — the clearest illustration that these are advisory strings. And
+opencode **injects a credential into its own environment** before spawning children: the console
+account token is written to `process.env["OPENCODE_CONSOLE_TOKEN"]`
+(`opencode/src/config/config.ts:505-506`) and flows into every child via the `{...process.env}` spread
+at `shell.ts:423`.
+
+### pi — the only one whose position is "we deliberately do not do this"
+
+Prefix `packages/`. pi has no permission decision path at all, and says so:
+`SECURITY.md:50` lists as out of scope "Local code execution or sandboxing behavior (the Pi coding
+agent intentionally does not have a sandbox)"; `coding-agent/README.md:503` says "No permission
+popups. Run in a container, or build your own confirmation flow with extensions";
+`coding-agent/docs/containerization.md:3` says "Pi runs with all permissions by default." The
+mechanism matches the statement: `coding-agent/src/core/agent-session.ts:487-491` checks
+`runner.hasHandlers("tool_call")` and **returns `undefined` immediately** when no extension registered
+one, after which `agent/src/agent-loop.ts:643-653` executes the tool. **The code path that "decides"
+is `agent-session.ts:489-491`, which decides not to look.** There is no parser anywhere in the tree
+(no `shell-quote`, no `shlex`, no tree-sitter dependency), so every construct on the list slips past
+by construction rather than by evasion.
+
+The strongest thing pi does is small and worth stealing anyway: **its one gate fails closed.**
+`emitToolCall` (`coding-agent/src/core/extensions/runner.ts:982-1003`) has **no** try/catch around
+`await handler(event, ctx)` — deliberately unlike `emitUserBash` (`:1013-1027`) and `emitToolResult`
+(`:955-967`), which swallow — so a throwing gate propagates to `agent-session.ts:500-505` and is
+rethrown as "Extension failed, blocking execution". A crashing permission check blocks.
+
+**How it is defeated.** Everything, trivially; the interesting part is the one place pi *does* ship a
+sandbox and gets it wrong. `coding-agent/examples/extensions/sandbox/index.ts` uses
+`@anthropic-ai/sandbox-runtime` (`:47`) — sandbox-exec on macOS, bubblewrap on Linux (`:5-6`) — and
+is **not shipped**: the dependency is a root `devDependency` only (root `package.json:58`), absent
+from `coding-agent/package.json:51-71`. Two defects even for someone who installs it:
+
+- **It fails open.** Init failure is caught, `sandboxEnabled = false`, and the only consequence is
+  `ctx.ui.notify(...)` (`:281-284`); same for an unsupported platform (`:252-256`). Commands then run
+  unconfined. This is the failure mode the operator's question 8 named — *"a safety check that fails
+  open is worse than none, because it converts 'nobody decided' into 'approved' and reads as
+  protection"* — and here it is, in the sandbox rather than in a classifier.
+- **It only wraps subprocesses.** It replaces the `bash` tool (`:214-227`), but `read`/`write`/`edit`/
+  `grep`/`find`/`ls` are in-process Node `fs` calls and are untouched. So its `denyRead: ["~/.ssh",
+  "~/.aws","~/.gnupg"]` default (`:73`) is enforced against `cat ~/.ssh/id_rsa` and **not** against
+  `read("~/.ssh/id_rsa")`. A boundary that covers one of two paths to the same asset is not a
+  boundary.
+
+Two structural hazards worth recording because letibot must avoid them. `event.input` **is mutable
+and is not re-validated**: "Later `tool_call` handlers see earlier mutations. No re-validation is
+performed after mutation" (`coding-agent/src/core/extensions/types.ts:942-943`), and handlers run in
+registration order (`runner.ts:986-1000`) — so a later handler can rewrite the command after an
+earlier gate approved the original. (omp closes exactly this gap; see above.) And project trust —
+pi's one persisted decision, at `~/.pi/agent/trust.json` (`coding-agent/src/core/trust-manager.ts:
+212-214`) — walks **up** the directory chain (`:44-58`) and offers "Trust parent folder" (`:71-82`),
+so one grant is hierarchical and permanent; extensions themselves are unconfined, loaded in-process
+via jiti (`coding-agent/src/core/extensions/loader.ts:496-508`), and an extension can veto or bypass
+the trust prompt that is supposed to gate extensions (`core/project-trust.ts:54-70`).
+
+### letibot at HEAD — fail-closed by construction, unsandboxed by admission
+
+Paths in full. letibot's strongest property is that **the default refuses, and the refusal is
+honest about who decided.** `NoAdjudicator` is the default and answers `Unavailable`, never a
+selection (`crates/tools/src/adjudicate.rs:484-506`); `AdjudicatedGate` routes that to the request's
+`on_timeout`, which is `Deny` for a permission (`crates/tools/src/adjudicate.rs:870-872`); and the outcome is `NotRun`, not `Denied`,
+"because `Denied` claims somebody decided and nobody did" (`:37-39`). The module states the principle
+directly: *"A `Gate` that returns 'allowed' because nothing is wired is worse than no gate, because
+it looks like protection"* (`:30-33`). Two independent mechanisms stand behind a write — an
+adjudicator that admitted it **and** a backend opened writable — and neither is the default
+(`:42-48`), on the stated grounds that "a safety property with one mechanism behind it is a safety
+property that ships broken the first time somebody refactors the mechanism." The `never`-write rows
+are evaluated **before any adjudicator and overridable by none** (`:896`, list at `:728-739`), which
+is the ordering opencode gets wrong. And `describe()` names the absence (`:504`) so an operator can
+see that nothing is attached.
+
+**How it is defeated: there is no boundary, and the code says so in the words a reader needs.**
+`crates/tools/src/backend.rs:164-165` — "The confinement is not a sandbox and does not pretend to be one";
+`crates/tools/src/backend.rs:212` — an exec-capable backend is "writable, **and unsandboxed**"; `crates/tools/src/backend.rs:542`
+renders it as the literal string `"writable + UNSANDBOXED EXEC"`, which is what the daemon banner
+shows. The `bash` refusal text spells out the consequence: "a command run there reads this user's
+whole filesystem — a cgroup bounds a lifetime, not a view, and §11.4's guest boundary is a different
+thing that is not here yet" (`crates/tools/src/builtins/bash.rs:111-113`). Confirmed by search: **no
+`setrlimit`, no `prctl`, no `pre_exec`, no `CommandExt`** anywhere in `crates/`, and no
+`memory.max`/`pids.max`/`cpu.max` ever written — the one OS primitive present, cgroup v2, is used
+purely as a lifetime handle.
+
+Five further findings, all first-party and none previously recorded:
+
+1. **`bash` does no command parsing at all**, and there is no allowlist to parse for: `Access::Exec`
+   (`crates/tools/src/builtins/bash.rs:84`), and the gate is consulted on **every** call including the ones
+   that only `ls` (`crates/tools/src/runtime.rs:794`, `:812`). That is defensible — nothing can slip past a
+   parse that does not exist — but it means every command costs an ask.
+2. **Grants are coarser than grok-build's.** `class_key` is `"{tool}|{class}"`
+   (`crates/tools/src/adjudicate.rs:876`), so one `allow_session` on `bash` covers **every** later command
+   that session. The comment is honest about why (`:748-751`) — "a grant keyed by the *arguments*
+   would be a grant for one call, which is `allow_once`" — but grok-build shows a third option:
+   argument-scoped grants with a round-trip check, exact-match-pinned for dangerous heads.
+   `allow_always` is not yet persisted past the process (`:26-27`, `:242-245`), so today it equals
+   `allow_session`.
+3. **Two of the three boundary facts shown to a human about a `bash` call are vacuous, and one is
+   affirmatively wrong.** `path_is_inside` returns `true` when there is no `path` argument
+   (`crates/tools/src/runtime.rs:213-216`), and `bash` has none — so every `bash` ask carries the fact "the
+   path is inside the session's workspace" about a command that can read `/etc/shadow`. `target_of`
+   (`crates/tools/src/adjudicate.rs:1092-1101`) keys on `path`/`url`/`query`/`repo`/`server`/`pattern` and
+   **not `command`**, so the summary line reads "`bash` wants exec access to `<no target argument>`".
+   The command itself *is* shown, via `arguments_preview` in `brief()` (`:335-352`), so this is a
+   misleading-headline defect rather than a blind approval — but asserting a fact about a target
+   nobody looked at is precisely what `~/.claude/CLAUDE.md`'s "guard the fact, not the proxy" rule
+   forbids.
+4. **`arguments_preview` omits the middle of any argument over 2 KiB** (`:375-386`, head/tail plus a
+   sha). Correct for a file body; wrong for a command line, which has no redundancy and whose middle
+   is exactly where a payload goes.
+5. **The model-server half of the `bash` guard is dead code in production.**
+   `predicate::examine` (`crates/tools/src/exec/predicate.rs:128-182`) has two witness sources: witness 1
+   (`:140-150`) matches the command text against the shell that will run it and needs no wiring;
+   witness 2 (`:153-165`) is "what the harness owns and the model cannot see" and needs
+   `protect_listener`. **`protect_listener` has exactly one caller in the tree and it is a test**
+   (`crates/tools/tests/exec.rs:98`; `crates/tools/src/exec/host.rs:325` is the definition, and `harnessd` never calls it),
+   so `protected()` (`crates/tools/src/exec/host.rs:682-684`) returns an empty list at runtime. Since `matches`
+   compiles the pattern as a **regex against the haystack** (`crates/tools/src/exec/predicate.rs:204-208`), `pkill -f
+   'llama[-]server'` misses witness 1 — the regex `llama[-]server` does not match its own bracketed
+   text — and would only be caught by witness 2. That is precisely the bracket trick the module
+   header says was measured five times in one session (`crates/tools/src/exec/predicate.rs:8-12`). **Landed is not
+   running.** *(Read-derived, not executed.)*
+6. **`resolve` canonicalises only when the path exists.** `if let Ok(real) = out.canonicalize()`
+   (`crates/tools/src/backend.rs:297`) skips the check for a non-existent leaf, and there is no parent
+   canonicalisation — only the root (`:192`) and the leaf (`:297`, `:425`). `write` then does
+   `canonicalize().unwrap_or(resolved)` (`:425`) and `create_dir_all(dir)` (`:431`), so a new file
+   under a symlinked-out parent directory is written outside the root. The comment at `:422-423`
+   claims "`resolve` already refused one that points out of the root", which is true only when the
+   path exists. *(Read-derived, not executed.)*
+7. The child **inherits the harness's whole environment** — `crates/tools/src/exec/host.rs:442-443` adds
+   `req.env` and never calls `env_clear`. One thing done right: the join wrapper uses `exec "$@"`
+   (`crates/tools/src/exec/scope.rs:678`), so the command string is not re-expanded by the wrapper.
+
+And letibot's `NEVER_WRITE` deserves a specific correction, because it is more effective and less
+principled than it looks. `never_hit` scans **every string argument**, not just `path`
+(`crates/tools/src/adjudicate.rs:1108-1127`, rationale `:1105-1107`), splitting on `/` and `\`. Because `bash`'s
+`command` *is* a string argument, `cat ~/.ssh/id_rsa` **does** hit, on the `.ssh` segment — by
+accident of a design aimed at differently-spelled path arguments. But it is a pre-shell string check
+on a list named `NEVER_WRITE` being used to block a read, so `cat ~/.s''sh/id_rsa`, `d=.ssh; cat
+~/$d/id_rsa`, and `cd ~/.config && cat gh/hosts.yml` (the two-segment `.config/gh` entry uses
+`contains`, and that string does not contain it) all pass. *(Read-derived, not executed.)*
+
+---
+
+## The parse, quantified — the highest-value part of this pass
+
+Six harnesses, three of which decide something about a command string, and the results do not favour
+parsing.
+
+| construct | grok-build | opencode | omp (strict path) | dsh / pi / letibot |
+|---|---|---|---|---|
+| `;` `&&` `\|\|` `\|` chains | **decomposed per segment** | **decomposed per node** | rejected → falls back | no decision made |
+| `$(...)`, backticks | → `Unparseable`, prompt + floor | **decomposed, tested** | rejected → falls back | — |
+| process substitution `<(…)` | → `Unparseable` | *probably* decomposed, **untested** | rejected | — |
+| here-doc body | body is stdin, not parsed | **body never seen; grant `bash *`** | rejected | — |
+| `bash -c "…"` | **recursed into**, depth cap 8 | **grant becomes `bash *`** | rejected as interpreter | — |
+| `eval "…"` | prompt floor, body **not** recursed; a managed **deny becomes a prompt** | **grant becomes `eval *`** | rejected as builtin | — |
+| `xargs`, `find -exec` | exec vehicles: scope pinned, payload **not** re-parsed | `xargs *` / `find *`; `-exec` payload **never seen** | `find -exec` caught incidentally; **`xargs` unhandled** | — |
+| `env VAR=x cmd` | peeled; `env -S` refuses and Asks | **`env` hides the callee**; grant `env *` | rejected as interpreter | — |
+| `VAR=x cmd` | peeled; injection keys floored | handled by omission (correct) | rejected | — |
+| absolute vs bare name | **basename-normalised** | **`/bin/rm` ≠ `rm`**: no scan, separate rule namespace | **basename-normalised** | — |
+| quoting `r""m`, `"r"m` | fail-safe → `Unparseable` | **`FILES.has('"r"m')` false**: no scan | rejected on control chars, even inside quotes | — |
+| symlinks | **physically resolved and re-checked** | **no `realpath` anywhere** on this path | `realpath` exists but **not wired to the model's tools** | — |
+| `PATH=` in the command | injection finding, floors the grant | pattern is `rm x`; **shim executes** | rejected as an assignment | — |
+| **inherited `PATH` / aliases / functions** | **DEFEATS IT** — login shell replayed, `expand_aliases` re-enabled, `eval`'d | no alias sourcing normally, but `BASH_ENV` inherited | not modelled | — |
+| unparseable input | **fails CLOSED** | **fails OPEN — no prompt at all** | strict closed, **deny path OPEN** | n/a |
+
+Three conclusions, and they are the point of the pass.
+
+**First: the best parser in the survey is defeated by something it never looks at.** grok-build's
+tree-sitter stack closes every construct in the list above — and then the command runs through
+`builtin eval "$__grok_user_cmd"` in a shell that has replayed the user's aliases and functions with
+`expand_aliases` explicitly re-enabled. `alias ls='rm -rf ~'` turns an `ALWAYS_SAFE_COMMANDS` entry
+into an `rm`. No amount of parser work fixes that, because the parser and the shell are looking at
+different objects: the parser sees the text, the shell sees the text *plus* a mutable name table the
+parser cannot read. **A permission decision made on a string the shell will reinterpret is theatre**,
+and grok-build is the proof precisely because its parse is excellent.
+
+**Second: parse failure direction is the single highest-leverage line of code in any of these
+harnesses.** grok-build turns "I could not parse this" into a prompt *plus* a grant floor so no
+existing grant can auto-allow it (`manager/mod.rs:608-611`, `:1072-1076`). opencode turns the same
+condition into **silent execution** (`shell.ts:282`). omp does both — closed on the strict path,
+open on the deny path (`bash.ts:283-291`, `:679`). Same parser technology in grok-build and opencode;
+opposite safety properties; one `if`.
+
+**Third: dsh's answer is better than a parser, and it is the answer letibot's own tree already
+argues for.** dsh has *no* parser, deliberately, and it does not matter, because a Landlock or
+Seatbelt write fence is **parse-independent**: `eval $(curl …)`, a here-doc-fed `python`, `find
+-exec`, and a `PATH`-shadowed binary all hit the same boundary regardless of how they were spelled.
+The trade is exact and dsh states it — **effects are contained; capabilities are not classified** —
+which is why its uncontained reads and network are the right thing to criticise and its missing
+parser is not. letibot's `predicate.rs` header makes the same argument from the other direction:
+*"A hazard with that many spellings is not one you check for; it is one you make unspellable… `pkill
+-f X` is not guarded, it is unnecessary, because `job_kill` takes a handle and `job_wait` takes a
+cgroup. Nothing here would survive a determined spelling, and it is not supposed to have to"*
+(`crates/tools/src/exec/predicate.rs:8-17`), with the measured fact behind it: seventy-six hand-written
+spellings of a polling loop before it became one verb (`crates/tools/src/exec/host.rs:20-28`).
+
+So: **parse to tell the human what is about to happen. Never to decide whether it is safe.**
+
+---
+
+## Is a model doing the permission handling?
+
+Asked because the operator suspected it, and finding nothing would itself have been a result.
+**Four of the five: searched and absent. One has it, and it is built correctly.**
+
+**grok-build has a real LLM classifier and it fails closed** — the only model in any permission path
+in the survey. Three things about it are worth more than the fact:
+
+- **Where it sits.** *After* the tree-sitter parse and after every deterministic layer, and it can
+  only fill gaps. Order in `permission/manager/mod.rs`: hooks (`:1671`) → `evaluate_bash` parse and
+  findings (`:602`) → `GatePreflight::evaluate` (`:1661-1666`) → **managed-policy `Deny` returns at
+  `:1677`, before yolo at `:1693`** → session grants (`:1707`) → narrow policy `Allow` (`:1729`) →
+  classifier, gated on `preflight.admits_auto_classifier()` (`:1753`). **A rule-match `Ask` never
+  reaches the model; only a fail-closed `Ask` — the parser could not decompose — defers to it**
+  (`permission/gate_preflight.rs:45-53`). The model is the gap-filler for "the parser gave up", never
+  an override of a decision that was made.
+- **What it is shown, and the laundering that follows.** The **raw command string**, as `detail:
+  <cmd>` in a `## Proposed action` block (`permission/auto_mode/mod.rs:1268-1272`). The parse reaches
+  it only as a fixed, harness-owned token glossary — `unparseable_shell`, `opaque_shell`,
+  `env_injection`, `unvetted_env`, `file_write`, `dangerous_command`, `special_exec_surface`,
+  `exec_or_ambient_git`, `fail_closed_policy` (`auto_mode/security_findings.rs:11-100`) — injected as
+  a trusted system message (`auto_mode/mod.rs:1227-1237`), with findings carrying no command text by
+  construction so a hostile command cannot steer them (`security_findings.rs:1-4`). Transcript turns
+  and `AGENTS.md` are included and **marked untrusted**. So the operator's own framing is confirmed:
+  **the parse problem is not solved by the model, it is summarised for it.**
+- **Every failure path prompts; none allows.** Timeout 30 s, clamped 1–120 s
+  (`xai-grok-shell/src/util/config/resolve/auto_mode.rs:6-8`, `:190-209`), enforced at
+  `xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:886-889`. Timeout → prompt
+  (`manager/mod.rs:1966-1974`); `Unavailable` → prompt (`:1975-1983`); not wired → `Unavailable`
+  (`:1843-1856`); transport error → failure (`auto_mode/mod.rs:1517-1520`); **malformed model output
+  with findings present must not fall back to the heuristic** (`:1522-1531`); and
+  `parse_classifier_model_output` **refuses to infer `Allow` from loose prose** (`:1355-1372`).
+  Structured output is enforced by schema (`:1152-1174`). A deterministic heuristic pre-pass may
+  allow **without** a model call, but only when the finding set is empty (`:1487-1490`). Model:
+  session model by default at reasoning effort `Low`, or a dedicated slug with its own credentials via
+  `[auto_mode] classifier_model` (`xai-grok-shell/src/agent/config.rs:4388-4392`,
+  `sampler_turn.rs:796-907`, `:949-980`) — there is **no** dedicated safety mini-model default.
+
+**The four absences, with the searches that found nothing.** pi: no classifier, no safety-model
+config field, no separate key; the only hits for the search terms are an HTTP-retry "classifier"
+comment (`ai/src/utils/retry.ts:95`) and a regex constant named `DESTRUCTIVE_PATTERNS`
+(`coding-agent/examples/extensions/plan-mode/utils.ts:7`) — and there is nothing to attach one to,
+since the path short-circuits at `agent-session.ts:489-491`. opencode: a `small_model` tier **does**
+exist (`core/src/v1/config/config.ts:77`, `opencode/src/provider/provider.ts:1935-1949`) and its only
+two call sites are session-title generation (`opencode/src/session/prompt.ts:220`) and a project-copy
+handler — neither reachable from `Permission.ask`; the permission schema is purely the three literals
+`ask|allow|deny` (`core/src/v1/config/permission.ts:5`). omp: the approval path is a **pure
+function** (`src/tools/approval.ts:120-219`) with no inference call anywhere in `wrapper.ts:196-345`;
+omp *does* have a `smol` model role and several small-model subsystems, and **none is reachable from
+the permission path**; the nearest thing to a model judge is the advisor, which
+`docs/advisor-watchdog.md:5` explicitly says "does not approve actions". dsh: the auxiliary-model
+purpose enum is **closed to two values**, `'compaction' | 'session-title'`
+(`llm/llm/src/types.ts:452-457`); there is no `dsh-safety-*` package to be in or out of a preset, and
+none of the four shipped presets mounts a classifier.
+
+**And the answer to "what makes `yolo` tolerable" is: nothing does.** omp's `yolo` is *approve
+everything*, traced from `cli/args.ts:279` through `main.ts:1524-1531` to the terminal
+`return {policy: effectiveUserPolicy ?? "allow"}` at `approval.ts:167-173`. opencode's `"*": "allow"`
+materialises and regex-matches the command against `^.*$` and never inspects it. grok-build's
+`--always-approve` — aliased `--dangerously-skip-permissions` — is a bare `Decision::Allow` at
+`manager/mod.rs:1693` gated only on `!shell_forced_prompt && !hook_forced_prompt`, and **the
+findings-based floors do not apply on that path**, so the one harness that *has* a classifier does
+not consult it in blanket mode. The only thing standing above it is a root-owned `requirements.toml`
+`[ui] disable_bypass_permissions_mode` (`permission/resolution.rs:884-935`). dsh's equivalent,
+`DSH_PERMISSION_MODE=danger-full-access`, turns the sandbox off **and** sets approval policy to
+`never` in one move (`bundle/base/cordis.patch.yml:211`, `:227`) — note the asymmetry there: `never`
+means *auto-reject* when paired with a confining sandbox, and *nobody asks* in this preset.
+
+---
+
+## What is worth copying, and what is worth avoiding
+
+### Copy
+
+1. **dsh's whole sandbox seam shape, and its three properties before its mechanism.** Fail closed on
+   no backend (`sandbox-local/src/index.ts:492-510`); choose the backend by **running `true` under
+   the candidate profile** rather than sniffing a version (`:68-112`, `:513-539`); and **report
+   partial enforcement as partial, in the code, with reasons** (`:181-186`). letibot already has the
+   vocabulary for the third — `describe()` naming the absence — and the first is `NoAdjudicator`'s
+   existing discipline applied one layer down.
+2. **dsh's vendored-helper-with-source pattern.** A static-musl binary that self-restricts and then
+   `execvp`s (`native/system/packages/entry/src/main.c:254-295`), with a documented CLI contract, is
+   how you get Landlock without linking a sandbox crate into the harness and without trusting a
+   third party's rule ordering. Note that **grok-build pins `nono` exactly for that precise reason** —
+   a rule-ordering change re-opened a macOS deny bypass (`xai-grok-sandbox/Cargo.toml:23-27`). The
+   vendored-source approach makes that risk auditable instead of pinned.
+3. **dsh's `sandbox/mode`-change fence for a persistent shell** (`terminal/terminal-bash/src/index.ts:
+   37-62`). Confinement applied once at spawn plus a hard error on any later policy change is the
+   correct answer to "a persistent shell defeats per-call checks", and it is the only correct answer
+   in the survey.
+4. **dsh's boot-time bootstrap-env refusal** (`boot/app-boot/src/index.ts:93-113`, `:117`,
+   throwing at `:167-181`). A project-supplied `.env` may not set `PATH`, `NODE_OPTIONS`,
+   `LD_PRELOAD`/`LD_AUDIT`, `BASH_ENV`, `SHELLOPTS`, `PYTHONSTARTUP`, `GIT_SSH_COMMAND`, or any
+   `DSH_*`/`DYLD_`/`BASH_FUNC_` name. The stated rationale is exactly right — `BASH_ENV` "runs a file
+   of the project's choosing on every single `bash -c` the bash tool issues". **Nobody else in the
+   survey has this**, and it closes clone-a-repo-and-own-the-agent. It is perhaps twenty lines.
+5. **dsh's one-shot-only grant vocabulary** (`interaction/user-approval/src/types.ts:32`,
+   `index.ts:204`). Having no "always" option at all is a defensible position that makes the entire
+   §6 class of widening bugs unrepresentable. If letibot keeps `allow_session`, it should at least
+   adopt dsh's separation: **persist a mode, never a grant** (`sandbox-policy/src/session-mode.ts:
+   28-37`).
+6. **dsh's unknown-concurrency-is-exclusive default** (`core/tools/src/index.ts:1261-1271`): a tool
+   that does not declare itself concurrency-safe is treated as a barrier. Fail-safe by construction,
+   in the same idiom as omp's tier default.
+7. **grok-build's grant round-trip requirement** (`permission/manager/bash_grants.rs:25-32`,
+   `:84-105`). Re-parse the joined grant label and require it to yield exactly the same single argv
+   spanning the whole script, and refuse to persist a label that does not re-derive at or above the
+   minimum scope. This kills "approve `git status`, get a grant that also matches
+   `git status; rm -rf /`" — and letibot needs it the moment it moves off `tool|class` keying.
+8. **grok-build's exec-vehicle list with pinned scope** (`permission/policy.rs:609-624`; pinning at
+   `manager/mod.rs:422-429`, `:718-722`; never minting segment grants at `bash_grants.rs:60-79`). The
+   right response to `xargs`/`sudo`/`ssh`/`docker`/`npx` is not to parse their payloads but to refuse
+   to let a *prefix* grant cover them at all.
+9. **grok-build's basename normalisation before any list lookup** (`policy.rs:628-636`), which omp
+   also does (`shell-tokenize.ts:239`). `/bin/rm` and `rm` must be the same key. opencode's failure to
+   do this creates two disjoint rule namespaces and silently skips its own path scan.
+10. **grok-build's classifier architecture, if letibot plugs a model into §11.7.** Specifically: put
+    it **after** every deterministic layer and let it fill only fail-closed gaps
+    (`gate_preflight.rs:45-53`); route **every** failure — timeout, transport, unwired, malformed — to
+    a prompt, never an allow (`manager/mod.rs:1966-1983`, `auto_mode/mod.rs:1517-1531`); **refuse to
+    infer an allow from loose prose** (`:1355-1372`); enforce a response schema (`:1152-1174`); and
+    give the model harness-owned finding tokens that carry no attacker-controlled text
+    (`security_findings.rs:1-4`) alongside explicitly-untrusted context.
+11. **grok-build's project-config asymmetry** (`xai-grok-sandbox/src/profiles.rs:117-133`): a
+    workspace file may **add** a profile name but never **redefine** a global one. A hostile repo
+    cannot hollow out a trusted profile.
+12. **omp's approve-the-post-revision-input ordering** (`extensibility/extensions/wrapper.ts:206-208`,
+    `:246-250`), which closes the mutation-after-approval hole pi documents as present
+    (`extensions/types.ts:942-943`).
+13. **pi's no-try/catch-on-the-gate** (`core/extensions/runner.ts:982-1003`): a throwing permission
+    handler must propagate and block, not be swallowed. letibot's `NoAdjudicator` already has this
+    property; the note is to keep it when a real adjudicator is wired, and to add the timeout pi
+    lacks.
+
+### Verdicts on the two candidates the brief named
+
+**omp's omitted-`approval`-defaults-to-`exec` — the construction is right, the citation is wrong, and
+the default configuration neutralises it.** The file is `packages/coding-agent/src/tools/approval.ts`
+and lines 70-71 are `override:` and a spread, not the default; the real fallback is at **`:77`**
+(`tool.approval` undefined, a number, an invalid string, `null`, or an array) and **`:63`** (object
+form with a missing or malformed `tier`). `ToolTier` is `"read" | "write" | "exec"` (`:29`, ranked
+`:31-35`), and `exec` is not "requires approval" — it is the **top rank**, compared against the mode's
+ceiling (`:37-41`, `:100-102`). Since `tools.approvalMode` defaults to **`yolo`**
+(`src/config/settings-schema.ts:4123-4126`), whose ceiling *is* `exec`, an unclassified tool is
+**auto-allowed, not prompted**. So: **copy the construction, and take the lesson that a fail-safe
+default is worth nothing behind a ceiling set to the top.** letibot's equivalent already exists and is
+better placed — `Access::is_unattended` is true for `Read` and `Session` **only**, and the
+session-state tool that *widens* what a session may do (`exit_plan_mode`) declares `Write` and goes to
+the gate like any other write (`crates/tools/src/schema.rs:53-66`). That is a fail-safe default with no
+mode able to raise it. Keep it that way; do not add a `yolo`.
+
+**grok-build's `AccessKind` carrying the argument — verified, and stronger than the brief knew.** The
+enum is `permission/types.rs:111-128` and the argument genuinely is the primary match key for `Bash`:
+word-boundary prefix matching for ordinary commands (`manager/mod.rs:721-728`, `:308-312`) but
+**exact whole-command matching for dangerous verbs and exec vehicles** (`:718-722`, `:422-429`), plus
+the round-trip check above. Approving `Bash(git status)` does not grant `Bash(*)`. Two caveats: the
+same file has tool-scoped, argument-blind grants for other tools —
+`AccessKind::Edit(_) if allow_edits_for_session => grant_allow(...)` at `manager/mod.rs:1159` means
+one "allow edits" covers every subsequent edit at any path — and grants persist **per git repository**
+at `<grok_home>/sessions/<url-encoded-repo-root>/permission.toml`
+(`permission/state.rs:114-122`, `:189-195`), merged rather than clobbered on write (`:369-382`), which
+is a good property with an acknowledged read-modify-write race.
+
+**grok-build's catch-all — worse than the brief said.** Not `:284` but **`:286`**, and there is a
+second at **`:330`**. See §"grok-build" above. The general lesson for letibot: **an exhaustive match
+with no catch-all, enforced by the compiler.** letibot's `Access` enum is five variants
+(`crates/tools/src/schema.rs:24-40`, the fifth added mid-pass) and every tool declares one explicitly; that is the property to
+protect. A `#[non_exhaustive]` input enum matched with `_ =>` is how grok-build ended up
+auto-approving a scheduler.
+
+**opencode's `always: ["*"]` — verified in effect, refined in location, and worse in consequence.**
+`permission/index.ts:145-151` is the loop; the `["*"]` comes from a dozen callers (`read.ts:258`,
+`write.ts:57`, `edit.ts:105`, …). The real severity is elsewhere: because `evaluate` uses `findLast`
+over `rulesets.flat()` with `approved` searched **last** (`index.ts:29-33`, `:73`), **one "Always"
+click silently disables any config `deny` the pattern covers** — including opencode's own `.env`
+guard. So the lesson is not just "don't widen a grant to `*`" but **"a grant and a rule must not live
+in one last-match-wins list."** letibot already gets this right in the other direction: `NEVER_WRITE`
+is evaluated before any adjudicator and overridable by none (`crates/tools/src/adjudicate.rs:896`,
+`:712-718`).
+
+### Avoid
+
+- **A parser as the primary boundary.** See §"the parse, quantified". Three harnesses built one;
+  the best of them is defeated by an alias table it never reads.
+- **Any fail-open on the deciding path.** opencode's `shell.ts:282` (no patterns ⇒ no prompt), omp's
+  `bash.ts:679` (unmatchable ⇒ `exec`), pi's example sandbox `index.ts:281-284` (init failed ⇒
+  unconfined, notify only), dsh's hook runner `hook-protocol/src/runner.ts:96-105` (hook error ⇒ turn
+  proceeds) and its invalid-regex-matcher containing to a non-match (`matcher.ts:24-28`) so **a
+  malformed deny hook silently stops matching**. Every one of these converts "nobody decided" into
+  "approved" while reading as protection.
+- **A boundary that covers one of two paths to the same asset.** pi's example sandbox confines the
+  bash child and not the in-process `fs` tools, so its own `denyRead: ["~/.ssh"]` is enforced against
+  `cat` and not against `read`. dsh avoids this deliberately: bash and `write`/`edit` derive the same
+  writable-root allowlist from one canonical symlink-resolving helper "so the two cannot drift"
+  (`sandbox/sandbox/src/roots.ts:52-55`), and containment compares **filesystem identity (`dev`/`ino`)
+  rather than string prefixes** (`fs/fs-sandbox/src/containment.ts:58-76`). Copy dsh's version of
+  this; avoid pi's.
+- **A write fence with no read fence.** dsh's own gap. It stops damage and not theft, and under its
+  shipped composition `cat ~/.ssh/id_rsa | curl -T- …` is fully permitted.
+- **A model-facing description that claims a boundary the composition does not enforce.** dsh's
+  persistent-bash tool tells the model "You don't have access to the internet via this tool"
+  (`preset/agent-presets/presets/minimal/agent.cordis.yml:44`) and nothing enforces it. This is the
+  same defect class as this document's §3.2 finding about opencode's falsely-claimed read-before-write.
+- **Deferring safety to a composition or a preset that a later file can swap out.** dsh's `minimal`
+  preset shadows the confining filesystem with the bare one
+  (`presets/minimal/agent.cordis.yml:72-83`); `sdk-minimal` mounts no approval service at all
+  (`bundle/sdk-minimal/cordis.patch.yml:41-44`). Because a preset *is* a composition, authoring one
+  "carries the same trust as shell access" (`bundle/web-app/cordis.patch.yml:471-478`) — which is
+  honest, and also means the product's safety is not a property of the product.
+- **A hierarchical, permanent trust grant.** pi's `trust.json` walks up the directory tree and offers
+  "Trust parent folder" (`coding-agent/src/core/trust-manager.ts:44-58`, `:71-82`). Trusting `~` once
+  trusts every repository forever.
+- **Environment inheritance by default.** Four of five spread the parent environment into the child
+  (`pi coding-agent/src/utils/shell.ts:147`; `opencode/src/tool/shell.ts:423`; `omp
+  exec/non-interactive-env.ts:111-135`; letibot `crates/tools/src/exec/host.rs:442-443`), and opencode
+  *adds* a credential first (`config/config.ts:505-506`). grok-build has the mechanism and defaults it
+  to a no-op (`xai-grok-tools/src/util/shell_env_policy.rs:55-66`), with its secret patterns gated
+  behind `ignore_default_excludes: false` (`:121-127`, `:78-80`). Only dsh scrubs by default — and
+  note that its regex heuristic catches `AWS_SESSION_TOKEN` and misses `GITHUB_PAT`, `NPM_AUTH`, and
+  a `DATABASE_URL` with an inline password (`subprocess/subprocess/src/index.ts:64-79`). **A denylist
+  over environment names is the wrong shape; use an allowlist.**
+- **Blanket-approve modes that skip the layer you built.** grok-build's `--always-approve` does not
+  consult the classifier and does not apply the findings floors.
+
+---
+
+## What letibot would have to build
+
+§11.4's guest boundary does not exist, and the exec substrate is explicit that it "is not a sandbox":
+a spawned command reads the operator's entire filesystem (`crates/tools/src/backend.rs:164-165`, `:212`, `:542`;
+`crates/tools/src/builtins/bash.rs:111-113`). Given that, and given that the survey found two working
+designs, the order below is chosen to put the cheapest correctness fixes before the boundary, and the
+boundary before the parser — because the parser is the thing not to build.
+
+**Primitives measured on this box, read-only, 2026-09-10.** Kernel `7.0.0-31-generic`.
+`/sys/kernel/security/lsm` = `lockdown,capability,landlock,yama,apparmor,ima,evm` — **Landlock is
+active, not merely compiled** (`CONFIG_SECURITY_LANDLOCK=y`,
+`CONFIG_LSM="landlock,lockdown,yama,integrity,apparmor"`). A version probe of syscall 444 returns
+**Landlock ABI 8**, well past ABI 4, which is where TCP bind/connect restriction arrives.
+`/usr/bin/bwrap` is present with an AppArmor profile `bwrap-userns-restrict`, which matters because
+`kernel.apparmor_restrict_unprivileged_userns` is `1`. `unshare`, `nsenter` and `systemd-run` are
+present; **`firejail`, `podman`, `docker`, `runsc` and `nsjail` are absent**. The delegated cgroup v2
+subtree `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service` is owned by `dead` with
+`cgroup.controllers = cpu memory pids` — note **no `io`**.
+
+So: **Landlock ABI 8 in-process is available, needs no helper binary and no privilege, and is the
+right primitive.** bwrap is available as the fallback for the deny-a-subpath case Landlock cannot
+express — which is exactly the split both grok-build (`xai-grok-sandbox/src/profiles.rs:403-405`) and
+dsh independently arrived at.
+
+**0. Remove verbs before confining them.** The cheapest item is not a sandbox. letibot's own
+`crates/tools/src/exec/predicate.rs:8-17` states the principle and `crates/tools/src/exec/host.rs:20-28` records the measurement behind it:
+seventy-six spellings of a polling loop before it became one verb; `job_wait` takes a handle and
+therefore has no predicate that can match its own waiter. Before building a boundary, ask which verbs
+it is being asked to make safe and delete the ones that have handle-shaped replacements. This is the
+only item on the list that *reduces* total mechanism.
+
+**1. Fix the facts the gate already asserts. Free, and a correctness bug rather than a feature.**
+Stop `path_is_inside` from returning `true` for a call with no `path` (`crates/tools/src/runtime.rs:213-216`) — a `bash` ask must not carry the fact "the path is inside the session's workspace". Add
+`command` to `target_of` (`crates/tools/src/adjudicate.rs:1092-1101`) so the summary line names the
+command. Do not head/tail the middle of a `command` argument the way a file body is spilled
+(`:375-386`). None of this needs a boundary and all of it currently misleads the only adjudicator
+that exists.
+
+**2. Wire what is already built.** `protect_listener` has one caller and it is a test
+(`crates/tools/tests/exec.rs:98`), so `protected()` is empty in production and half of
+`predicate::examine` is dead code — including the half that would catch the bracket trick the module
+header says was measured five times in one session. Landed is not running.
+
+**3. Landlock, in-process, applied before the first tool runs.** Highest ratio of boundary to effort
+available here, for five reasons: it is per-process and **inherited across `exec`**, so it covers the
+shell *and* everything the shell spawns — which is the gap no path check can close and the reason
+grok-build's alias defeat does not matter under a boundary; it needs no helper binary, no setuid, no
+namespace and no daemon; it is **irrevocable once applied**, so confined code cannot undo it; support
+is detectable at startup, so "no boundary" can be *reported* rather than silently skipped; and one
+rule — read+write under the workspace root, read on the toolchain paths a build needs, **nothing under
+`$HOME` except the workspace** — subsumes the entire `NEVER_WRITE` string list and does it as a
+mechanism instead of a spelling, killing every quoting bypass in one move.
+
+Take three design decisions from dsh here, not just the mechanism: **fail closed** when no backend
+works rather than warning and continuing as grok-build does
+(`sandbox-local/src/index.ts:492-510` versus `xai-grok-sandbox/src/lib.rs:194-206`); **probe
+functionally**, by running `true` under the candidate profile (`:68-112`); and **derive the writable
+root set from one canonical symlink-resolving helper shared by `bash` and `write`** so the two cannot
+drift (`sandbox/sandbox/src/roots.ts:52-55`), comparing by `dev`/`ino` rather than string prefix
+(`fs/fs-sandbox/src/containment.ts:58-76`). That last one also fixes the non-existent-leaf
+symlink gap in `crates/tools/src/backend.rs:297` as a side effect, by making the check a boundary instead of a
+canonicalisation.
+
+State the cost honestly: **Landlock is path-based and knows nothing about a command string**, so it
+does not tell you *what* ran — it makes the question less important. And its network rules are
+**TCP-only**, so UDP and therefore DNS survive it.
+
+**4. Environment, at the same time as step 3, because they cover disjoint assets.** An API key in the
+environment is not on the filesystem, so no path rule touches it. `env_clear` plus an **allowlist**
+(not dsh's name-regex denylist, which misses `GITHUB_PAT` and `NPM_AUTH`) at
+`crates/tools/src/exec/host.rs:442-443`. Add dsh's boot-time refusal for `BASH_ENV`, `LD_PRELOAD`,
+`LD_AUDIT`, `PATH`, `NODE_OPTIONS` and friends
+(`boot/app-boot/src/index.ts:93-113`): twenty lines, no OS mechanism, and it closes
+clone-a-repo-and-own-the-agent.
+
+**5. Egress, and only after 3.** Two options and they are not equal. Landlock TCP connect rules are
+in-process and need no helper, but are TCP-only and per-port rather than per-host. A network namespace
+is total but needs a helper to set up veth or a proxy. And letibot's §11.4 already says the boundary
+explicitly does **not** protect the network because the agent needs real credentials. So the honest
+first version is not "block egress" but **"the child gets a different network identity from the
+harness"**, which is a firecode-shaped question rather than a tools-crate one. Note that grok-build's
+answer — a per-child seccomp filter denying `connect`/`bind`/`sendto`/`sendmsg`/`listen`/`accept`
+plus the three `io_uring` entry points (`xai-grok-sandbox/src/child_net.rs:180-198`) — is
+instructive for two reasons: it blocks **operations, not address families** (`socket` is absent from
+the list), and it deliberately keys on the *configured* profile rather than on whether Landlock
+succeeded, because in a degraded state the seccomp filter is the only enforcement left
+(`src/lib.rs:85-90`).
+
+**6. Grant granularity, once there is a boundary to make it meaningful.** Move off `tool|class`
+keying (`crates/tools/src/adjudicate.rs:876`) to grok-build's shape: argument-scoped, with the
+**round-trip requirement** (`bash_grants.rs:25-32`), **exact-whole-command pinning for an exec-vehicle
+head** (`policy.rs:609-624`), and grants kept in a list that a `deny` row still outranks — which
+letibot already has right (`crates/tools/src/adjudicate.rs:896`) and opencode gets wrong.
+
+**7. Resource limits. Real work, not free, and lowest priority.** This looked cheap and is not:
+`crates/tools/src/exec/scope.rs:23-28` deliberately enables **no** controller in
+`cgroup.subtree_control`, and the documented reason is sound — cgroup v2's no-internal-processes rule
+would make the harness's own cgroup illegal. So `memory.max`/`pids.max` need the scope tree
+restructured so interior nodes hold no processes. The controllers *are* delegated on this box
+(`cpu memory pids`), but the layout change is the work, and `io` is not available at all.
+
+**What not to build: a shell-command parser as the boundary.** Parse to *tell the human what is about
+to happen* — that is a real and sufficient job, and letibot's `arguments_preview` already does most
+of it. Never to decide whether it is safe. And if §11.7's model adjudicator is wired, put it exactly
+where grok-build puts its classifier: after every deterministic layer, filling only fail-closed gaps,
+with every failure path routed to a prompt — which is already `NoAdjudicator`'s discipline
+(`crates/tools/src/adjudicate.rs:484-506`) applied to a second implementation of the same trait.
+
+---
+
+## What could not be determined
+
+Stated plainly rather than guessed. This section's own gaps first:
+
+- **Two letibot findings above are read-derived and were not executed**, per the read-only
+  constraint: the `predicate::examine` bracket-trick gap (`crates/tools/src/exec/predicate.rs:140-165`, `:204-208` with an
+  empty `protected()`), and the non-existent-leaf symlink write-through in `crates/tools/src/backend.rs:297`/`:425`.
+  The code paths are cited precisely so both are checkable; neither was confirmed by running a test.
+- **Landlock ABI 8 was measured on this box, not on any other.** The claim that ABI ≥ 4 provides TCP
+  bind/connect restriction is from the ABI history, not from a probe of the rule types.
+- **grok-build:** whether the 15 `restrict_child_network` call sites cover *every* process spawn in
+  the tree — the calls were enumerated, the spawns were not, and a missed site is silently unfiltered
+  (the doc comment at `child_net.rs:266-268` states the requirement explicitly). Whether `nono`
+  0.53.0's `Sandbox::apply` is best-effort or refuses on old kernels: that is inside the third-party
+  crate, unopened; `support_info().is_supported` (`src/lib.rs:193-206`) is the only signal the harness
+  reads. Whether MCP servers get filesystem confinement beyond the inherited process-wide ruleset.
+  Whether the agent can kill the harness or the classifier (`kill`/`pkill` are on the dangerous-prompt
+  list at `manager/mod.rs:516-518`, but no anti-self-tampering check was found). Effective Windows
+  enforcement: the `enforce` path is `cfg(unix)`-only (`src/lib.rs:179`, `:241`).
+- **dsh:** the `cordis.patch.yml` row that mounts `bash-sandbox` as the default shell executor was
+  not read directly; "on by default" is inferred from the two facts above. Whether any real
+  deployment ships a `PreToolUse` hook that gates commands — the two hook
+  bridges and example configs exist but no shipped `hooks.json` was found in the default compositions,
+  and the hook packages are not mounted in `bundle/base/cordis.patch.yml`. Whether `pwsh-sandbox`
+  reaches parity with `bash-sandbox` (`docs/tool-catalog.md:263` says the pwsh tool mirrors bash
+  "minus sandbox controls", unresolved against the sandboxed executor). **The `packages/e2b` group was
+  not opened** — it is a remote-executor seam and may replace `ctx.shell` with real VM isolation,
+  which would change the §1 picture for compositions that use it. Whether the experimental Python
+  code-runtime's rlimit confinement is reachable from any shipped preset (it spawns outside
+  `ctx.sandbox`, `experimental/code-runtime-python/src/index.ts:1184`).
+- **opencode:** whether tree-sitter-bash surfaces commands inside **process substitution** `<(…)` as
+  `command` descendants. The mechanism would catch them if the grammar nests them and the analogous
+  `$(…)` case is test-covered (`test/tool/shell.test.ts:359-368`), but there is no test for `<(…)`.
+  How often the `shell.ts:282` fail-open is reachable in practice — the code path is unambiguous, its
+  trigger frequency is not establishable by reading. Whether any per-session concurrency limit
+  constrains simultaneous shell invocations. `node_modules` was not audited; the dependency conclusion
+  rests on `bun.lock`.
+- **omp:** `src/tools/hub/`, `computer/`, and the SSH read path were not opened beyond their approval
+  tiers. The on-disk resolution order for `tools.approval` was not verified, so it is cited as a
+  config *key* rather than a file path. Whether `xargs` is caught for every argument shape — it is
+  flagged unhandled from its absence from both denylists (`shell-tokenize.ts:90-202`), not from a
+  test, and `find -exec` is caught only *incidentally* because `-exec` matches `/^-[^-]*[ce]$/`
+  (`:205`).
+- **pi:** `@anthropic-ai/sandbox-runtime`'s internals — the package is not vendored, only pinned
+  (root `package.json:58`), so what its seatbelt profile or bwrap invocation actually permits is
+  outside what can be cited from pi. The Gondolin example extension's source was not read (only the
+  prose claim at `coding-agent/docs/containerization.md:40-42`).
+- **Not attempted anywhere:** nothing was built, run, or started. No harness was executed. `:8080`,
+  `:8100`, `:8101`, the ollama units and harnessd were untouched. `omo/`, `omo-slim/` and `crush/`
+  were not opened.
