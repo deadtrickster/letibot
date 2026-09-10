@@ -499,12 +499,12 @@ pub mod roles {
 
     /// The only role that can run a command.
     ///
-    /// Eight tools, **exactly** at §8.4's ceiling, and the arithmetic is the
-    /// argument: the exec surface is five seats (`bash` plus the four job verbs,
-    /// which cannot be fewer — starting, watching, reading and stopping are four
-    /// different questions and three harnesses independently found the same
-    /// shape), leaving three for everything else. `read`, `grep` and `read_spill`
-    /// take them.
+    /// **Nine tools, one over §8.4's ceiling, and the overrun is declared rather
+    /// than absorbed.** The arithmetic: the exec surface is five seats (`bash`
+    /// plus the four job verbs, which cannot be fewer — starting, watching,
+    /// reading and stopping are four different questions and three harnesses
+    /// independently found the same shape), `monitor` is the sixth, and `read`,
+    /// `grep` and `read_spill` take the rest.
     ///
     /// What that gives up is `glob`, and it is given up on purpose: a session with
     /// a shell has a worse-but-real substitute for it in `ls` and `find`, and it
@@ -512,8 +512,32 @@ pub mod roles {
     /// "bounded, never truncated" true rather than a slogan. Dropping the honest
     /// one to keep the convenient one would be trading a correctness property for
     /// a search.
+    ///
+    /// # Why the ninth seat is taken rather than traded for
+    ///
+    /// The ceiling's evidence is *"past ~5–7 MCP servers small models get worse at
+    /// choosing tools"* — it is about **confusion between similar choices**. The
+    /// monitor surface was cut twice against exactly that before it was allowed to
+    /// cost a seat:
+    ///
+    /// - declaring, renewing and retiring are **one** tool taking an `action`,
+    ///   because all three act on the same named handle;
+    /// - listing monitors is **not a tool at all**. It is in `job_list`, next to
+    ///   the jobs, the scopes, the promotions and the reap log, because "what is
+    ///   running and what is watching" is one question.
+    ///
+    /// What is left cannot be folded into `job_wait` without making the model's
+    /// worst mistake here spellable: `job_wait` blocks **inside** the turn and a
+    /// monitor watches **across** turns, and a flag that switched between them
+    /// would let a model believe it had waited when it had not. T24 names them as
+    /// two primitives for that reason.
+    ///
+    /// So `max_tools` is 9 here and [`DEFAULT_MAX_TOOLS`] everywhere else. A
+    /// ceiling that is quietly raised for everybody is not a ceiling; one role
+    /// declaring its own number, with the trade written down, is a decision
+    /// somebody can reverse.
     pub fn m2_runner() -> Role {
-        Role::new(
+        let mut r = Role::new(
             "runner",
             &[
                 "read",
@@ -524,8 +548,11 @@ pub mod roles {
                 "job_output",
                 "job_wait",
                 "job_kill",
+                "monitor",
             ],
-        )
+        );
+        r.max_tools = 9;
+        r
     }
 }
 

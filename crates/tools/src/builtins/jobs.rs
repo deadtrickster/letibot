@@ -60,7 +60,7 @@ fn no_process_host(ctx: &InvokeCtx<'_>) -> Invocation {
 }
 
 /// Clause 1 for a job id that is not there: the list, and the nearest.
-fn unknown_job(host: &dyn ProcessHost, asked: &str) -> Invocation {
+pub(crate) fn unknown_job(host: &dyn ProcessHost, asked: &str) -> Invocation {
     let jobs = host.jobs();
     let mut body = if jobs.is_empty() {
         // A denominator of zero. `no such job` over an empty table and `no such
@@ -121,11 +121,13 @@ impl Tool for JobList {
         ToolSchema::new(
             "job_list",
             "List the commands this session has started, what state each is in, how \
-             much output it has produced and which scope owns it — and what every \
-             scope that has already ended killed on its way out. Takes no arguments; \
-             optionally `scope` to show only one scope's jobs. Use this instead of \
-             `ps` or `pgrep`: it reads cgroup membership, so it has no pattern that \
-             could match the process asking.",
+             much output it has produced and which scope owns it — plus every monitor \
+             that is watching and every one that has settled with the reason it did, \
+             every job that was moved to a different scope, and what every scope that \
+             has already ended killed on its way out. Takes no arguments; optionally \
+             `scope` to show only one scope's jobs. Use this instead of `ps` or \
+             `pgrep`: it reads cgroup membership, so it has no pattern that could \
+             match the process asking.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -204,6 +206,69 @@ impl Tool for JobList {
             body.push_str(&format!("\n{} scope(s) open:\n", scopes.len()));
             for s in &scopes {
                 body.push_str(&format!("  {} — {}\n", s, s.kind.reaped_when()));
+            }
+        }
+
+        // THE MONITORS. T24 requirement 2: *"the head can show what is watching
+        // and for whom … an invisible watcher is an unreapable one."* They are
+        // here rather than behind a `monitor_list` of their own because "what is
+        // running and what is watching" is one question, and a second listing
+        // nobody opens is how a watcher becomes invisible without anybody hiding
+        // it.
+        if let Some(monitors) = host.monitors() {
+            let live = monitors.list();
+            let done = monitors.history();
+            body.push_str(&format!(
+                "\n{} monitor(s) watching, {} settled",
+                live.len(),
+                done.len()
+            ));
+            if live.is_empty() && done.is_empty() {
+                body.push_str(
+                    " — this session has declared none. That is a fact about this \
+                     session, not evidence that nothing is worth watching.\n",
+                );
+            } else {
+                body.push('\n');
+            }
+            for m in &live {
+                body.push_str(&format!(
+                    "  {} — watching {}\n    owner: {} — {}\n    declared by: {}; {} \
+                     left of a {:.0}s ttl\n",
+                    m.name,
+                    m.watch.describe(),
+                    m.owner,
+                    m.owner.kind.reaped_when(),
+                    m.declared_by,
+                    m.remaining().map(secs).unwrap_or_else(|| "none".into()),
+                    m.ttl().as_secs_f32(),
+                ));
+            }
+            for m in &done {
+                // **Why it fired, not that it did.** A settled monitor whose
+                // record said only "done" would have thrown away the answer it
+                // was declared to get.
+                body.push_str(&format!(
+                    "  {} — was watching {} — {}\n",
+                    m.name,
+                    m.watch.describe(),
+                    m.settled().map(|f| f.word()).unwrap_or_default()
+                ));
+            }
+        }
+
+        // THE PROMOTIONS. A lifetime that changed under the model is a fact
+        // somebody has to be able to read back: a job whose owner is now the
+        // session, when the model started it in the turn, is a different thing
+        // from one that started there.
+        let promotions = host.promotions();
+        if !promotions.is_empty() {
+            body.push_str(&format!(
+                "\n{} job(s) moved to a different scope this session:\n",
+                promotions.len()
+            ));
+            for p in &promotions {
+                body.push_str(&format!("  {}\n", p.summary()));
             }
         }
 
@@ -664,7 +729,7 @@ impl Tool for JobKill {
 }
 
 /// A scope name from the model to a scope this host has open.
-fn resolve_scope(host: &dyn ProcessHost, name: &str) -> Option<ScopeId> {
+pub(crate) fn resolve_scope(host: &dyn ProcessHost, name: &str) -> Option<ScopeId> {
     let open = host.scopes();
     if let Some(s) = open.iter().find(|s| s.name == name) {
         return Some(s.clone());
@@ -675,7 +740,7 @@ fn resolve_scope(host: &dyn ProcessHost, name: &str) -> Option<ScopeId> {
     open.iter().find(|s| s.kind == kind).cloned()
 }
 
-fn unknown_scope(host: &dyn ProcessHost, asked: &str) -> Invocation {
+pub(crate) fn unknown_scope(host: &dyn ProcessHost, asked: &str) -> Invocation {
     let open = host.scopes();
     let mut body = if open.is_empty() {
         "this session has 0 scopes open, so there is nothing to look in. A scope is \

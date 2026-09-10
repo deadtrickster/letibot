@@ -246,6 +246,7 @@ pub fn runner_tools(
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;
     reg.register(Box::new(builtins::jobs::JobKill))?;
+    reg.register(Box::new(builtins::monitor::Monitor))?;
     Ok(reg)
 }
 

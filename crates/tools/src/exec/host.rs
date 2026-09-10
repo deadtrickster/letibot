@@ -253,6 +253,15 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
+    /// The workspace root, for a tool that must turn a relative path into a real
+    /// one — [`crate::builtins::monitor`] is the caller.
+    ///
+    /// `None` on a host with no opinion about where it is, which is a different
+    /// fact from a root of `/` and is not rendered as one.
+    fn workspace(&self) -> Option<&std::path::Path> {
+        None
+    }
+
     /// The live handle for a job, so a monitor can be declared against the job
     /// itself rather than against an id it would have to look up every tick.
     ///
@@ -1009,6 +1018,10 @@ impl ProcessHost for HostProcesses {
 
     fn job_handle(&self, job: &JobId) -> Option<Arc<Job>> {
         self.find(job)
+    }
+
+    fn workspace(&self) -> Option<&std::path::Path> {
+        Some(&self.root)
     }
 
     fn protected(&self) -> Vec<Protected> {
