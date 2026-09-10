@@ -1,0 +1,394 @@
+//! `bash` — run a command in the workspace, in a cgroup that owns its lifetime.
+//!
+//! The single largest gap in `docs/tool-survey.md` §5: *"a shell / exec tool — all
+//! five. letibot has none."* What makes ours different is not the shell; it is
+//! that the process it starts **has an owner**, and that the two commands a model
+//! most often reaches for in a shell — kill-by-pattern and wait-by-pattern — are
+//! answered by tools with no pattern in them.
+//!
+//! # Three refusals, and each hands over what the retry needs
+//!
+//! | refusal | what it hands over |
+//! |---|---|
+//! | the gate has nobody to ask | `NotRun` — *nobody decided*, never `Denied`. [`crate::runtime::NoBoundary`] |
+//! | the backend cannot start processes | which constructor would, and the fact that it is still not a sandbox |
+//! | the command's predicate matches the process running it | the pids, the diagnosis, and the handle-shaped command ([`crate::exec::predicate`]) |
+//!
+//! # Clause 5, and where the rest of the output is
+//!
+//! The inline body is capped by line and by byte and **says so with its
+//! denominator**. The rest is not in a spill store and is not gone: every `bash`
+//! call is a job, and `job_output` reads the job's capture. `docs/tool-survey.md`
+//! §3.5's worst case — a clip *"with no locator and no way back"* — is not
+//! reachable, because the locator is the job id the result already printed.
+//!
+//! Shell output keeps the **tail**. A build that fails prints the error last.
+//!
+//! # A timeout is not a kill
+//!
+//! A foreground command that outruns its deadline is **promoted to the session
+//! scope and reported as still running**, with its job id. Killing it would throw
+//! away work the model asked for; blocking would hold the turn. The promotion is
+//! in the result, because a scope change the model was not told about is a
+//! lifetime it cannot reason about.
+
+use std::time::Duration;
+
+use serde_json::Value;
+
+use crate::exec::predicate::{Verdict, annotation, refusal};
+use crate::exec::{JobState, ProcessHost, ScopeKind, SpawnRequest, Waited};
+use crate::runtime::{Invocation, InvokeCtx, Tool};
+use crate::schema::{Access, ToolSchema};
+
+pub struct Bash;
+
+/// What goes inline before the cap bites. Both are reported when they do.
+const MAX_INLINE_BYTES: usize = 30_000;
+const MAX_INLINE_LINES: usize = 400;
+/// The default deadline for a foreground command.
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// The longest one may be asked for. Past this the honest answer is `background`.
+const MAX_TIMEOUT_MS: u64 = 600_000;
+
+impl Tool for Bash {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "bash",
+            "Run a shell command in the session's workspace and return its output. \
+             Give `command`; optionally `cwd` (relative to the workspace), \
+             `timeout_ms`, and `background: true` to start it and return \
+             immediately. Every run is a job with an id: output is capped inline and \
+             the rest is read with `job_output`, a running job is watched with \
+             `job_wait` and stopped with `job_kill`. Every process lands in a cgroup \
+             owned by a scope, so a foreground command dies with the turn and a \
+             background one with the session unless you name an `scope`. Do not \
+             write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
+             process running them, and `job_kill` and `job_wait` take a job id \
+             instead of a pattern.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
+                    "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
+                    "timeout_ms": {"type": "integer", "description": "How long to wait before returning with the job still running. Ignored when background is true."},
+                    "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
+                    "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
+                    "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."}
+                },
+                "required": ["command"]
+            }),
+            // Declared as the widest thing it can do, per clause 4. Everything a
+            // shell command might do is behind this one word, which is why the
+            // gate is consulted on every call including the ones that only `ls`.
+            Access::Exec,
+        )
+    }
+
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "bash needs a command",
+                "call `bash` again with `command` set to the shell command to run.",
+            );
+        };
+        if command.trim().is_empty() {
+            return Invocation::failed(
+                "bash was given an empty command",
+                "nothing was run. Give `command` a shell command line.",
+            );
+        }
+
+        // The second gate, and it is a different mechanism from the first: a
+        // session whose backend cannot start processes refuses here however the
+        // adjudicator answered. Same asymmetry `write` keeps.
+        let Some(host) = ctx.backend.processes() else {
+            return Invocation::failed(
+                "this session's backend cannot start processes",
+                format!(
+                    "nothing was run. The backend is `{}`. A session that may run \
+                     commands is opened with `HostBackend::executable`, which needs a \
+                     delegated cgroup v2 subtree so that every process it starts has \
+                     a scope that will reap it. Note what that still does NOT give: a \
+                     command run there reads this user's whole filesystem — a cgroup \
+                     bounds a lifetime, not a view, and §11.4's guest boundary is a \
+                     different thing that is not here yet.",
+                    ctx.backend.describe()
+                ),
+            );
+        };
+
+        // T21.1 and T21.2. Before anything is started, because the diagnosis is
+        // only useful if it arrives instead of the damage.
+        let protected = host.protected();
+        let verdict = crate::exec::predicate::examine(command, &protected);
+        let mut notes: Vec<String> = Vec::new();
+        match &verdict {
+            Verdict::Refuse(h) => {
+                return Invocation::failed(
+                    "the command's process predicate matches the process that would \
+                     run it, so it was not run",
+                    refusal(command, h),
+                );
+            }
+            Verdict::Annotate(h) => notes.push(annotation(h)),
+            Verdict::Clear => {}
+        }
+
+        let background = args
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        if ctx.backend.stat(cwd).is_none() && cwd != "." {
+            let (dir, entries) = super::nearest_listing(ctx.backend, cwd);
+            return Invocation::failed(
+                format!("no directory at `{cwd}`, so nothing was run"),
+                super::render_listing(&dir, &entries, 40),
+            )
+            .with_note(format!(
+                "`{cwd}` does not exist. The listing of `{dir}` is below; run under \
+                 one of these, or drop `cwd` to run at the workspace root."
+            ));
+        }
+
+        // D4: *"if a vm is temporary then it is a session cgroup"*. A foreground
+        // command is temporary in the turn; a background one is not, and giving it
+        // the turn scope would reap it before the next call could read it.
+        let asked_scope = args.get("scope").and_then(|v| v.as_str());
+        let default_scope = if background {
+            ScopeKind::Session
+        } else {
+            ScopeKind::Turn
+        };
+        let scope = match asked_scope.map(ScopeKind::parse) {
+            None => default_scope,
+            Some(Some(k)) => k,
+            Some(None) => {
+                return Invocation::failed(
+                    format!("`{}` is not a scope", asked_scope.unwrap_or("")),
+                    "there are three and no fourth: `turn` (reaped when this turn \
+                     ends), `session` (reaped when the session ends), `explicit` \
+                     (survives the session, and needs `scope_name` so it can be \
+                     listed and ended). Nothing was run.",
+                );
+            }
+        };
+        let scope_name = args
+            .get("scope_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if scope == ScopeKind::Explicit && scope_name.is_none() {
+            return Invocation::failed(
+                "an `explicit` scope must be named",
+                "an explicit scope outlives this session, so an unnamed one is a \
+                 process nobody can refer to in order to end it — which is the leak \
+                 with an extra step. Call `bash` again with `scope_name`. Nothing \
+                 was run.",
+            );
+        }
+
+        let timeout = Duration::from_millis(
+            args.get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .clamp(1, MAX_TIMEOUT_MS),
+        );
+
+        let req = SpawnRequest {
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            scope,
+            scope_name,
+            background,
+            env: vec![],
+        };
+        let id = match host.spawn(&req) {
+            Ok(id) => id,
+            Err(e) => {
+                return Invocation::failed(
+                    "the command did not start",
+                    format!("{e}\n\nNothing is running and nothing was left behind."),
+                );
+            }
+        };
+
+        if background {
+            let view = host.job(&id);
+            let mut inv = Invocation::ok(format!(
+                "started `{id}` in the background.\n  command: {command}\n  \
+                 pid: {}\n  scope: {} — {}\n\nIt is running now. `job_wait` with \
+                 job=\"{id}\" blocks until it finishes (a deadline is required, and \
+                 its expiry is reported as its own outcome, not as completion); \
+                 `job_output` with job=\"{id}\" reads what it has written so far; \
+                 `job_kill` stops it.",
+                view.as_ref().map(|v| v.pid).unwrap_or(0),
+                scope.as_str(),
+                scope.reaped_when(),
+            ));
+            for n in notes {
+                inv = inv.with_note(n);
+            }
+            return inv;
+        }
+
+        // Foreground. Progress reports WORK DONE — bytes produced — and never
+        // "still alive": §8.5, and `liveness-indicators-measure-the-wrong-thing`.
+        let state = wait_with_progress(ctx, host, &id, timeout);
+
+        let Ok(out) = host.output(&id, 0, usize::MAX) else {
+            return Invocation::failed(
+                format!("`{id}` started but its output could not be read"),
+                "this is a harness defect, not a command failure. The process is in \
+                 its scope and will be reaped with it.",
+            );
+        };
+        let (body, capped) = clip_tail(&out.text(), MAX_INLINE_BYTES, MAX_INLINE_LINES);
+
+        let mut inv = match &state {
+            JobState::Running => {
+                // Not a failure and not a success: it is a fact, and it is the fact
+                // F5 says must not be reported as either.
+                Invocation::failed(
+                    format!("`{id}` is still running after {:?}", timeout),
+                    format!(
+                        "{}\n\nThe command did not finish inside its deadline and was \
+                         NOT killed — killing it would throw away work you asked for. \
+                         It is now in the `{}` scope, so it outlives this turn and is \
+                         reaped when the session ends. Call `job_wait` with \
+                         job=\"{id}\" and a deadline, or `job_output` with \
+                         job=\"{id}\", or `job_kill` with job=\"{id}\".",
+                        body,
+                        ScopeKind::Session.as_str()
+                    ),
+                )
+            }
+            JobState::NotScoped => Invocation::failed(
+                format!("`{id}` could not join its scope, so the command was NOT run"),
+                format!(
+                    "{body}\n\nThe wrapper failed to put the process in its cgroup and \
+                     refused to exec rather than start a process nothing would reap. \
+                     Nothing ran."
+                ),
+            ),
+            JobState::Exited { code: 0 } => Invocation::ok(body),
+            // A non-zero exit is the COMMAND's answer, not a harness failure, and it
+            // is `ok` with the code stated. Reporting it as `failed` would make a
+            // `grep` that found nothing indistinguishable from a broken tool.
+            JobState::Exited { code } => Invocation::ok(format!(
+                "{body}\n\n[exit {code}] the command ran and exited non-zero. That is \
+                 the command's answer, not a harness failure."
+            )),
+            other => Invocation::failed(
+                format!("`{id}` {}", other.word()),
+                format!("{body}\n\nThe process did not exit on its own."),
+            ),
+        };
+
+        // Clause 5's half of the bargain: the cap is stated with its denominator
+        // and the way to the rest is a call, not advice.
+        if capped || !out.complete() {
+            inv = inv.with_note(format!(
+                "output was capped inline at {MAX_INLINE_BYTES} bytes / \
+                 {MAX_INLINE_LINES} lines, keeping the TAIL. {} Call `job_output` \
+                 with job=\"{id}\" — and `offset` if you want a different window — \
+                 for the rest.",
+                out.denominator(&id)
+            ));
+        }
+        for n in notes {
+            inv = inv.with_note(n);
+        }
+        inv
+    }
+}
+
+/// Wait, emitting progress that is a measurement of work rather than a heartbeat.
+fn wait_with_progress(
+    ctx: &mut InvokeCtx<'_>,
+    host: &dyn ProcessHost,
+    id: &crate::exec::JobId,
+    timeout: Duration,
+) -> JobState {
+    let started = std::time::Instant::now();
+    let step = Duration::from_millis(500);
+    let mut last_reported = 0u64;
+    loop {
+        let left = timeout.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        match host.wait_job(id, step.min(left)) {
+            Ok(Waited::Happened {
+                state: Some(s), ..
+            }) => return s,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        if let Some(v) = host.job(id) {
+            // Only when the number MOVED. A progress event that repeats an
+            // unchanged count is the liveness signal this is not supposed to be.
+            if v.produced != last_reported {
+                last_reported = v.produced;
+                ctx.progress(format!(
+                    "`{id}`: {} bytes of output after {:.1}s",
+                    v.produced,
+                    v.elapsed.as_secs_f32()
+                ));
+            }
+        }
+    }
+    host.job(id).map(|v| v.state).unwrap_or(JobState::Running)
+}
+
+/// Keep the tail, by bytes and by lines, and say whether anything was dropped.
+///
+/// pi's split, and the reasoning is the same: `read` keeps the head of a file,
+/// shell output keeps the tail, because a command that failed says why last. The
+/// cut is on a line boundary — a head joined to a tail mid-line reads as one line
+/// that never existed.
+fn clip_tail(text: &str, max_bytes: usize, max_lines: usize) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept: Vec<&str> = if lines.len() > max_lines {
+        lines[lines.len() - max_lines..].to_vec()
+    } else {
+        lines.clone()
+    };
+    let mut capped = kept.len() < lines.len();
+    while kept.iter().map(|l| l.len() + 1).sum::<usize>() > max_bytes && !kept.is_empty() {
+        kept.remove(0);
+        capped = true;
+    }
+    (kept.join("\n"), capped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tail_is_what_survives_the_cap() {
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let (kept, capped) = clip_tail(&text, 100_000, 10);
+        assert!(capped);
+        assert!(kept.starts_with("line 90"), "{kept}");
+        assert!(kept.ends_with("line 99"), "{kept}");
+    }
+
+    #[test]
+    fn a_cut_lands_on_a_line_boundary() {
+        let text = "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\n";
+        let (kept, capped) = clip_tail(text, 15, 100);
+        assert!(capped);
+        // No partial line: whatever survived is whole.
+        assert!(text.lines().any(|l| l == kept.lines().next().unwrap()));
+    }
+
+    #[test]
+    fn the_description_declares_exec_and_says_how_to_use_the_tool() {
+        let s = Bash.schema();
+        assert_eq!(s.access, Access::Exec);
+        assert!(!s.access.is_unattended(), "exec must reach the gate");
+        assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+    }
+}
