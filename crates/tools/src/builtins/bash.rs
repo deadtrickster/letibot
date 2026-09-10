@@ -65,7 +65,11 @@ impl Tool for Bash {
              background one with the session unless you name an `scope`. Do not \
              write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
              process running them, and `job_kill` and `job_wait` take a job id \
-             instead of a pattern.",
+             instead of a pattern. When this session has a boundary, the command runs \
+             in a filesystem view rooted at the workspace: a path outside that view \
+             is absent rather than denied, and a result that says a path is not in \
+             the view is a fact about the boundary, not about whether anything is \
+             there — asking again with a different spelling will not reach it.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -106,13 +110,17 @@ impl Tool for Bash {
             return Invocation::failed(
                 "this session's backend cannot start processes",
                 format!(
-                    "nothing was run. The backend is `{}`. A session that may run \
-                     commands is opened with `HostBackend::executable`, which needs a \
-                     delegated cgroup v2 subtree so that every process it starts has \
-                     a scope that will reap it. Note what that still does NOT give: a \
-                     command run there reads this user's whole filesystem — a cgroup \
-                     bounds a lifetime, not a view, and §11.4's guest boundary is a \
-                     different thing that is not here yet.",
+                    "nothing was run. The backend is `{}`. There are two constructors \
+                     that can run commands and they are not interchangeable. \
+                     `HostBackend::confined` gives the boundary: a cgroup v2 scope \
+                     that owns the process's lifetime AND project-scoped mount, PID, \
+                     network and user namespaces, so a path outside the workspace is \
+                     absent rather than denied. `HostBackend::executable` gives the \
+                     lifetime half only — a command there reads this user's whole \
+                     filesystem, sees every process, and reaches the network, because \
+                     a cgroup bounds a lifetime and not a view. Either one refuses to \
+                     exist rather than degrade: no delegated cgroup v2 subtree, or no \
+                     usable namespaces, and the session has no exec path at all.",
                     ctx.backend.describe()
                 ),
             );
@@ -243,7 +251,33 @@ impl Tool for Bash {
                  its scope and will be reaped with it.",
             );
         };
-        let (body, capped) = clip_tail(&out.text(), MAX_INLINE_BYTES, MAX_INLINE_LINES);
+        let full = out.text();
+        let (body, capped) = clip_tail(&full, MAX_INLINE_BYTES, MAX_INLINE_LINES);
+
+        // **Absence must be legible.** A path the mount namespace does not contain
+        // produces a bare `ENOENT`, and a model reads that as *the file does not
+        // exist* — an answer about an empty haystack, and the same defect as a
+        // `grep` reporting `0` over a scope it failed to open. The confinement turns
+        // it into *"not in this session's filesystem view"*.
+        //
+        // Scanned over the WHOLE capture rather than the clipped body: a path in the
+        // dropped head is exactly the one whose diagnosis got lost.
+        //
+        // Nothing here stats the host, so the note never says whether the path
+        // exists outside — that is not a fact the model needs and not one this
+        // boundary should hand out.
+        // **And the boundary's own failure is not the command's answer.** F5, in the
+        // shape that is easy to miss: a helper that could not set up the namespaces
+        // exits with a code indistinguishable from a command's, and rendering it as
+        // `[exit 1] the command ran and exited non-zero` tells the model something
+        // false about what happened.
+        let mut launcher_failed = None;
+        if let Some(c) = host.confinement() {
+            for n in c.absence_notes(&full) {
+                notes.push(n);
+            }
+            launcher_failed = c.launcher_failure(&full);
+        }
 
         let mut inv = match &state {
             JobState::Running => {
@@ -269,6 +303,17 @@ impl Tool for Bash {
                     "{body}\n\nThe wrapper failed to put the process in its cgroup and \
                      refused to exec rather than start a process nothing would reap. \
                      Nothing ran."
+                ),
+            ),
+            // Checked before the exit code is read as an answer, because that is
+            // exactly the reading it must not get.
+            _ if launcher_failed.is_some() => Invocation::failed(
+                format!("`{id}`'s boundary did not come up, so nothing can be concluded from its exit"),
+                format!(
+                    "{body}\n\n{}\n\nThis is `not_run` in substance: the confinement is \
+                     the thing that failed, and running the command without it is not \
+                     an available outcome.",
+                    launcher_failed.clone().unwrap_or_default()
                 ),
             ),
             JobState::Exited { code: 0 } => Invocation::ok(body),

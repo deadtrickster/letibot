@@ -12,12 +12,15 @@
 //! |---|---|
 //! | **here** | every process a turn starts is a member of a cgroup owned by a scope, and a scope that ends kills its cgroup and **records what it killed** |
 //! | **here** | a shell command whose process predicate matches the process evaluating it, or a process the harness manages, is refused with the diagnosis (T21.1, T21.2) |
-//! | **not here** | §11.4's guest boundary — *the guest sees a copy of one project and nothing else of the host*. A cgroup bounds a process's **lifetime**, not what it can read. |
+//! | **here, since layer 1** | [`confine`] — project-scoped mount, PID, network and user namespaces, so a secret outside the project is **absent** rather than denied |
+//! | **not here** | the transcript edge. §3's invariant has two halves and this module delivers the first: secret bytes stay consumable inside the boundary and out of the view. *Never entering the transcript* is a choke point on tool results that `docs/boundary-and-adjudication.md` §5 still lists as open. |
+//! | **not here** | layers 2 and 3 — normalisation through a grammar, and the adjudicator. A boundary is what makes those a defence in depth rather than the only guard. |
 //!
-//! That distinction is why [`crate::backend::HostBackend::executable`] is spelled
-//! as its own constructor and says `unsandboxed` in what it reports. A session
-//! running this substrate can still read the operator's home directory. It simply
-//! cannot leak a process past the scope that started it.
+//! That distinction is why the constructors are spelled separately.
+//! [`crate::backend::HostBackend::executable`] is the **unconfined** exec path and
+//! says so in everything it reports; [`crate::backend::HostBackend::confined`] is
+//! the one that adds the namespaces, and it **fails rather than degrading** when
+//! they are not available.
 //!
 //! # Why cgroups, and what they retire
 //!
@@ -62,16 +65,22 @@
 //!
 //! | module | what |
 //! |---|---|
+//! | [`confine`] | the namespaces: the mount view, the measured [`Boundary`], and the refusal when there is none |
 //! | [`scope`] | the cgroup tree, the three scopes, and [`Reaping`] |
 //! | [`jobs`] | one running command: its capture ring, its state, its denominator |
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
 //! | [`predicate`] | T21.1 and T21.2 — what the harness knows that the model cannot |
 
+pub mod confine;
 pub mod host;
 pub mod jobs;
 pub mod predicate;
 pub mod scope;
 
+pub use confine::{
+    Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, NoConfinement, Namespace,
+    NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
+};
 pub use host::{HostProcesses, JobView, ProcessHost, Protected, SpawnRequest, Waited};
 pub use jobs::{JobId, JobState, OutputSlice};
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
@@ -99,6 +108,17 @@ pub enum ExecError {
     NoSuchJob(String),
     /// No scope by that id.
     NoSuchScope(String),
+    /// **A boundary was asked for and is not there.** Fail closed, the same shape
+    /// as [`ExecError::NoScopes`] one layer over: a command that would have been
+    /// confined is not run unconfined instead, because a boundary that silently is
+    /// not there is worse than none.
+    NoConfinement(String),
+    /// The path is outside this session's filesystem view. Distinguished from
+    /// "does not exist" **on purpose** — see [`confine`]'s rule 4.
+    NotInView { path: String, view: String },
+    /// A credential could not be made usable inside the boundary without also
+    /// making it readable, and the second is not an available outcome.
+    NoCredentialMechanism(String),
 }
 
 impl std::fmt::Display for ExecError {
@@ -115,6 +135,27 @@ impl std::fmt::Display for ExecError {
             ExecError::Spawn(e) => write!(f, "the process did not start: {e}"),
             ExecError::NoSuchJob(id) => write!(f, "no job called `{id}`"),
             ExecError::NoSuchScope(id) => write!(f, "no scope called `{id}`"),
+            ExecError::NoConfinement(why) => write!(
+                f,
+                "this session asks for a project-scoped boundary and does not have \
+                 one, so the command was NOT run. Running it unconfined is not an \
+                 available outcome here — a boundary that silently is not there is \
+                 worse than none, and a confined-looking result about an unconfined \
+                 run is the defect this refuses to produce. What is missing: {why}"
+            ),
+            ExecError::NotInView { path, view } => write!(
+                f,
+                "`{path}` is not in this session's filesystem view, so the command \
+                 was NOT run. This is the boundary and not a missing file: the view \
+                 is {view}. No other spelling of the path reaches it — the mount \
+                 namespace does not contain it."
+            ),
+            ExecError::NoCredentialMechanism(why) => write!(
+                f,
+                "no credential could be made usable inside the boundary without also \
+                 making it readable, and making it readable is not an available \
+                 outcome: {why}"
+            ),
         }
     }
 }

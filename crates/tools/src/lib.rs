@@ -52,13 +52,22 @@
 //!
 //! # What this crate deliberately does not do
 //!
-//! - **No §11.4 guest boundary.** [`exec`] is the *lifetime* half of what `bash`
-//!   needed — every process in a cgroup owned by a scope — and it is emphatically
-//!   not the other half: *the guest sees a copy of one project and nothing else of
-//!   the host*. A cgroup bounds how long a process lives, not what it can read, so
-//!   a command run through [`backend::HostBackend::executable`] still reads this
-//!   user's filesystem. That is why the constructor is separate, why `describe()`
-//!   says `UNSANDBOXED`, and why `bash` is seated only by [`roles::m2_runner`].
+//! - **Layer 1 of the boundary, and not layers 2 or 3.**
+//!   `docs/boundary-and-adjudication.md` §4: [`exec::scope`] is the *lifetime* half
+//!   — every process in a cgroup owned by a scope — and [`exec::confine`] is the
+//!   *view* half: project-scoped mount, PID, network and user namespaces, so a
+//!   secret outside the project is **absent** rather than denied.
+//!   [`backend::HostBackend::confined`] is the constructor that has both;
+//!   [`backend::HostBackend::executable`] is the lifetime half alone and its
+//!   `describe()` says `NOT CONFINED`. Neither ever *silently* has no boundary:
+//!   asked-for-and-missing is [`exec::NoConfinement`], which refuses every spawn.
+//!
+//!   What is **not** here is §3's other half. The mount view keeps secret bytes out
+//!   of the view; *never entering the transcript* needs one choke point through
+//!   which every tool result passes, and each tool still builds its own body
+//!   (`docs/boundary-and-adjudication.md` §5). Nor is the normalisation layer here
+//!   (tree-sitter over the command) or the adjudicator (§4's layers 2 and 3) —
+//!   `bash` is still seated only by [`roles::m2_runner`].
 //! - **No §11.3 policy table and no auto mode.** One adjudicator is attached per
 //!   session, not a table of them; [`adjudicate::ActionClass`] is the routing key
 //!   that table will use, derived and logged from the first call.

@@ -208,6 +208,47 @@ pub fn runner_harness_with_gate(
     })
 }
 
+/// A session that can run commands **inside a measured project-scoped boundary**,
+/// or the reason it cannot.
+///
+/// A `Result` for the same reason [`runner_harness`] is one, and here the error
+/// branch is the more interesting of the two: a host with no usable user namespace
+/// is a real host — `kernel.apparmor_restrict_unprivileged_userns=1` is the Ubuntu
+/// default since 24.04 — and a test that skipped there would be a green suite
+/// asserting nothing about the boundary it is named after. So the caller gets the
+/// refusal and has to assert something about it.
+pub fn confined_harness() -> Result<Harness, crate::exec::ExecError> {
+    confined_harness_with(|root| crate::exec::Bwrap::project(root).map(|b| Box::new(b) as _))
+}
+
+/// The same, over a chosen confinement, so a test can build a boundary that is
+/// deliberately broken and check what the substrate does about it.
+pub fn confined_harness_with(
+    build: impl FnOnce(
+        &std::path::Path,
+    ) -> Result<Box<dyn crate::exec::Confinement>, crate::exec::ExecError>,
+) -> Result<Harness, crate::exec::ExecError> {
+    let dir = TempDir::new();
+    fixture_tree(dir.path());
+    // Canonicalised, because the backend canonicalises its root and the view is
+    // compared lexically. A `/tmp` that is a symlink would otherwise put the
+    // project outside its own view.
+    let root = dir.path().canonicalize().unwrap_or_else(|_| dir.path().to_path_buf());
+    let confine = build(&root)?;
+    let host = Arc::new(crate::exec::HostProcesses::confined(&root, confine)?);
+    let backend =
+        crate::backend::HostBackend::executable_with(&root, Arc::clone(&host)).expect("fixture root");
+    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(allow_all());
+    Ok(Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: Some(host),
+        mount: Default::default(),
+        _dir: dir,
+    })
+}
+
 /// A session with the network tools registered, over whatever is behind them.
 ///
 /// The gate **allows**, because what these tests are about is the second gate: the
