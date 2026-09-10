@@ -465,6 +465,46 @@ reason per entry for the same cause `ALWAYS_ASK` does: a list without reasons ge
   what they are agreeing to: *"git — reads and writes inside the project, NOT code
   execution."*
 
+### Keep the glob. It is how a person expresses this, and it is their foot.
+
+§4f's conclusion — grant on the intent, not the word — is right about the **mechanism**
+and wrong if it removes globbing. Operator:
+
+> *"how we do it with claude code in ask-me mode: I said, write a globbing list for
+> read-only git commands and for write commands like push. and that was allowed. so not
+> `git *` but `git status`, `git commit` and so on. and that is the key — we need to keep
+> globbing as a way for users to shoot in the foot."*
+
+Two things in that, and the second is a design position worth holding.
+
+**The workflow is: the model proposes, the operator approves.** Asked to stop being
+prompted about git, the model writes the list *split by what the commands do* —
+`status|log|diff|show|branch` as reads, `push|commit|merge` as writes. That is better than
+either extreme: better than `git *`, which grants the escape hatches, and better than a
+system that only accepts machine-derived classes, which cannot express *"these ones, I
+know what they do"*. It is also the same shape as automode reading man pages (§4g): the
+model does the tedious enumeration, the human keeps the decision.
+
+**And a hand-written glob must stay possible even when it is a bad idea.** A permission
+system whose safe path is too rigid gets turned off wholesale, and then nothing is
+guarded. Paternalism has a failure mode and it is the worst one.
+
+So globbing is first-class. What it does **not** get is silence:
+
+- **A glob is shown in class terms before it is accepted.** *"This matches 47 commands,
+  including 3 that can execute arbitrary code (`-c core.pager`, `--upload-pack`, `ext::`)."*
+  That is informed foot-shooting rather than blind — the muzzle direction is visible.
+- **A glob can reach `MayApprove` and `AlwaysAsk`. It can never reach `Inexpressible`.**
+  §3's flow rule is not a setting, and a user-written glob is still a grant. You can shoot
+  your foot; you cannot shoot your head.
+- **A glob never covers an unresolvable normalisation.** `NotRun` stands. If layer A could
+  not read the command, no pattern written in advance about a command nobody could parse
+  applies to it.
+
+The difference from every harness in the survey is not that we refuse the glob. It is that
+`git *` here **tells you it includes the execution vehicles**, and opencode's
+`always: ["*"]` silently disables the operator's own `.env` guard.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
