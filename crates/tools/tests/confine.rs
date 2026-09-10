@@ -23,6 +23,7 @@ use letibot_tools::exec::confine::{
     Namespace, NsState, Seal, SealKind, Unconfined, ViewSpec,
 };
 use letibot_tools::exec::{Bwrap, ExecError, HostProcesses, ProcessHost, ScopeKind, SpawnRequest};
+use letibot_transcript::ToolOutcome;
 use letibot_tools::testing::{confined_harness, confined_harness_with};
 
 /// The branch a test took, printed so a green run says which half of the world it
@@ -361,17 +362,51 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
     )
     .expect("fixture secret");
 
+    // TWO calls, because there are two mechanisms and one would hide the other.
+    //
+    // Layer A's flow rule (`letibot_tools::intent`) landed after this test was
+    // written, and it classifies a `.pem` read whose stdout surfaces as a disclosure
+    // — so a single call naming `credential.pem` is now refused BEFORE the boundary
+    // is reached, and this test's own comment predicted exactly that: *"the string
+    // check denies the call before the boundary is reached, so the boundary's
+    // behaviour would go unmeasured."*
+    //
+    // So the boundary is measured on a file that is not credential-shaped, and layer
+    // A is measured separately below. Both hold, and neither is standing in for the
+    // other.
+    std::fs::write(outside.join("notes.txt"), "outside contents\n").expect("fixture note");
     let r = h.call(
         "bash",
         &serde_json::json!({
             "command": format!(
-                "ls -a {d} 2>&1; cat {d}/credential.pem 2>&1; true",
+                "ls -a {d} 2>&1; cat {d}/notes.txt 2>&1; true",
                 d = outside.display()
             ),
         })
         .to_string(),
     );
     let text = payload(&r);
+
+    // The second mechanism, in front of the first: naming the credential at all is
+    // refused by the flow rule, and nothing runs. Belt and braces — the boundary
+    // above already made the bytes unreachable.
+    let refused = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": format!("cat {d}/credential.pem", d = outside.display()),
+        })
+        .to_string(),
+    );
+    let refused_text = format!("{refused:?}");
+    assert!(
+        matches!(refused.outcome, ToolOutcome::Denied { .. }),
+        "a `.pem` read into the transcript is a disclosure: {refused_text}"
+    );
+    assert!(
+        !refused_text.contains("PRIVATE KEY"),
+        "the refusal must not carry the bytes it refused: {refused_text}"
+    );
+
     let _ = std::fs::remove_dir_all(&outside);
 
     // No key bytes, by any spelling. The assertion is on the marker rather than on
@@ -385,7 +420,7 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
         text.contains("No such file or directory") || text.contains("cannot access"),
         "the secret must be ABSENT, not merely unreadable: {text}"
     );
-    assert!(!text.contains("credential.pem\n"), "not even listed: {text}");
+    assert!(!text.contains("outside contents"), "not readable: {text}");
 }
 
 #[test]
@@ -448,7 +483,14 @@ fn the_command_cannot_see_or_signal_the_harness_or_the_servers_it_manages() {
     let r = h.call(
         "bash",
         &serde_json::json!({
-            "command": format!("echo pids=$(ls /proc | grep -c '^[0-9]'); kill -0 {me} 2>&1; echo rc=$?"),
+            // Respelled without `$(…)` and `$?`: layer 2 reports both as
+            // unresolvable — a value that does not exist until the shell runs — and
+            // an unresolvable command is `not_run` before it reaches the boundary.
+            // The measurement is unchanged; `sed` does the labelling the command
+            // substitution was doing, and `||` the labelling `$?` was.
+            "command": format!(
+                "ls /proc | grep -c '^[0-9]' | sed 's/^/pids=/'; kill -0 {me} 2>&1 || echo rc=1"
+            ),
         })
         .to_string(),
     );
@@ -602,14 +644,15 @@ fn a_path_outside_the_view_produces_a_boundary_note_and_not_a_bare_enoent() {
     // directory` is read by a model as an answer about the world. It is not.
     //
     // The path is a fixture rather than `~/.ssh/id_rsa` for the reason recorded in
-    // `a_secret_outside_the_project_is_absent`: the string check denies the call
-    // before the boundary is reached, so the boundary's behaviour would go
-    // unmeasured.
+    // `a_secret_outside_the_project_is_absent`: a check that denies the call before
+    // the boundary is reached leaves the boundary's behaviour unmeasured. That now
+    // includes layer A's flow rule, which reads `.pem` as credential-shaped — hence
+    // `thing.txt` here.
     let mut h = confined!("a_path_outside_the_view_produces_a_note");
     let outside = PathBuf::from(format!("/opt/letibot-note-{}", std::process::id()));
     let r = h.call(
         "bash",
-        &serde_json::json!({"command": format!("cat {}/credential.pem 2>&1; true", outside.display())})
+        &serde_json::json!({"command": format!("cat {}/thing.txt 2>&1; true", outside.display())})
             .to_string(),
     );
     let all = format!("{:?}", r);
