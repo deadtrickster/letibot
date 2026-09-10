@@ -46,6 +46,52 @@ tmux kill-session -t "$S"
 2. **Kill your sessions.** An orphaned tmux session holds a `harnessd` and its socket,
    and the next run then attaches to a daemon it did not start.
 
+## What to put in front of it: a real session, out of the store
+
+`letibot-tui --replay FILE.jsonl` needs no daemon, no socket and no model, and
+`FILE.jsonl` is one `letibot_sessionlog::event::Envelope` per line. That makes the
+input to a capture **data you choose**, which is what turns a screenshot into an
+experiment: truncate the file with `head -n K` and the head renders the state it
+was in at event K. A turn mid-round, a call that never came back, a screen with
+nothing on it yet — all of them are a `head -n` away, with no timing to race.
+
+The strongest fixture is not a synthetic one. Every session this box has ever run
+is in `~/.local/share/letibot/sessions.db`, and the rows are transcript items:
+
+```sql
+select seq, item_id, kind, item_json from transcript_item
+ where transcript_id = 's-…#t0' order by seq
+```
+
+Copy the file first — it is the operator's, and a `-wal` alongside it means a
+daemon may be writing. `python3` has `sqlite3` built in; there is no `sqlite3`
+binary on this machine. Turn each row into a `transcript_appended` plus a
+`transcript_content` (which carries the whole `TranscriptItem`), wrap them in
+`turn_started` / `prompt_progress` / `turn_finished`, and emit
+`tool_call_proposed` / `tool_started` / `tool_finished` around the calls.
+
+**Get the ordering right or the fixture tests a head nobody runs.** The engine
+invokes every call in a round *before* appending any of the round's result rows
+(`harnessd::harness`, the `for call in &calls` loop then one `append_items`), so a
+`ToolFinished` always precedes its own row's `TranscriptAppended`. A fixture that
+interleaves them the other way exercises a path the daemon never produces — and
+in this tree the head reads that ordering to carry a call's duration onto its
+settled card, so getting it backwards silently loses the field.
+
+Two defects in the last visual pass were only visible against real data: call ids
+are positional **within a round** (`call_0`, `call_1`, …), so a fourteen-round
+turn out of the store has fourteen calls named `call_0` and any head that keys a
+table on the id alone shows it. No synthetic fixture anybody was writing had two
+rounds in it.
+
+## Waiting: two loops, in that order
+
+A replay paces itself (`VTIME=1` means each key poll costs 100 ms, so 600
+envelopes take about a minute). Sleeping a fixed number of seconds either races
+it or wastes a minute per capture. Poll instead: wait until the pane is
+**non-empty**, then until two captures 1.5 s apart are **identical**. An empty
+pane before startup is a boot window, not a finished render.
+
 ## The controlled-pair form, which is the stronger one
 
 Two sessions, identical except for the thing under test, captured and diffed. `rano`

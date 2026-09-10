@@ -55,6 +55,16 @@ pub mod sgr {
     pub const GREY: &str = "\x1b[90m";
 }
 
+/// What this module draws its own frames with: a code fence, a horizontal rule,
+/// an elision marker.
+///
+/// [`sgr::DIM`], not [`sgr::GREY`]. 90 is the theme's *bright black*, and
+/// `letibot_ui::style` measured it landing within a hair of the background on
+/// several light themes — which is why every role in that table is an attribute
+/// or a named slot and none of them is 90. The attribute de-emphasises whatever
+/// foreground the reader already chose, which is the thing a frame wants.
+const FRAME: &str = sgr::DIM;
+
 /// How many lines a single block may occupy before it is summarised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
@@ -254,12 +264,12 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 (None, false) => format!("┌─ {lang}"),
                 (None, true) => "┌─ code".to_string(),
             };
-            out.push(cfg.c(sgr::GREY, &head));
+            out.push(cfg.c(FRAME, &head));
             for l in painted {
-                out.push(format!("{}{l}", cfg.c(sgr::GREY, "│ ")));
+                out.push(format!("{}{l}", cfg.c(FRAME, "│ ")));
             }
             out.push(cfg.c(
-                sgr::GREY,
+                FRAME,
                 if *closed {
                     "└─"
                 } else {
@@ -268,7 +278,11 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             ));
             out
         }
-        Block::List { ordered, items } => {
+        Block::List {
+            ordered,
+            start,
+            items,
+        } => {
             let p = cfg.painter();
             let mut out = Vec::new();
             for (i, it) in items.iter().enumerate() {
@@ -279,7 +293,12 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 // refers back to — so it is not de-emphasised. A bullet is pure
                 // structure and is.
                 let (marker, marker_role) = if *ordered {
-                    (format!("{}. ", i + 1), Role::Plain)
+                    // `start + i`, not `i + 1`. A loose list — one whose items are
+                    // separated by blank lines, which is what a model writes as
+                    // soon as an item runs past a sentence — arrives as one block
+                    // per item, and numbering from the index inside the block made
+                    // every item of a six-point answer read `1.`.
+                    (format!("{}. ", start + i), Role::Plain)
                 } else {
                     ("· ".to_string(), Role::Faint)
                 };
@@ -305,7 +324,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 .map(|l| cfg.c(sgr::DIM, &format!("│ {l}")))
                 .collect()
         }
-        Block::Rule => vec![cfg.c(sgr::GREY, &"─".repeat(w.min(60)))],
+        Block::Rule => vec![cfg.c(FRAME, &"─".repeat(w.min(60)))],
     }
 }
 
@@ -335,7 +354,7 @@ fn render_bounded_with(
     let elided = full.len() - keep;
     let mut out = Vec::with_capacity(limit);
     out.push(cfg.c(sgr::DIM, &format!("▸ {}", trim_to(&b.title(), cfg.width))));
-    out.push(cfg.c(sgr::GREY, &format!("  … {elided} lines elided …")));
+    out.push(cfg.c(FRAME, &format!("  … {elided} lines elided …")));
     out.extend(full[full.len() - keep..].iter().cloned());
     out
 }

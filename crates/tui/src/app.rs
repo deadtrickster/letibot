@@ -288,6 +288,19 @@ struct TurnPane {
     /// survives. Without this the answer is on the screen twice, once in the wrong
     /// order, which is what the first run of `--demo` showed.
     appended: Vec<String>,
+    /// How many of `calls` the transcript has already taken over.
+    ///
+    /// A round's tool-result rows are appended **in call order**, after every call
+    /// in the round has been invoked (`harnessd::harness`, the `for call in &calls`
+    /// loop, then one `append_items`). So the *n*th `tool_result` row of this turn
+    /// is about `calls[n-1]`, exactly, with no id matching involved — which is the
+    /// point, because the ids repeat.
+    ///
+    /// Everything below this index is on the screen already as a settled card with
+    /// its payload under it, and drawing it a second time in the live pane is the
+    /// wall the operator was looking at: eight `● Read …` rows above eight
+    /// `▸ Read … · ok · N lines` rows, no added fact between them.
+    settled_calls: usize,
     /// The `ts` of `TurnStarted`, and of the last event seen for this turn. The
     /// difference is how long the turn has been going, taken from the log's own
     /// clock rather than from a wall clock in the head — a head that reads a
@@ -339,6 +352,10 @@ pub struct App {
     hist_lines: Vec<String>,
     hist_upto: usize,
     hist_width: usize,
+    /// The class of the last row the walk actually drew, so the next one knows
+    /// whether a blank line belongs between them. The walk is incremental across
+    /// frames, so this has to survive the frame that set it.
+    hist_class: Option<RowClass>,
     turn: Option<TurnPane>,
     open: Vec<OpenDecision>,
     /// Things that happened *between* transcript rows and belong in the
@@ -392,6 +409,21 @@ pub struct App {
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
     picker: bool,
+    /// The head's own instrumentation, as a screen: `/status`.
+    ///
+    /// Every counter it shows was added because something was measured going
+    /// wrong, and every one of them used to live on the **bottom border of the
+    /// chat window** — `seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 ·
+    /// scrubbed 0 · resync 0 · s-1789023464202470853 h3`, in the operator's frame,
+    /// on every frame, next to the thing they are typing into. That is the wrong
+    /// place for a number that is zero: it costs a row of attention for ever in
+    /// exchange for being noticed once.
+    ///
+    /// So the border keeps only the alarm — the counters that are *not* zero, in
+    /// the attention role — and this screen keeps everything, with a line under
+    /// each counter saying what it means. Reachable, which is the obligation, and
+    /// not resident, which was never part of it.
+    stats: bool,
     quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
     redraw: bool,
@@ -412,11 +444,43 @@ pub struct App {
     /// running — which is most of the time a person is looking at it. Since §4.4 it
     /// is also on `Hello`, so a head with no turn yet has an answer too.
     model: String,
-    /// §4.1's display target, by call id, for every proposal this head has seen.
+    /// §4.1's display target, by call id, **for the round the history walk is
+    /// currently inside** — and for no other.
     ///
-    /// Bounded by the session rather than by the turn on purpose: a transcript row
-    /// from six turns ago still wants to say which file it read.
+    /// # Why this is not session-scoped, which is what it used to be
+    ///
+    /// A call id is positional *within one round of one turn*:
+    /// `letibot_turn::items` assigns `format!("call_{}", calls.len())` when the
+    /// wire format carries no id, so every round of every turn starts again at
+    /// `call_0`. This table was keyed on the id alone and kept for the life of the
+    /// session, which means the fourteen rounds of a long turn all wrote to the
+    /// same three keys — and every settled card then read back whichever round
+    /// happened to write last.
+    ///
+    /// What that looked like on the screen, from the operator's capture:
+    /// `▸ Read */Cargo.toml · ok · 3 lines` above a body reading
+    /// `pub fn longest_common_prefix(…)`. The payload was the right one; the label
+    /// was another round's. A head that names a file the tool never opened is
+    /// telling the operator something false about what a tool returned, which is
+    /// the defect class this repo exists against — so the fix is not to widen the
+    /// key but to stop the table outliving the thing it describes.
+    ///
+    /// It is therefore **replaced wholesale** every time the walk reaches an
+    /// `Assistant` row, in transcript order, and a `ToolResult` that finds no
+    /// entry renders its correlation id rather than a neighbour's path.
     call_targets: std::collections::HashMap<String, String>,
+    /// How long the call behind a settled `tool_result` row took, by **item id**.
+    ///
+    /// The one fact the live card had that the transcript row does not: a
+    /// `TranscriptItem::ToolResult` carries no timestamps at all. Without this the
+    /// only way to keep "that grep took 4.1 s" on the screen was to keep the live
+    /// card beside the settled one, which is the duplication being removed.
+    ///
+    /// Keyed by item id, which is unique per row — unlike the call id, which is
+    /// not. Absent for a row this head did not watch run (a snapshot, a `--replay`
+    /// of a log recorded elsewhere), and the card then shows no duration rather
+    /// than a fabricated one, which is the same rule as `card::Phase::Replayed`.
+    call_ms: std::collections::HashMap<String, u64>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
     /// Where the terminal's caret belongs, from the last frame.
@@ -486,6 +550,7 @@ impl App {
             hist_upto: 0,
             note_upto: 0,
             hist_width: 0,
+            hist_class: None,
             turn: None,
             open: Vec::new(),
             notes: Vec::new(),
@@ -500,6 +565,7 @@ impl App {
             editor: Editor::new(),
             model: String::new(),
             call_targets: std::collections::HashMap::new(),
+            call_ms: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             raw_calls: false,
@@ -507,6 +573,7 @@ impl App {
             notice_ttl: 0,
             help: false,
             picker: false,
+            stats: false,
             quit: false,
             redraw: false,
             now_ms: 0,
@@ -753,11 +820,10 @@ impl App {
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
-        for c in s.turn.iter().flat_map(|t| t.calls.iter()) {
-            if !c.target.is_empty() {
-                self.call_targets.insert(c.call_id.clone(), c.target.clone());
-            }
-        }
+        // The snapshot's in-flight calls are **not** seeded into `call_targets`.
+        // They reach the screen as `TurnPane::calls`, which carries each call's own
+        // target on the row that is about to draw it; putting them in an id-keyed
+        // table as well is how a live `call_0` came to relabel a settled one.
         if let Some(TurnState::Finished { usage, .. }) = s.turn.as_ref().map(|t| &t.state) {
             self.usage = Some(*usage);
         }
@@ -862,6 +928,10 @@ impl App {
                     last_ms: ts,
                     ..TurnPane::default()
                 });
+                // A new turn takes the pane away from the previous one, so the
+                // previous one's rows now own everything they proposed. Same
+                // reason as the terminal states above: the history is cached.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::PromptProgress { progress, .. } => {
@@ -918,15 +988,13 @@ impl App {
                 target,
                 ..
             } => {
-                // Kept beyond the turn: a settled `Assistant { tool_calls }` row
-                // renders `→ Read crates/tui/src/app.rs`, and the only place the
-                // head can get that word from is the proposal it already saw.
-                // Re-deriving it from the row's own `arguments` would put a second
-                // copy of `display_target` in this crate, and two spellings of a
-                // display rule drift.
-                if !target.is_empty() {
-                    self.call_targets.insert(call_id.clone(), target.clone());
-                }
+                // Not kept beyond the turn, and not put in `call_targets`. It used
+                // to be, on the argument that a settled `Assistant { tool_calls }`
+                // row needs the word and the proposal is where the head saw it —
+                // but the row carries the arguments the word is derived from, and
+                // the id it would be filed under is reused by the next round. The
+                // proposal's target lives on the `CallRow` below, which is the row
+                // that draws it, and dies with the turn that made it.
                 if let Some(t) = self.turn.as_mut() {
                     // The proposal is the settled form of whatever was being
                     // written, so the pending affordance stands down here.
@@ -945,7 +1013,7 @@ impl App {
             }
             SessionEvent::ToolStarted { call_id, name, .. } => {
                 if let Some(t) = self.turn.as_mut() {
-                    match t.calls.iter_mut().find(|c| c.call_id == call_id) {
+                    match open_call(&mut t.calls, &call_id) {
                         Some(c) => {
                             c.state = CallState::Running;
                             // The clock starts when the tool starts, not when the
@@ -977,7 +1045,7 @@ impl App {
                 match self
                     .turn
                     .as_mut()
-                    .and_then(|t| t.calls.iter_mut().find(|c| c.call_id == call_id))
+                    .and_then(|t| open_call(&mut t.calls, &call_id))
                 {
                     Some(c) => {
                         c.note = Some(note);
@@ -996,7 +1064,7 @@ impl App {
                 ..
             } => {
                 if let Some(t) = self.turn.as_mut()
-                    && let Some(c) = t.calls.iter_mut().find(|c| c.call_id == call_id)
+                    && let Some(c) = open_call(&mut t.calls, &call_id)
                 {
                     c.ended_ms = ts;
                     c.note = None;
@@ -1075,6 +1143,13 @@ impl App {
                         timings,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             // §4.5's terminal event, which did not exist. The head used to be told
@@ -1096,6 +1171,13 @@ impl App {
                         partial_kept,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::TurnInterrupted {
@@ -1110,6 +1192,13 @@ impl App {
                         partial_kept,
                     });
                 }
+                // A terminal state can hand a call back to the transcript.
+                // While the pane is drawing a turn, that turn's assistant rows do
+                // not draw their own unsettled calls; once it stands down they
+                // must, or a call the turn was interrupted in the middle of leaves
+                // the screen with nothing said about it. The rendered history is
+                // cached, so it has to be told.
+                self.invalidate_history();
                 Disposition::Rendered
             }
             SessionEvent::TranscriptAppended {
@@ -1117,8 +1206,26 @@ impl App {
                 kind,
                 ledger_head,
             } => {
+                // A tool-result row hands one live card over to the transcript.
+                // Positional, not by id: the engine invokes a round's calls in
+                // order and appends their rows in the same order, and the ids
+                // repeat every round so there is nothing to match on. The duration
+                // is carried across here because it is the only fact the live card
+                // had that the row does not.
+                let mut carried: Option<u64> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
+                    if kind == "tool_result" {
+                        carried = t
+                            .calls
+                            .get(t.settled_calls)
+                            .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
+                            .map(|c| c.ended_ms - c.started_ms);
+                        t.settled_calls += 1;
+                    }
+                }
+                if let Some(ms) = carried {
+                    self.call_ms.insert(item_id.clone(), ms);
                 }
                 self.items.push(SnapshotItem {
                     item_id,
@@ -1340,9 +1447,10 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
-        if (self.help || self.picker) && matches!(k, Key::Esc | Key::CtrlC) {
+        if (self.help || self.picker || self.stats) && matches!(k, Key::Esc | Key::CtrlC) {
             self.help = false;
             self.picker = false;
+            self.stats = false;
             self.redraw = true;
             return None;
         }
@@ -1567,6 +1675,12 @@ impl App {
                 self.redraw = true;
                 None
             }
+            // Where the bottom border's telemetry went. See `App::stats`.
+            "status" | "stats" => {
+                self.stats = !self.stats;
+                self.redraw = true;
+                None
+            }
             "think" | "r" => {
                 self.reasoning = self.reasoning.flip();
                 self.refold();
@@ -1612,11 +1726,39 @@ impl App {
 
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
+        let prose = matches!(item, TranscriptItem::Assistant { .. });
         if let Some(r) = self.items.iter_mut().find(|r| r.item_id == item_id) {
             r.item = Some(item);
             // The row's rendered form changed, so the history cache from that row
             // on is stale.
             self.invalidate_history();
+        } else {
+            return;
+        }
+        // The pane's accumulated prose, handed over the same way its calls are.
+        //
+        // `TurnPane::text` is every `Delta { target: Text }` of the whole turn, and
+        // a turn's prose is committed to the transcript one ROUND at a time. So
+        // once a round's assistant row has its body, the sentence the model wrote
+        // before its first tool call is on the screen twice — in history where it
+        // belongs and again in the pane below the cards. Measured at 60x34 on the
+        // operator's session: "I'll take a look at what's in the tree first."
+        // appearing above the round's cards and again under them.
+        //
+        // Clearing rather than counting bytes, because that is what "the
+        // transcript has taken this over" means, and because `IncrementalMarkdown`
+        // is a frozen-prefix lexer — slicing it would mean re-lexing what it has
+        // already frozen, which is the §13.3 rule this head is built around.
+        //
+        // Safe against a race only because the engine appends a round's assistant
+        // row before generating the next round (`harnessd::harness`), so no delta
+        // of round N+1 can arrive before round N's row.
+        if prose
+            && let Some(t) = self.turn.as_mut()
+            && t.appended.iter().any(|a| a == item_id)
+        {
+            t.text = IncrementalMarkdown::new();
+            t.text_cache = BlockCache::new();
         }
     }
 
@@ -1627,6 +1769,11 @@ impl App {
         self.hist_lines.clear();
         self.hist_upto = 0;
         self.note_upto = 0;
+        self.hist_class = None;
+        // The target table is the walk's own state — the round it is currently
+        // inside — so it is thrown away with the lines it labelled. Leaving it
+        // behind is what let a rebuild start at row 0 holding round 14's paths.
+        self.call_targets.clear();
     }
 
     /// File something that happened between rows, at the row it happened at.
@@ -1730,10 +1877,11 @@ impl App {
             let n = dec_rows
                 + usize::from(show_inflight)
                 + usize::from(show_notice)
-                // Unboxed still costs one row: the disclosure counters move off
-                // the border and back onto a line of their own. They are §13.2b
-                // obligations and are not what a narrow screen gives up.
-                + if boxed { 2 } else { 1 }
+                // Unboxed costs one row **only when there is an alarm to show**:
+                // the counters move off the border and back onto a line of their
+                // own, and a counter that has moved is not what a narrow screen
+                // gives up. A clean head owes that row to the transcript.
+                + if boxed { 2 } else { usize::from(self.alarmed()) }
                 + rows
                 + usize::from(hint);
             if n < h {
@@ -1772,16 +1920,8 @@ impl App {
         chrome.extend(input_rows);
         if boxed {
             chrome.push(self.box_edge(w, '╰', '╯', &self.status_line(w.saturating_sub(6))));
-        } else {
-            chrome.push(colour(
-                &self.cfg,
-                if self.dropped + self.scrubbed + self.resyncs > 0 {
-                    sgr::YELLOW
-                } else {
-                    sgr::GREY
-                },
-                &self.status_line(w),
-            ));
+        } else if self.alarmed() {
+            chrome.push(self.status_line(w));
         }
         if hint {
             chrome.push(self.hint_bar(w));
@@ -1810,6 +1950,10 @@ impl App {
             let mut help = help_lines(&self.cfg, w);
             help.truncate(room);
             help
+        } else if self.stats {
+            let mut rows = self.status_lines(w);
+            rows.truncate(room);
+            rows
         } else if self.picker {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
@@ -1892,7 +2036,11 @@ impl App {
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();
             out.push(if boxed {
-                let wall = colour(&self.cfg, sgr::GREY, "│");
+                // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright
+                // black*, which `style.rs` measured landing within a hair of the
+                // background on several light themes; the attribute de-emphasises
+                // whatever foreground the reader has already chosen.
+                let wall = self.cfg.palette().paint(Role::Faint, "│");
                 format!("{wall} {}{wall}", width::fit(&body, inner + 1))
             } else {
                 trim_to(&body, w)
@@ -1910,15 +2058,21 @@ impl App {
     fn box_edge(&self, w: usize, open: char, close: char, legend: &str) -> String {
         let w = w.max(4);
         let inner = w - 2;
+        // A legend may arrive already painted — the bottom edge's alarm is in the
+        // attention role — and `Palette::paint` closes with a plain reset, which
+        // restores the *terminal default* and not the grey of the border it is
+        // inlaid into. So the border reopens itself on the far side of it. Same
+        // defect and same fix as `style::Painter::inside`, one layer up: a reset
+        // is not a restore.
+        let reopen = self.cfg.palette().open(Role::Faint);
         let text = if legend.is_empty() || inner < 10 {
             String::new()
         } else {
-            format!("─ {} ", trim_to(legend, inner - 4))
+            format!("─ {}{reopen} ", trim_to(legend, inner - 4))
         };
         let fill = inner.saturating_sub(visible_width(&text));
-        colour(
-            &self.cfg,
-            sgr::GREY,
+        self.cfg.palette().paint(
+            Role::Faint,
             &format!("{open}{text}{}{close}", "─".repeat(fill)),
         )
     }
@@ -1963,7 +2117,7 @@ impl App {
     fn hint_bar(&self, w: usize) -> String {
         let p = self.cfg.palette();
         let mut s = self.editor.hint(self.turn_running(), self.now_ms, p);
-        let tail = if self.help {
+        let tail = if self.help || self.stats {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
@@ -1993,61 +2147,13 @@ impl App {
         // *while* the rendered lines are being appended and the tool-target table
         // is being read — three disjoint fields, one borrow each, no clone of a row
         // per frame.
-        {
-            let App {
-                hist_lines,
-                hist_upto,
-                note_upto,
-                items,
-                notes,
-                call_targets,
-                ..
-            } = self;
-            loop {
-                let note_next = notes
-                    .get(*note_upto)
-                    .is_some_and(|(at, _)| *at <= *hist_upto);
-                if note_next {
-                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
-                    hist_lines.push(String::new());
-                    *note_upto += 1;
-                } else if *hist_upto < items.len() {
-                    // An assistant row carries the arguments for the calls it
-                    // proposed, and the tool-result rows that follow it want the
-                    // same label. Learning them here, in transcript order, is what
-                    // lets a head that attached *after* a turn still say which file
-                    // was read — the proposal event is long gone and the row is the
-                    // only place the arguments survive.
-                    if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
-                        items[*hist_upto].item.as_ref()
-                    {
-                        for c in tool_calls {
-                            call_targets
-                                .entry(c.id.clone())
-                                .or_insert_with(|| {
-                                    letibot_sessionlog::display_target(&c.arguments)
-                                });
-                        }
-                    }
-                    hist_lines.extend(item_lines(
-                        &items[*hist_upto],
-                        &cfg,
-                        think,
-                        tool,
-                        raw,
-                        call_targets,
-                    ));
-                    hist_lines.push(String::new());
-                    *hist_upto += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-
         // Does the transcript already own this turn's content? If so the live pane
         // is a duplicate of history and only its summary line survives — otherwise
         // the answer is on the screen twice, once in the wrong order.
+        //
+        // Computed before the walk, because the walk needs it: it is the
+        // difference between "the pane below is drawing this call" and "nothing
+        // is".
         let superseded = !matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running) | None
@@ -2060,6 +2166,113 @@ impl App {
                         .is_some_and(|r| r.item.is_some())
                 })
         });
+        // The rows the live pane is still drawing. An assistant row in this set
+        // does **not** draw its own unsettled calls: the pane below is drawing
+        // them, with a spinner and a running clock, and `→ Read foo.rs · no result`
+        // above a `◐ Reading foo.rs` is both a duplicate and, while the call is
+        // still running, false.
+        //
+        // Empty once the pane has stood down, which is what stops a call the turn
+        // was interrupted in the middle of from vanishing off the screen entirely:
+        // nothing is drawing it, so the assistant row draws it, and says it never
+        // came back.
+        let in_flight: std::collections::HashSet<&str> = if superseded {
+            std::collections::HashSet::new()
+        } else {
+            self.turn
+                .as_ref()
+                .map(|t| t.appended.iter().map(String::as_str).collect())
+                .unwrap_or_default()
+        };
+        {
+            let App {
+                hist_lines,
+                hist_upto,
+                note_upto,
+                items,
+                notes,
+                call_targets,
+                call_ms,
+                hist_class,
+                ..
+            } = self;
+            loop {
+                let note_next = notes
+                    .get(*note_upto)
+                    .is_some_and(|(at, _)| *at <= *hist_upto);
+                if note_next {
+                    if !hist_lines.is_empty() {
+                        hist_lines.push(String::new());
+                    }
+                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
+                    *hist_class = Some(RowClass::Other);
+                    *note_upto += 1;
+                } else if *hist_upto < items.len() {
+                    // An assistant row carries the arguments for the calls it
+                    // proposed, and the tool-result rows that follow it want the
+                    // same label. Learning them here, in transcript order, is what
+                    // lets a head that attached *after* a turn still say which file
+                    // was read — the proposal event is long gone and the row is the
+                    // only place the arguments survive.
+                    //
+                    // **Replaced, not merged.** `call_0` is round-positional, so a
+                    // merge is how round 4's `call_0` came to be labelled with
+                    // round 1's path. An assistant row opens a new round and its
+                    // calls are the only ones the rows after it can be about; one
+                    // with no calls at all opens a round with no calls, and a
+                    // stray result then has to say so rather than borrow.
+                    let mut answered: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
+                        items[*hist_upto].item.as_ref()
+                    {
+                        call_targets.clear();
+                        for c in tool_calls {
+                            call_targets.insert(
+                                c.id.clone(),
+                                letibot_sessionlog::display_target(&c.arguments),
+                            );
+                        }
+                        answered = round_results(items, *hist_upto);
+                    }
+                    let (class, rows) = item_lines(
+                        &items[*hist_upto],
+                        &ItemCtx {
+                            cfg: &cfg,
+                            think,
+                            tools: tool,
+                            raw,
+                            targets: call_targets,
+                            answered: &answered,
+                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                        },
+                    );
+                    // A row that rendered nothing gets no separator either. An
+                    // assistant row whose text is `"\n\n\n"` and whose every call
+                    // is drawn by its own result row is a real and common shape —
+                    // it is what a tool-calling round looks like — and paying two
+                    // blank lines for it puts a hole in the transcript.
+                    if !rows.iter().all(|l| l.trim().is_empty()) {
+                        // Air where the KIND changes, not between every pair of
+                        // rows. Two tool cards in a row are one block and read as
+                        // one; a blank between each of them was a third of the
+                        // vertical budget spent separating things a glyph in the
+                        // first column already separates.
+                        let pack = *hist_class == Some(RowClass::Activity)
+                            && class == RowClass::Activity;
+                        if !hist_lines.is_empty() && !pack {
+                            hist_lines.push(String::new());
+                        }
+                        hist_lines.extend(rows);
+                        *hist_class = Some(class);
+                    }
+                    *hist_upto += 1;
+                } else {
+                    break;
+                }
+            }
+        }
 
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
@@ -2067,6 +2280,13 @@ impl App {
             hist_lines, turn, ..
         } = self;
         let mut segs: Vec<Seg<'_>> = vec![Seg::Borrowed(hist_lines)];
+        // The history no longer ends with a blank — separators go *before* a row
+        // now, so the last row of the transcript is the last line of it. The live
+        // pane therefore brings its own.
+        let gap = vec![String::new()];
+        if !hist_lines.is_empty() {
+            segs.push(Seg::Borrowed(&gap));
+        }
 
         if let Some(t) = turn {
             let running = matches!(t.state, Some(TurnState::Running));
@@ -2082,26 +2302,30 @@ impl App {
                 text_cache,
                 reasoning_cache,
                 calls,
+                settled_calls,
                 raw_call,
                 writing_call,
                 state,
                 ..
             } = t;
+            let ind = activity_indent(cfg.width);
             if !superseded && !reasoning.is_empty() {
-                // Two columns narrower, because the rail is two columns wide.
-                // Getting this wrong makes the block one row taller than the space
-                // reserved for it, which moves everything below it by a line every
-                // frame — which is one of the things being called flicker.
-                let mut rcfg = cfg.inside(Role::Reasoning);
-                rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
+                // Narrower by the rail and by the step it is set in. Getting this
+                // wrong makes the block one row taller than the space reserved for
+                // it, which moves everything below it by a line every frame — which
+                // is one of the things being called flicker.
+                let rcfg = reasoning_cfg(&cfg);
                 reasoning_cache.set_decor(reasoning_decor(&cfg));
-                segs.push(Seg::Owned(vec![thinking_header(
-                    &cfg,
-                    reasoning.raw(),
-                    think.is_open(),
-                    running,
-                    think_elapsed,
-                )]));
+                segs.push(Seg::Owned(step_in(
+                    vec![thinking_header(
+                        &cfg,
+                        reasoning.raw(),
+                        think.is_open(),
+                        running,
+                        think_elapsed,
+                    )],
+                    ind,
+                )));
                 if think.is_open() {
                     let (stable, tail) =
                         reasoning_cache.split(reasoning, &rcfg, cfg.budget.reasoning_lines);
@@ -2118,10 +2342,16 @@ impl App {
                 segs.push(Seg::Owned(vec![String::new()]));
             }
             if !superseded {
-                if !calls.is_empty() {
+                // Only the calls the transcript has NOT taken over yet. The rest
+                // are already on the screen above as settled cards with their
+                // output under them, and drawing them here as well was the second
+                // half of the doubling: a turn eight calls deep showed eight live
+                // rows under eight settled ones, in the same order, saying less.
+                let live = calls.get(*settled_calls..).unwrap_or(&[]);
+                if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
-                    for c in calls.iter() {
-                        owned.extend(call_card(c, &cfg, now_ms, tool));
+                    for c in live.iter() {
+                        owned.extend(step_in(call_card(c, &cfg, now_ms, tool), ind));
                     }
                     owned.push(String::new());
                     segs.push(Seg::Owned(owned));
@@ -2136,7 +2366,10 @@ impl App {
                 // written, which is the fact the raw text was accidentally
                 // conveying and the only part of it a reader wanted.
                 if *writing_call {
-                    segs.push(Seg::Owned(vec![writing_call_line(&cfg, now_ms)]));
+                    segs.push(Seg::Owned(step_in(
+                        vec![writing_call_line(&cfg, now_ms)],
+                        ind,
+                    )));
                 }
                 if raw && !raw_call.is_empty() {
                     segs.push(Seg::Owned(raw_call_lines(&cfg, raw_call)));
@@ -2538,39 +2771,136 @@ impl App {
     /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
     /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
     /// impossible to miss. Anything nonzero is promoted to the front.
+    /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
+    /// border has something to say at all.
+    fn alarmed(&self) -> bool {
+        self.dropped + self.scrubbed + self.resyncs > 0
+    }
+
+    /// The bottom border's legend: **the counters that are not zero, and nothing
+    /// else**.
+    ///
+    /// It used to be all of them, plus the sequence numbers, plus the verbosity,
+    /// plus the twenty-one-character session id and the head id, on every frame:
+    ///
+    /// ```text
+    /// ╰─ seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 · scrubbed 0 ·
+    ///    resync 0 · s-1789023464202470853 h3 ─╯
+    /// ```
+    ///
+    /// Every one of those was added because something was measured going wrong,
+    /// and none of that is an argument for keeping them resident. §13.2b's rule is
+    /// that *an absent field and a zero field must not look the same when the
+    /// field is the disclosure* — which is a rule about the moment the field is
+    /// **read**, not about where it lives the rest of the time. `/status` is where
+    /// it is read, it says `dropped 0` explicitly, and it says what the counter
+    /// means, which the border never had room to.
+    ///
+    /// What stays here is the case a person must not have to go looking for: a
+    /// counter that has moved. In [`Role::Attention`], not the border's grey,
+    /// because a second colour inside a border reads as damage and this *is*
+    /// damage — that was the argument for painting it grey and it was the wrong
+    /// way round.
     fn status_line(&self, w: usize) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        let alarms = self.dropped + self.scrubbed + self.resyncs;
-        if alarms > 0 {
-            parts.push(format!(
-                "dropped {} · scrubbed {} · resync {}",
-                self.dropped, self.scrubbed, self.resyncs
+        if !self.alarmed() {
+            return String::new();
+        }
+        let p = self.cfg.palette();
+        trim_to(
+            &p.paint(
+                Role::Attention,
+                &format!(
+                    "⚠ dropped {} · scrubbed {} · resync {} · /status",
+                    self.dropped, self.scrubbed, self.resyncs
+                ),
+            ),
+            w,
+        )
+    }
+
+    /// `/status`: this head's own instrumentation, with what each number means.
+    ///
+    /// The gloss is the part the border could never carry, and it is the reason
+    /// the counters are worth keeping at all — `scrubbed 4` is not actionable
+    /// unless you know that scrubbing is what a *late* head does to an
+    /// interactive-only frame, at which point it is the answer to "why is this
+    /// head quieter than the one next to it".
+    fn status_lines(&self, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let mut out = vec![p.paint(Role::Strong, "this head"), String::new()];
+        let mut row = |k: &str, v: String, why: &str| {
+            let head = format!("  {k:<12}");
+            out.push(format!(
+                "{}{}",
+                p.paint(Role::Faint, &head),
+                p.paint(Role::Plain, &v)
             ));
+            for l in wrap(why, w.saturating_sub(16)) {
+                out.push(format!("{:14}{}", "", p.paint(Role::Faint, &l)));
+            }
+            out.push(String::new());
+        };
+
+        if !self.session_id.is_empty() {
+            row(
+                "session",
+                self.session_id.clone(),
+                "In full, because this is the form a command takes. \
+                 The header shows the last eight characters, which is the part \
+                 two sessions differ in.",
+            );
         }
-        parts.push(format!("seq {}", self.seq));
-        parts.push(format!(
-            "rendered {} · filtered {} ({})",
-            self.rendered,
-            self.filtered,
-            self.verbosity.as_str()
-        ));
-        if self.heads > 1 {
-            parts.push(format!("heads {}", self.heads));
+        if !self.head_id.is_empty() {
+            row(
+                "head",
+                format!("{} · {} attached", self.head_id, self.heads.max(1)),
+                "Every head on this session sees the same stream from its own \
+                 read mark. Closing one does not stop the turn.",
+            );
         }
-        if alarms == 0 {
-            parts.push("dropped 0 · scrubbed 0 · resync 0".into());
+        row(
+            "seq",
+            format!("{} · {} rendered", self.seq, self.rendered),
+            "The log's monotonic, gap-free position, and how many of those events \
+             reached the screen. Both counted by this head, not by the daemon.",
+        );
+        row(
+            "filtered",
+            format!("{} ({})", self.filtered, self.verbosity.as_str()),
+            "Events this head chose not to show at the current verbosity. \
+             /verbosity walks terse → normal → loud.",
+        );
+        row(
+            "dropped",
+            self.dropped.to_string(),
+            "Events the daemon's bounded scrollback threw away before this head \
+             asked for them. Not a rendering choice: they are gone.",
+        );
+        row(
+            "scrubbed",
+            self.scrubbed.to_string(),
+            "Interactive-only frames withheld from a head that attached late — \
+             partial tool output and the like, which has no durable form.",
+        );
+        row(
+            "resync",
+            self.resyncs.to_string(),
+            "Times this head threw its state away and took a fresh snapshot, \
+             because the gap since its read mark was past the daemon's bound.",
+        );
+        let wiring = self.wiring.summary();
+        if !wiring.is_empty() {
+            row("wiring", wiring, "Model, dialect and endpoint, from the daemon's own command line.");
         }
-        // Not while they are empty: `--demo` and `--replay` have no session and no
-        // head, and a trailing separator with nothing after it reads as a field
-        // that failed to load.
-        if !self.session_id.is_empty() || !self.head_id.is_empty() {
-            parts.push(format!("{} {}", self.session_id, self.head_id).trim().into());
+        if !self.wiring.workspace.is_empty() {
+            row(
+                "workspace",
+                tilde(&self.wiring.workspace),
+                "Where the daemon is standing. Tools resolve relative paths here.",
+            );
         }
-        // Uncoloured: this is inlaid into the box's bottom edge, which is grey
-        // all the way across, and a second colour inside a border reads as
-        // damage. The alarm case is promoted to the front instead, which is what
-        // survives a truncation.
-        trim_to(&parts.join(" · "), w)
+        out.push(p.paint(Role::Faint, "  /status or esc closes this"));
+        out
     }
 
     /// Drop the transient notice, once the operator has had a frame to see it.
@@ -2591,6 +2921,28 @@ fn match_option(d: &OpenDecision, typed: &str) -> Option<String> {
                 .find(|o| o.option_id.to_ascii_lowercase().starts_with(&t) && !t.is_empty())
         })
         .map(|o| o.option_id.clone())
+}
+
+/// The row a `ToolStarted` / `ToolProgress` / `ToolFinished` is about: the
+/// **last** call with that id that has not finished yet.
+///
+/// Not the first, which is what this used to be. A call id is positional within a
+/// round (`call_0`, `call_1`, …), so a turn that makes fourteen rounds of calls
+/// has fourteen rows called `call_0` in one `TurnPane`, and `find` handed every
+/// one of those events to the first of them. Measured on the operator's own
+/// session, replayed: round one's card was re-finished eight times and wore the
+/// last round's duration, while rounds two onward sat at `○ Reading README.md ·
+/// proposed` for the rest of the turn — a call that had returned twenty seconds
+/// earlier, drawn as one that had not started.
+///
+/// Searching from the back for a row that is still open is exact rather than
+/// heuristic: within a turn the engine proposes and settles in order, so the only
+/// row a start or a finish can be about is the newest unfinished one.
+fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
+    calls
+        .iter_mut()
+        .rev()
+        .find(|c| c.call_id == call_id && !matches!(c.state, CallState::Finished { .. }))
 }
 
 fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
@@ -2625,8 +2977,26 @@ fn fold_word(f: Fold) -> &'static str {
 /// Handing it to the `BlockCache` as a `Decor` rather than mapping over the lines
 /// per frame is what keeps §13.3: the rail is applied once, when the line enters
 /// the cache, not once per line per frame.
+/// The width the reasoning body wraps to, and the style it wraps inside.
+///
+/// One place, because two call sites computing it and one of them forgetting the
+/// step makes the block a row taller than the space reserved for it, which moves
+/// everything below it every frame.
+fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
+    let mut r = cfg.inside(Role::Reasoning);
+    r.width = cfg
+        .width
+        .saturating_sub(activity_indent(cfg.width) + card::REASONING_RAIL_WIDTH)
+        .max(20);
+    r
+}
+
 fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     let p = cfg.palette();
+    // The step the whole of the model's working is set in, carried on the same
+    // prefix as the rail so it is applied once per line as the line enters the
+    // cache — not once per line per frame, which is what §13.3 forbids.
+    let step = " ".repeat(activity_indent(cfg.width));
     // The rail is painted **inside** the block too, so that the row obeys one
     // invariant end to end: every reset in a reasoning row either ends the row or
     // hands the reasoning style straight back. That is what the test asserts, and
@@ -2635,7 +3005,7 @@ fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     // which a terminal collapses to nothing.
     let rail = Painter::inside(p, Role::Reasoning);
     Decor {
-        prefix: format!("{} ", rail.paint(Role::Faint, "┃")),
+        prefix: format!("{step}{} ", rail.paint(Role::Faint, "┃")),
         open: p.open(Role::Reasoning).to_string(),
     }
 }
@@ -2747,10 +3117,14 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
             } else {
                 0.0
             };
+            // `23.8k`, the same way the header and the prefill line say it. The
+            // footer said `23800` and the header two rows up said `23.8k ctx`, so
+            // one screen carried one number in two notations — which is a thing a
+            // reader stops to reconcile.
             let stats = format!(
                 "{} in ({keep}) · {} out · {rate:.0} tok/s · {}",
-                usage.prompt_tokens,
-                usage.predicted_tokens,
+                progress::thousands(usage.prompt_tokens),
+                progress::thousands(usage.predicted_tokens),
                 dur_human(timings.wall_ms),
             );
             match finish_reason {
@@ -2833,7 +3207,8 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-t", "fold or unfold tool output"),
         ("ctrl-x", "show the raw <function=…> text of tool calls, as the model wrote it"),
         ("ctrl-l", "repaint the screen"),
-        ("/verbosity", "terse → normal → loud; the status line counts what is filtered"),
+        ("/status", "this head's counters — dropped, scrubbed, resync — and what each means"),
+        ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
@@ -3014,19 +3389,38 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
     })
 }
 
-fn outcome_str(o: &letibot_transcript::ToolOutcome) -> String {
+/// How a call ended, in one word.
+///
+/// Split from its reason on purpose. The two used to be one string on the card's
+/// header, and a header is trimmed from the right — so a `not run` whose reason
+/// ran to a hundred and forty characters pushed **the word itself** off the end
+/// of the line and the row read `▸ ask_code "Give an overview of the crate…`,
+/// with no sign anywhere on it that the call had not run. A reason is prose and
+/// belongs on a line that wraps; the word is the fact and must not be able to
+/// vanish.
+fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str {
     use letibot_transcript::ToolOutcome as O;
     match o {
-        O::Ok => "ok".into(),
+        O::Ok => "ok",
         // §8.2: abstention is not a flavour of success and must not read like one.
-        O::Abstained { reason } => format!("ABSTAINED — {reason}"),
-        O::Failed { reason } => format!("failed — {reason}"),
-        O::Denied { req_id } => format!("REFUSED — the call was denied ({req_id})"),
-        O::Timeout => "timeout".into(),
-        O::NotRun { why } => format!("not run — {why}"),
-        O::Backgrounded { handle, next, .. } => {
-            format!("STILL RUNNING as `{handle}` — {next}")
-        }
+        O::Abstained { .. } => "ABSTAINED",
+        O::Failed { .. } => "failed",
+        O::Denied { .. } => "REFUSED",
+        O::Timeout => "timeout",
+        O::NotRun { .. } => "not run",
+        O::Backgrounded { .. } => "STILL RUNNING",
+    }
+}
+
+/// Why it ended that way, when there is a why. Goes in the body, where it wraps.
+fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
+    use letibot_transcript::ToolOutcome as O;
+    match o {
+        O::Ok | O::Timeout => None,
+        O::Abstained { reason } | O::Failed { reason } => Some(reason.clone()),
+        O::Denied { req_id } => Some(format!("the call was denied ({req_id})")),
+        O::NotRun { why } => Some(why.clone()),
+        O::Backgrounded { handle, next, .. } => Some(format!("as `{handle}` — {next}")),
     }
 }
 
@@ -3107,6 +3501,25 @@ fn ellipsise_left(s: &str, max: usize) -> String {
     if visible_width(s) <= max || max < 2 {
         return s.to_string();
     }
+    // **At a separator, not at a character.** `…/1f0655c6-…/scratchpad` was the
+    // operator's example and it is two lies in twenty-two columns: the first
+    // ellipsis says a prefix was dropped, which is true, and the second says a
+    // directory has a shorter name than it does, which is not — and neither
+    // segment can be pasted back into a shell. Dropping *whole* segments leaves a
+    // suffix that is a real path, which is what a person compares against.
+    //
+    // `match_indices` runs left to right, so the first candidate that fits is the
+    // longest suffix that fits.
+    if s.contains('/') {
+        for (i, _) in s.match_indices('/') {
+            let cand = format!("…{}", &s[i..]);
+            if visible_width(&cand) <= max {
+                return cand;
+            }
+        }
+    }
+    // A single segment longer than the whole allowance, or no separator at all.
+    // Then there is nothing to cut on and the characters are all there is.
     let keep = max - 1;
     let mut out = String::new();
     let mut cols = 0usize;
@@ -3121,6 +3534,35 @@ fn ellipsise_left(s: &str, max: usize) -> String {
     format!("…{}", out.chars().rev().collect::<String>())
 }
 
+/// Shorten a tool call's subject to `max` columns, cutting at the end a reader
+/// does not need.
+///
+/// A **path** loses its left, at a separator: `…/crates/tui/src/app.rs` is still
+/// a file you can recognise and `crates/tui/src/ap…` is not. Anything else — a
+/// regex, a command line, a glob — loses its **right**, because those are read
+/// from the start and the first token is the one that says what it is.
+///
+/// The test for "path" is a separator **and no glob metacharacter**. Measured at
+/// 60 columns: `**/*.{md,json,toml,yaml,yml} 40` has a slash in it and cutting
+/// its left gave `…json,toml,yaml,yml} 40`, which has lost the fact that it is a
+/// glob at all. Cutting its right gives `**/*.{md,json,tom…`, which has not.
+fn shorten_subject(s: &str, max: usize) -> String {
+    if visible_width(s) <= max {
+        return s.to_string();
+    }
+    // A glob metacharacter, or a quote — `display_target` quotes any argument
+    // containing whitespace, so a leading `"` is how prose announces itself.
+    // Measured: an `ask_code` call whose subject was a sentence with `src/` in the
+    // middle of it left-cut to `…/ is responsible for, how main.rs, editor.rs,
+    // and…`, which has thrown away the question and kept its tail.
+    let not_a_path = s.contains(['*', '?', '{', '[', '"']);
+    if s.contains('/') && !not_a_path {
+        ellipsise_left(s, max)
+    } else {
+        trim_to(s, max)
+    }
+}
+
 /// A path with `$HOME` written as `~`. Twelve columns of an eighty-column header
 /// spent on `/home/dead` is twelve columns not spent on the session's name.
 fn tilde(path: &str) -> String {
@@ -3130,28 +3572,166 @@ fn tilde(path: &str) -> String {
     }
 }
 
-fn item_lines(
-    it: &SnapshotItem,
-    cfg: &RenderConfig,
+/// The call ids answered by a result row **in this round**: the rows between the
+/// assistant row at `at` and the next assistant or user row.
+///
+/// Bounded by the round for the same reason everything else here is: `call_0` is
+/// reused every round, so "does a result for `call_0` exist anywhere in this
+/// transcript" is a question with the wrong answer in it.
+///
+/// A row whose body has not arrived yet counts as unanswered — the head cannot
+/// read a call id out of an announcement. The proposal line stays until the body
+/// lands, and `record_item` rebuilds the history when it does.
+fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for it in items.iter().skip(at + 1) {
+        match it.item.as_ref() {
+            Some(TranscriptItem::ToolResult { call_id, .. }) => {
+                out.insert(call_id.clone());
+            }
+            Some(TranscriptItem::Assistant { .. }) | Some(TranscriptItem::User { .. }) => break,
+            // An announcement with no body yet, or a reasoning row between the
+            // calls and their results. Neither ends the round.
+            _ if it.kind == "assistant" || it.kind == "user" => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The columns everything the model *does* is set in, under everything anybody
+/// *says*.
+///
+/// # A turn had no shape
+///
+/// The operator's words: *"user message, then a flat wall of cards. Nothing says
+/// this is one assistant turn, nothing separates thinking from acting from
+/// answering, and assistant prose has no home of its own."* Every row started in
+/// the same column, so a question, a file listing and the answer were three
+/// things of equal weight in a stack.
+///
+/// What separates them here is a **step**, not a new glyph. The operator's
+/// question and the model's answer sit at the body's own column — they are the
+/// conversation. Thinking and acting are indented one step under them: they are
+/// how the answer was arrived at, and they are subordinate to it. The turn's
+/// footer rule closes the block at the outer column again.
+///
+/// That gives a turn four readable levels out of the vocabulary already on the
+/// screen — `▌` for the question, a step in for the working, the answer flush
+/// left, `──` to close — and costs no colour, so it survives [`Palette::None`]
+/// and a copy-paste, which is the same argument the reasoning rail makes.
+///
+/// **Two columns, matching the reasoning rail's width** (`card::REASONING_RAIL_WIDTH`)
+/// and the frame's own gutter, so the page reads as one repeated step rather than
+/// as three unrelated indents. Given up below sixty columns, where two columns
+/// out of every line is a bigger fraction than the hierarchy is worth — the same
+/// trade `App::gutter` makes at forty.
+fn activity_indent(w: usize) -> usize {
+    if w >= 60 { card::REASONING_RAIL_WIDTH } else { 0 }
+}
+
+/// Drop a leading line-number gutter — `     1| ` — from one line of tool output.
+///
+/// Only ever applied to a **one-line preview inlaid on a header**, never to a
+/// body: a body's gutter is how a reader refers to a line, and taking it away
+/// there would lose a fact. On a header it is `1|` before the only line there is,
+/// which is three columns saying "this is line one of one".
+///
+/// A prefix match rather than a parse of any tool's format. It matches what
+/// `read` emits and nothing that is not shaped exactly like it; a tool whose
+/// output happens to begin `12| ` gets three columns back and loses nothing.
+fn strip_gutter(l: &str) -> String {
+    let t = l.trim_start();
+    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    match t[digits..].strip_prefix("| ") {
+        Some(rest) if digits > 0 => rest.trim_end().to_string(),
+        _ => l.trim().to_string(),
+    }
+}
+
+/// Set `lines` one step in. Empty rows stay empty: trailing spaces on a blank
+/// line are invisible until something copies them.
+fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
+    if n == 0 {
+        return lines;
+    }
+    let pad = " ".repeat(n);
+    lines
+        .into_iter()
+        .map(|l| if l.is_empty() { l } else { format!("{pad}{l}") })
+        .collect()
+}
+
+/// What kind of row this is, for the one question the layout asks about its
+/// neighbours: does a blank line belong between them.
+///
+/// Activity rows **pack**. A run of tool cards is one block and reads as one; a
+/// blank line between each of them was costing a third of the vertical budget to
+/// separate things that are already separated by a glyph in the first column. Air
+/// goes where the *kind* changes — around the question, around the answer, around
+/// a warning — because that is where the reader's attention has to move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowClass {
+    /// Somebody said something: the operator's question, the model's answer.
+    Speech,
+    /// The model working: reasoning, and tool calls.
+    Activity,
+    /// Anything else — a system row, a segment mark, an announcement with no
+    /// body yet.
+    Other,
+}
+
+/// Everything one transcript row needs to know about where it sits.
+///
+/// A struct rather than seven positional parameters because two of the seven are
+/// round-scoped and one is row-scoped, and a caller passing them in the wrong
+/// order is exactly the defect this file has just finished fixing.
+struct ItemCtx<'a> {
+    cfg: &'a RenderConfig,
     think: Fold,
     tools: Fold,
     raw: bool,
-    targets: &std::collections::HashMap<String, String>,
-) -> Vec<String> {
+    /// Display targets for **this row's round**, keyed by call id.
+    targets: &'a std::collections::HashMap<String, String>,
+    /// Call ids in this round that already have a settled result row below.
+    /// Their card is that row; the assistant row does not draw them again.
+    answered: &'a std::collections::HashSet<String>,
+    /// This row belongs to the turn the live pane is still drawing, so the pane
+    /// below owns whatever has not settled and this row draws none of it.
+    drawn_live: bool,
+    /// How long this row's call took, when this head watched it run.
+    elapsed_ms: Option<u64>,
+}
+
+fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
+    let ItemCtx {
+        cfg,
+        think,
+        tools,
+        raw,
+        targets,
+        answered,
+        drawn_live,
+        elapsed_ms,
+    } = *ctx;
+    let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
         // The event arrived and the body has not — which, since the body now
         // travels on the log too, is a real in-flight state and no longer a
         // permanent one. It says so.
-        return vec![dim(
-            cfg,
-            &format!("[{} — waiting for the body of {}]", it.kind, it.item_id),
-        )];
+        return (
+            RowClass::Other,
+            vec![dim(
+                cfg,
+                &format!("[{} — waiting for the body of {}]", it.kind, it.item_id),
+            )],
+        );
     };
     match item {
         TranscriptItem::System { text, origin } => {
             let mut out = vec![dim(cfg, &format!("system ({origin:?})"))];
             out.extend(wrap(text, cfg.width).into_iter().map(|l| dim(cfg, &l)));
-            out
+            (RowClass::Other, out)
         }
         TranscriptItem::User { parts } => {
             let text = parts
@@ -3163,49 +3743,73 @@ fn item_lines(
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            user_block(&text, it.ts, cfg)
+            (RowClass::Speech, user_block(&text, it.ts, cfg))
         }
         TranscriptItem::Reasoning { text, .. } => {
             // A settled row: `Thought`, with no duration. The head can compute one
             // for a *live* turn from the delta timestamps, and a transcript row
             // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
-            let mut out = vec![thinking_header(cfg, text, think.is_open(), false, None)];
+            let mut out = step_in(
+                vec![thinking_header(cfg, text, think.is_open(), false, None)],
+                ind,
+            );
             if think.is_open() {
-                let mut rcfg = cfg.inside(Role::Reasoning);
-                rcfg.width = cfg.width.saturating_sub(card::REASONING_RAIL_WIDTH).max(20);
+                let rcfg = reasoning_cfg(cfg);
                 let mut md = IncrementalMarkdown::new();
                 md.push(text);
                 let mut cache = BlockCache::decorated(reasoning_decor(cfg));
                 out.extend(cache.lines(&md, &rcfg, cfg.budget.reasoning_lines));
             }
-            out
+            (RowClass::Activity, out)
         }
         TranscriptItem::Assistant { text, tool_calls } => {
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
-            let mut out = cache.lines(&md, cfg, cfg.budget.body_lines);
+            // The answer sits at the body's own column, with the question. It is
+            // the one thing on the screen that is not subordinate to something
+            // else, and that is what says so.
+            let prose = cache.lines(&md, cfg, cfg.budget.body_lines);
+            let spoke = !prose.iter().all(|l| l.trim().is_empty());
+            let mut out = prose;
+            let mut acted = false;
             let p = cfg.palette();
             for c in tool_calls {
-                // `→ Read crates/tui/src/app.rs`, not `→ read(call_7)`. The verb is
-                // the same one the live card used, so a call reads identically
-                // before and after the turn settles; the target comes from the
-                // proposal this head saw, and is **absent rather than guessed** for
-                // a row whose proposal it never saw — a head that attached after
-                // the call, or a log recorded before §4.1 was fixed.
+                // ONE ROW PER CALL. A call whose result is on the screen is drawn
+                // by that result and not here.
+                //
+                // This row used to draw `→ Read foo.rs` for every call it made and
+                // the result row then drew `▸ Read foo.rs · ok · 21 lines` for the
+                // same call three lines below, which is two rows and one fact: the
+                // proposal says a call is coming, and once the result has settled
+                // nothing is coming. That doubling is most of why a turn read as a
+                // wall — four calls cost eight rows of a thirty-four-row screen
+                // before any output was shown.
+                //
+                // What survives is the case the proposal line is actually FOR: a
+                // call with no result. The turn was interrupted, the round is still
+                // running, or the body has not arrived. `→` now means exactly
+                // "asked for, nothing came back", which is a fact worth a row.
+                if answered.contains(&c.id) || drawn_live {
+                    if raw && !c.arguments.is_empty() {
+                        out.extend(raw_call_lines(cfg, &format!("{} {}", c.name, c.arguments)));
+                    }
+                    continue;
+                }
                 let verb = card::Verb::of(&c.name);
                 let mut line = format!("→ {}", verb.label(false));
-                // The proposal's target if this head saw it, and otherwise the same
-                // rule applied to the arguments on the row itself — **the same
-                // function**, `letibot_sessionlog::display_target`, so a call that
-                // was watched live and one reconstructed from the transcript render
-                // identically. Deriving it here with a second copy of the rule is
-                // what would make a switched head disagree with the head it
-                // switched away from.
-                let target = match targets.get(&c.id) {
-                    Some(t) if !t.is_empty() => t.clone(),
-                    _ => letibot_sessionlog::display_target(&c.arguments),
-                };
+                // Derived from the arguments **on this row**, never looked up by
+                // call id. The row is holding the very bytes the rule reads, and it
+                // is the only copy of them that is guaranteed to belong to this
+                // round — an id-keyed lookup was how `→ Read TODO.md` came to sit
+                // above a card whose payload was `README.md`.
+                //
+                // It is the same function the engine puts on the wire,
+                // `letibot_sessionlog::display_target`, so a call watched live and
+                // one reconstructed from the transcript still render identically;
+                // a second copy of the rule here is what would make a switched head
+                // disagree with the head it switched away from.
+                let target = letibot_sessionlog::display_target(&c.arguments);
                 if target.is_empty() {
                     // The call id earns its columns only when there is nothing
                     // better: it is a correlation key, and it is the only thing
@@ -3215,7 +3819,15 @@ fn item_lines(
                     line.push(' ');
                     line.push_str(&target);
                 }
-                out.push(trim_to(&p.paint(Role::Faint, &line), cfg.width));
+                // Said out loud, because a row that looks like every other tool row
+                // and quietly has no output is the shape a person reads straight
+                // past. It is the only thing this row now means.
+                line.push_str(" · no result");
+                acted = true;
+                out.push(trim_to(
+                    &format!("{}{}", " ".repeat(ind), p.paint(Role::Attention, &line)),
+                    cfg.width,
+                ));
                 // The settled row's half of `ctrl-x`. A live turn shows the raw
                 // markup from the `ToolCall` deltas; once the row is committed the
                 // markup is gone and the arguments the parser read out of it are
@@ -3229,7 +3841,17 @@ fn item_lines(
                     ));
                 }
             }
-            out
+            // A row that says something is speech; a row that only names calls is
+            // working. A row that does both is speech, because the sentence is
+            // what the reader's eye is going to land on.
+            let class = if spoke {
+                RowClass::Speech
+            } else if acted {
+                RowClass::Activity
+            } else {
+                RowClass::Other
+            };
+            (class, out)
         }
         TranscriptItem::ToolResult {
             name,
@@ -3249,21 +3871,130 @@ fn item_lines(
                 Some(t) if !t.is_empty() => t.clone(),
                 _ => format!("({call_id})"),
             };
-            let head = colour(
-                cfg,
-                if bad { sgr::RED } else { sgr::GREY },
+            // How long it took, when this head watched it run. Carried from the
+            // live card at the moment the transcript took the call over — a
+            // `TranscriptItem::ToolResult` has no timestamps of its own — and
+            // simply absent for a row read out of a snapshot, which is the same
+            // rule `card::Phase::Replayed` follows and for the same reason.
+            let took = match elapsed_ms {
+                Some(ms) => format!(" · {}", letibot_ui::progress::duration(ms)),
+                None => String::new(),
+            };
+            // # Everything used to be the same weight
+            //
+            // A one-line `ls` and a two-hundred-line search rendered identically:
+            // one grey header, one dim body. The operator's words — *"size,
+            // indentation and rule-weight should tell you what matters before you
+            // read a word"*.
+            //
+            // The header is now built out of roles rather than painted one colour,
+            // and the roles are chosen so the **scan** works with no reading at
+            // all:
+            //
+            // - The subject — the path, the pattern — is [`Role::Plain`], i.e. no
+            //   sequence at all, so it is the brightest thing on the row. It is
+            //   what a person is looking for.
+            // - Everything structural around it is [`Role::Faint`]: the glyph, the
+            //   verb, the separators, the chord. Present, skippable.
+            // - `ok` is faint too. It is the boring case and it is most of them;
+            //   anything else keeps its own loud role, which is §8.2's rule
+            //   (abstention must not read like success) and is now the *only*
+            //   coloured thing on an ordinary row.
+            // - The line count is [`Role::Strong`] once the output is big enough
+            //   to be worth a fold — that is the size signal, and it is an
+            //   attribute rather than a second colour, so it survives a
+            //   terminal-native theme.
+            //
+            // Under [`Palette::None`] the words are unchanged and the count is
+            // still a number, which is the whole reason the weighting is carried
+            // by *which* field rather than by a decoration.
+            const BIG: usize = 40;
+            let p = cfg.palette();
+            let w = cfg.width.saturating_sub(ind).max(20);
+            let outcome_role = if bad { Role::Failure } else { Role::Faint };
+            let size_role = if lines.len() >= BIG {
+                Role::Strong
+            } else {
+                Role::Faint
+            };
+            // # It degrades by shortening the subject, never by losing the tail
+            //
+            // The same rule `header_line` had to learn, and for the same reason:
+            // this row was built left to right and trimmed at the right, so a long
+            // target ate the outcome. Measured on the operator's session — an
+            // `ask_code` call that did not run rendered
+            // `▸ ask_code "Give an overview of the crate architecture: what each…`
+            // with the word `not run` cut off the end, which is a failed call
+            // wearing the shape of a successful one.
+            //
+            // So the tail is measured first and the subject is given what is left.
+            // A path is shortened from its LEFT at a separator — the end of a path
+            // is what identifies it, and `crates/tui/src/…` names nothing.
+            let word = outcome_word(outcome);
+            let tail_cols = 3 + visible_width(word)
+                + visible_width(&took)
+                + 3 + 6 + lines.len().to_string().len();
+            let lead = format!("{mark} {verb} ");
+            let subject = shorten_subject(
+                &subject,
+                w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
+            );
+            let mut head = p.paint(if bad { Role::Failure } else { Role::Faint }, mark);
+            head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
+            head.push_str(&p.paint(Role::Plain, &subject));
+            head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
+            head.push_str(&p.paint(Role::Faint, &took));
+
+            // A result of one line goes ON the header. `▸ Read .gitignore · ok ·
+            // 1.1s · /target` is one row where `▸ Read .gitignore · ok · 1 line ·
+            // ctrl-t` over `  /target` was two, and the second of them carried the
+            // count and the chord for a fold that has nothing to fold. At 34 rows
+            // that halving is the difference between four calls fitting and eight.
+            let inline = (!bad && lines.len() == 1)
+                .then(|| strip_gutter(lines[0]))
+                .filter(|l| !l.is_empty())
+                .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
+            if let Some(l) = inline {
+                head.push_str(&p.paint(Role::Faint, " · "));
+                head.push_str(&p.paint(Role::Plain, &l));
+                return (RowClass::Activity, step_in(vec![trim_to(&head, w)], ind));
+            }
+
+            head.push_str(&p.paint(
+                size_role,
                 &format!(
-                    "{mark} {verb} {subject} · {} · {} line{} · ctrl-t",
-                    outcome_str(outcome),
+                    " · {} line{}",
                     lines.len(),
                     if lines.len() == 1 { "" } else { "s" }
                 ),
-            );
-            let mut out = vec![head];
+            ));
+            // No `· ctrl-t` here. The chord belongs on the elision row below, which
+            // exists exactly when something is hidden — an affordance on a card
+            // with nothing folded is eight columns of every row spent advertising
+            // a key that would do nothing, and the hint bar already teaches it.
+            let mut out = vec![trim_to(&head, w)];
+            // The reason, on its own wrapping line rather than in the header's
+            // tail. Never folded, never truncated, and in the outcome's own role:
+            // a call that abstained or was refused said *why*, and that sentence
+            // is the whole content of the row.
+            let why = outcome_why(outcome);
+            if let Some(why) = &why {
+                out.extend(
+                    wrap(why, w.saturating_sub(2))
+                        .into_iter()
+                        .map(|l| p.paint(outcome_role, &format!("  {l}"))),
+                );
+            }
             // Folded shows the first line, which is where a tool puts what it did.
-            // A failure is never folded: an error nobody can read is an error
-            // nobody acts on.
-            let limit = if tools.is_open() || bad {
+            //
+            // A failure used to be exempt — *an error nobody can read is an error
+            // nobody acts on* — and that rule is satisfied by the line above,
+            // which prints the reason in full, wrapped, unfoldable. What the
+            // exemption was actually doing on the screen was printing a tool's
+            // whole `<<<TOOL_ERROR>>>` envelope, in which the reason appears twice
+            // more. So the exemption now applies only when there is **no** reason
+            // to have printed: a timeout, where the payload is all there is.
+            let limit = if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
             } else {
                 2
@@ -3274,19 +4005,26 @@ fn item_lines(
                         .iter()
                         .map(|l| dim(cfg, &format!("  {l}"))),
                 );
-                out.push(colour(
-                    cfg,
-                    sgr::GREY,
-                    &format!("  … {} more lines …", lines.len() - (limit - 1)),
+                // grok-build's `execute.rs:549` form: `… +{n} lines`, and it is a
+                // separator row rather than a sentence — it is not content, it is
+                // the seam where content was taken out. The chord goes here, where
+                // there is something for it to do.
+                out.push(p.paint(
+                    Role::Faint,
+                    &format!("  … +{} lines · ctrl-t", lines.len() - (limit - 1)),
                 ));
             } else {
                 out.extend(lines.iter().map(|l| dim(cfg, &format!("  {l}"))));
             }
-            out
+            (
+                RowClass::Activity,
+                step_in(out.into_iter().map(|l| trim_to(&l, w)).collect(), ind),
+            )
         }
-        TranscriptItem::SegmentMark { label, .. } => {
-            vec![dim(cfg, &format!("─── {label} ───"))]
-        }
+        TranscriptItem::SegmentMark { label, .. } => (
+            RowClass::Other,
+            vec![dim(cfg, &format!("─── {label} ───"))],
+        ),
     }
 }
 
@@ -3422,9 +4160,43 @@ mod tests {
             )));
         }
         assert_eq!(a.filtered - before, 10);
-        let status = a.status_line(200);
-        assert!(status.contains("filtered 10"), "{status}");
-        assert!(status.contains("terse"), "{status}");
+        // Where it says so is `/status`, not the bottom border. §13.2b's rule is
+        // about the moment the disclosure is READ — the count has to exist, be
+        // exact, and be reachable without restarting anything. It was never an
+        // argument for a resident row of zeros next to the prompt.
+        a.command("status");
+        let screen = a.screen(120, 40).join("\n");
+        assert!(screen.contains("filtered"), "{screen}");
+        assert!(screen.contains("10 (terse)"), "{screen}");
+        // And a head that has lost nothing says nothing on the border.
+        assert_eq!(a.status_line(200), "", "a clean head has a clean border");
+    }
+
+    /// The border is not silent about a counter that has **moved**.
+    ///
+    /// The half of §13.2b that does belong on a resident row: a head that dropped
+    /// events is a head whose transcript has a hole in it, and that must not wait
+    /// for somebody to type a command.
+    #[test]
+    fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        let mut a = app();
+        assert_eq!(a.status_line(200), "");
+        a.apply(ServerFrame::Resync {
+            reason: "queue overflow".into(),
+            dropped: 12,
+            snapshot: Box::new(hub.snapshot()),
+            scrubbed: Default::default(),
+        });
+        let border = a.status_line(200);
+        assert!(border.contains("dropped 12"), "{border}");
+        assert!(border.contains("resync 1"), "{border}");
+        assert!(border.contains("/status"), "and says where the rest is: {border}");
+        assert!(
+            a.screen(120, 24).join("\n").contains("dropped 12"),
+            "and it is on the screen without asking"
+        );
     }
 
     #[test]
@@ -3562,12 +4334,23 @@ mod tests {
         let joined = screen.join("\n");
         // The model is on the top edge…
         assert!(screen[row - 1].contains("normal"), "{:?}", screen[row - 1]);
-        // …the disclosure counters on the bottom edge…
-        assert!(screen[row + 1].contains("seq 1"), "{:?}", screen[row + 1]);
+        // …the bottom edge closes the box and says nothing, because nothing has
+        // gone wrong…
+        assert!(screen[row + 1].contains('╰'), "{:?}", screen[row + 1]);
+        assert!(
+            !screen[row + 1].contains("seq"),
+            "the telemetry is not resident in the operator's frame: {:?}",
+            screen[row + 1]
+        );
         // …and the keys on a bar below the box, never in the field.
         assert!(screen[row + 2].contains("ctrl-r"), "{:?}", screen[row + 2]);
         assert!(!screen[row].contains("ctrl-r"), "{:?}", screen[row]);
-        assert!(joined.contains("dropped 0"), "{joined}");
+        assert!(!joined.contains("dropped 0"), "{joined}");
+        // Reachable in one command, with the sequence numbers and the full id.
+        a.command("status");
+        let stats = a.screen(100, 40).join("\n");
+        assert!(stats.contains("dropped"), "{stats}");
+        assert!(stats.contains("seq"), "{stats}");
     }
 
     #[test]
@@ -4286,6 +5069,497 @@ mod tests {
             "{screen}"
         );
         assert!(!screen.contains("(c1)"), "the id is not shown when a name is: {screen}");
+    }
+
+    /// Two rounds of one turn, both numbering their calls from `call_0`, which is
+    /// what `letibot_turn::items` does whenever the wire format carries no id.
+    ///
+    /// Taken from the operator's own session (`s-1788987496351498881`, fourteen
+    /// rounds of `call_0`/`call_1`/`call_2`) and reduced to the two rows that make
+    /// the defect: the head kept one session-wide table keyed on the call id, so
+    /// the later round's paths overwrote the earlier round's and every settled card
+    /// read back the survivor. On screen that was `▸ Read TODO.md · ok · 143 lines`
+    /// above a body beginning `# rano` — the payload of `README.md`.
+    ///
+    /// It is a correctness test, not a layout one. A card that names a file the
+    /// tool did not open is the head telling the operator something false about
+    /// what a tool returned.
+    #[test]
+    fn a_second_round_of_calls_does_not_relabel_the_first_rounds_results() {
+        fn call(id: &str, name: &str, arguments: &str) -> letibot_transcript::ToolCall {
+            letibot_transcript::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments: arguments.into(),
+            }
+        }
+        fn assistant(a: &mut App, seq: u64, id: &str, calls: Vec<letibot_transcript::ToolCall>) {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "assistant"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::Assistant {
+                        text: String::new(),
+                        tool_calls: calls,
+                    }),
+                },
+            )));
+        }
+        fn result(a: &mut App, seq: u64, id: &str, call_id: &str, name: &str, payload: &str) {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: call_id.into(),
+                        name: name.into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: payload.into(),
+                    }),
+                },
+            )));
+        }
+
+        let mut a = app();
+        assistant(&mut a, 1, "r1.a", vec![call("call_0", "read", r#"{"path":"README.md"}"#)]);
+        // Two lines each, so the payload is a body under a header rather than
+        // inlined onto it — the pairing is what is under test, and it is only
+        // visible when the two are separate rows.
+        result(&mut a, 3, "r1.t", "call_0", "read", "FIRST-ROUND-PAYLOAD\nmore\n");
+        assistant(&mut a, 5, "r2.a", vec![call("call_0", "read", r#"{"path":"TODO.md"}"#)]);
+        result(&mut a, 7, "r2.t", "call_0", "read", "SECOND-ROUND-PAYLOAD\nmore\n");
+
+        // A tall enough screen that both rounds are on it at once, which is the
+        // only way the pairing is visible at all.
+        let lines = a.screen(120, 60);
+        // The card a payload is sitting under: the nearest header above it.
+        let label = |needle: &str| -> String {
+            let i = lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not on the screen:\n{}", lines.join("\n")));
+            lines[..i]
+                .iter()
+                .rev()
+                .find(|l| l.contains('▸') || l.contains('▾'))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let screen = lines.join("\n");
+        assert!(
+            label("FIRST-ROUND-PAYLOAD").contains("README.md"),
+            "round one's payload is under `{}`:\n{screen}",
+            label("FIRST-ROUND-PAYLOAD")
+        );
+        assert!(
+            label("SECOND-ROUND-PAYLOAD").contains("TODO.md"),
+            "round two's payload is under `{}`:\n{screen}",
+            label("SECOND-ROUND-PAYLOAD")
+        );
+    }
+
+    /// A settled call is **one** row, not two.
+    ///
+    /// It used to be two: `→ Read TODO.md` from the assistant row, then
+    /// `▸ Read TODO.md · ok · 129 lines · ctrl-t` from the result row three lines
+    /// below, saying the same thing with an outcome attached. Four calls cost
+    /// eight rows of a thirty-four-row terminal before any output was on it.
+    #[test]
+    fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "r.a".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        let before = a.screen(120, 40).join("\n");
+        assert_eq!(
+            before.matches("TODO.md").count(),
+            1,
+            "a call with no result yet is announced exactly once:\n{before}"
+        );
+        assert!(before.contains("no result"), "and says it has none:\n{before}");
+
+        a.apply(ServerFrame::Event(env(3, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "r.t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "# rano TODO\n".into(),
+                }),
+            },
+        )));
+        let after = a.screen(120, 40).join("\n");
+        assert_eq!(
+            after.matches("TODO.md").count(),
+            1,
+            "and once the result lands the proposal does not stay beside it:\n{after}"
+        );
+        assert!(after.contains("▸ Read TODO.md · ok"), "{after}");
+        assert!(
+            !after.contains("no result"),
+            "a call that returned does not still read as one that did not:\n{after}"
+        );
+    }
+
+    /// One turn, with all four of its levels on the screen at once.
+    ///
+    /// The operator's report was that a turn has no shape: *"user message, then a
+    /// flat wall of cards"*. What answers it is a step, not a glyph — the
+    /// question and the answer at the body's own column, the working one step in
+    /// under them.
+    #[test]
+    fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: "what crates are in this workspace".into(),
+                    }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "one\ntwo\nthree\n".into(),
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(5, testing::appended("s", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::TranscriptContent {
+                item_id: "s".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "There are twelve.".into(),
+                    tool_calls: vec![],
+                }),
+            },
+        )));
+        let screen = a.screen(120, 40);
+        let at = |needle: &str| -> usize {
+            let l = screen
+                .iter()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing:\n{}", screen.join("\n")));
+            l.len() - l.trim_start().len()
+        };
+        let question = at("what crates are in this workspace");
+        let working = at("Read (call_0)");
+        let answer = at("There are twelve.");
+        assert_eq!(question, answer, "the question and the answer share a column");
+        assert_eq!(
+            working,
+            question + card::REASONING_RAIL_WIDTH,
+            "and the working is one step in under them:\n{}",
+            screen.join("\n")
+        );
+    }
+
+    /// [`Palette::None`] is not a monochrome theme, it is the `--replay`, pipe and
+    /// CI case: **no sequences at all**. The accent glyphs are what survive it, and
+    /// they are why the hierarchy above is carried by a step and a word rather than
+    /// by a colour.
+    #[test]
+    fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text { text: "hello".into() }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("r", "reasoning"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "r".into(),
+                item: Box::new(TranscriptItem::Reasoning {
+                    text: "working it out".into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(5, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "grep".into(),
+                    outcome: letibot_transcript::ToolOutcome::Failed {
+                        reason: "no such path".into(),
+                    },
+                    payload: "a\nb\n".into(),
+                }),
+            },
+        )));
+        a.reasoning = Fold::Open;
+        let screen = a.screen(120, 40).join("\n");
+        assert!(!screen.contains('\x1b'), "{screen:?}");
+        for glyph in ["▌", "▸", "┃", "╭", "│", "╰"] {
+            assert!(screen.contains(glyph), "{glyph} is missing:\n{screen}");
+        }
+        assert!(screen.contains("failed"), "and the word survives too:\n{screen}");
+        assert!(screen.contains("no such path"), "{screen}");
+    }
+
+    /// Size tells you what matters before you read a word — by **attribute**, so
+    /// it survives a terminal-native theme, and never by a cube colour.
+    #[test]
+    fn a_big_result_weighs_more_than_a_small_one_and_costs_no_cube_colour() {
+        let mut a = App::new(RenderConfig {
+            width: 120,
+            color: true,
+            ..RenderConfig::default()
+        });
+        let mut add = |seq: u64, id: &str, n: usize| {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: "call_0".into(),
+                        name: "grep".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: "x\n".repeat(n),
+                    }),
+                },
+            )));
+        };
+        add(1, "small", 3);
+        add(3, "big", 236);
+        let screen = a.screen(120, 40);
+        let row = |needle: &str| {
+            screen
+                .iter()
+                .find(|l| l.contains(needle))
+                .cloned()
+                .unwrap_or_else(|| panic!("{needle}: {}", screen.join("\n")))
+        };
+        assert!(
+            row("236 lines").contains("\x1b[1m"),
+            "a big result is bold: {:?}",
+            row("236 lines")
+        );
+        assert!(
+            !row("3 lines").contains("\x1b[1m"),
+            "a small one is not: {:?}",
+            row("3 lines")
+        );
+        let joined = screen.join("\n");
+        for cube in ["38;5;", "48;5;", "38;2;"] {
+            assert!(!joined.contains(cube), "{cube} is not a theme slot: {joined:?}");
+        }
+    }
+
+    /// A subject that does not fit takes the shortening, and the outcome does not.
+    #[test]
+    fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "ask_code".into(),
+                    outcome: letibot_transcript::ToolOutcome::NotRun {
+                        why: "no retrieval backend is attached to this session".into(),
+                    },
+                    payload: "a\nb\nc\n".into(),
+                }),
+            },
+        )));
+        // The subject comes from the round's assistant row; here there is none, so
+        // it is the correlation id — long enough to matter once the row narrows.
+        let screen = a.screen(60, 24).join("\n");
+        assert!(screen.contains("not run"), "{screen}");
+        assert!(
+            screen.contains("no retrieval backend"),
+            "the reason wraps in the body rather than being cut off a header:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_path_is_shortened_at_a_separator_and_a_pattern_is_not() {
+        assert_eq!(
+            ellipsise_left("/home/dead/Projects/letibot/crates/tui", 22),
+            "…/letibot/crates/tui",
+            "whole segments, and the longest suffix that fits"
+        );
+        assert_eq!(
+            shorten_subject("crates/tui/src/app.rs", 14),
+            "…/src/app.rs",
+            "a path loses its left"
+        );
+        assert_eq!(
+            shorten_subject("^pub (fn|struct|enum)", 12),
+            "^pub (fn|st…",
+            "a pattern loses its right — it is read from the start"
+        );
+        assert_eq!(
+            shorten_subject("**/*.{md,json,toml,yaml}", 12),
+            "**/*.{md,js…",
+            "and so does a glob, slash or no slash"
+        );
+        assert_eq!(
+            shorten_subject("\"what is src/main.rs for\"", 12),
+            "\"what is sr…",
+            "a quoted sentence is prose with a slash in it, not a path"
+        );
+        // A single segment with no separator to cut on falls back to characters
+        // rather than returning something wider than it was asked for.
+        assert!(letibot_ui::width::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
+    }
+
+    /// The sentence the model writes before its first tool call is on the screen
+    /// once, before and after its row lands.
+    ///
+    /// `TurnPane::text` accumulates every text delta of the whole turn, and prose
+    /// is committed to the transcript one round at a time — so once round one's
+    /// row had a body, its sentence was in history and still in the pane below the
+    /// cards. Measured at 60x34 on the operator's session.
+    #[test]
+    fn a_rounds_prose_moves_into_the_transcript_rather_than_being_copied_into_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        for w in ["I'll take ", "a look ", "at the tree first."] {
+            a.apply(ServerFrame::Event(env(2, testing::delta("t1", w))));
+        }
+        // Streaming: the pane is the only place it exists, and it is showing.
+        let live = a.screen(120, 30).join("\n");
+        assert_eq!(
+            live.matches("at the tree first.").count(),
+            1,
+            "{live}"
+        );
+        a.apply(ServerFrame::Event(env(3, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "I'll take a look at the tree first.".into(),
+                    tool_calls: vec![],
+                }),
+            },
+        )));
+        // Settled: still once, and now in the transcript where it belongs.
+        let settled = a.screen(120, 30).join("\n");
+        assert_eq!(
+            settled.matches("at the tree first.").count(),
+            1,
+            "the pane kept a copy of what the transcript took over:\n{settled}"
+        );
+        // The next round's prose still streams into the pane.
+        a.apply(ServerFrame::Event(env(5, testing::delta("t1", "And now the answer."))));
+        let next = a.screen(120, 30).join("\n");
+        assert!(next.contains("And now the answer."), "{next}");
+        assert_eq!(next.matches("at the tree first.").count(), 1, "{next}");
+    }
+
+    /// A call the turn was cut short in the middle of does not leave the screen.
+    ///
+    /// The hazard in "one row per call": while the live pane is drawing a turn,
+    /// that turn's assistant rows deliberately draw none of their own unsettled
+    /// calls. If the pane then stands down with a call still unanswered, nobody is
+    /// drawing it — and the operator is looking at a turn that asked for three
+    /// files with no sign it ever did.
+    #[test]
+    fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        // While it is running the pane owns it and the row says nothing.
+        assert!(
+            !a.screen(120, 24).join("\n").contains("no result"),
+            "not while it is still running"
+        );
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TurnInterrupted {
+                turn_id: "t1".into(),
+                reason: "operator pressed esc twice".into(),
+                partial_kept: true,
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            screen.contains("→ Read TODO.md · no result"),
+            "and once nothing is drawing it, the row does:\n{screen}"
+        );
+    }
+
+    /// The other half of the same table: a result whose round is not on the screen
+    /// borrows nothing. `(call_0)` is a correlation key and reads as one; a
+    /// neighbour's path reads as a fact.
+    #[test]
+    fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("t.0", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "t.0".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "hello\n".into(),
+                }),
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        assert!(screen.contains("(call_0)"), "{screen}");
     }
 
     #[test]

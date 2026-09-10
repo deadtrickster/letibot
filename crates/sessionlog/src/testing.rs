@@ -260,6 +260,18 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         access: "read".into(),
     });
     out.push(tool_progress("c1", "40 of 276 lines"));
+    // The assistant row that MADE the call, appended before the row that answers
+    // it — which is what the daemon does (`harnessd::harness` appends the
+    // assistant item, invokes the round, then appends its results) and what the
+    // store holds for every real session.
+    //
+    // It was missing, and it is the row a head reads a settled call's display
+    // target out of: the arguments live on it and nowhere else once the proposal
+    // event has gone by. So `--demo` — the fixture people look at to decide
+    // whether the head is any good — rendered `▸ Read (c1)`, demonstrating the
+    // thing §4.1 fixed as though it had not been. A fixture missing a row the real
+    // producer always emits is a fixture that exercises a head nobody runs.
+    out.push(appended("s.2", "assistant"));
     out.push(SessionEvent::ToolFinished {
         turn_id: "s#1".into(),
         call_id: "c1".into(),
@@ -270,11 +282,11 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         spill: None,
         repairs: 0,
     });
-    out.push(appended("s.2", "tool_result"));
+    out.push(appended("s.3", "tool_result"));
     for w in chunks(MARKDOWN) {
         out.push(delta("s#1", &w));
     }
-    out.push(appended("s.3", "assistant"));
+    out.push(appended("s.4", "assistant"));
     out.push(turn_finished("s#1"));
     out
 }
@@ -299,7 +311,21 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
             },
         ),
         (
+            // The row that made the call. Its `arguments` are the only surviving
+            // copy of what the call was about once the proposal event has gone by,
+            // and they are what `letibot_sessionlog::display_target` reads.
             "s.2".into(),
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"/home/dead/Projects/letibot/TODO.md"}"#.into(),
+                }],
+            },
+        ),
+        (
+            "s.3".into(),
             TranscriptItem::ToolResult {
                 call_id: "c1".into(),
                 name: "read".into(),
@@ -308,7 +334,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
             },
         ),
         (
-            "s.3".into(),
+            "s.4".into(),
             TranscriptItem::Assistant {
                 text: MARKDOWN.into(),
                 tool_calls: vec![],
