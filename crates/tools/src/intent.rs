@@ -295,8 +295,10 @@ impl Provenance {
 
 /// How a trigger recognises itself in an argument list.
 ///
-/// Three shapes and no more. Each one is a shape at least one real entry below needs,
-/// and a shape nothing uses is a shape nobody has checked.
+/// Four shapes and no more. Each one is a shape at least one real entry below needs,
+/// and a shape nothing uses is a shape nobody has checked. Three came from the
+/// operator's list; the fourth exists because a trigger written in the first three
+/// fired on `git log -c`, which is ordinary work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerMatch {
     /// The flag is the vehicle whatever its value: `-exec`, `--to-command`, `git -c`.
@@ -319,6 +321,22 @@ pub enum TriggerMatch {
     /// flag or position carried it: `ext::` as a git remote, which can be the operand
     /// of `clone`, of `fetch`, or the value of `remote add`.
     ValuePrefix(&'static str),
+    /// The flag is the vehicle only when its value has a certain **shape**, because
+    /// the same spelling is an ordinary flag elsewhere in the same program.
+    ///
+    /// Used once, and the once is why it exists: git's top-level `-c` takes
+    /// `name=value` and nothing else, while `git commit -c HEAD` and `git log -c`
+    /// take a commit-ish. A trigger on the flag alone would call an ordinary
+    /// `git log -c -p` code execution, and a finding that fires on ordinary work is a
+    /// finding people learn to click through — which is §4b's workaround loop, not
+    /// safety.
+    ///
+    /// Matches the separated form (the flag, then a value containing the needle) and
+    /// the glued form.
+    FlagValueContains {
+        flag: &'static str,
+        needle: &'static str,
+    },
 }
 
 impl TriggerMatch {
@@ -357,6 +375,23 @@ impl TriggerMatch {
                 .iter()
                 .find(|w| w.starts_with(prefix))
                 .map(|w| (*w).to_string()),
+            TriggerMatch::FlagValueContains { flag, needle } => {
+                for (i, w) in words.iter().enumerate() {
+                    if let Some(rest) = w.strip_prefix(flag) {
+                        let rest = rest.strip_prefix('=').unwrap_or(rest);
+                        if !rest.is_empty() && rest.contains(needle) {
+                            return Some((*w).to_string());
+                        }
+                    }
+                    if w == flag
+                        && let Some(next) = words.get(i + 1)
+                        && next.contains(needle)
+                    {
+                        return Some(format!("{w} {next}"));
+                    }
+                }
+                None
+            }
         }
     }
 }
@@ -563,15 +598,21 @@ pub const EXECUTION_VEHICLES: &[ExecutionVehicle] = &[
                 },
             },
             VehicleTrigger {
-                name: "-c (any key)",
+                name: "-c <key>=<value>",
                 why: "the three keys above are named separately so a disclosure can \
                       print the ones a person recognises, but the set of config keys \
                       git shells out for is git's to grow — `core.hooksPath`, \
                       `alias.*`, `filter.*.clean`, `diff.*.command`, \
                       `uploadpack.packObjectsHook` — and enumerating it would be a \
-                      block list, widened by exception until it means nothing. So the \
-                      flag itself is the trigger",
-                how: TriggerMatch::Flag("-c"),
+                      block list, widened by exception until it means nothing. So any \
+                      config override is the trigger. It is the VALUE'S SHAPE and not \
+                      the flag, because `-c` is also an ordinary subcommand flag: \
+                      `git commit -c HEAD` reuses a message and `git log -c` asks for \
+                      a combined diff, and neither takes a `name=value`",
+                how: TriggerMatch::FlagValueContains {
+                    flag: "-c",
+                    needle: "=",
+                },
             },
             VehicleTrigger {
                 name: "--upload-pack",
@@ -1898,6 +1939,10 @@ impl Baseline {
         // gate that stopped at `sudo` would log a service restart as nothing but
         // privilege escalation.
         let mut effective = program.clone();
+        // The argument list the effective program actually receives: `sudo git -c X
+        // log` hands `git` everything after `git`, and a vehicle test run over the
+        // whole thing would be reading `sudo`'s own flags as `git`'s.
+        let mut effective_argv: &[Word] = &stage.argv;
         for i in intents_of(&program, &stage.argv) {
             self.intents.insert(i);
         }
@@ -1905,17 +1950,22 @@ impl Baseline {
             self.findings.push(format!(
                 "`{program}` wraps `{inner}`; the effective program is the inner one"
             ));
-            for i in intents_of(&inner, &stage.argv[(at + 1).min(stage.argv.len())..]) {
+            effective_argv = &stage.argv[(at + 1).min(stage.argv.len())..];
+            for i in intents_of(&inner, effective_argv) {
                 self.intents.insert(i);
             }
             effective = inner;
         }
 
-        // The vehicle finding is a sentence, not just an intent: `ExecuteCode` says
-        // that code runs, and the operator deciding about `git -c core.pager=… log`
-        // needs to be told WHICH argument made a `git log` into a shell.
-        for p in [program.as_str(), effective.as_str()] {
-            if let Some(v) = execution_vehicle(p, &stage.argv) {
+        // The vehicle finding is a sentence, not just an intent. `ExecuteCode` says
+        // that code runs; the operator deciding about `git -c core.pager=… log` needs
+        // to be told WHICH argument made a `git log` into a shell, because that is the
+        // half they can check against what they asked for.
+        for (p, argv) in [
+            (program.as_str(), &stage.argv[..]),
+            (effective.as_str(), effective_argv),
+        ] {
+            if let Some(v) = execution_vehicle(p, argv) {
                 let line = format!("execution vehicle: {}", v.render());
                 if !self.findings.contains(&line) {
                     self.findings.push(line);
@@ -2576,6 +2626,17 @@ mod tests {
         assert!(has_exec("/usr/bin/git -c core.editor='rm -rf ~' commit"));
         assert!(has_exec("/usr/bin/git clone --upload-pack=/tmp/x host:repo"));
         assert!(has_exec("/usr/bin/git clone 'ext::sh -c whoami' /tmp/r"));
+
+        // A key nobody named still fires: the set of config keys git shells out for
+        // is git's to grow, and enumerating it would be a block list.
+        assert!(has_exec("/usr/bin/git -c core.hooksPath=/tmp/h status"));
+
+        // And the other direction, which is the one over-refusal comes from: `-c` is
+        // an ordinary subcommand flag too, and calling ordinary work code execution
+        // is how a finding becomes something people click through. The value's shape
+        // is what separates them — a config override is `name=value`.
+        assert!(!has_exec("/usr/bin/git commit -c HEAD"));
+        assert!(!has_exec("/usr/bin/git log -c -p"));
     }
 
     #[test]

@@ -162,6 +162,19 @@ pub struct Config {
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
     pub sampling: Value,
+    /// **Where this project sits**, as a named point. See
+    /// [`letibot_tools::mode::Mode`].
+    ///
+    /// Read from the per-project store by the daemon, never chosen here: the default
+    /// is [`letibot_tools::mode::UNSEEN_PROJECT`], which is *always-ask* — nothing that
+    /// is not a read happens without the operator.
+    ///
+    /// It is a separate field from [`Config::seat`] because they answer different
+    /// questions and conflating them is the defect this whole strand exists to undo: a
+    /// **role** says which tools are seated, a **mode** says how much approval each one
+    /// costs. `--role coder` used to mean both, so an operator who wanted to edit had
+    /// to pick a role and thereby also picked an approval policy they were never shown.
+    pub mode: letibot_tools::mode::Mode,
     /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -351,6 +364,7 @@ impl Config {
             // before roles were reachable. `the_default_seat_is_what_shipped_before`
             // is the test that keeps it true.
             seat: Seat::default(),
+            mode: letibot_tools::mode::UNSEEN_PROJECT,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -413,6 +427,21 @@ impl Config {
                 active: row.active,
             });
         }
+        // **Where this project sits.** First of the three, because it is the one an
+        // operator changes and the other two are consequences of it: the role says
+        // which tools exist, the adjudicator says who answers, and this says how much
+        // any of it costs. It was the missing line — an operator could read which role
+        // was seated and could not read what that role would ask them.
+        out.push(Disclosure {
+            subject: "mode".into(),
+            state: String::new(),
+            detail: format!(
+                "{}. Nothing at any mode reaches an inexpressible action, and the \
+                 always-ask list reaches you at every one of them.",
+                self.mode.describe()
+            ),
+            active: true,
+        });
         // **The seat, read from the resolved registry rather than from `--role`.**
         // A role that resolved to fewer tools than its name suggests is exactly the
         // thing an operator should be able to see, so the names travel with it.

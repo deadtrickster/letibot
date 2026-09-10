@@ -923,6 +923,59 @@ impl<'a> Harness<'a> {
             )));
         }
 
+        // **The point's prerequisites, checked before anything opens.**
+        //
+        // `Mode::check` refuses by name, says how to attach what is missing, and hands
+        // back no weaker point. That last part is the whole of it: an operator who
+        // asked for `writes allowed` and silently got `always-ask` has a banner saying
+        // one thing and a session doing another, and finds out one wasted turn later.
+        //
+        // What is available is **read**, never assumed — the same discipline
+        // `GateWiring` exists for. `WritableBackend` comes from the backend's own
+        // answer; `ReachableAdjudicator` from the adjudicator's own `describe`, which
+        // is how `NoAdjudicator` and a `HeadAdjudicator` with no head attached both
+        // report themselves as nothing anybody can reach; `Confinement` from whether an
+        // exec backend was actually built. `Oracle` is on nothing this build can
+        // supply, which is why `automode` refuses here rather than being absent.
+        {
+            use letibot_tools::mode::Prereq;
+            let mut have: Vec<Prereq> = Vec::new();
+            if backend_writable {
+                have.push(Prereq::WritableBackend);
+            }
+            // A reachable adjudicator, by its own account. `HeadAdjudicator::describe`
+            // says "none attached right now" when no head can answer, and that string
+            // is the honest reading of *reachable* rather than *attached*.
+            let reachable = adjudicator
+                .as_ref()
+                .map(|a| {
+                    let d = a.describe();
+                    !d.starts_with("none") && !d.contains("none attached")
+                })
+                // No adjudicator was handed in, so the harness builds one from
+                // `cfg.adjudicator`, and both values it can build reach a person.
+                .unwrap_or(true);
+            if reachable {
+                have.push(Prereq::ReachableAdjudicator);
+            }
+            if has_exec_tools {
+                have.push(Prereq::Confinement);
+            }
+            // What the role actually seated, read off the resolved schemas rather than
+            // off the role's name. A prerequisite is about a capability the session
+            // will use: a read-only seat needs no writable backend however strict the
+            // point is, and requiring one unconditionally stopped every read-only
+            // session from opening at all.
+            let seats = letibot_tools::mode::Seats {
+                write: has_write_tools,
+                exec: has_exec_tools,
+                network: has_network_tools,
+            };
+            if let Err(why) = cfg.mode.check(&have, seats) {
+                return Err(HarnessError::Setup(why));
+            }
+        }
+
         let trail = Arc::new(TrailMirror::default());
         let injected: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let monitor_cursor = Arc::new(AtomicUsize::new(0));
@@ -958,6 +1011,10 @@ impl<'a> Harness<'a> {
                 let trail_for_gate = trail.clone();
                 let g = AdjudicatedGate::new(adj)
                     .with_identity(cfg.session_id.clone(), cfg.owner.clone())
+                    // Where this project sits. Without this the gate is at
+                    // `UNSEEN_PROJECT` — always-ask — which is the fail-closed default
+                    // and not what the operator recorded for this tree.
+                    .with_mode(cfg.mode)
                     // Layer A needs to know where it is standing. Undeclared means
                     // `ShellTrust::Unknown`, under which a **bare** command name is
                     // unresolved and the call is `not_run` — the fail-closed

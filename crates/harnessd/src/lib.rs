@@ -90,9 +90,11 @@ pub mod config;
 pub mod daemon;
 pub mod dialect;
 pub mod harness;
+pub mod modes;
 pub mod sessions;
 
 pub use answers::{Answers, HeadAdjudicator};
+pub use modes::ModeStore;
 pub use config::{Config, SpillPolicy, SpillStorage};
 pub use daemon::Daemon;
 pub use sessions::{Outcome, Sessions};

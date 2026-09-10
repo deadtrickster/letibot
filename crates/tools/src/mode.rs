@@ -204,6 +204,28 @@ impl Prereq {
     }
 }
 
+/// **What the seated role actually put in `tools_json`.**
+///
+/// Read off the resolved schemas, never off which role was asked for: a role that
+/// failed to resolve some of its tools seats fewer than its name suggests, and a
+/// prerequisite check that trusted the name would be checking a session that does not
+/// exist. `GateWiring` already pays for that distinction four times over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Seats {
+    pub write: bool,
+    pub exec: bool,
+    pub network: bool,
+}
+
+impl Seats {
+    /// Nothing that is not a read. What an orchestrator seats.
+    pub const READS_ONLY: Seats = Seats {
+        write: false,
+        exec: false,
+        network: false,
+    };
+}
+
 /// **A named coordinate.**
 ///
 /// The four constants below are the points the operator named. Others are legal —
@@ -403,19 +425,52 @@ impl Mode {
         self.disposition(access) != Disposition::Absent
     }
 
+    /// **What this point needs, given what the session actually seats.**
+    ///
+    /// A prerequisite is about a capability the session will *use*, and axis 1 —
+    /// which tools are seated — is chosen separately from the point. So a read-only
+    /// role at `always-ask` needs no writable backend: it has nothing to write with,
+    /// and there is nothing for the missing backend to break.
+    ///
+    /// This is not a softening, and the difference is worth stating because getting it
+    /// wrong is what a test caught. Requiring a writable backend unconditionally made
+    /// **every read-only session refuse to open** — the default point is `always-ask`,
+    /// the default role seats no write tools, and the two together produced a harness
+    /// that would not start. A prerequisite that fires for a capability nobody has is
+    /// not conservative, it is wrong, and it is the kind of wrong that reads as
+    /// safety.
+    pub fn requires_given(&self, seats: Seats) -> Vec<Prereq> {
+        self.requires
+            .iter()
+            .copied()
+            .filter(|p| match p {
+                // Only a session that can write needs somewhere to write.
+                Prereq::WritableBackend => seats.write,
+                // Only a session that can run a command needs it confined.
+                Prereq::Confinement => seats.exec,
+                // A session with nothing gated needs nobody to decide.
+                Prereq::ReachableAdjudicator => seats.write || seats.exec || seats.network,
+                // The oracle is the point's own claim about who answers, and it is
+                // false whatever is seated. `automode` with no oracle is `always-ask`
+                // wearing a different banner, which is the lie this refuses.
+                Prereq::Oracle => true,
+            })
+            .collect()
+    }
+
     /// **Check the prerequisites, and refuse by name.**
     ///
     /// `have` is what the caller could actually build — read off the backend, the
     /// adjudicator and the confinement probe, never off which point was asked for.
-    /// Returns the refusal text, which names every missing piece **and how to attach
-    /// it**, or `Ok(())`.
+    /// `seats` is what the role put in `tools_json`. Returns the refusal text, which
+    /// names every missing piece **and how to attach it**, or `Ok(())`.
     ///
     /// There is deliberately no `fn best_available_mode`. A function that picked a
     /// weaker point for the operator is the silent downgrade, and having it available
     /// is how it gets called.
-    pub fn check(&self, have: &[Prereq]) -> Result<(), String> {
-        let missing: Vec<Prereq> = self
-            .requires
+    pub fn check(&self, have: &[Prereq], seats: Seats) -> Result<(), String> {
+        let needs = self.requires_given(seats);
+        let missing: Vec<Prereq> = needs
             .iter()
             .copied()
             .filter(|p| !have.contains(p))
@@ -424,13 +479,13 @@ impl Mode {
             return Ok(());
         }
         let mut s = format!(
-            "the `{}` mode needs {} and this session has {}.\n\n",
+            "the `{}` mode needs {} for what this session seats, and {}.\n\n",
             self.name,
-            plural(self.requires.len(), "prerequisite"),
-            if missing.len() == self.requires.len() {
-                "none of them".to_string()
+            plural(needs.len(), "prerequisite"),
+            if missing.len() == needs.len() {
+                "none of them are here".to_string()
             } else {
-                format!("{} missing", missing.len())
+                format!("{} of them are missing", missing.len())
             }
         );
         for p in &missing {
@@ -589,7 +644,16 @@ mod tests {
     /// no `Ok` on this path at all.
     #[test]
     fn a_missing_prerequisite_refuses_by_name_and_never_downgrades() {
-        let e = Mode::AUTO.check(&[Prereq::WritableBackend, Prereq::ReachableAdjudicator])
+        let seats = Seats {
+            write: true,
+            exec: true,
+            network: false,
+        };
+        let e = Mode::AUTO
+            .check(
+                &[Prereq::WritableBackend, Prereq::ReachableAdjudicator, Prereq::Confinement],
+                seats,
+            )
             .unwrap_err();
         assert!(e.contains("automode"), "{e}");
         assert!(e.contains("authorisation oracle"), "{e}");
@@ -600,15 +664,53 @@ mod tests {
         // Everything present is fine.
         assert!(
             Mode::AUTO
-                .check(&[
-                    Prereq::WritableBackend,
-                    Prereq::ReachableAdjudicator,
-                    Prereq::Oracle
-                ])
+                .check(
+                    &[
+                        Prereq::WritableBackend,
+                        Prereq::ReachableAdjudicator,
+                        Prereq::Confinement,
+                        Prereq::Oracle
+                    ],
+                    seats
+                )
                 .is_ok()
         );
         // Read-only needs nothing, which is why it is always available.
-        assert!(Mode::READ_ONLY.check(&[]).is_ok());
+        assert!(Mode::READ_ONLY.check(&[], Seats::default()).is_ok());
+    }
+
+    /// **A prerequisite is about a capability the session will use.**
+    ///
+    /// The regression this is written against: requiring a writable backend
+    /// unconditionally made every read-only session refuse to open, because the
+    /// default point is `always-ask` and the default role seats no write tools. A
+    /// prerequisite that fires for a capability nobody has is not conservative, it is
+    /// wrong — and it is the kind of wrong that reads as safety.
+    #[test]
+    fn a_read_only_seat_needs_no_writable_backend_whatever_the_point_says() {
+        assert!(
+            Mode::ALWAYS_ASK
+                .check(&[], Seats::READS_ONLY)
+                .is_ok(),
+            "a session with nothing to write with needs nowhere to write"
+        );
+        // And it still needs one the moment write is seated.
+        let e = Mode::ALWAYS_ASK
+            .check(
+                &[Prereq::ReachableAdjudicator],
+                Seats {
+                    write: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(e.contains("writable backend"), "{e}");
+
+        // `automode`'s oracle is not seat-dependent: a point that claims a model
+        // answers and has none is `always-ask` wearing a different banner, whatever
+        // the session seats.
+        let e = Mode::AUTO.check(&[], Seats::READS_ONLY).unwrap_err();
+        assert!(e.contains("oracle"), "{e}");
     }
 
     /// Automode is **selectable**. A point that is missing reads as "this build cannot
