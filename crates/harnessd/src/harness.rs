@@ -823,6 +823,24 @@ impl<'a> Harness<'a> {
             ledger: intent.clone(),
             ..intent_tools::Wiring::standalone()
         };
+        // **`--role planner` IS plan mode**, so the state says so.
+        //
+        // Without this, `PlanMode::active` is false for the seat whose whole name is
+        // plan mode, `exit_plan_mode` answers *"this session is not in plan mode"* on
+        // every call, and one of the role's eight seats is a tool that can only
+        // refuse. Fail-closed and honest, and still a seat spent on a tool the model
+        // will try.
+        //
+        // The turn and call ids are this seat rather than a decision: nothing
+        // *entered* — no `enter_plan_mode` call exists to point at, because no role
+        // seats it — and `PlanState::entered_by` is read by a refusal that has to
+        // name what is in force. Naming the role is true; inventing a call id would
+        // point a refusal at a decision nobody took.
+        if cfg.seat == Seat::Planner {
+            intent_wiring
+                .plan
+                .enter("open", &format!("--role {}", cfg.seat.as_str()));
+        }
 
         let mut registry: Registry = letibot_tools::read_only_tools(retrieval.clone())
             .map_err(|e| HarnessError::Setup(format!("registering the M1 tool set: {e}")))?;

@@ -446,6 +446,31 @@ impl Config {
             detail: wiring.backend.clone(),
             active: true,
         });
+        // **Plan mode, and the half of it this build cannot do.**
+        //
+        // Seating `planner` puts the session in plan mode for real — the state is
+        // active, so `write_plan` and the ledger mean what they say and
+        // `exit_plan_mode` is not a seat that can only refuse. What it cannot do is
+        // the *widening*: a role's tool list is `tools_json`, which is stable-prefix
+        // bytes, so re-seating `write` and `edit` mid-session rewrites message 0 and
+        // costs a full cold re-prefill of the whole conversation. That is the one
+        // thing this harness is built not to do (§5.3, measured at 179k tokens).
+        //
+        // So leaving plan mode records the plan and does not hand over the tools,
+        // and an operator who reads this knows to open a coder session against the
+        // plan rather than discovering it from a `write` that is not there.
+        if self.seat == Seat::Planner {
+            out.push(Disclosure::off(
+                "plan mode",
+                "NO HANDOVER",
+                "this session is in plan mode and can record a plan (`write_plan`) and \
+                 talk to the fabric (`say`). `exit_plan_mode` commits the plan to the \
+                 intent list; it does NOT seat `write` and `edit`, because a role's \
+                 tool list is stable-prefix bytes and re-seating mid-session is a full \
+                 cold re-prefill of the conversation. Open a `--role coder` session \
+                 against the plan to execute it.",
+            ));
+        }
         // `bash`, and why it is off. Only interesting where it could have been on.
         if self.seat == Seat::Runner && !wiring.seated.iter().any(|t| t == "bash") {
             out.push(Disclosure::off(
