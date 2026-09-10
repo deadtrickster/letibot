@@ -74,6 +74,46 @@ operation on the file, it is **where the bytes end up**:
 | `cp ~/.ssh/id_rsa /tmp/k` | to a location with weaker protection, and then anywhere | **inexpressible** |
 | `scp ~/.ssh/id_rsa remote:` | off the machine | **inexpressible** |
 
+### Danger is not a property of the string
+
+Operator: *"rm -rf / can be allowed if it is the intent."*
+
+That removes the mechanism this section was reaching for. Continue pairs a shell-accurate
+parse with **a hard list of destructive commands blocked outright**; the parse is the part
+to copy and **the block list is not.** `rm -rf /` on a scratch VM is the intent. Danger is
+a **mismatch between what an action does and what was authorised**, and a block list
+encodes the wrong thing and then has to be widened by exception every time somebody
+legitimately needs a listed command — which is how block lists die.
+
+So layer A emits an **intent with its scope**, not a verdict and not a score: file read,
+network access, code execution, privilege escalation, destruction, disclosure, each with
+what it touches. Scope is load-bearing — *destroys `target/debug`* and *destroys the
+project* are different intents, and the 4B classifier measured on 2026-09-10
+distinguished exactly that pair, unprompted: *"action targets wrong path, no authorization
+context provided."*
+
+A score cannot be argued with. An intent can be checked against a sentence the operator
+actually said. That is why the reformulation is the key rather than a refinement.
+
+### Then why is a private key absolute? Because consent is not the operator's to give
+
+The asymmetry is not danger. It is **who bears the consequence, and whether they can
+consent to it in-session**:
+
+| | consequence lands on | can the operator consent? |
+|---|---|---|
+| `rm -rf /` | **the operator**, and they own the loss | **yes** — their machine, their call |
+| `cat ~/.ssh/id_rsa` | every host that key opens, the org, whoever reads the transcript later | **no** — a yes does not bound where the bytes go once they are in a context, a store and possibly a provider |
+
+Destruction is authorisable because the person authorising is the person harmed.
+Disclosure is not, because saying yes does not un-disclose it afterwards.
+
+So the inexpressible tier is **narrow**: irreversible disclosure of a secret across the
+boundary, and nothing else. Not "destructive", not "dangerous". This also lines up with
+§11.3's existing `reversibility` field — destruction is reversible in the sense that
+matters, the operator owns the loss and chose it; disclosure is not reversible in any
+sense.
+
 So the invariant, stated once:
 
 > **Secret bytes may be consumed by a process inside the boundary. They may never enter
