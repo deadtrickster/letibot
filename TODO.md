@@ -152,6 +152,89 @@ without saying so; log alongside rather than replacing.
 ---
 
 
+## R7 — A turn that ends inside its own reasoning is reported as success
+
+**Found live 2026-09-10** while three opencode agents worked on this repo against
+GLM-5.3-Flash. Two wrote results, one was still running, and one "finished" with
+nothing. It had not failed, timed out, or run out of budget.
+
+`msg_08d19c747001d1xPcOJgtgH10c`, 22:54:32, from opencode's session DB:
+
+    parts        step-start, reasoning, step-finish     <- no text, no tool
+    tokens       in 3520 / out 1512, cache read 50494
+    step-finish  reason = "stop"
+    reasoning    5960 chars, contains "</think>" = FALSE
+    ends         '...renders it as a think block within the SAME assistant turn.
+                  So no extra turn marker -> mechanism 2 (extra '
+
+Mid-parenthetical. The think block never closed, there is no assistant text, and
+llama.cpp reported a normal stop. opencode recorded `completed: true`.
+
+**Not the thinking budget.** 1512 tokens against opencode's 65536 output cap is
+2.3%, and server-side there was no truncation at all across the whole session --
+largest generation 7150 tokens, `truncated = 0` on every release, no `--n-predict`
+and no `--reasoning-budget` on the process.
+
+### Why it happened, reproducible in one call
+
+The agents were reasoning about llama.cpp's chat templates, so their reasoning
+necessarily contained control-token NAMES. GLM emits those as control tokens, not
+as text:
+
+    curl -s localhost:8080/v1/chat/completions -d '{"model":"glm-5.3-flash",
+      "messages":[{"role":"user","content":
+        "Output exactly this line and nothing else: the extra <|assistant|> marker is the problem"}],
+      "max_tokens":3000,"chat_template_kwargs":{"reasoning_effort":"low"}}'
+
+    -> content: 'the extra " marker is the problem'      (measured)
+
+The literal is GONE from the output. Here the turn survived because
+`<|assistant|>` opens a role rather than ending one; when the emitted token is a
+turn-ender the turn stops where it is. So the hazard is proportional to how much
+the agent must write about control tokens -- which is why it worsened as those
+agents went deeper into template work rather than degrading over time.
+
+This direction is the mirror of what the fidelity gate already covers. That gate
+classifies 3,617 payload-supplied control literals as DATA on the way IN. On the
+way OUT there is no such defence and there cannot be: a generated control token
+IS a control token, and nothing distinguishes "the model means to end the turn"
+from "the model is naming a token". The model cannot be fixed here. The REPORT
+can.
+
+### What to build, and it is F5
+
+*Never let a component's "I did not do this" be reported upward as success.* A
+turn that ends with an unterminated reasoning block and no assistant content is a
+**failure**, and the engine already holds every fact needed to say so: it owns the
+parse, so it knows the block never closed, and it knows no `Assistant` item was
+committed. Today that turn would be committed as an ordinary empty one.
+
+**Still open?** `grep -rn 'in_reasoning' crates/turn/src/engine.rs` -- the engine
+tracks the state (T12's fix seeds it from the generation prompt). Check whether
+anything asserts on it at the turn boundary.
+
+**Where.** `crates/turn` at the turn boundary, the same place T21.3 joined
+`intent::close_the_turn` to the steering source. This is the same shape: a
+post-flight assertion whose response is steering, not a hard failure -- append
+*"your previous turn ended inside a reasoning block and said nothing; continue or
+say why not"* and let the loop run.
+
+**Done when.** A turn ending with `in_reasoning` true and no `Assistant` item is
+reported as a distinct outcome rather than an empty success, there is a test
+against canned frames in `crates/turn/tests/engine_decisions.rs` that ends a frame
+stream mid-reasoning, and the daemon's disclosure names the check.
+
+### Two mitigations that need no code
+
+- **Tell agents to break the spelling** -- write control-token names so they do not
+  tokenize to the real id. The only fix that works on an agent already running.
+- **`glm-flash-server` sets no `reasoning_effort` at all**, so GLM runs at its
+  template default while both Qwen launchers pin `xhigh` deliberately. Measured
+  above: "output exactly this line" spent 200+ tokens thinking at the default and
+  127 at `low`. That is a cost on every request, separate from this defect.
+
+---
+
 # 2. NEEDS A NOD — small question first, then unblocked
 
 ## N1 — Put content on `TranscriptAppended` (was T13.1)
