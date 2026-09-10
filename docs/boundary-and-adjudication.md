@@ -704,6 +704,46 @@ being built. **The audit rows are written and never read** — closing that loop
 cheapest large improvement available, and it does not wait on VRAM. Only the 1↔2 join
 does.
 
+### A PFN-shaped adjudicator, and "close to danger" as the ask threshold — SPECULATION
+
+Operator: *"wonder tho if PFN-like networks can be applied to it, and tipping point
+defined as being close to danger."*
+
+Untested, and recorded because the fit is unusually good on three axes this design is
+already constrained by:
+
+- **Small data.** There will be hundreds of decisions on a seat, not millions. That is the
+  regime PFNs are built for, and it is the regime a fine-tune is worst in.
+- **In-context adaptation.** A PFN takes its dataset at inference. **The audit rows go
+  in-context**, which is §4h's *"previous answers are a runtime input"* falling out of the
+  architecture rather than being bolted on — no retrain, and the history stays inspectable.
+- **Calibrated uncertainty.** A posterior is the thing a safety classifier most needs and a
+  fine-tuned LLM least provides. *"I am unsure"* has to mean something before it can route
+  to a human.
+
+**And the tipping point is the sharper half of the idea.** The usual ask-policy is a
+threshold on confidence — *below 0.8, ask* — which asks wherever the model is vague,
+including about things that do not matter. **Distance to a dangerous class** asks where
+being wrong is expensive: confidently-safe runs, confidently-dangerous refuses, and the
+band **adjacent to harm** is what reaches a person. That is a threshold on consequence
+rather than on the model's mood, and it is a better fit for §4d's *earned authority* — the
+band can narrow as the record supports it, which a confidence cutoff cannot express.
+
+**Why it does not replace the model.** The input here is not tabular. Intent, scope,
+program class, prior-count and age featurise fine; **the authorisation trail does not** —
+recognising *"yeah restart"* as authorising a specific `systemctl` invocation is §4h's
+1↔2 join and needs language. So the honest shape is two stages: a language model answers
+*was this authorised* as one feature, and a PFN decides the tier from features with
+calibration. Two small things, each doing what it is good at, rather than one large one
+doing both adequately.
+
+**The caveat that must travel with this**: a PFN was already trained on this box for a
+different problem and returned **an honest negative on its classifier**. That is not
+evidence against this — different problem, different features, labels here come from a
+person who was present — but it is the reason to hold this as a direction and not a plan.
+Nothing about it is measurable until §4c's rows exist, which is the same blocker as
+everything else in this section.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
