@@ -88,6 +88,7 @@
 
 pub mod adjudicate;
 pub mod args;
+pub mod authorise;
 pub mod attach;
 pub mod backend;
 pub mod builtins;
@@ -95,6 +96,7 @@ pub mod edit;
 pub mod events;
 pub mod exec;
 pub mod files;
+pub mod intent;
 pub mod result;
 pub mod runtime;
 pub mod schema;
@@ -106,8 +108,14 @@ pub mod testing;
 pub use adjudicate::{
     ActionClass, AdjudicatedGate, Adjudicator, AdjudicationDecision, AdjudicationRequest,
     AdjudicationRow, AskAdjudicator, ConsoleAdjudicator, Cost, DecisionOption, DecisionOutcome,
-    EffectScope, NEVER_WRITE, NoAdjudicator, OnTimeout, OptionKind, RequestKind, Reversibility,
-    permission_options,
+    Adjudicable, EffectScope, FlowRule, NEVER_WRITE, NoAdjudicator, OnTimeout, OptionKind,
+    RequestKind, Reversibility, Tier, always_ask_options, permission_options,
+};
+pub use authorise::{
+    AuthorisationOracle, AuthorisationTrail, Breaker, BreakerState, Budgeted, CorpusRow,
+    DenialNotice, DenialSink, ModelAdjudicator, ModelBrief, OperatorOverride, OracleAnswer,
+    OracleScope, RecordingDenialSink, ScriptedOracle, Speaker, TaskDirection, TrailProvenance,
+    Utterance, Widening, refusal_text,
 };
 pub use args::{Repair, SalvageError, Salvaged, salvage};
 pub use attach::NotAttached;
@@ -120,6 +128,10 @@ pub use exec::{
 };
 pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use files::{FileLedger, Seen};
+pub use intent::{
+    ALWAYS_ASK, AlwaysAskRule, Baseline, BaselineVerdict, Intent, Region, ScopedIntent, SecretFlow,
+    ShellTrust, Surroundings,
+};
 pub use result::{Envelope, Propagation, ToolResult, propagate};
 pub use runtime::{
     DEFAULT_MAX_TOOLS, Gate, GateCall, GateDecision, Invocation, InvokeCtx, Limits, NoBoundary,

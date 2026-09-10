@@ -314,15 +314,91 @@ workaround loop.
 
 ## 5. Open
 
+Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
+`crates/tools/src/intent.rs`, `crates/tools/src/authorise.rs`, and the gate in
+`crates/tools/src/adjudicate.rs`. §4's four outcomes, the always-ask list, the flow rule
+and the earned scope are all code now. What follows is what building them **settled**,
+and what it did not, recorded here so the next reader is not told something the code has
+since disproved.
+
+### Settled by building it
+
+- **~~Whether the classifier sees the raw conversation or a summary of the
+  authorisation.~~** **Neither.** It sees `authorise::ModelBrief`, which has no field
+  holding the command as written: the *post-expansion* words, the scoped intents, the
+  regions, and the operator's utterances with their distance. The injection surface the
+  question worried about is real, and it is why layer B may only ever widen. A surveyed
+  harness gets the layering right and still shows its classifier the raw string, which
+  launders the vulnerability through the model rather than solving it — and a test here
+  asserts the raw text never reaches the oracle, which caught a leak through the request
+  summary while it was being written.
+
+- **~~What counts as "the same task direction".~~** `authorise::TaskDirection` =
+  `(tool, intent set, effect scope, region set)`. Not the arguments — they change on
+  every re-spelling, so the counter would never reach three and the breaker would be
+  measuring typing. Not the tool alone — unrelated denials would trip it. Where the
+  definition is wrong is written beside it: it over-merges, and every error mode pushes
+  toward asking a human, which is the direction a breaker should fail in.
+
+- **~~Whether `NEVER_WRITE` survives at all.~~** **Yes, demoted.** Still the first
+  precheck, still overridable by nobody, and it no longer decides anything interesting:
+  the flow rule does, and needs no allowlist of programs. T25/D20's false positive is
+  gone by construction — a `web_search` query is not a path, and `intent::Region` places
+  paths rather than matching spellings.
+
+- **~~A hard list of destructive commands.~~** **Deleted, and `ALWAYS_ASK` is not it.**
+  §4's distinction is now load-bearing in code: a block list says *never* and gets widened
+  by exception until it dies; an always-ask list says *the operator decides this one*.
+  Three separate mechanisms keep the classifier from shrinking it — the tier mints no
+  `Adjudicable`, the gate refuses to record a class grant for one, and the prompt does not
+  offer a standing-grant option at all.
+
+### What layer 1 must guarantee for layer 2 to mean anything
+
+**A resolved parse is not a resolved meaning.** A grammar reads text; a shell resolves a
+bare command name through aliases, functions and `PATH`, none of which are in the text —
+which is how the survey's best parser is defeated. So `intent::ShellTrust` defaults to
+`Unknown`, under which a **bare** name is unresolved and the command is `not_run`; an
+absolute path is not shadowable and is unaffected.
+
+The gap is small and specific, because `exec/host.rs` already spawns `/bin/sh -c`:
+non-interactive and non-login, so no rc file is read, and `/bin/sh` is `dash` here, which
+reads `$ENV` only when interactive. What remains before
+`Surroundings::with_pinned_shell` can honestly be called:
+
+1. `env_clear()` before the explicit `env` pairs, so `PATH` is pinned rather than
+   inherited.
+2. Unset `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`. `BASH_ENV` **is** sourced by bash for
+   non-interactive shells, so a distribution where `/bin/sh` is bash has a real injection
+   point this box does not.
+
+Stated as a requirement rather than assumed, because a requirement crosses a merge where
+an assumption does not.
+
+### Still open
+
 - **How a denial is presented without becoming a nag.** §4b requires every denial to
   surface; a session that denies often must not turn into a wall of notices. The
-  consecutive-denial breaker is part of the answer and probably not all of it.
-- **Whether the classifier sees the raw conversation or a summary of the authorisation.**
-  Raw is more faithful and puts operator text inside a security decision — which is a
-  prompt-injection surface pointed at the guard itself.
-- **What counts as "the same task direction"** for the circuit breaker.
-- **Where the transcript edge is enforced.** §3's invariant needs a single choke point
-  through which every tool result passes, and today each tool builds its own body.
-- **Whether `NEVER_WRITE` survives at all** once §3 is structural, or becomes a
-  belt-and-braces check that no longer decides anything.
-- **Nothing here is scheduled.** This is the argument for the shape, not the build.
+  consecutive-denial breaker is part of the answer — it stops the *second* attempt
+  becoming a third notice — and probably not all of it. `DenialNotice` carries
+  `BreakerState`, so a head has what it needs to collapse repeats, and nothing does yet.
+
+- **Where the transcript edge is enforced.** Narrower than it was.
+  `shell::Stage::stdout_surfaces` is the structural half, and §3's rule is decided on it.
+  What is still missing is the single choke point every tool result passes through: today
+  each tool builds its own body, and `Baseline::of_paths` covers the path-shaped tools by
+  *reproducing* the rule rather than by sharing an edge. Two implementations of one
+  invariant is how invariants stop agreeing.
+
+- **What a fine-tune needs that the row does not yet carry.** `AdjudicationRow` keeps the
+  action, the trail as shown, the model's verdict and the operator's override as separate
+  values, which is the shape §4c asks for. It has no wall-clock timestamp
+  (`letibot-transcript` does not stamp items, so `Utterance::seconds_ago` is `None` unless
+  a session loop supplies it), no record of which *model build* answered, and no outcome
+  after the fact — whether an admitted action turned out to be what the operator wanted is
+  not captured anywhere, and that is the label a calibration would most want.
+
+- **The model itself is not built here.** The seam takes an `AuthorisationOracle`; the
+  fake is `ScriptedOracle`; what a real one needs is written into that trait — a
+  `ModelBrief` and never a string, a `budget()` it is abandoned for overrunning, and a
+  `scope()` earned by measurement rather than granted by assumption.
