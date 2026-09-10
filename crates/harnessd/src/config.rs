@@ -441,7 +441,9 @@ impl Config {
                 "progress check",
                 "OFF",
                 &format!(
-                    "nothing measures whether a turn is getting anywhere; the only stop                      is the {}-round backstop, which counts effort rather than progress.                      Pass --stall-rounds N.",
+                    "nothing measures whether a turn is getting anywhere; the only \
+                     stop is the {}-round backstop, which counts effort rather than \
+                     progress. Pass --stall-rounds N.",
                     self.max_tool_rounds
                 ),
             ));
@@ -449,7 +451,8 @@ impl Config {
             out.push(Disclosure::on(
                 "progress check",
                 format!(
-                    "stops after {} consecutive rounds producing nothing new; the round                      backstop is {}",
+                    "stops after {} consecutive rounds producing nothing new; the \
+                     round backstop is {}",
                     self.stall_rounds, self.max_tool_rounds
                 ),
             ));

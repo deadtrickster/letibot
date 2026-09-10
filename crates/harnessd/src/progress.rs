@@ -221,11 +221,18 @@ impl ProgressDetector {
                  answer them.",
             ),
         }
+        // **Say what happens next.** The version before this one invited the model
+        // to "say so and carry on", which promised latitude the harness does not
+        // grant: one more stalled round and the turn stops regardless. A steer that
+        // offers a choice it cannot honour is the same defect one layer up as a gate
+        // returning *allowed* because nothing is wired.
         msg.push_str(
-            "\n\nIf you already have what you need, answer. If you do not, ask a \
-             *different* question: the same one will return the same bytes. If you are \
-             deliberately re-checking something you expect to have changed, say so and \
-             carry on \u{2014} this is a measurement, not a refusal.",
+            "\n\nIf you already have what you need, answer now. If you do not, ask a \
+             *different* question \u{2014} the same one returns the same bytes. If the \
+             next round also produces nothing new the turn stops and the operator is \
+             shown this, so say in that round what you are still looking for: an \
+             operator who can see what you were after can widen the search, and one \
+             who cannot see it can only see that you stopped.",
         );
         Some(msg)
     }
@@ -292,7 +299,8 @@ impl ProgressDetector {
     /// The stop, as a sentence naming what it saw.
     pub fn evidence(&self, rounds_run: usize, backstop: usize) -> String {
         let mut s = format!(
-            "stopped after {rounds_run} rounds: {}",
+            "stopped after {rounds_run} round{}: {}",
+            if rounds_run == 1 { "" } else { "s" },
             self.window_summary()
         );
         if let Some(r) = self.repeats_clause() {
