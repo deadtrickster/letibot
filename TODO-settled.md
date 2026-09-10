@@ -1,0 +1,519 @@
+# TODO — settled
+
+Closed work, kept because open items in `TODO.md` rest on these measurements and
+cite them by number. Split out of `TODO.md` on 2026-09-10 so the open list is the
+open list.
+
+Nothing here needs doing. If one of these turns out to be wrong, it moves back.
+
+Also closed and not reproduced here, because the record is elsewhere:
+**T5a** (claimed the M1 loop did not exist; superseded by T17, which records
+harnessd built and serving), **D9**/**D10** (answered on arrival, in git history),
+and **D19** (the dense-27B control "cannot run here" — refuted 2026-09-10; it runs
+under `~/bin/qwen-dense-server`, see that script's comments for the measurements).
+
+---
+
+## T1 — How templates are rendered — **SETTLED 2026-09-09: template-driven, minijinja**
+
+Verdict and evidence: `experiments/minijinja-fidelity/RESULTS.md`. Decision recorded
+as D11.
+
+**Adopt the template-driven design** on `minijinja` 2.24 with `loop_controls`,
+`preserve_order` and the `pycompat` shim, and **keep the CPython differential as a
+permanent CI gate** — that last part is not belt-and-braces, see below.
+
+Measured: **4,132 byte-exact renders** across GLM and Qwen templates over the
+139-case fixture corpus, an 18-case Qwen-native corpus, edge cases and 2,200
+generated conversations; 588 cases where both engines refused identically; **zero**
+where one rendered and the other refused. Sentinel provenance works unchanged and
+its region maps are **identical to the authority's, 0 differences in 4,132
+comparisons**, with 3,617 payload-supplied control-token literals all classified
+DATA and none straddling a boundary.
+
+**minijinja does not have minja's scoping bug** — a bare `{% set %}` is per-iteration,
+matching CPython. That was the near-decisive check and it passed.
+
+**Why the differential gate stays forever.** Reaching byte-exact took eight
+configuration decisions, **four of which fail silently** and three of those were
+invisible without diffing the two engines: `serde_json` separators, `BTreeMap` key
+sorting without `preserve_order`, Rust's `Display` for `f64` never using exponent
+notation, and three Jinja `is` tests answering Python's way in Jinja2 and Rust's way
+in minijinja — of which `none is iterable` is reachable, because both templates
+branch on it.
+
+The framing that explains all four: **minijinja implements Jinja the language
+correctly; `transformers` runs Jinja on top of the Python object model.** `.strip()`,
+`.startswith()`, `.items()` are Python, not Jinja. Every silent divergence lives in
+that seam. The risk is not that minijinja is wrong today — it is that a new template
+reaches an unexercised corner of the shim.
+
+**Known, characterised, unfixed:** integers outside `i64`/`u64` render as floats.
+`minijinja::Value` has no bignum and `serde_json`'s `arbitrary_precision` does not
+fix it — precision is lost in the conversion into minijinja's own value type. Kept
+measured by `cases-edge`.
+
+**Cost:** 7–15 µs to render a 51 KB prompt, 14–30 µs for the double render provenance
+needs, against prefill in hundreds of milliseconds. 18 crates, no C, no Python.
+
+**The biggest untested risk**, and the most likely way a third model breaks this:
+`{% generation %}`. `transformers` registers an `AssistantTracker` extension for it,
+and **minijinja 2.24 has no public custom-tag API**, so a template shipping that tag
+would fail to parse with no shim available. Neither of our two templates uses it.
+
+---
+
+---
+
+## T7 — Falsifier B — **RUN 2026-09-09. The lazy-compaction assumption SURVIVES.**
+
+Full write-up `experiments/falsifier-b/RESULTS.md`, raw per-sample data in
+`raw/samples.jsonl`. 160 samples, 40 per depth, scored objectively on
+compiles-and-tests-pass, first attempt, no retries.
+
+| depth | measured tokens | pass rate | 95% CI |
+|---|---|---|---|
+| 0k (control) | 0 | **0.829** | [0.67, 0.92] |
+| 20k | 19,190 | 0.875 | [0.74, 0.95] |
+| 60k | 60,046 | **1.000** | [0.91, 1.00] |
+| 150k | 149,713 | 0.900 | [0.77, 0.96] |
+
+**20k vs 150k: Fisher exact two-sided p = 1.000.** No monotone trend, no cliff. The
+only significant pair is 0k vs 60k (p = 0.008) **and its sign is backwards** — the
+deeper condition did better. No task degrades, no position effect, no drift across
+reps.
+
+Cache evidence, which is what makes this a quality measurement rather than a prefill
+one: at 150k the first request prefilled 149,968 tokens in 144.6 s and every later
+one reused 149,715 cached against 391 new in **0.8 s**, ~180× faster.
+
+### The two findings nobody predicted
+
+1. **The 0k control is the worst cell, not the best.** Depth did not hurt; the
+   *absence* of a conversation did.
+2. **An empty context makes this model reason ~4× longer** — median 6,468 generated
+   tokens at 0k against ~1,400 at every real depth, on identical tasks. A long prior
+   conversation *anchors* it rather than distracting it. All 5 of 160 runs lost to
+   `finish_reason: length` were at 0k; zero at every real depth.
+
+Finding 2 is an argument against aggressive compaction that the plan does not
+currently make: **compaction risks paying a cold prefill *and* re-entering the
+free-running regime.** It does not merely cost time, it may cost tokens on the far
+side too.
+
+### What this settles
+
+§9.1 clause 4 stands. Locally the trigger policy is "compact when you must, as late
+as possible", and **§10's leveled design earns its keep only at the context wall and
+under KV pressure — not on quality.** That materially reduces what W13 must do for
+M1. The metered branch of T9 is untouched: that trade-off is money, not quality.
+
+### Limits — stated because this will be quoted
+
+Tasks are self-contained and the filler deliberately irrelevant, so this measures
+whether depth degrades **fresh reasoning**. It does **not** measure whether the model
+can still use something stated at turn 3 when it is at turn 200. **That failure mode
+is untested and needs its own falsifier.** n=40 per depth can see a collapse but
+cannot resolve a 5-point slide. 150k–262k is unmeasured. One model.
+
+### Deviations from the brief, both deliberate and both flagged
+
+- `max_tokens` 16,000 rather than 6,000 — at 6,000 the model truncated far too often.
+- One worker per depth on its own pinned slot (concurrency 4) rather than fully
+  sequential, which projected to ~4 hours. Running all depths over the same
+  wall-clock window *eliminates* the server-drift confound rather than merely
+  interleaving against it. Cost: timings are not per-request throughput, and the 0k
+  worker finished last and ran largely alone, so its 97 tok/s against ~32 is GPU
+  availability, not depth.
+
+---
+
+---
+
+## T14 — Composable KV — **SETTLED NEGATIVE 2026-09-09. Prefix reuse is the ceiling.**
+
+`experiments/kv-stitching/RESULTS.md`. Not achievable beyond prefix reuse on this
+stack, and not for the reason expected: a recurrent memory's cells *are* sequence ids,
+so 36 of 48 layers hold one fixed 111.4 MiB accumulator per sequence with no per-token
+structure. A block's contribution there is not extractable, so partial recompute is not
+an operation. Recompute fraction 1.0 of everything after the divergence; recomputing
+98% of a prompt still diverges at token 5.
+
+**Active memory survives** because it was decoupled first — see `docs/memory.md` §4 and
+`docs/compaction.md` §5. What died is the optimisation, not the feature.
+
+The original analysis is kept below because its framing of the two obstacles is what
+made the experiment answerable, and because obstacle 1 turned out never to bind.
+
+---
+
+### Original entry
+
+
+The plan analyses this well (§3.10-C, UNVERIFIED-16) but files it as an open question.
+The operator has asked for it twice and it is a **design goal**: a request should be
+able to send a *composition* — `[block_hash, block_hash, text, block_hash]` — rather
+than a full prompt, and blocks should be reusable **across sessions and across
+agents**, not only as a prefix of one conversation.
+
+### What it is FOR — and why "infinite sessions" is the strong claim, not the weak one
+
+I first framed unbounded sessions as the weaker half, on the grounds that attention
+still costs per resident token so selection does not go away. That framing was wrong,
+and the operator's counter-example is **this session**.
+
+The PFN/stroppy work was done here, in this conversation, and was lost across
+compaction. Asked about it directly, I said it was not in context and not in the
+summary; the only reason it was recovered is that the operator **said it was in the
+transcript**. Without that, the answer would have been "we did not do that here" —
+about work this same session produced.
+
+**The asymmetry that makes composition different in kind, not merely cheaper:**
+
+| | compaction | composition |
+|---|---|---|
+| what it does to detail | **destroys** it | **omits** it |
+| can a later turn recover it | no, it is gone | yes, the block is still addressable |
+| a selection mistake is | permanent | a turn's choice, revisable next turn |
+
+That is the point. Selection does not disappear, but it stops being a one-way door.
+
+**And the current medium indicts itself.** The session transcript is 77 MB of
+append-only jsonl: greppable and nothing else. No index, no addressing, and — the
+actual failure — **no way to know what is in it without already knowing what to
+search for.** Recovering the PFN work required guessing that the word "stroppy" would
+appear; "pfn" alone returns 1,579 hits of noise.
+
+**`crates/sessionlog` currently repeats this mistake**, which is worth saying plainly
+about something we built today: it is an append-only log of text events, and T13
+records that `TranscriptAppended` carries no content at all, so it is not even a
+sufficient record of a session. See T13 — that gap is not a footnote, it is the same
+disease one layer up.
+
+So the fallback, if the recurrent layers say stitching cannot work, is **not**
+"compaction, oh well". It is that the *record* must be addressable even when the KV
+cannot be.
+
+### Two obstacles, and only one of them has a known answer
+
+**1. Position dependence (RoPE).** The same text at position 5,000 and 50,000 yields
+different KV, which is why vLLM's block hash chains the parent and why reuse is
+prefix-only everywhere in production today.
+
+arXiv 2608.03893 (*Cross-Model KV Cache Transfer in LLM Families*, Heo et al.) does
+the relevant trick as step 2 of its method: **strip RoPE from the keys to make them
+position-independent**, map, re-apply. Its own purpose is cross-model transfer within
+a family and its accuracy retention (73–98%) is far too lossy for us — but the
+position-independence technique is separable from the transfer claim, and it is the
+piece composable KV needs.
+
+This also corrects the design brief: it says KV pages "are not freely relocatable the
+way database pages are" as a hard property of attention. It is a property of how the
+KV is *stored*, not of attention.
+
+**2. Cross-attention context dependence — and on our models this is the binding
+constraint.** A block's KV is not a pure function of its own tokens; it depends on
+what preceded it. CacheBlend's answer is to recompute a fraction to reconcile.
+
+**But CacheBlend's premise assumes attention-only layers, and both our models are
+hybrid.** GLM is 12 MLA attention blocks and **34 KDA recurrent blocks**; Qwen3-Next
+is hybrid too — W6 measured llama.cpp resuming it from a context checkpoint and
+snapping `n_past` back. In a recurrent layer the state at position *n* is a function
+of all *n* tokens, so "recompute the last *k*" is not a partial correction: it is
+either exact, because you re-ran from the divergence, or it is wrong.
+
+If that holds, stitching applies to roughly a quarter of GLM and the recompute
+fraction is not "a few percent" but "everything after the divergence, for 34 of 46
+blocks" — and the economics collapse.
+
+**So the paper solves the obstacle we do not have, and is silent on the one we do.**
+
+### What composable KV is ultimately for: active memory
+
+See `docs/memory.md`. Passive memory is a notebook — you must know to look. Active
+memory arrives unbidden because it is relevant. The transcript is passive and it
+failed exactly that way this session.
+
+The link to this item is economic: **without composition, surfacing a block costs a
+full re-prefill** — 144.6 s against 0.8 s for a prefix hit, measured here. That cost
+is why active memory is not standard: you would only dare fire it when already
+confident, which is when you did not need it. With composition a miss costs context
+rather than minutes, and being liberal becomes affordable.
+
+**Revised 2026-09-09: composable KV is no longer a prerequisite for active memory.**
+A suggestion appended to the *user turn* leaves the prefix untouched, so the
+re-prefill cost never arises; composition becomes an optimisation of the `recall`
+pull rather than a gate on the feature. See `docs/memory.md` §4. What composable KV
+still buys is that the pull becomes nearly free rather than a tool call.
+
+It is also a **fused-backend** feature and cannot be built on either side alone: the
+server holds the blocks and has no idea what is relevant; the daemon knows relevance
+and cannot place a block without re-prefilling it. That is a stronger argument for
+fusion than anything in §3.4, where the unlocks are optimisations rather than
+capabilities that do not otherwise exist.
+
+### What settles it — UNVERIFIED-16, the experiment already specified
+
+§3.10-C states the method. Build `P = A ++ B ++ C`, take the reference KV by full
+prefill, then assemble from a cached `A`, a cached `C` taken from a **different
+position**, and a recompute of the first *k* tokens of `C` at its new position. Vary
+*k*. Measure exact agreement of 200 greedy continuation tokens, and run it **per
+layer class** — the whole question is whether the recurrent blocks behave differently
+from the attention ones.
+
+Qwen3-Next is serving and is hybrid, so this is runnable today on the model we
+actually use, not only on GLM.
+
+**Why this is the right next experiment:** it decides whether composable KV is
+achievable on this stack at all, and §19.3's recommendation against model swapping is
+permanent or provisional depending on the answer. Everything else in the composable-KV
+direction is unfundable until it is answered.
+
+---
+
+---
+
+## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **SETTLED 2026-09-10: the server drops a frame; the guard was right**
+
+`crates/turn/src/stream.rs:172` refuses a turn when a frame's `ids.len()` does not equal
+its advance in `tokens_predicted`. It fired in **3 of 6 M1 runs on 2026-09-09** (once
+twice in one run) and in **neither** of the two runs recorded before that. It costs a
+whole turn when it fires and it is upstream of everything C4 measures.
+
+**First reading, mine, and wrong to act on:** the server runs `--spec-type draft-mtp
+--spec-draft-n-max 5`, and a frame advancing the counter by 2 while carrying one id is
+the shape of speculative acceptance — so the guard assumes one frame is one token and
+is too strict for MTP.
+
+**Measured instead of assumed, and it does not hold up.** A 400-token request against
+the live server: 39 frames, 35 advancing, **advance histogram `{1: 35}`** — every
+advancing frame carried exactly its own ids, and the ids on advancing frames reconciled
+exactly with final `tokens_predicted`. The mismatch did not reproduce. What *did*
+reproduce is the other trap: **4 non-advancing progress frames carrying 3 fabricated
+ids**, which the guard's `n_decoded <= self.n_decoded` early return correctly discards.
+
+**So the guard may be right and the server may be dropping an id.** That inverts the
+fix. If an id is genuinely absent then the turn's token identity is unknown, and
+refusing it is *correct* — the ledger's whole claim is that it holds the exact ids the
+model produced. **Relaxing the check to make the failure go away would trade a loud
+turn failure for a silent ledger corruption**, which is the one outcome this design
+exists to prevent.
+
+**Recommendation: instrument, do not relax.** On `FrameMismatch`, capture and log the
+raw frame — its `tokens`, `tokens_predicted`, `timings`, and the frames either side.
+The next occurrence then says whether the id arrives late, arrives elsewhere, or never
+arrives, and *that* decides the fix. Until then the guard is doing its job.
+
+### SETTLED 2026-09-10 — the server drops a token's frame on an incomplete UTF-8 tail
+
+**Cause, in llama.cpp.** `process_token` (`server-context.cpp:4067`) computes
+
+```cpp
+bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
+```
+
+and puts `send_partial_response` inside `if (!incomplete)`. `slot.stats.n_gen` has
+already been incremented — in **both** the plain (`:6450`) and the speculative
+(`:6615`) decode paths. So a token whose bytes leave the generated text ending
+mid-character produces **no frame at all**, while the counter it advanced is
+reported by the *next* frame, which carries only its own id.
+
+Captured verbatim from the live stream (control server, no draft model):
+
+```json
+{"index":0,"content":"😀","tokens":[141334],"stop":false,"tokens_predicted":1}
+{"index":0,"content":" 😂","tokens":[224],   "stop":false,"tokens_predicted":3}
+```
+
+`" 😂"` is `[26525, 224]`. `26525` spells a space plus the **first three bytes** of a
+four-byte emoji, so its frame was suppressed; `224` is the fourth byte and carries
+the accumulated text. **Id `26525` is never transmitted** — in stream mode the
+terminal frame's `tokens` array is empty (`server-context.cpp:4326`), so there is
+nowhere else for it to appear. The guard was right: the id is genuinely absent.
+
+**Why the shape was always `advance 2, ids 1`.** Never `2 → 0`, because a suppressed
+token emits nothing rather than an empty frame. `3 → 1` when a character is spread
+over three tokens. And it is content-dependent, not periodic — ASCII and common
+typographic punctuation are single vocabulary entries. The operator's two
+occurrences were both `advance 2`, which is what a three-byte character makes; `√`
+(U+221A) and `∞` (U+221E) were measured doing exactly that in a technical report.
+
+**The MTP hypothesis is dead, measured both ways** (2026-09-10):
+
+| server | content | advancing frames |
+|---|---|---|
+| `:8080`, `--spec-type draft-mtp` (215 drafted, 150 accepted) | ASCII | `{adv 1 / ids 1: 190}` — **0 mismatches** |
+| `:8080`, same | emoji | `adv2 ×29, adv3 ×11` — 40 mismatches |
+| control, **no `-md`, no `--spec-type`** | ASCII | `{adv 1 / ids 1: 112}` — 0 mismatches |
+| control, same | emoji | `adv2 ×67` — **67 mismatches** |
+
+The variable is content. The draft head is not involved. The control was a different
+model and arch (`Qwen3-4B-Instruct-2507-Q6_K`, killed after the run), so its clean
+ASCII row proves nothing on its own — the **positive** row is what carries the
+argument: the mismatch reproduces with speculative decoding entirely absent.
+
+Base rate on agent-style output with light Unicode: **4 in 269 tokens**. On pure
+ASCII prose, 0 in 400.
+
+**Fix, and where it is not.** Not in the guard, and not in the harness's arithmetic
+either — there is no expected-advance the harness could compute, because the
+suppressed frame's id is not anywhere on the wire. This is an **upstream defect
+worth reporting**: `process_token` should either send the frame with its id and an
+empty `text_to_send`, or defer the counter along with the frame. Today it defers one
+and not the other. UNVERIFIED: nothing has been filed upstream.
+
+**Landed in `crates/turn` (branch `t23/frame-capture-and-partial-keep`):**
+
+1. `capture.rs` — on a refusal, the offending frame, the two before it and the next
+   three go to a file verbatim (`LETIBOT_FRAME_CAPTURE_DIR`, on by default). The
+   *trailing* frames are the point: "the id arrives late" and "the id never arrives"
+   produce the same error message and want opposite fixes.
+2. The refusal is now `AbortCause::FrameMismatch` rather than `TurnFailure::Stream`,
+   so **the ids already accounted for survive it**. The guard did not move — the
+   refused id and everything after it still never reach the ledger — but the turn is
+   now `TurnInterrupted{partial_kept}` with a named seam instead of *"nothing was
+   recorded"*. The same trade §5.8 already makes for an urgent steering message.
+3. Known limit, in the safe direction: if the cut lands inside an unterminated tool
+   call, the parser emits no call and `rows_cover_every_token` refuses the turn
+   wholesale. Nothing half-formed is committed or executed; there is simply no
+   partial in that case.
+
+Conditions worth noting for whoever chases it: it is intermittent, it appeared only
+after the server was OOM-killed and restarted at 14:35 (same unit, same flags, cache
+lost), and the same runs show slot migration mid-session — run 1's turn 19 moved from
+slot 2 to slot 0 and got a cold slot. Concurrency across five slots with other agents
+using the server is the obvious variable nobody has controlled for.
+
+---
+
+---
+
+## T21 — Three failure modes the operator wants solved — **stated requirement**
+
+All three are instances of F5 — *never let a component's "I did not do this" be
+reported upward as success* — applied where nobody applies it.
+
+**1 and 2 are the same bug: a process predicate that matches the process evaluating
+it.** `pkill -f X` where the pattern matches the shell running it. `until pgrep -f
+model; do sleep; done` where the condition matches the waiter — so it never fires, or
+fires at once.
+
+Harness-solvable because the harness **owns the bash tool** and knows what the model
+cannot see: its own pid, its command line, the parent chain, and the pids of the
+servers it manages. Before running, test the pattern against `/proc/self/cmdline`;
+refuse with the diagnosis and what it currently matches, per §8.1 clause 1 — a hazard
+that is self-correcting in the same call.
+
+The waiter form gets a second check the model cannot do: **is this predicate matching
+the model server that is serving you.** Waiting on your own backend is a deadlock the
+harness can see.
+
+*(The author of this entry committed failure mode 1 twice in one day, and it was
+already in memory as a lesson learned.)*
+
+**3 — announced, then not done.** The model says "I'll start X" and the turn ends with
+nothing started. Not a process bug: an **intent-versus-action gap**, solvable because
+the harness sees the whole turn while the model sees only its own output.
+
+Mechanism: a post-flight assertion, the same shape as the prefix check and the length
+policy — the turn ends with a future-tense commitment and no corresponding tool call.
+The response is **steering, not failure**: §5.8 already injects at a step boundary, so
+append *"you said you would X — do it or say why not"* and continue.
+
+Honest limit: detecting intent is a judgement, not a parse, so there will be false
+positives. The harness does not need certainty — it needs the gap **visible rather than
+silent**, and a wrong steer costs a few tokens. Same trade as the recall suggestion.
+
+### T21.3 — **JOINED 2026-09-10.** Both halves existed; nobody called the boundary
+
+`intent::close_the_turn` and `letibot_turn::steering` were both built, both tested, and
+had no join: T21.3 sat announced-but-not-done, which is the failure it exists to catch.
+The session loop now calls the diff at the turn boundary and routes findings through the
+steering source, which injects at the next step boundary.
+
+**Two decisions the join forced, neither of them obvious.**
+
+**The prose half is a flag and the tool-declared half is not**, and the split is the rule
+this repo is under rather than caution. `IntentLedger::reconcile(turn_id, "")` — the
+deterministic half — cannot fire unless the model used `todo` or `goal`, and only a role
+that names them seats them, so a default session is behaviourally identical with it on.
+`intent::close_the_turn` also reads the assistant's prose, and `commitments` fires on any
+turn that ran no tools — which for a plain answer is the *normal* shape. Switching that on
+for every existing session would put *"you said you would X"* into conversations that were
+working. It is the more useful half and the one with an unmeasured false-positive rate, so
+it is `--intent-prose`.
+
+**The nudge is capped at one per user turn.** T21.3's response is *"append … and
+continue"*, and continuing means the answer turn is not the end of the loop — the
+`calls.is_empty()` branch appends the notice and goes round again rather than returning.
+Uncapped, a model that answers the nudge with more prose and no tool call produces a
+second finding, a third, and burns `max_tool_rounds` on an argument. One is the error
+signal; two is the harness insisting. If the model explains itself and stops, that is a
+legitimate answer to the check — `docs/closed-loop.md`'s tolerance band (T22-adjacent, and
+D22's open question), set at its narrowest until somebody measures a better one.
+
+**Still open:** the false-positive rate of the prose half is unmeasured, which is exactly
+why it is off. Measuring it needs a corpus of turns labelled *"did this commitment matter"*,
+and the honest source for one is the same as §4c's: run with it on and record the
+overrides.
+
+### T21.4 — **DONE 2026-09-10.** The round counter was an open-loop guard and it cut working turns twice
+
+`max_tool_rounds: 12` was the only thing that could end a runaway turn, so it also
+ended two legitimate ones — a session asked to *"look at the project and suggest
+improvements"*, cut mid-investigation, and before that a session doing genuine
+exploration two rounds from finishing, every round of it new work.
+
+**A count of rounds measures effort.** It never looks at the effect, only at the
+command, which is `docs/closed-loop.md` §1 exactly. And the message blamed the model
+for working — *"the model called tools 12 times without answering"* — when it was
+answering and had not finished. Same defect as `grep` reporting absence having opened
+no files.
+
+`crates/harnessd/src/progress.rs` is the encoder. **A round made progress when at
+least one of its calls returned `Ok` with a result this turn had not already seen.**
+Every input is a fact the harness already computed: `args_digest` for the repeated
+call, `payload_digest` for the repeated result, and `intent::ledger::is_effect` —
+lifted out of `record_effect` so the ledger and the detector cannot come to hold two
+nearly-identical predicates that disagree silently.
+
+**Why payload novelty and not the repeated call**, which is the stronger raw signal: a
+model that edits a file and reads it back makes a byte-identical call and gets a
+different answer, and that is progress. Only the payload separates it from the third
+read of an unchanged file. The repeated call is kept for the *evidence*.
+
+`max_tool_rounds` moves to 200 and is now a backstop for a different failure — a turn
+producing genuinely new results forever — with a sentence that no longer accuses.
+`--stall-rounds N` (default 5) is the band, `0` is off and disclosed.
+
+**The operator's own prompt was replayed at the new defaults.** *"Look at the
+project and suggest improvements."*, the session that was cut, ran to completion:
+**28 rounds, 55 tool calls, exit 0**, ending in a ranked list with an ordering
+argument. Every round produced at least one `Ok` carrying bytes the turn had not
+seen, so the progress check never came within four rounds of firing. The old cap
+stopped this turn less than half way through it.
+
+**The false positive is measured, not assumed.** Live against the running server: a
+turn told to run three searches one per step, each correctly finding nothing, is a run
+of stalled rounds even though every query was new and every answer was right. At the
+default it survives (3 < 5); at `--stall-rounds 2` it was cut. The nudge at N-1 is the
+mitigation and it now names *which* case it saw — repeated calls, or new questions
+nothing could answer — so the operator can tell the two apart in the stop.
+
+**Still open:** whether a run of *distinct* fruitless queries should get a longer band
+than a run of repeats. It is one threshold today and they are plainly not the same
+failure. Nobody has measured how often either occurs.
+
+---
+
+
+---
+
+> **Both verified implemented on 2026-09-10** while still filed as open.
+> T12: `crates/turn/src/engine.rs:482,794` seeds `in_reasoning` from
+> `items::lead_opens_reasoning(&lead, ...)` — the generation prompt — and the
+> channel is computed before the delta is emitted.
+> T21.1/T21.2: `crates/tools/src/exec/predicate.rs` exists, with the
+> refuse-and-hand-back-the-handle-form design and coverage in
+> `crates/tools/tests/exec.rs`. T21.3 was recorded JOINED the same day.
+
