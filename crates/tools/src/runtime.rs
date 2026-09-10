@@ -78,6 +78,23 @@ impl Invocation {
         }
     }
 
+    /// **Nothing ran.** Not a denial, not an abstention, not a failure — see
+    /// [`crate::attach`], which is where the sentence a tool puts in `why` is
+    /// built so that every tool with nothing behind it produces the same shape.
+    ///
+    /// This was a struct literal in `retrieval` and nowhere else, which is why it
+    /// is here now: the family had three constructors and a fourth outcome, and
+    /// the missing constructor is what makes a tool author reach for the nearest
+    /// one that exists.
+    pub fn not_run(why: impl Into<String>, payload: impl Into<String>) -> Self {
+        Invocation {
+            outcome: ToolOutcome::NotRun { why: why.into() },
+            payload: payload.into(),
+            notes: Vec::new(),
+            edit: None,
+        }
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
         self
@@ -371,6 +388,30 @@ pub mod roles {
                 "glob",
                 "ask_code",
                 "ask_corpus",
+                "read_spill",
+            ],
+        )
+    }
+
+    /// §8.4's `researcher` with the web instead of `search_corpus`, which no
+    /// build has.
+    ///
+    /// Seven against a ceiling of eight, and the shape of the table's own
+    /// `researcher`: ask the index, ask the web, then read and search the tree.
+    /// Four of the seven refuse today — the two retrieval seats have no backend and
+    /// the two network seats have no provider — and the role exists so that *"which
+    /// tools would this agent have"* is a question with a written answer rather
+    /// than one settled per session.
+    pub fn m3_researcher() -> Role {
+        Role::new(
+            "researcher",
+            &[
+                "ask_corpus",
+                "ask_code",
+                "web_search",
+                "web_fetch",
+                "read",
+                "grep",
                 "read_spill",
             ],
         )

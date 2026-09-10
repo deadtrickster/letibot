@@ -173,6 +173,37 @@ impl ActionClass {
             cost: Cost::Free,
         }
     }
+
+    /// The class of a call that **leaves the box**.
+    ///
+    /// This exists because [`ActionClass::host`] was the only constructor and
+    /// `Access::Network` had no user, so every derivation ran through the path
+    /// that asks whether a `path` argument is inside the workspace. A network call
+    /// has no `path`, `path_is_inside` answers `true` for the absence of one, and
+    /// the first `web_fetch` would therefore have been logged and routed as
+    /// `network,host_project` — a class that says the effect lands in the
+    /// operator's project directory. The audit would have been wrong in the
+    /// direction that matters, and nothing would have said so.
+    ///
+    /// `reversibility` is **always `Irreversible`**, and that is a claim rather
+    /// than a hedge: a request that has left this box cannot be recalled. Even a
+    /// read is a row in somebody's access log and a fact about who is looking at
+    /// what. §11.3 routes `*,external,irreversible,*` to a human, which is the
+    /// conservative row, and the alternative — calling a `GET` reversible because
+    /// nothing here changed — would be reasoning about the wrong side of the wire.
+    ///
+    /// `cost` is the caller's to state. It is `Free` for everything today because
+    /// nothing is attached and nothing is billed; the first metered provider brings
+    /// [`Cost::Metered`] with it, and §11.4 is explicit that the boundary does not
+    /// protect metered actions.
+    pub fn external(access: Access, cost: Cost) -> Self {
+        ActionClass {
+            access,
+            scope: EffectScope::External,
+            reversibility: Reversibility::Irreversible,
+            cost,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -766,30 +797,57 @@ impl AdjudicatedGate {
     /// The request one call produces. Public because the head and the tests both
     /// want to see a request without a decision having been made about it.
     pub fn request_for(&mut self, call: &GateCall<'_>) -> AdjudicationRequest {
-        let path = call
-            .args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<no path argument>");
+        let network = call.access == Access::Network;
+        // What this call is *about*, for a human who is deciding in one line. A
+        // path for a file tool; for a network tool there is none, and printing
+        // `<no path argument>` about a `web_fetch` would describe the request by
+        // what it is not.
+        let target = target_of(call.args);
         let inside = call.path_is_inside();
         // Reversibility is a fact about the target, and the runtime stats it
         // before asking. `None` — no path argument at all — is treated as
         // reversible: claiming irreversibility about a call whose target nobody
         // looked at would be a stronger statement than the evidence supports.
         let creates = call.target_exists == Some(false);
-        let class = ActionClass::host(call.access, inside, creates);
+        let class = if network {
+            ActionClass::external(call.access, Cost::Free)
+        } else {
+            ActionClass::host(call.access, inside, creates)
+        };
         let digest = crate::events::payload_digest(&call.args.to_string());
-        let mut facts = vec![
-            format!("workspace: {}", call.workspace),
-            format!(
-                "the path is {} the session's workspace",
-                if inside { "inside" } else { "OUTSIDE" }
-            ),
-            "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
-                .to_string(),
-        ];
-        if creates {
+        let mut facts = if network {
+            vec![
+                format!("workspace: {} — and this call does not touch it", call.workspace),
+                "this call LEAVES THE BOX: it reaches a third party, who learns that \
+                 somebody here asked"
+                    .to_string(),
+                "a request that has been sent cannot be recalled, which is why the class \
+                 says irreversible even for a read"
+                    .to_string(),
+                "what comes back is text this harness did not write, and it enters the \
+                 model's context"
+                    .to_string(),
+            ]
+        } else {
+            vec![
+                format!("workspace: {}", call.workspace),
+                format!(
+                    "the path is {} the session's workspace",
+                    if inside { "inside" } else { "OUTSIDE" }
+                ),
+                "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
+                    .to_string(),
+            ]
+        };
+        if creates && !network {
             facts.push("this creates a file that does not exist, so there is nothing to restore".into());
+        }
+        if let Some(op) = call.args.get("op").and_then(|v| v.as_str()) {
+            // A tool that dispatches on an op is one tool to the gate and ten
+            // actions to whoever is deciding. The op goes in the facts because the
+            // routing key cannot carry it (§11.3's class has no op field), and a
+            // human reading `github` alone cannot tell a listing from a merge.
+            facts.push(format!("operation: `{op}`"));
         }
         AdjudicationRequest {
             id: self.next_id(),
@@ -800,7 +858,7 @@ impl AdjudicatedGate {
             tool: call.name.to_string(),
             class,
             summary: format!(
-                "`{}` wants {} access to `{path}`",
+                "`{}` wants {} access to `{target}`",
                 call.name,
                 call.access.as_str()
             ),
@@ -1022,6 +1080,24 @@ pub fn startup_disclosure(
             true,
         ),
     }
+}
+
+/// What a call is about, in one string, for the summary a human decides from.
+///
+/// The order is the order of specificity, not of preference: a `path` is the most
+/// concrete thing a call can name, then an address, then a query. A call that names
+/// none of them says so rather than borrowing the word `path`, because *"no path
+/// argument"* on a `web_search` describes the request by something it was never
+/// going to have.
+fn target_of(args: &Value) -> String {
+    for key in ["path", "url", "query", "repo", "server", "pattern"] {
+        if let Some(v) = args.get(key).and_then(|v| v.as_str())
+            && !v.trim().is_empty()
+        {
+            return v.to_string();
+        }
+    }
+    "<no target argument>".to_string()
 }
 
 /// Any string argument that names a path on the never-write list.

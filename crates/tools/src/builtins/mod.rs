@@ -23,6 +23,7 @@
 //! | [`mod@write`] | an overwrite of an unread or changed file is refused **with the file**, and the refusal records it so the retry proceeds |
 //! | [`bash`] | a command whose process predicate matches the process that would run it is refused with the pids it matches and the handle-shaped call that does what was meant |
 //! | [`jobs`] | an unknown job id comes back with the jobs there are and the nearest; an unknown scope with the scopes there are and the three kinds |
+//! | [`external`] | a tool whose infrastructure is not attached names what is missing, what would attach it, and what still works here — and returns `NotRun`, because nothing ran |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
@@ -32,6 +33,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod external;
 pub mod glob;
 pub mod grep;
 pub mod jobs;

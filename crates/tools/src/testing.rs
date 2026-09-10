@@ -69,6 +69,10 @@ pub struct Harness {
     /// to declare a protected pid, to end a scope, and to read the reap log —
     /// none of which is a tool call, and all of which a daemon does.
     pub processes: Option<Arc<crate::exec::HostProcesses>>,
+    /// What mounting the MCP catalog did, if there was one. Empty otherwise, and
+    /// an empty report is a real answer: nothing was offered and nothing was
+    /// refused.
+    pub mount: crate::builtins::external::mcp::MountReport,
     /// Held so the tree outlives the backend.
     _dir: TempDir,
 }
@@ -199,8 +203,26 @@ pub fn runner_harness_with_gate(
         rt,
         sink: RecordingToolSink::new(),
         processes: Some(host),
+        mount: Default::default(),
         _dir: dir,
     })
+}
+
+/// A session with the network tools registered, over whatever is behind them.
+///
+/// The gate **allows**, because what these tests are about is the second gate: the
+/// backend seam. A session with no adjudicator refuses at the first gate and never
+/// reaches the tool, which is [`external_harness_with_gate`]'s `None` case and is
+/// itself worth a test — it is the configuration a daemon starts in.
+pub fn external_harness(backends: crate::ExternalBackends) -> Harness {
+    external_harness_with_gate(backends, Some(allow_all()))
+}
+
+pub fn external_harness_with_gate(
+    backends: crate::ExternalBackends,
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+) -> Harness {
+    build_ext(Spiller::unset(), Arc::new(Unavailable), false, gate, Some(backends))
 }
 
 fn build(
@@ -208,6 +230,16 @@ fn build(
     retrieval: Arc<dyn Retrieval>,
     writable: bool,
     gate: Option<Box<dyn crate::runtime::Gate>>,
+) -> Harness {
+    build_ext(spiller, retrieval, writable, gate, None)
+}
+
+fn build_ext(
+    spiller: Spiller,
+    retrieval: Arc<dyn Retrieval>,
+    writable: bool,
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+    external: Option<crate::ExternalBackends>,
 ) -> Harness {
     let dir = TempDir::new();
     fixture_tree(dir.path());
@@ -222,6 +254,21 @@ fn build(
             crate::read_only_tools(retrieval).expect("built-ins register"),
         )
     };
+    // Registered, not seated: a role is what a session's prompt carries, and these
+    // three plus the read-only seven are over §8.4's ceiling.
+    let (registry, mount) = match &external {
+        Some(b) => {
+            let mut reg = crate::external_tools(registry, b).expect("external tools register");
+            // A real session mounts at open, against the role's remaining seats.
+            let report = crate::builtins::external::mcp::mount(
+                &mut reg,
+                b.mcp.clone(),
+                crate::DEFAULT_MAX_TOOLS,
+            );
+            (reg, report)
+        }
+        None => (registry, Default::default()),
+    };
     let mut rt = ToolRuntime::new(registry, Box::new(backend)).with_spiller(spiller);
     if let Some(g) = gate {
         rt = rt.with_gate(g);
@@ -230,6 +277,7 @@ fn build(
         rt,
         sink: RecordingToolSink::new(),
         processes: None,
+        mount,
         _dir: dir,
     }
 }

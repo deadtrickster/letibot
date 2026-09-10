@@ -170,13 +170,18 @@ impl Config {
                  Pass --store PATH.",
             ));
         }
-        out.push(Disclosure::off(
-            "retrieval",
-            "INERT",
-            "ask_code and ask_corpus return NotRun, not Abstained. No MCP server is \
-             running anywhere (T16.6), so nothing was searched; saying `the corpus does \
-             not cover this` would be a claim about a corpus nobody queried.",
-        ));
+        // Retrieval, the web tools, the forge and MCP: computed from what the
+        // session attached and what it seated, never asserted. This line used to be
+        // a constant sentence about `ask_code`, which was true and unchecked — the
+        // same defect `GateWiring` exists to make unwriteable, one subject over.
+        for row in wiring.external.startup_disclosures() {
+            out.push(Disclosure {
+                subject: row.subject.into(),
+                state: row.state.into(),
+                detail: row.detail,
+                active: row.active,
+            });
+        }
         let (state, detail, active) = letibot_tools::adjudicate::startup_disclosure(
             &wiring.adjudicator,
             wiring.backend_writable,
@@ -213,6 +218,10 @@ pub struct GateWiring {
     pub backend_writable: bool,
     /// Whether any seated tool declares `Access::Write`.
     pub has_write_tools: bool,
+    /// What is behind the tools that need infrastructure this box does not run,
+    /// read off the seams themselves. The same argument as the three fields above,
+    /// applied to four more things that can silently be absent.
+    pub external: letibot_tools::ExternalWiring,
 }
 
 impl GateWiring {
@@ -223,6 +232,7 @@ impl GateWiring {
             adjudicator: "none (no adjudicator attached)".into(),
             backend_writable: false,
             has_write_tools: false,
+            external: letibot_tools::ExternalWiring::none(),
         }
     }
 }
@@ -335,9 +345,9 @@ mod tests {
         // exactly backwards: it reported no boundary while the gate was refusing
         // every call.
         let unattended = GateWiring {
-            adjudicator: "none (no adjudicator attached)".into(),
             backend_writable: true,
             has_write_tools: true,
+            ..GateWiring::read_only()
         };
         let u = line(&unattended);
         assert_ne!(
@@ -357,6 +367,7 @@ mod tests {
             adjudicator: "console adjudicator".into(),
             backend_writable: true,
             has_write_tools: true,
+            ..GateWiring::read_only()
         };
         let w = line(&wired);
         assert!(w.active, "an attached adjudicator over a writable backend is on");

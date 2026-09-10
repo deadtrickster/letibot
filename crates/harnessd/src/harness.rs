@@ -369,7 +369,12 @@ impl<'a> Harness<'a> {
         // be the exact failure §8.2 exists to prevent.
         let retrieval: Arc<dyn letibot_tools::builtins::retrieval::Retrieval> =
             Arc::new(letibot_tools::builtins::retrieval::Unavailable);
-        let mut registry: Registry = letibot_tools::read_only_tools(retrieval)
+        // The web, the forge and MCP are in the same position and for the same
+        // reason: nothing is attached, so nothing is registered here. The seams are
+        // read into the wiring below so the banner says which, rather than the
+        // daemon staying silent about four capabilities it does not have.
+        let external = letibot_tools::ExternalBackends::unattached();
+        let mut registry: Registry = letibot_tools::read_only_tools(retrieval.clone())
             .map_err(|e| HarnessError::Setup(format!("registering the M1 tool set: {e}")))?;
         if let Some(t) = extra_tool {
             registry
@@ -390,6 +395,11 @@ impl<'a> Harness<'a> {
             has_write_tools: schemas
                 .iter()
                 .any(|s| s.access == letibot_tools::schema::Access::Write),
+            external: letibot_tools::ExternalWiring::read(
+                retrieval.as_ref(),
+                &external,
+                &schemas,
+            ),
         };
 
         let spiller = build_spiller(&cfg)?;
