@@ -741,7 +741,7 @@ we inherited.
 
 ---
 
-## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **do NOT relax the guard**
+## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **SETTLED 2026-09-10: the server drops a frame; the guard was right**
 
 `crates/turn/src/stream.rs:172` refuses a turn when a frame's `ids.len()` does not equal
 its advance in `tokens_predicted`. It fired in **3 of 6 M1 runs on 2026-09-09** (once
@@ -771,6 +771,80 @@ exists to prevent.
 raw frame — its `tokens`, `tokens_predicted`, `timings`, and the frames either side.
 The next occurrence then says whether the id arrives late, arrives elsewhere, or never
 arrives, and *that* decides the fix. Until then the guard is doing its job.
+
+### SETTLED 2026-09-10 — the server drops a token's frame on an incomplete UTF-8 tail
+
+**Cause, in llama.cpp.** `process_token` (`server-context.cpp:4067`) computes
+
+```cpp
+bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
+```
+
+and puts `send_partial_response` inside `if (!incomplete)`. `slot.stats.n_gen` has
+already been incremented — in **both** the plain (`:6450`) and the speculative
+(`:6615`) decode paths. So a token whose bytes leave the generated text ending
+mid-character produces **no frame at all**, while the counter it advanced is
+reported by the *next* frame, which carries only its own id.
+
+Captured verbatim from the live stream (control server, no draft model):
+
+```json
+{"index":0,"content":"😀","tokens":[141334],"stop":false,"tokens_predicted":1}
+{"index":0,"content":" 😂","tokens":[224],   "stop":false,"tokens_predicted":3}
+```
+
+`" 😂"` is `[26525, 224]`. `26525` spells a space plus the **first three bytes** of a
+four-byte emoji, so its frame was suppressed; `224` is the fourth byte and carries
+the accumulated text. **Id `26525` is never transmitted** — in stream mode the
+terminal frame's `tokens` array is empty (`server-context.cpp:4326`), so there is
+nowhere else for it to appear. The guard was right: the id is genuinely absent.
+
+**Why the shape was always `advance 2, ids 1`.** Never `2 → 0`, because a suppressed
+token emits nothing rather than an empty frame. `3 → 1` when a character is spread
+over three tokens. And it is content-dependent, not periodic — ASCII and common
+typographic punctuation are single vocabulary entries. The operator's two
+occurrences were both `advance 2`, which is what a three-byte character makes; `√`
+(U+221A) and `∞` (U+221E) were measured doing exactly that in a technical report.
+
+**The MTP hypothesis is dead, measured both ways** (2026-09-10):
+
+| server | content | advancing frames |
+|---|---|---|
+| `:8080`, `--spec-type draft-mtp` (215 drafted, 150 accepted) | ASCII | `{adv 1 / ids 1: 190}` — **0 mismatches** |
+| `:8080`, same | emoji | `adv2 ×29, adv3 ×11` — 40 mismatches |
+| control, **no `-md`, no `--spec-type`** | ASCII | `{adv 1 / ids 1: 112}` — 0 mismatches |
+| control, same | emoji | `adv2 ×67` — **67 mismatches** |
+
+The variable is content. The draft head is not involved. The control was a different
+model and arch (`Qwen3-4B-Instruct-2507-Q6_K`, killed after the run), so its clean
+ASCII row proves nothing on its own — the **positive** row is what carries the
+argument: the mismatch reproduces with speculative decoding entirely absent.
+
+Base rate on agent-style output with light Unicode: **4 in 269 tokens**. On pure
+ASCII prose, 0 in 400.
+
+**Fix, and where it is not.** Not in the guard, and not in the harness's arithmetic
+either — there is no expected-advance the harness could compute, because the
+suppressed frame's id is not anywhere on the wire. This is an **upstream defect
+worth reporting**: `process_token` should either send the frame with its id and an
+empty `text_to_send`, or defer the counter along with the frame. Today it defers one
+and not the other. UNVERIFIED: nothing has been filed upstream.
+
+**Landed in `crates/turn` (branch `t23/frame-capture-and-partial-keep`):**
+
+1. `capture.rs` — on a refusal, the offending frame, the two before it and the next
+   three go to a file verbatim (`LETIBOT_FRAME_CAPTURE_DIR`, on by default). The
+   *trailing* frames are the point: "the id arrives late" and "the id never arrives"
+   produce the same error message and want opposite fixes.
+2. The refusal is now `AbortCause::FrameMismatch` rather than `TurnFailure::Stream`,
+   so **the ids already accounted for survive it**. The guard did not move — the
+   refused id and everything after it still never reach the ledger — but the turn is
+   now `TurnInterrupted{partial_kept}` with a named seam instead of *"nothing was
+   recorded"*. The same trade §5.8 already makes for an urgent steering message.
+3. Known limit, in the safe direction: if the cut lands inside an unterminated tool
+   call, the parser emits no call and `rows_cover_every_token` refuses the turn
+   wholesale. Nothing half-formed is committed or executed; there is simply no
+   partial in that case.
 
 Conditions worth noting for whoever chases it: it is intermittent, it appeared only
 after the server was OOM-killed and restarted at 14:35 (same unit, same flags, cache
@@ -928,7 +1002,7 @@ we inherited.
 
 ---
 
-## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **do NOT relax the guard**
+## T23 — A frame advancing `tokens_predicted` by 2 while carrying 1 id — **SETTLED 2026-09-10: the server drops a frame; the guard was right**
 
 `crates/turn/src/stream.rs:172` refuses a turn when a frame's `ids.len()` does not equal
 its advance in `tokens_predicted`. It fired in **3 of 6 M1 runs on 2026-09-09** (once
@@ -958,6 +1032,80 @@ exists to prevent.
 raw frame — its `tokens`, `tokens_predicted`, `timings`, and the frames either side.
 The next occurrence then says whether the id arrives late, arrives elsewhere, or never
 arrives, and *that* decides the fix. Until then the guard is doing its job.
+
+### SETTLED 2026-09-10 — the server drops a token's frame on an incomplete UTF-8 tail
+
+**Cause, in llama.cpp.** `process_token` (`server-context.cpp:4067`) computes
+
+```cpp
+bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
+```
+
+and puts `send_partial_response` inside `if (!incomplete)`. `slot.stats.n_gen` has
+already been incremented — in **both** the plain (`:6450`) and the speculative
+(`:6615`) decode paths. So a token whose bytes leave the generated text ending
+mid-character produces **no frame at all**, while the counter it advanced is
+reported by the *next* frame, which carries only its own id.
+
+Captured verbatim from the live stream (control server, no draft model):
+
+```json
+{"index":0,"content":"😀","tokens":[141334],"stop":false,"tokens_predicted":1}
+{"index":0,"content":" 😂","tokens":[224],   "stop":false,"tokens_predicted":3}
+```
+
+`" 😂"` is `[26525, 224]`. `26525` spells a space plus the **first three bytes** of a
+four-byte emoji, so its frame was suppressed; `224` is the fourth byte and carries
+the accumulated text. **Id `26525` is never transmitted** — in stream mode the
+terminal frame's `tokens` array is empty (`server-context.cpp:4326`), so there is
+nowhere else for it to appear. The guard was right: the id is genuinely absent.
+
+**Why the shape was always `advance 2, ids 1`.** Never `2 → 0`, because a suppressed
+token emits nothing rather than an empty frame. `3 → 1` when a character is spread
+over three tokens. And it is content-dependent, not periodic — ASCII and common
+typographic punctuation are single vocabulary entries. The operator's two
+occurrences were both `advance 2`, which is what a three-byte character makes; `√`
+(U+221A) and `∞` (U+221E) were measured doing exactly that in a technical report.
+
+**The MTP hypothesis is dead, measured both ways** (2026-09-10):
+
+| server | content | advancing frames |
+|---|---|---|
+| `:8080`, `--spec-type draft-mtp` (215 drafted, 150 accepted) | ASCII | `{adv 1 / ids 1: 190}` — **0 mismatches** |
+| `:8080`, same | emoji | `adv2 ×29, adv3 ×11` — 40 mismatches |
+| control, **no `-md`, no `--spec-type`** | ASCII | `{adv 1 / ids 1: 112}` — 0 mismatches |
+| control, same | emoji | `adv2 ×67` — **67 mismatches** |
+
+The variable is content. The draft head is not involved. The control was a different
+model and arch (`Qwen3-4B-Instruct-2507-Q6_K`, killed after the run), so its clean
+ASCII row proves nothing on its own — the **positive** row is what carries the
+argument: the mismatch reproduces with speculative decoding entirely absent.
+
+Base rate on agent-style output with light Unicode: **4 in 269 tokens**. On pure
+ASCII prose, 0 in 400.
+
+**Fix, and where it is not.** Not in the guard, and not in the harness's arithmetic
+either — there is no expected-advance the harness could compute, because the
+suppressed frame's id is not anywhere on the wire. This is an **upstream defect
+worth reporting**: `process_token` should either send the frame with its id and an
+empty `text_to_send`, or defer the counter along with the frame. Today it defers one
+and not the other. UNVERIFIED: nothing has been filed upstream.
+
+**Landed in `crates/turn` (branch `t23/frame-capture-and-partial-keep`):**
+
+1. `capture.rs` — on a refusal, the offending frame, the two before it and the next
+   three go to a file verbatim (`LETIBOT_FRAME_CAPTURE_DIR`, on by default). The
+   *trailing* frames are the point: "the id arrives late" and "the id never arrives"
+   produce the same error message and want opposite fixes.
+2. The refusal is now `AbortCause::FrameMismatch` rather than `TurnFailure::Stream`,
+   so **the ids already accounted for survive it**. The guard did not move — the
+   refused id and everything after it still never reach the ledger — but the turn is
+   now `TurnInterrupted{partial_kept}` with a named seam instead of *"nothing was
+   recorded"*. The same trade §5.8 already makes for an urgent steering message.
+3. Known limit, in the safe direction: if the cut lands inside an unterminated tool
+   call, the parser emits no call and `rows_cover_every_token` refuses the turn
+   wholesale. Nothing half-formed is committed or executed; there is simply no
+   partial in that case.
 
 Conditions worth noting for whoever chases it: it is intermittent, it appeared only
 after the server was OOM-killed and restarted at 14:35 (same unit, same flags, cache

@@ -32,6 +32,18 @@ pub enum Frame {
     Progress { total: u64, processed: u64 },
     /// One generated token.
     Token { id: u32, text: &'static str },
+    /// A token the server **counted but sent no frame for**.
+    ///
+    /// T23's defect, in the server's own terms: `process_token`
+    /// (`server-context.cpp:4067`) skips `send_partial_response` when the
+    /// generated text ends mid-UTF-8-character, and `slot.stats.n_gen` has already
+    /// been incremented. So the counter advances by one with nothing on the wire,
+    /// and the *next* frame appears to advance by two while carrying one id.
+    ///
+    /// Measured against the live server on 2026-09-10: `" 😂"` is `[26525, 224]`,
+    /// `26525` spells a space plus the first three bytes of the emoji, and only
+    /// `224` was ever sent.
+    Suppressed,
     /// The terminal frame. `tokens` is empty, as it is in stream mode.
     Final {
         stop_type: &'static str,
@@ -47,6 +59,7 @@ impl Frame {
             Frame::Progress { total, processed } => format!(
                 r#"{{"index":0,"content":"","tokens":[0],"stop":false,"id_slot":-1,"tokens_predicted":0,"tokens_evaluated":{total},"prompt_progress":{{"total":{total},"cache":0,"processed":{processed},"time_ms":1}}}}"#
             ),
+            Frame::Suppressed => String::new(),
             Frame::Token { id, text } => format!(
                 r#"{{"index":0,"content":{},"tokens":[{id}],"stop":false,"id_slot":3,"tokens_predicted":{n_decoded_so_far},"tokens_evaluated":0}}"#,
                 serde_json::to_string(text).unwrap()
@@ -134,8 +147,13 @@ fn answer(mut stream: TcpStream, frames: &[Frame]) -> std::io::Result<()> {
     )?;
     let mut decoded = 0u64;
     for frame in frames {
-        if matches!(frame, Frame::Token { .. }) {
+        if matches!(frame, Frame::Token { .. } | Frame::Suppressed) {
             decoded += 1;
+        }
+        // The counter moved and nothing goes on the wire. This `continue` is the
+        // defect, reproduced rather than described.
+        if matches!(frame, Frame::Suppressed) {
+            continue;
         }
         let payload = format!("data: {}\n\n", frame.to_json(decoded));
         write!(stream, "{:x}\r\n", payload.len())?;

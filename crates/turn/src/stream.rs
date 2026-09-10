@@ -43,6 +43,53 @@
 //! is the fact ("how many tokens has this turn generated"); the presence of a
 //! `prompt_progress` object is a proxy for it. At the end, the accumulated count
 //! must equal the final frame's `tokens_predicted`, or the turn is refused.
+//!
+//! # The third trap: the server sometimes emits no frame at all for a token
+//!
+//! T23, and it is a **defect in llama.cpp**, measured on this box 2026-09-10.
+//! `process_token` (`server-context.cpp:4067`) computes
+//!
+//! ```text
+//! bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
+//! ```
+//!
+//! and puts `send_partial_response` inside `if (!incomplete)`. `slot.stats.n_gen`
+//! was already incremented, in both the plain (`:6450`) and the speculative
+//! (`:6615`) decode paths. So a token whose bytes leave the generated text ending
+//! mid-character produces **no frame**, while the counter it advanced is reported
+//! by the *next* frame — which carries only its own id:
+//!
+//! ```text
+//!   {"content":"😀",  "tokens":[141334],"tokens_predicted":1}
+//!   {"content":" 😂", "tokens":[224],   "tokens_predicted":3}   ← advance 2, ids 1
+//! ```
+//!
+//! `" 😂"` is two tokens, `[26525, 224]`: `26525` spells a space and the **first
+//! three bytes** of a four-byte emoji, so it is suppressed, and `224` (the fourth
+//! byte) completes the character and carries the accumulated text. **Id `26525` is
+//! never transmitted** — in stream mode the terminal frame's `tokens` array is
+//! empty (`server-context.cpp:4326`), so there is nowhere else for it to appear.
+//!
+//! The signature is exactly `advance 2, ids 1`, never `2, 0` — a suppressed token
+//! emits nothing, so there is no zero-id frame — and `advance 3, ids 1` when a
+//! character is spread over three tokens. It is content-dependent, not periodic:
+//! ASCII and common typographic punctuation are single vocabulary entries and never
+//! trigger it, which is why 400 tokens of prose reproduce nothing and a line of
+//! emoji reproduce it forty times.
+//!
+//! **This is not speculative decoding**, which was the standing hypothesis. Measured
+//! both ways on 2026-09-10: with MTP active (215 drafted, 150 accepted) an ASCII
+//! generation gave `{advance 1, ids 1}` for all 190 tokens, and on a server with no
+//! draft model at all the emoji case reproduced 67 times.
+//!
+//! # Why the guard stays, and what changed instead
+//!
+//! The id is genuinely gone. Accepting the frame anyway would write a ledger whose
+//! ids are not what the model produced, and the hash chain exists to catch exactly
+//! that. So the frame is still refused. What changed is the blast radius: the
+//! refusal is carried out as [`AbortCause::FrameMismatch`], which keeps every id
+//! that *was* accounted for, so the operator gets a turn marked interrupted with a
+//! partial answer instead of a turn that recorded nothing.
 
 use letibot_tokencore::TokenId;
 
@@ -124,6 +171,15 @@ pub enum AbortCause {
     Guard(String),
     /// An urgent steering message or an explicit ABORT (§5.8).
     Steering(String),
+    /// A frame did not account for its own advance, so the stream stopped being
+    /// a record of what the model produced. See [`StreamError::FrameMismatch`] —
+    /// this is the same refusal, carried as an abort so the ids that *were*
+    /// accounted for survive.
+    FrameMismatch {
+        n_decoded: u64,
+        previous: u64,
+        ids: usize,
+    },
 }
 
 /// Accumulates ids across frames, refusing anything it cannot account for.
@@ -335,6 +391,49 @@ mod tests {
         // The last id decoded to nothing: content and ids are different lengths and
         // only one of them is the prompt.
         assert_eq!(out.ids.len(), 4);
+    }
+
+    /// T23's frames, captured verbatim from a live `/completion` stream on
+    /// 2026-09-10 — the control server, which had **no draft model and no
+    /// speculative decoding at all**, so these are not an MTP artifact.
+    ///
+    /// Kept as bytes rather than paraphrased because the whole of T23 was that a
+    /// paraphrase of this frame ("advance 2, ids 1") was all anyone had.
+    const T23_FRAMES: &[&str] = &[
+        r#"{"index":0,"content":"","tokens":[0],"stop":false,"id_slot":-1,"tokens_predicted":0,"tokens_evaluated":26,"prompt_progress":{"total":26,"cache":0,"processed":26,"time_ms":20}}"#,
+        r#"{"index":0,"content":"😀","tokens":[141334],"stop":false,"id_slot":-1,"tokens_predicted":1,"tokens_evaluated":26}"#,
+        // `" 😂"` is `[26525, 224]`. `26525` is a space plus the first three bytes
+        // of a four-byte emoji, so the server suppressed its frame — and the
+        // counter it advanced is reported here, by the token that completed the
+        // character.
+        r#"{"index":0,"content":" 😂","tokens":[224],"stop":false,"id_slot":-1,"tokens_predicted":3,"tokens_evaluated":26}"#,
+        r#"{"index":0,"content":" 😃","tokens":[225],"stop":false,"id_slot":-1,"tokens_predicted":5,"tokens_evaluated":26}"#,
+    ];
+
+    #[test]
+    fn the_real_t23_frames_are_refused_at_the_frame_that_stopped_adding_up() {
+        let mut acc = IdAccumulator::new();
+        for (i, f) in T23_FRAMES.iter().enumerate() {
+            let c = classify(f).unwrap();
+            match acc.push(&c) {
+                Ok(_) => assert!(i < 2, "frame {i} should not have been accepted"),
+                Err(StreamError::FrameMismatch {
+                    n_decoded,
+                    previous,
+                    ids,
+                }) => {
+                    assert_eq!((previous, n_decoded, ids), (1, 3, 1));
+                    // Exactly the operator's shape: two-for-one, never two-for-zero.
+                    assert_eq!(n_decoded - previous, 2);
+                    // And the ids accounted for so far survive the refusal — this
+                    // is what `AbortCause::FrameMismatch` then keeps.
+                    assert_eq!(acc.ids(), &[141334]);
+                    return;
+                }
+                Err(other) => panic!("{other:?}"),
+            }
+        }
+        panic!("the frames stopped adding up and nothing said so");
     }
 
     #[test]

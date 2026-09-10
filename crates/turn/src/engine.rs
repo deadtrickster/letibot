@@ -42,6 +42,7 @@ use letibot_tokencore::{
 use letibot_transcript::{ReasoningField, TranscriptItem};
 use serde_json::Value;
 
+use crate::capture::FrameCapture;
 use crate::completion::{Chunk, CompletionRequest, FinishReason};
 use crate::events::{DeltaTarget, EventSink, TurnEvent, args_digest, head_hex};
 use crate::guards::{GuardSet, Trip};
@@ -222,6 +223,9 @@ pub struct TurnEngine<'a> {
     pub reasoning_field: ReasoningField,
     pub sampling: Value,
     pub salvage: SalvageBudget,
+    /// Where a refused frame and its neighbours are written (T23). On by default;
+    /// see [`FrameCapture`] for why the default is on rather than off.
+    pub frame_capture: FrameCapture,
 }
 
 impl<'a> TurnEngine<'a> {
@@ -275,6 +279,7 @@ impl<'a> TurnEngine<'a> {
             reasoning_field,
             sampling,
             salvage: SalvageBudget::default(),
+            frame_capture: FrameCapture::default(),
         })
     }
 
@@ -704,11 +709,30 @@ impl TurnEngine<'_> {
         // partial output was kept. Announced as an interruption, because a kept
         // partial that reports as a complete turn is §5.7's failure with a
         // different cause.
-        let interrupted = matches!(outcome.aborted, Some(AbortCause::Steering(_)));
-        if interrupted {
+        //
+        // T23 arrives through the same door and for the same reason. A frame that
+        // did not account for itself is still refused — the ids after it never
+        // reach the ledger — but the ids before it were each checked against the
+        // server's own counter and are exactly as trustworthy as they were a frame
+        // earlier. Failing the whole turn over the tail threw away an answer the
+        // operator was waiting on and left `nothing was recorded` behind; keeping
+        // the head and marking the seam is the same trade §5.8 already makes.
+        let interrupt_reason = match &outcome.aborted {
+            Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
+            Some(AbortCause::FrameMismatch {
+                n_decoded,
+                previous,
+                ids,
+            }) => Some(format!(
+                "frame_mismatch: tokens_predicted {previous} -> {n_decoded} carried {ids} id(s)"
+            )),
+            _ => None,
+        };
+        let interrupted = interrupt_reason.is_some();
+        if let Some(reason) = interrupt_reason {
             sink.emit(TurnEvent::TurnInterrupted {
                 turn_id: turn_id.clone(),
-                reason: "steering_urgent".to_string(),
+                reason,
                 partial_kept: !appended.is_empty(),
             });
         }
@@ -776,11 +800,28 @@ impl TurnEngine<'_> {
         let mut abort: Option<AbortCause> = None;
         let mut final_chunk = None;
         let mut stream_err: Option<StreamError> = None;
+        let mut capture = self.frame_capture.begin(turn_id);
 
-        body.for_each_event(|payload| {
+        let streamed = body.for_each_event(|payload| {
+            // Unconditional, and before anything classifies it: by the time a frame
+            // is recognised as unaccountable, the frames that explain it have
+            // already gone past.
+            capture.observe(payload);
+            if capture.is_armed() {
+                // A frame was refused. Nothing more reaches the accumulator — the
+                // guard has not moved — but a few more frames are read so the
+                // capture can say whether the missing id turns up late.
+                return Ok(if capture.trail_complete() {
+                    Flow::Stop
+                } else {
+                    Flow::Continue
+                });
+            }
+
             let chunk = match crate::completion::classify(payload) {
                 Ok(c) => c,
                 Err(e) => {
+                    capture.arm(e.clone());
                     stream_err = Some(StreamError::Protocol(e));
                     return Ok(Flow::Stop);
                 }
@@ -795,7 +836,35 @@ impl TurnEngine<'_> {
 
             let fresh = match acc.push(&chunk) {
                 Ok(ids) => ids.to_vec(),
+                // T23. The guard is unchanged: this frame's ids are still refused,
+                // and so is everything after it. What changed is that the ids
+                // already accounted for are no longer thrown away with it — the
+                // operator gets an interrupted turn holding a partial answer rather
+                // than a failed turn holding nothing. The raw frames go to disk
+                // because a one-line message has now cost two sessions.
+                Err(e @ StreamError::FrameMismatch { .. }) => {
+                    capture.arm(e.to_string());
+                    let StreamError::FrameMismatch {
+                        n_decoded,
+                        previous,
+                        ids,
+                    } = e
+                    else {
+                        unreachable!("matched above")
+                    };
+                    abort = Some(AbortCause::FrameMismatch {
+                        n_decoded,
+                        previous,
+                        ids,
+                    });
+                    return Ok(if capture.trail_complete() {
+                        Flow::Stop
+                    } else {
+                        Flow::Continue
+                    });
+                }
                 Err(e) => {
+                    capture.arm(e.to_string());
                     stream_err = Some(e);
                     return Ok(Flow::Stop);
                 }
@@ -877,7 +946,11 @@ impl TurnEngine<'_> {
                 return Ok(Flow::Stop);
             }
             Ok(Flow::Continue)
-        })?;
+        });
+        // Before the `?`: a socket that died mid-frame is one of the things the
+        // capture exists for, so it must survive the transport error.
+        report_capture(&capture, sink);
+        streamed?;
 
         if let Some(e) = stream_err {
             return Err(TurnFailure::Stream(e));
@@ -964,6 +1037,39 @@ fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text
         target,
         text: text.to_string(),
     });
+}
+
+/// Flush a T23 capture and say where it went.
+///
+/// The path is announced on the event stream rather than only written, because a
+/// capture nobody is told about is a file in a temp directory nobody looks in —
+/// which is the position T23 has been in since it was first seen.
+///
+/// A capture that cannot be written is a warning and nothing more. Turning a
+/// diagnostic's failure into a turn's failure would be this defect a second time.
+fn report_capture(capture: &crate::capture::CaptureSession, sink: &mut dyn EventSink) {
+    if !capture.is_armed() {
+        return;
+    }
+    match capture.write() {
+        Ok(Some(path)) => sink.emit(TurnEvent::Warning {
+            code: "frame_capture_written",
+            detail: format!(
+                "the refused frame and its neighbours were written to {}",
+                path.display()
+            ),
+        }),
+        Ok(None) => sink.emit(TurnEvent::Warning {
+            code: "frame_capture_disabled",
+            detail: "a frame was refused and frame capture is switched off, so the \
+                     evidence that would identify it was not kept"
+                .into(),
+        }),
+        Err(e) => sink.emit(TurnEvent::Warning {
+            code: "frame_capture_failed",
+            detail: format!("a frame was refused but the capture could not be written: {e}"),
+        }),
+    }
 }
 
 /// The channel a delta belongs on, from the two boundary flags.
