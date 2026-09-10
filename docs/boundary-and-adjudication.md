@@ -312,6 +312,92 @@ restart or on path scope".
 Over-refusal is not the safe direction here. It is the direction that produces §4b's
 workaround loop.
 
+## 4e. Four axes, named points, and dependencies
+
+Operator, after being shown a design with roles, tiers, grants and adjudicators as four
+independent systems, and then a proposal to collapse them into one dial:
+
+> *"it is ok to have four axes, they should be composable to dots in that 4 dimensional
+> space and the dots have names and dependencies"*
+
+Both of my positions were wrong. Four separate systems is four things to configure for
+one decision; a flat dial throws away reachable coordinates. **The axes are the
+mechanism; the named points are the surface.**
+
+### The axes
+
+1. **role** — which tools are seated
+2. **tier policy** — what asks (`Auto` / `MayApprove` / `AlwaysAsk` / `Inexpressible`)
+3. **grant scope** — what persists from an answer
+4. **adjudicator** — who decides
+
+A **point** is a named coordinate:
+
+```
+Mode {
+    name:        "writes allowed",
+    role:         coder,
+    tiers:        write→MayApprove, exec→AlwaysAsk, read→Auto,
+    grants:       session,
+    adjudicator:  console,
+    requires:    [ WritableBackend, ReachableAdjudicator ],
+}
+```
+
+Unnamed coordinates stay legal. The names are what an operator picks, not a cage around
+what is expressible.
+
+### Roles are not the approval mechanism
+
+They answer *which tools*, never *how much approval*. Conflating them is what produced
+the defect the operator hit: `--role coder` meant both "has write" and "asks about
+writes", so a session without it reported **"no edit tools"** with no way to change it in
+place — and a capability gap the model cannot see past reads to it as a fact about the
+world rather than a decision it could ask to have lifted. That is §4b's chain arriving
+through a different door.
+
+### Dependencies are the load-bearing part
+
+Each point declares what it **requires**. Selecting it checks them, and an unmet
+prerequisite **refuses by name, saying what is missing and how to attach it** — never a
+silent downgrade to a weaker point, which is `docs/tool-design-brief.md` §3b's
+degrade-to-absence rule applied to configuration.
+
+| point | requires | on this box, 2026-09-10 |
+|---|---|---|
+| **read-only** | — | satisfied |
+| **always-ask** | a *reachable* adjudicator | **blocked: D25** — the console adjudicator reads the daemon's stdin and a head cannot answer |
+| **writes allowed** | writable backend + reachable adjudicator | **blocked: D25** |
+| **automode** | an oracle | **blocked: VRAM/model.** Selectable, refuses by name |
+| any exec point | confinement available | satisfied — `Bwrap` probes, `NoConfinement` refuses |
+
+That table is why *"only automode is blocked on VRAM"* is exactly right, and it makes the
+dependency edges legible instead of remembered: **three of four points are blocked on one
+piece of software, and exactly one on hardware.**
+
+**`automode` must be selectable and refuse honestly**, the way retrieval is `INERT`
+rather than absent. A point that exists and names what it needs beats a missing one,
+because a missing one reads as *"this build cannot do that"* instead of *"this box has no
+model loaded"*.
+
+### The project scope goes on the point
+
+One durable mapping of **project root → point name**. `~/Projects/letibot` at *writes
+allowed*; a directory never seen before starts at *always-ask*; `/etc` stays *read-only*.
+Listable, changeable, disclosed at startup.
+
+This replaces a `(project, tool, intent class)` grant store, which was the version of this
+that went too far: **a per-project point is one value a person can hold in their head and
+audit; a grant table is not**, and an unaudited grant table is a permanent widening nobody
+remembers making. `allow once` survives as an answer to a prompt — it is a reply, not a
+policy.
+
+### What holds at every point
+
+`Inexpressible` is ungrantable everywhere, **including automode** — §3's flow rule is not
+a setting. Changing point mid-session works and states its cost first: seating write where
+there was none re-prefills, because `tools_json` is stable-prefix bytes.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
