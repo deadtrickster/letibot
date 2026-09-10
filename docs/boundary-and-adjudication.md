@@ -151,8 +151,73 @@ the dense model means swapping Flash-Next out and Coder-Next is the one that co-
 Different jobs, different answers: the control run wants a swap, the adjudicator wants the
 smaller MoE.
 
+## 4b. A denial the operator cannot see manufactures the workaround
+
+Operator, on living with this in another harness:
+
+> *"when it denies it doesnt surface it to me in anyway - and models including you then try
+> to workaround the denial which sometime or mostly doesnt work and the task stops anyway"*
+
+The chain matters more than the complaint, because it shows the design causing the
+behaviour rather than the model choosing it:
+
+1. the classifier denies
+2. the operator is not told
+3. the model sees an unexplained failure and infers **the approach was wrong**, not
+   **the action was forbidden**
+4. so it tries a variant — the routing-around every rule in this repo forbids, **induced
+   by the design**
+5. the variant fails, or is denied too
+6. the task dies, and the operator sees only a dead task, never the decision that killed it
+
+So §11.5's *"the audit is log-only and never enters the model's context"* was answering the
+wrong question. **Three parties, three visibilities, and conflating any two is a defect:**
+
+| party | must see | today |
+|---|---|---|
+| the model | that it was refused, by whom, on what basis | `NotRun` carries this |
+| **the operator** | **every denial, when it happens** — it is a decision taken on their behalf and they alone can lift it | **blind** |
+| the durable log | all of it, for §4c's corpus | §11.5's rows |
+
+What follows: a denial **emits to the head immediately**, not at turn end and not on
+request. The grant path is reachable **at the moment of denial**, not after the task has
+died — `docs/closed-loop.md` §4 says a refusal that can only be routed around teaches
+people to route around refusals, and a refusal the operator cannot see is one they cannot
+lift, which is the same thing with an extra step. And the refusal text must make
+**forbidden** unmistakable from **failed**, because that one distinction is what stops
+step 3.
+
+## 4c. The corpus is a side effect of §4b, and only of §4b
+
+> *"so my inputs on model decision should be together with some prior context a fine
+> tuning input."*
+
+The audit row is not `(action, decision)`. It is:
+
+```
+normalised action  +  authorisation trail  +  the model's verdict  +  what the OPERATOR decided
+```
+
+**The disagreements are the training signal** — every override is a labelled example of the
+classifier being wrong in a named direction, produced by working rather than by a labelling
+project. §11.5's rows already exist and are already kept out of the transcript, so the
+mechanism is there; what it needs is the verdict and the override as **separate** values
+(never the override overwriting the verdict) and the trail stored as **what was actually
+shown to the model**, not a later reconstruction.
+
+And the two sections are one requirement: **an operator who never sees a denial can never
+override it, so the invisible-denial defect also starves the corpus.** A harness that hides
+its refusals cannot learn from them.
+
+This is the closed loop pointed at the classifier itself — the audit log is the encoder,
+the operator's overrides are the error signal, a fine-tune is the correction. Same shape as
+the fidelity gate standing between the harness and its own source.
+
 ## 5. Open
 
+- **How a denial is presented without becoming a nag.** §4b requires every denial to
+  surface; a session that denies often must not turn into a wall of notices. The
+  consecutive-denial breaker is part of the answer and probably not all of it.
 - **Whether the classifier sees the raw conversation or a summary of the authorisation.**
   Raw is more faithful and puts operator text inside a security decision — which is a
   prompt-injection surface pointed at the guard itself.
