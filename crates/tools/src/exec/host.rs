@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::ExecError;
+use super::confine::{ConfinePlan, Confinement, Unconfined};
 use super::jobs::{Capture, Job, JobId, JobState, OutputSlice};
 use super::scope::{Cgroup2, EXIT_NOT_SCOPED, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree, cmdline_of, join_script};
 
@@ -157,11 +158,33 @@ pub trait ProcessHost: Send + Sync {
 
     /// The scope a foreground command belongs to, opened on demand.
     fn scope_for(&self, kind: ScopeKind, name: Option<&str>) -> Result<ScopeId, ExecError>;
+
+    /// **What bounds the view**, for a tool that has to explain its own result.
+    ///
+    /// `None` means this host has no opinion about views — which is a different
+    /// fact from [`super::confine::Unconfined`], where somebody decided not to ask
+    /// for one, and different again from
+    /// [`super::confine::NoConfinement`], where one was asked for and is missing.
+    /// A caller that renders `None` as "not confined" would be asserting a
+    /// property of a host it did not read.
+    fn confinement(&self) -> Option<&dyn Confinement> {
+        None
+    }
 }
 
 /// The host implementation: real processes, real cgroups.
 pub struct HostProcesses {
     tree: Box<dyn ScopeTree>,
+    /// What bounds the process's **view**, as against its lifetime.
+    ///
+    /// Not an `Option`. An absent field is a question nobody answered, and the
+    /// three answers here are genuinely different —
+    /// [`super::confine::Bwrap`] (asked for and measured),
+    /// [`super::confine::NoConfinement`] (asked for and missing, so every spawn
+    /// refuses) and [`Unconfined`] (not asked for, and loud about it). Making it a
+    /// `Box<dyn Confinement>` means the second cannot be spelled as the third by
+    /// leaving something out.
+    confine: Box<dyn Confinement>,
     root: PathBuf,
     /// The turn and session scopes, opened lazily and reused.
     session: Mutex<Option<ScopeId>>,
@@ -198,6 +221,7 @@ impl std::fmt::Debug for HostProcesses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostProcesses")
             .field("scopes", &self.tree.describe())
+            .field("confinement", &self.confine.describe())
             .field("jobs", &self.jobs.lock().map(|j| j.len()).unwrap_or(0))
             .finish()
     }
@@ -218,9 +242,29 @@ impl HostProcesses {
         Ok(Self::with_tree(root, Box::new(Cgroup2::probe()?)))
     }
 
+    /// The confined constructor: a real cgroup tree **and** a measured boundary.
+    ///
+    /// Both halves fail closed and they fail for different reasons, so the error
+    /// names which. There is no argument, flag or environment variable that turns
+    /// a failure here into an unconfined run.
+    pub fn confined(
+        root: impl Into<PathBuf>,
+        confine: Box<dyn Confinement>,
+    ) -> Result<HostProcesses, ExecError> {
+        Ok(Self::with_tree(root, Box::new(Cgroup2::probe()?)).with_confinement(confine))
+    }
+
     pub fn with_tree(root: impl Into<PathBuf>, tree: Box<dyn ScopeTree>) -> HostProcesses {
         let h = HostProcesses {
             tree,
+            // **Not asked for**, and named as such rather than left absent, so a
+            // reader of `describe()` cannot mistake silence for a boundary.
+            confine: Box::new(Unconfined::because(
+                "this host was built by `HostProcesses::with_tree` / \
+                 `HostBackend::executable`, which ask for a lifetime mechanism and \
+                 no boundary. `HostBackend::confined` is the one that adds the \
+                 namespaces.",
+            )),
             root: root.into(),
             session: Mutex::new(None),
             turn: Mutex::new(None),
@@ -233,6 +277,11 @@ impl HostProcesses {
         };
         h.protect_self_and_ancestors();
         h
+    }
+
+    pub fn with_confinement(mut self, confine: Box<dyn Confinement>) -> Self {
+        self.confine = confine;
+        self
     }
 
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
@@ -371,12 +420,19 @@ impl HostProcesses {
 }
 
 impl ProcessHost for HostProcesses {
+    /// **Read off the state, both halves.**
+    ///
+    /// This used to end in a hard-coded `NOT confined`, which was true of every
+    /// host that existed when it was written and is the exact shape of the defect
+    /// `docs/tool-design-brief.md` §1 names — a banner asserting a property of a
+    /// session rather than reading it. Layer 1 makes a confined host possible, so
+    /// the sentence now comes from [`Confinement::describe`], which in turn comes
+    /// from a boundary that was measured from inside itself.
     fn describe(&self) -> String {
         format!(
-            "host processes; lifetime: {}; NOT confined — a command here reads the \
-             operator's filesystem with this user's rights (§11.4's guest boundary \
-             is not this)",
-            self.tree.describe()
+            "host processes; lifetime: {}; view: {}",
+            self.tree.describe(),
+            self.confine.describe()
         )
     }
 
@@ -424,17 +480,46 @@ impl ProcessHost for HostProcesses {
             .tree
             .open(req.scope, &format!("job-{id}"), Some(&parent))?;
 
+        let cwd = self.root.join(req.cwd.trim_start_matches('/'));
+
+        // **The boundary is decided before the cgroup is committed to.** A session
+        // that asks for confinement and has none refuses here, and refusing after
+        // the `mkdir` would leave an empty scope directory that a later listing
+        // reads as somebody's work.
+        let wrap = match self.confine.wrap(&ConfinePlan {
+            cwd: &cwd,
+            env: &req.env,
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = self.tree.end(&cgroup);
+                return Err(e);
+            }
+        };
+
         let procs = Cgroup2::procs_path(&cgroup);
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(join_script())
             .arg("letibot-scope")
             .arg(&procs);
+        // **The order is load-bearing.** `join_script` writes `$$` into
+        // `cgroup.procs` and only then `exec`s `"$@"`, so the join happens on the
+        // HOST, before any namespace exists — which is the only order that works:
+        // `/sys/fs/cgroup` is deliberately not in the mount view, so a process that
+        // tried to join from inside would fail the write and `exit 125`.
+        //
+        // Membership survives the crossing, because a cgroup is not a namespace: the
+        // helper stays in the cgroup, its children inherit it, `cgroup.kill` reaches
+        // every one of them regardless of which pid namespace they are in, and the
+        // pid the harness tracks is the helper's, which is a real member.
+        for a in &wrap {
+            cmd.arg(a);
+        }
         for s in &self.shell {
             cmd.arg(s);
         }
         cmd.arg(&req.command);
-        let cwd = self.root.join(req.cwd.trim_start_matches('/'));
         cmd.current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -681,6 +766,10 @@ impl ProcessHost for HostProcesses {
 
     fn protected(&self) -> Vec<Protected> {
         self.protected.lock().expect("protected").clone()
+    }
+
+    fn confinement(&self) -> Option<&dyn Confinement> {
+        Some(self.confine.as_ref())
     }
 }
 

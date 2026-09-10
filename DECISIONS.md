@@ -209,3 +209,51 @@ a witness counting predicted tokens is off by one on every turn (T11).
 
 **Consequence:** the M1 run must be re-measured before M1's exit can be judged. The
 0.8771 was a correct measurement of the wrong metric.
+
+---
+
+## D12 — a credential is made **usable** inside the boundary, never **readable** — **SETTLED 2026-09-10**
+
+Forced by `docs/boundary-and-adjudication.md` §3 the moment layer 1's mount view existed.
+The invariant is *secret bytes may be consumed by a process inside the boundary; they may
+never enter the transcript and never leave it*, and the authorised case is real:
+`ssh user@host` legitimately reads `~/.ssh/id_rsa`. A project-rooted mount view leaves
+that file **absent**, which is the point of the view and also breaks the authorised case.
+
+Three mechanisms were available. Two are rejected:
+
+| mechanism | usable | readable into context | verdict |
+|---|---|---|---|
+| bind `~/.ssh/id_rsa` into the view | yes | **yes** — one `cat` and it is in the transcript | rejected |
+| bind `~/.ssh` read-only | yes | **yes**, and more of it | rejected |
+| forward `$SSH_AUTH_SOCK` | yes | **no** — the agent signs, outside the boundary; only signatures cross | **this** |
+
+**Decision: `Grant::AgentSocket`, and no grant that binds a private key.** The key bytes
+stay in `ssh-agent`, which is in neither the view nor the namespace. What enters is a unix
+socket, bound at a fixed in-sandbox path so the operator's own `/run/user/<uid>/…` path
+does not travel either. `cat $SSH_AUTH_SOCK` returns nothing a transcript can use. §3's
+invariant is not *enforced* here, it *holds* — which is `docs/tool-design-brief.md` §2.4:
+make the mistake inexpressible rather than warn about it.
+
+**And the case with no mechanism is a refusal, not a bind.** A key that is not loaded into
+an agent cannot be used from inside the boundary. `Grant::agent_from_env` returns
+`ExecError::NoCredentialMechanism` naming what to do — *load it into `ssh-agent`; letibot
+forwards the agent, never the key* — because binding the key to get `ssh` working is
+exactly the quiet widening that kills a boundary. It also refuses a `$SSH_AUTH_SOCK` that
+is not a socket: "usable without being readable" is a property of the socket, not of the
+name.
+
+**An authorised `ssh` needs two declarations, not one.** The default network namespace has
+no route out, so the second is `Egress::Host { why }` — recorded as
+`NsState::SharedByDecision` so that no disclosure can mistake a declared egress for a
+boundary that failed. Neither declaration makes a private key readable.
+
+**What is NOT settled by this, and is the gap to say out loud:** an agent-less key, a
+GPG/`pass` secret, and a cloud token in a file all still have no mechanism. The general
+form — a credential daemon the boundary talks to over a socket — is not built. And §3's
+*second* half is untouched: the mount view keeps secret bytes out of the view, but there
+is still no single choke point through which every tool result passes, which is
+`docs/boundary-and-adjudication.md` §5's open question and not this decision's to close.
+
+Unblocks: seating `bash` behind a boundary at all, and the adjudicator's authorisation
+trail having something to authorise that is not a path list.

@@ -225,15 +225,65 @@ impl HostBackend {
     /// What it does **not** buy is §11.4's boundary — *the guest sees a copy of
     /// one project and nothing else of the host*. A command started here runs with
     /// this user's rights over this user's whole filesystem. A cgroup bounds a
-    /// lifetime, not a view. [`ExecBackend::describe`] says `unsandboxed` for
+    /// lifetime, not a view. [`ExecBackend::describe`] says `NOT CONFINED` for
     /// exactly this reason: a disclosure that lists only the guarantees reads as a
     /// claim about the rest, which is `docs/closed-loop.md`'s banner defect.
+    ///
+    /// **Since layer 1, this is a choice and not the only option.**
+    /// [`HostBackend::confined`] adds the namespaces, and the difference between
+    /// the two backends is a [`crate::exec::Confinement`] that names itself:
+    /// [`crate::exec::Unconfined`] here (*not asked for*) against a measured
+    /// [`crate::exec::Bwrap`] there. What neither ever is:
+    /// [`crate::exec::NoConfinement`] silently behaving like this one.
     ///
     /// Fails, rather than degrading, when there is no cgroup v2 subtree to
     /// delegate: a process with no owner is the leak `TODO.md` T24 exists to stop.
     pub fn executable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         let base = Self::writable(root)?;
         let host = crate::exec::HostProcesses::new(base.root.clone())
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        Ok(HostBackend {
+            processes: Some(std::sync::Arc::new(host)),
+            ..base
+        })
+    }
+
+    /// A backend that can start processes **inside a project-scoped boundary**.
+    ///
+    /// The fourth constructor, and the first one that is a *narrowing* rather than
+    /// a widening — but it is spelled the same way for the same reason: `grep -rn
+    /// 'HostBackend::confined'` finds every session that has a boundary, and the
+    /// absence of the string is then evidence about a session rather than a
+    /// question about it.
+    ///
+    /// # What this buys over [`HostBackend::executable`]
+    ///
+    /// `docs/boundary-and-adjudication.md` §4's layer 1: a mount namespace rooted
+    /// at this project (so the operator's `~/.ssh` is **absent**, not denied), a
+    /// PID namespace (so the daemon, the model server and a sibling job are
+    /// invisible and unsignalable), a network namespace with no route out (so
+    /// egress is a decision), and a user namespace, which is what makes the other
+    /// three possible unprivileged.
+    ///
+    /// # What it does not buy
+    ///
+    /// §3's invariant has two halves and this is the first. Secret bytes stay
+    /// outside the view, so they cannot be *read* — but a tool result that already
+    /// contains something still travels into the transcript, and the choke point
+    /// for that is open (§5). And an authorised credential is usable only through
+    /// [`crate::exec::Grant::AgentSocket`]; there is no grant that binds a key.
+    ///
+    /// # It fails rather than degrading
+    ///
+    /// Two independent ways to fail and the error says which: no delegated cgroup
+    /// v2 subtree (a process with no owner), or no usable boundary (a command that
+    /// would read the operator's disk while a disclosure said otherwise). Neither
+    /// falls back to [`HostBackend::executable`].
+    pub fn confined(root: impl AsRef<Path>) -> Result<Self, BackendError> {
+        let base = Self::writable(root)?;
+        let confine = crate::exec::Bwrap::project(base.root.clone())
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let host = crate::exec::HostProcesses::confined(base.root.clone(), Box::new(confine))
             .map_err(|e| BackendError::Io(e.to_string()))?;
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
@@ -264,11 +314,40 @@ impl HostBackend {
         &self.root
     }
 
-    /// Resolve a tool-supplied path inside the root.
+    /// Resolve a tool-supplied path inside the root, **following symlinks as it
+    /// goes** rather than checking one at the end.
+    ///
+    /// # The escape this used to have
+    ///
+    /// It ended in `if let Ok(real) = out.canonicalize() && !real.starts_with(root)`.
+    /// `canonicalize` fails on a path that does not exist, and `if let Ok` turns
+    /// that failure into *no check at all* — so for a **new** file the containment
+    /// test was skipped, invisibly. With `root/escape -> /elsewhere`, resolving
+    /// `escape/new.txt` returned a path inside `root` in name only, and `write`
+    /// then created `/elsewhere/new.txt`. `write`'s own comment asserted the
+    /// opposite: *"`resolve` already refused one that points out of the root"*. A
+    /// guard whose failure mode is silence is the shape `docs/closed-loop.md` calls
+    /// an open-loop stepper.
+    ///
+    /// A dangling link was the same hole with a different spelling:
+    /// `root/escape -> /elsewhere/gone` canonicalises to nothing, so nothing was
+    /// checked, and a write created the target.
+    ///
+    /// # Why this is not made moot by [`crate::exec::confine`]
+    ///
+    /// The mount namespace confines the **exec** path. `read`, `write`, `edit`,
+    /// `glob` and `grep` are in-process calls in the daemon's own mount namespace
+    /// and go through this function instead. Layer 1 covers one of the two ways in;
+    /// this is the other one, and it is why the fix is here rather than deferred to
+    /// a boundary.
+    ///
+    /// # What it does now
     ///
     /// Lexical normalisation first (so `a/../../etc` is refused without touching
-    /// the disk), then, for a path that exists, a canonicalisation check — which is
-    /// what catches a symlink pointing out of the tree.
+    /// the disk), then [`resolve_under`] walks the components from the root
+    /// downwards, resolving each link against its own parent and requiring
+    /// containment at every step — which is answerable about a path whose tail does
+    /// not exist yet, and is the only form that is.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, BackendError> {
         let given = Path::new(path);
         let rel = match given.strip_prefix(&self.root) {
@@ -279,27 +358,7 @@ impl HostBackend {
             Err(_) => given.to_path_buf(),
         };
 
-        let mut out = self.root.clone();
-        for c in rel.components() {
-            match c {
-                Component::Normal(p) => out.push(p),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if !out.pop() || !out.starts_with(&self.root) {
-                        return Err(BackendError::Outside(path.to_string()));
-                    }
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(BackendError::Outside(path.to_string()));
-                }
-            }
-        }
-        if let Ok(real) = out.canonicalize()
-            && !real.starts_with(&self.root)
-        {
-            return Err(BackendError::Outside(path.to_string()));
-        }
-        Ok(out)
+        resolve_under(&self.root, &rel).ok_or_else(|| BackendError::Outside(path.to_string()))
     }
 
     /// The path a tool should show back to the model: relative to the root, `/`
@@ -419,10 +478,18 @@ impl ExecBackend for HostBackend {
                  a session that may change files opens it with HostBackend::writable",
             ));
         }
+        // (5) `resolve` has already followed every symlink on the way down and
+        // refused any that left the root — **including on a path whose tail does
+        // not exist yet**, which is the case this comment used to be wrong about.
+        // The `canonicalize` is belt and braces for a component that changed
+        // between the resolve and now, and it falls back to the resolved path
+        // because a file that is about to be created has nothing to canonicalise.
         let resolved = self.resolve(path)?;
-        // (5) follow a symlink to its target; `resolve` already refused one that
-        // points out of the root.
-        let target = resolved.canonicalize().unwrap_or(resolved);
+        let target = match resolved.canonicalize() {
+            Ok(c) if c.starts_with(&self.root) => c,
+            Ok(_) => return Err(BackendError::Outside(path.to_string())),
+            Err(_) => resolved,
+        };
         if target.is_dir() {
             return Err(BackendError::IsADirectory(path.to_string()));
         }
@@ -537,11 +604,28 @@ impl ExecBackend for HostBackend {
     /// `docs/tool-design-brief.md` §1 names — *"a banner asserted 'read-only tools'
     /// about a session that had write tools"* — and it was in the disclosure the
     /// daemon prints at startup. It is now read off the fields.
+    /// ... and the *same fix, a second time*, in the half this constructor added.
+    ///
+    /// `(_, true) => "writable + UNSANDBOXED EXEC"` was correct for every backend
+    /// that existed when it was written and became a hard-coded claim the moment
+    /// [`HostBackend::confined`] existed. So the exec half is read from the process
+    /// host too, through [`crate::exec::Confinement::describe`], which reads it from
+    /// a boundary that was measured from inside itself. There is no constant in
+    /// this function that asserts a confinement property.
     fn describe(&self) -> String {
-        let mode = match (self.writable, self.processes.is_some()) {
-            (_, true) => "writable + UNSANDBOXED EXEC",
-            (true, false) => "writable",
-            (false, false) => "read-only",
+        let mode = match (self.writable, self.processes.as_ref()) {
+            (_, Some(p)) => {
+                let view = match crate::exec::ProcessHost::confinement(p.as_ref()) {
+                    Some(c) => c.describe(),
+                    None => "no confinement seam on this process host, so what a \
+                             command can see is unknown — and an unknown boundary is \
+                             not a boundary"
+                        .to_string(),
+                };
+                format!("writable + EXEC ({view})")
+            }
+            (true, None) => "writable".to_string(),
+            (false, None) => "read-only".to_string(),
         };
         format!("host filesystem, {mode}, rooted at {}", self.root.display())
     }
@@ -549,6 +633,126 @@ impl ExecBackend for HostBackend {
     fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
         self.processes.as_ref().map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
     }
+}
+
+/// The most symlinks one path may traverse. Linux's own limit is 40 (`ELOOP`
+/// above it); matching it means a path this refuses is a path the kernel would
+/// have refused too, so no legitimate tree becomes unusable.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// A `realpath` for a path whose **tail may not exist yet**.
+///
+/// This is the containment primitive, and its shape is forced by the requirement:
+/// `std::fs::canonicalize` cannot answer for a file that is about to be created,
+/// and a check that is skipped when it cannot answer is not a check. So the walk
+/// goes *down* from the root, one component at a time:
+///
+/// - a component that does not exist ends the resolving — nothing under a
+///   non-existent directory can exist either, so the rest is appended literally
+///   and the containment already established stands;
+/// - a component that is a **symlink** is replaced by its target, pushed back onto
+///   the front of the queue so the target's own components are resolved in turn.
+///   An absolute target restarts from the root and must land inside it;
+/// - `..` pops, and popping past the root is a refusal rather than a clamp: a
+///   clamp silently answers a different question from the one asked.
+///
+/// `None` means *outside the root, or unresolvable* — the caller turns it into
+/// [`BackendError::Outside`], which already carries the path. Returning an
+/// `Option` rather than a `bool` plus an out-parameter is deliberate: there is no
+/// way to spell "refused" and still have a path to use.
+fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+
+    // The work queue, in order. A symlink target is prepended, which is what makes
+    // a chain of links terminate in one loop rather than in recursion.
+    let mut queue: VecDeque<OsString> = VecDeque::new();
+    for c in rel.components() {
+        match c {
+            Component::Normal(p) => queue.push_back(p.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir => queue.push_back(OsString::from("..")),
+            // An absolute or prefixed path inside what should be a relative
+            // remainder is not a path this root can contain.
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    let mut out = root.to_path_buf();
+    let mut hops = 0usize;
+    while let Some(name) = queue.pop_front() {
+        if name == ".." {
+            if !out.pop() || !out.starts_with(root) {
+                return None;
+            }
+            continue;
+        }
+        if name == "." {
+            continue;
+        }
+        let cand = out.join(&name);
+        // `symlink_metadata` and not `metadata`: the question is whether THIS
+        // component is a link, not whether its target exists. A dangling link
+        // answers `Ok` here and `Err` to `metadata`, and it is the dangling one
+        // that used to get through.
+        let Ok(meta) = std::fs::symlink_metadata(&cand) else {
+            // Does not exist. Everything left is new; append it literally.
+            out = cand;
+            for rest in queue {
+                if rest == ".." {
+                    // A `..` after a non-existent component still has to be
+                    // honoured, because the caller may create the parent first.
+                    if !out.pop() || !out.starts_with(root) {
+                        return None;
+                    }
+                } else if rest != "." {
+                    out.push(rest);
+                }
+            }
+            return out.starts_with(root).then_some(out);
+        };
+        if !meta.file_type().is_symlink() {
+            out = cand;
+            continue;
+        }
+        hops += 1;
+        if hops > MAX_SYMLINK_HOPS {
+            // A cycle, or a chain long enough that the kernel would refuse it too.
+            // A refusal, never a hang and never a partial resolution.
+            return None;
+        }
+        let target = std::fs::read_link(&cand).ok()?;
+        // Prepend the target's components so they are resolved in turn. An
+        // absolute target restarts the walk at the root and must lie inside it —
+        // this is the check the old code did once, at the end, and therefore not
+        // at all for a path that did not exist.
+        let mut front: VecDeque<OsString> = VecDeque::new();
+        if target.is_absolute() {
+            let inside = target.strip_prefix(root).ok()?;
+            out = root.to_path_buf();
+            for c in inside.components() {
+                match c {
+                    Component::Normal(p) => front.push_back(p.to_os_string()),
+                    Component::CurDir => {}
+                    Component::ParentDir => front.push_back(OsString::from("..")),
+                    Component::RootDir | Component::Prefix(_) => return None,
+                }
+            }
+        } else {
+            for c in target.components() {
+                match c {
+                    Component::Normal(p) => front.push_back(p.to_os_string()),
+                    Component::CurDir => {}
+                    Component::ParentDir => front.push_back(OsString::from("..")),
+                    Component::RootDir | Component::Prefix(_) => return None,
+                }
+            }
+        }
+        while let Some(c) = front.pop_back() {
+            queue.push_front(c);
+        }
+    }
+    out.starts_with(root).then_some(out)
 }
 
 /// Single-quote one argv element for a shell, the only way that is total: close
@@ -657,6 +861,92 @@ mod tests {
             })
             .unwrap_err();
         assert!(format!("{e}").contains("11.4"), "{e}");
+    }
+
+    /// **A first-party containment escape, found by reading, and it is the one the
+    /// namespaces do NOT make moot.**
+    ///
+    /// `resolve` ended in `if let Ok(real) = out.canonicalize()`. `canonicalize`
+    /// fails on a path that does not exist, so for a **new** file the containment
+    /// check was not merely weak — it was *skipped*, and the `let Ok(..)` made the
+    /// skip invisible. A symlinked-out parent plus a filename that is not there yet
+    /// wrote outside the root, and `write`'s own comment asserted the opposite:
+    /// *"`resolve` already refused one that points out of the root"*.
+    ///
+    /// Why this matters after layer 1 exists: `read`, `write`, `edit`, `glob` and
+    /// `grep` do **not** go through a namespace. They are in-process calls on the
+    /// daemon's own mount namespace, so the mount view confines the exec path and
+    /// nothing else. A boundary that covers one of two paths in is not a boundary,
+    /// and this is the second path.
+    #[test]
+    fn a_new_file_under_a_symlinked_out_parent_is_refused() {
+        let d = tempdir::TempDir::new();
+        let outside = d.path().join("outside");
+        let root = d.path().join("root");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::create_dir_all(&root).expect("root");
+        // The escape: a link inside the root pointing at a directory outside it.
+        std::os::unix::fs::symlink(&outside, root.join("escape")).expect("symlink");
+        let b = HostBackend::writable(&root).expect("writable");
+
+        // The path that DOES exist was always refused, and still is.
+        assert!(matches!(b.resolve("escape"), Err(BackendError::Outside(_))));
+        // The path that does not exist yet is the hole.
+        let e = b.resolve("escape/new.txt");
+        assert!(
+            matches!(e, Err(BackendError::Outside(_))),
+            "a new file under a symlinked-out parent must be refused, got {e:?}"
+        );
+        // And through `write`, which is where the damage would land. Guard the fact,
+        // not the proxy: the assertion is that nothing appeared on the operator's
+        // disk outside the root, not merely that the call returned an error.
+        let _ = b.write("escape/new.txt", b"escaped");
+        assert!(
+            !outside.join("new.txt").exists(),
+            "a write escaped the root to {}",
+            outside.join("new.txt").display()
+        );
+        // A deeper tail, so the fix cannot be "check one level".
+        let _ = b.write("escape/a/b/c.txt", b"escaped");
+        assert!(!outside.join("a").exists(), "a deep write escaped the root");
+    }
+
+    #[test]
+    fn a_symlink_that_stays_inside_the_root_still_works() {
+        // The other direction, because a containment fix that refuses everything
+        // looks exactly like one that works. A project with an internal symlink is
+        // ordinary, and `resolve` must follow it.
+        let d = tempdir::TempDir::new();
+        let root = d.path().join("root");
+        std::fs::create_dir_all(root.join("real")).expect("real");
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).expect("symlink");
+        let b = HostBackend::writable(&root).expect("writable");
+        let p = b.resolve("link/new.txt").expect("an internal link resolves");
+        assert!(p.starts_with(&root), "{}", p.display());
+        b.write("link/new.txt", b"inside").expect("write through an internal link");
+        assert_eq!(
+            std::fs::read_to_string(root.join("real/new.txt")).unwrap_or_default(),
+            "inside"
+        );
+        // A relative link, and a link whose target is itself a link.
+        std::os::unix::fs::symlink("real", root.join("rel")).expect("relative symlink");
+        std::os::unix::fs::symlink("link", root.join("link2")).expect("link to a link");
+        assert!(b.resolve("rel/x.txt").expect("relative").starts_with(&root));
+        assert!(b.resolve("link2/x.txt").expect("chained").starts_with(&root));
+    }
+
+    #[test]
+    fn a_symlink_loop_is_a_refusal_and_not_a_hang() {
+        // The cost of resolving component by component is that a cycle is now this
+        // function's problem. It is bounded, and the bound is a refusal.
+        let d = tempdir::TempDir::new();
+        let root = d.path().join("root");
+        std::fs::create_dir_all(&root).expect("root");
+        std::os::unix::fs::symlink("b", root.join("a")).expect("a->b");
+        std::os::unix::fs::symlink("a", root.join("b")).expect("b->a");
+        let b = HostBackend::writable(&root).expect("writable");
+        let e = b.resolve("a/x.txt");
+        assert!(matches!(e, Err(BackendError::Outside(_))), "{e:?}");
     }
 
     #[test]
