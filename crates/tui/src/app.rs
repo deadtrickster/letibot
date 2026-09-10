@@ -351,6 +351,17 @@ pub struct App {
     items: Vec<SnapshotItem>,
     hist_lines: Vec<String>,
     hist_upto: usize,
+    /// Where the walk stood just before it rendered each item: `hist_marks[k]` is
+    /// the state at the top of the iteration that drew `items[k]`, so there is one
+    /// per rendered row and `hist_marks.len() == hist_upto`.
+    ///
+    /// This is what makes "the history from row k on is stale" expressible. It was
+    /// only ever sayable as "all of it": a row whose body arrived, and every
+    /// turn-state transition, threw the whole rendered session away and re-lexed
+    /// it — 135 full rebuilds of an 89-row session, measured on one replay — which
+    /// is the §13.3 rule this head is built around, broken at the level above the
+    /// lexer that was careful about it.
+    hist_marks: Vec<HistMark>,
     hist_width: usize,
     /// The class of the last row the walk actually drew, so the next one knows
     /// whether a blank line belongs between them. The walk is incremental across
@@ -373,6 +384,14 @@ pub struct App {
     heads: usize,
     /// Counters. Every one of these is on the status line, because a number a head
     /// keeps and does not show is a number nobody can act on.
+    /// Transcript rows the history walk has rendered, ever — not rows in the
+    /// session, rows *drawn*, so a row re-rendered ten times counts ten.
+    ///
+    /// The encoder for [`App::invalidate_history_from`]. "Did that turn re-render
+    /// the whole session" is unanswerable after the fact, and a wall time is not
+    /// something a test can assert on; a count is. On a session of `n` rows this
+    /// is `O(n)`, and it was `O(n²)`.
+    pub hist_renders: u64,
     pub seq: u64,
     pub dropped: u64,
     pub scrubbed: u64,
@@ -548,6 +567,7 @@ impl App {
             items: Vec::new(),
             hist_lines: Vec::new(),
             hist_upto: 0,
+            hist_marks: Vec::new(),
             note_upto: 0,
             hist_width: 0,
             hist_class: None,
@@ -555,6 +575,7 @@ impl App {
             open: Vec::new(),
             notes: Vec::new(),
             heads: 0,
+            hist_renders: 0,
             seq: 0,
             dropped: 0,
             scrubbed: 0,
@@ -919,6 +940,10 @@ impl App {
                 model,
                 ledger_head: _,
             } => {
+                // Asked *before* the pane is replaced. The rows that stop being
+                // drawn live are the previous turn's, and once its pane is gone
+                // there is nothing left to ask which they were.
+                let stale_from = self.turn_first_row();
                 self.model = model.clone();
                 self.turn = Some(TurnPane {
                     turn_id,
@@ -930,8 +955,12 @@ impl App {
                 });
                 // A new turn takes the pane away from the previous one, so the
                 // previous one's rows now own everything they proposed. Same
-                // reason as the terminal states above: the history is cached.
-                self.invalidate_history();
+                // reason as the terminal states above: the history is cached —
+                // from the first row that pane owned, which is the only part of
+                // it that can render differently now.
+                if let Some(k) = stale_from {
+                    self.invalidate_history_from(k);
+                }
                 Disposition::Rendered
             }
             SessionEvent::PromptProgress { progress, .. } => {
@@ -1155,8 +1184,10 @@ impl App {
                 // not draw their own unsettled calls; once it stands down they
                 // must, or a call the turn was interrupted in the middle of leaves
                 // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told.
-                self.invalidate_history();
+                // cached, so it has to be told — from the first row this pane
+                // owns, which is the only part of it that can render differently
+                // now.
+                self.invalidate_turn_rows();
                 Disposition::Rendered
             }
             // §4.5's terminal event, which did not exist. The head used to be told
@@ -1183,8 +1214,10 @@ impl App {
                 // not draw their own unsettled calls; once it stands down they
                 // must, or a call the turn was interrupted in the middle of leaves
                 // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told.
-                self.invalidate_history();
+                // cached, so it has to be told — from the first row this pane
+                // owns, which is the only part of it that can render differently
+                // now.
+                self.invalidate_turn_rows();
                 Disposition::Rendered
             }
             SessionEvent::TurnInterrupted {
@@ -1204,8 +1237,10 @@ impl App {
                 // not draw their own unsettled calls; once it stands down they
                 // must, or a call the turn was interrupted in the middle of leaves
                 // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told.
-                self.invalidate_history();
+                // cached, so it has to be told — from the first row this pane
+                // owns, which is the only part of it that can render differently
+                // now.
+                self.invalidate_turn_rows();
                 Disposition::Rendered
             }
             SessionEvent::TranscriptAppended {
@@ -1734,14 +1769,19 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
-        if let Some(r) = self.items.iter_mut().find(|r| r.item_id == item_id) {
-            r.item = Some(item);
-            // The row's rendered form changed, so the history cache from that row
-            // on is stale.
-            self.invalidate_history();
-        } else {
+        let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
-        }
+        };
+        self.items[idx].item = Some(item);
+        // The row's rendered form changed, so the history cache from that row
+        // on is stale. From that row on, and not from row zero: this is the
+        // hottest of the invalidations — one per transcript row, so one per
+        // row per session — and re-rendering the rows above a row whose body
+        // just arrived is the whole session, again, for every row in it. From
+        // the head of its ROUND, because a round is what renders as a unit; see
+        // `round_head`.
+        let k = self.round_head(idx);
+        self.invalidate_history_from(k);
         // The pane's accumulated prose, handed over the same way its calls are.
         //
         // `TurnPane::text` is every `Delta { target: Text }` of the whole turn, and
@@ -1772,15 +1812,131 @@ impl App {
     /// Throw the rendered history away; it is rebuilt from `items` and `notes`
     /// on the next frame. One place, because forgetting one of the two cursors
     /// duplicates or loses everything after it.
+    ///
+    /// For the three callers that really do mean *all of it*: a snapshot replaced
+    /// `items` wholesale, a fold changed how many lines every cached block renders
+    /// to, and a width change moved every wrap. Everything else means
+    /// [`App::invalidate_history_from`].
     fn invalidate_history(&mut self) {
-        self.hist_lines.clear();
-        self.hist_upto = 0;
-        self.note_upto = 0;
-        self.hist_class = None;
-        // The target table is the walk's own state — the round it is currently
-        // inside — so it is thrown away with the lines it labelled. Leaving it
-        // behind is what let a rebuild start at row 0 holding round 14's paths.
+        self.invalidate_history_from(0);
+    }
+
+    /// The rendered history is stale **from row `k` on**. Rows above it are
+    /// settled: nothing this head is told can change what they render to.
+    ///
+    /// # Why this is not `invalidate_history`
+    ///
+    /// It was, at every call site, and the comment at the largest one already said
+    /// what the code did not do — *"the row's rendered form changed, so the history
+    /// cache from that row on is stale"*. Measured over one replay of a real
+    /// 89-row session: 89 row bodies arriving and 46 turn-state transitions, each
+    /// re-rendering the whole transcript ahead of the row that moved, so the cost
+    /// of a session grows as its square.
+    ///
+    /// **It is not a repaint.** [`crate::term::paint_full`] diffs every frame
+    /// against the glass and writes only the rows whose text changed, so a rebuild
+    /// that produces the same lines writes no bytes. Measured on the same replay,
+    /// with all four turn-state invalidations removed: 1,253,922 bytes against
+    /// 1,256,038, and the same final screen to the byte. This is the cost of the
+    /// *render*, and nothing about what reaches the terminal.
+    fn invalidate_history_from(&mut self, k: usize) {
+        if k == 0 {
+            self.hist_lines.clear();
+            self.hist_marks.clear();
+            self.hist_upto = 0;
+            self.note_upto = 0;
+            self.hist_class = None;
+            // The target table is the walk's own state — the round it is currently
+            // inside — so it is thrown away with the lines it labelled. Leaving it
+            // behind is what let a rebuild start at row 0 holding round 14's paths.
+            self.call_targets.clear();
+            return;
+        }
+        // A row the walk has not reached yet has nothing rendered to throw away,
+        // and rewinding to it would rewind past rows that are fine.
+        let Some(mark) = self.hist_marks.get(k).copied() else {
+            return;
+        };
+        self.hist_lines.truncate(mark.lines);
+        self.hist_marks.truncate(k);
+        self.hist_upto = k;
+        self.note_upto = mark.note_upto;
+        self.hist_class = mark.class;
+        self.retarget_before(k);
+    }
+
+    /// Put `call_targets` back to what it held when the walk was about to draw
+    /// row `k`: the calls of the nearest assistant row above it that has a body.
+    ///
+    /// Derived rather than stored, and it has to match the walk exactly — the walk
+    /// **replaces** the table at every assistant row with a body, including one
+    /// that proposed no calls at all, because `call_0` is positional within a
+    /// round and a merge is how round 4's `call_0` came to wear round 1's path.
+    /// So the scan stops at the first such row rather than accumulating.
+    fn retarget_before(&mut self, k: usize) {
         self.call_targets.clear();
+        for r in self.items[..k].iter().rev() {
+            if let Some(TranscriptItem::Assistant { tool_calls, .. }) = r.item.as_ref() {
+                for c in tool_calls {
+                    self.call_targets.insert(
+                        c.id.clone(),
+                        letibot_sessionlog::display_target(&c.arguments),
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    /// The first row whose rendering a change to row `idx` can reach.
+    ///
+    /// **A row is not rendered in isolation, and this is the trap in narrowing an
+    /// invalidation.** An assistant row asks which of the calls it proposed have
+    /// come back, and that answer lives in the rows *after* it, up to the next
+    /// assistant or user row — [`round_results`]. So the unit that has to be
+    /// re-rendered is the ROUND, not the row: a tool result's body arriving
+    /// changes what the assistant row above it draws, and rewinding only to the
+    /// result leaves the proposal beside its own answer. Measured as exactly that
+    /// — `TODO.md` on the screen twice — by
+    /// `a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it`,
+    /// and against a real session by
+    /// `a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero`,
+    /// which is the one that exercises a rewind rather than a rebuild.
+    ///
+    /// Keyed on `kind` rather than on the body, because [`round_results`] breaks on
+    /// an *announced* assistant row whose content has not arrived yet, and two
+    /// answers to "where does this round start" is one too many.
+    fn round_head(&self, idx: usize) -> usize {
+        self.items[..=idx]
+            .iter()
+            .rposition(|r| r.kind == "assistant" || r.kind == "user")
+            .unwrap_or(0)
+    }
+
+    /// The first history row this turn's pane is drawing, or `None` if it is
+    /// drawing none.
+    ///
+    /// A turn-state transition changes one input to the walk — `drawn_live`, which
+    /// is true only for a row in `TurnPane::appended` — so it can change what those
+    /// rows render to and nothing above the first of them.
+    fn turn_first_row(&self) -> Option<usize> {
+        let t = self.turn.as_ref()?;
+        if t.appended.is_empty() {
+            return None;
+        }
+        let ids: std::collections::HashSet<&str> = t.appended.iter().map(String::as_str).collect();
+        self.items
+            .iter()
+            .position(|r| ids.contains(r.item_id.as_str()))
+    }
+
+    /// The history is stale from the first row the live pane owns. A pane that
+    /// owns no rows changes no history at all, and then this does nothing.
+    fn invalidate_turn_rows(&mut self) {
+        if let Some(k) = self.turn_first_row() {
+            let k = self.round_head(k);
+            self.invalidate_history_from(k);
+        }
     }
 
     /// File something that happened between rows, at the row it happened at.
@@ -1790,6 +1946,13 @@ impl App {
         if self.notes.len() > 64 {
             self.notes.remove(0);
             self.note_upto = self.note_upto.saturating_sub(1);
+            // Every mark holds a `note_upto`, and dropping the oldest note shifts
+            // every index in `notes` down by one. A mark that is not shifted with
+            // them rewinds to the wrong note and re-renders it — which is the
+            // "duplicates or loses everything after it" failure, one cursor along.
+            for m in &mut self.hist_marks {
+                m.note_upto = m.note_upto.saturating_sub(1);
+            }
         }
     }
 
@@ -2195,12 +2358,14 @@ impl App {
             let App {
                 hist_lines,
                 hist_upto,
+                hist_marks,
                 note_upto,
                 items,
                 notes,
                 call_targets,
                 call_ms,
                 hist_class,
+                hist_renders,
                 ..
             } = self;
             loop {
@@ -2215,6 +2380,17 @@ impl App {
                     *hist_class = Some(RowClass::Other);
                     *note_upto += 1;
                 } else if *hist_upto < items.len() {
+                    // Where the walk stands before this row, so a later "from row
+                    // k on" can come back to exactly here. Recorded for every row,
+                    // including one that renders to nothing, because the mark is
+                    // indexed by row and a gap would misalign every mark after it.
+                    if hist_marks.len() == *hist_upto {
+                        hist_marks.push(HistMark {
+                            lines: hist_lines.len(),
+                            note_upto: *note_upto,
+                            class: *hist_class,
+                        });
+                    }
                     // An assistant row carries the arguments for the calls it
                     // proposed, and the tool-result rows that follow it want the
                     // same label. Learning them here, in transcript order, is what
@@ -2242,6 +2418,7 @@ impl App {
                         }
                         answered = round_results(items, *hist_upto);
                     }
+                    *hist_renders += 1;
                     let (class, rows) = item_lines(
                         &items[*hist_upto],
                         &ItemCtx {
@@ -3677,6 +3854,23 @@ fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
 /// separate things that are already separated by a glyph in the first column. Air
 /// goes where the *kind* changes — around the question, around the answer, around
 /// a warning — because that is where the reader's attention has to move.
+/// Where the history walk stood before one row. See [`App::hist_marks`].
+///
+/// Three fields because the walk carries three cursors, and the fourth —
+/// `call_targets` — is *derivable* from the rows above rather than stored:
+/// it is the calls of the nearest assistant row with a body, which
+/// [`App::retarget_before`] finds by scanning back. Storing a map per row would
+/// be the cache growing with the session, which is the thing being fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistMark {
+    /// `hist_lines.len()` before the row was drawn.
+    lines: usize,
+    /// `note_upto` before the row was drawn.
+    note_upto: usize,
+    /// `hist_class` before the row was drawn — the separator's whole input.
+    class: Option<RowClass>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowClass {
     /// Somebody said something: the operator's question, the model's answer.
@@ -4601,6 +4795,44 @@ mod tests {
         assert!(a.body_len > 400, "the history is there: {}", a.body_len);
     }
 
+    /// The same rule one layer up: **rendering** the history does not grow with
+    /// the session either.
+    ///
+    /// `the_body_a_frame_builds_…` asserts the frame is the window. It says
+    /// nothing about how many rows were rendered to build it, and that was the
+    /// hole: every row whose body arrived threw the whole rendered transcript
+    /// away, so a session of `n` rows cost `n²/2` renders. At 400 rows that is
+    /// 80,000 against 400 — and the count, not a stopwatch, is the thing a test
+    /// can hold.
+    ///
+    /// The bound is deliberately loose (`4n`): a row is legitimately re-rendered
+    /// when its own round changes under it, and pinning this to the exact number
+    /// would make it a test of the current round shape rather than of the rule.
+    #[test]
+    fn rendering_the_history_does_not_grow_with_the_session_either() {
+        let mut a = app();
+        let n = 400u64;
+        for i in 0..n {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), "a line of conversation"),
+            )));
+            // A frame per event, which is what the driver does: the walk has to
+            // have caught up before the next row lands or nothing is re-rendered.
+            let _ = a.screen(80, 24);
+        }
+        assert!(
+            a.hist_renders < 4 * n,
+            "{n} rows cost {} row renders; a full rebuild per row would be about {}",
+            a.hist_renders,
+            n * n / 2
+        );
+    }
+
     #[test]
     fn the_body_of_a_row_arrives_and_replaces_the_placeholder() {
         // Fault one, end to end through the head: announce, then fill.
@@ -5219,6 +5451,83 @@ mod tests {
             "and once the result lands the proposal does not stay beside it:\n{after}"
         );
         assert!(after.contains("▸ Read TODO.md · ok"), "{after}");
+        assert!(
+            !after.contains("no result"),
+            "a call that returned does not still read as one that did not:\n{after}"
+        );
+    }
+
+    /// The same claim, with a row above the round so the narrowed invalidation
+    /// cannot fall back on "rewind to zero".
+    ///
+    /// `a_settled_call_is_one_row_…` starts at the assistant row, so its round
+    /// head is index 0 and every invalidation in it is a full rebuild — which is
+    /// exactly the path that was never narrowed. Put a user row in front and the
+    /// rewind is a real one. Found by diffing the byte stream of a replay against
+    /// the same replay with the narrowing switched off: 59 frames of 1028 showed
+    /// a different screen, and the first of them had `→ Listed * · no result`
+    /// sitting above `▸ Listed * · ok`.
+    #[test]
+    fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: "what is in the tree".into(),
+                    }],
+                }),
+            },
+        )));
+        // A pane, because `drawn_live` and `superseded` are inputs to the walk and
+        // a test without a turn exercises neither. The daemon's order, from
+        // `docs/tui-testing.md`: the round's own rows, then the terminal event,
+        // then the result rows.
+        a.apply(ServerFrame::Event(env(3, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(4, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::TranscriptContent {
+                item_id: "r.a".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(6, testing::turn_finished("t1"))));
+        // The walk has to have RENDERED the round before the result lands, or the
+        // rewind has nothing to rewind and the bug hides.
+        let before = a.screen(120, 40).join("\n");
+        assert!(before.contains("no result"), "{before}");
+
+        a.apply(ServerFrame::Event(env(7, testing::appended("r.t", "tool_result"))));
+        let _ = a.screen(120, 40);
+        a.apply(ServerFrame::Event(env(
+            8,
+            SessionEvent::TranscriptContent {
+                item_id: "r.t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "# rano TODO\n".into(),
+                }),
+            },
+        )));
+        let after = a.screen(120, 40).join("\n");
+        assert_eq!(
+            after.matches("TODO.md").count(),
+            1,
+            "the proposal does not stay beside its own answer:\n{after}"
+        );
         assert!(
             !after.contains("no result"),
             "a call that returned does not still read as one that did not:\n{after}"
