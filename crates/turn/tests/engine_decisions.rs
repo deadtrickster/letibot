@@ -898,3 +898,164 @@ fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
         "the boundary's own literal was streamed: {call:?}"
     );
 }
+
+// --------------------------------------------------------------------------
+// T23 — a frame that does not account for its own advance
+// --------------------------------------------------------------------------
+
+/// Build the script for a turn the server drops one token out of the middle of.
+fn suppressed_script(head: &[u32], tail: &[u32]) -> Vec<Frame> {
+    let mut frames = vec![
+        Frame::Token {
+            id: THINK_OPEN,
+            text: "",
+        },
+        Frame::Token {
+            id: THINK_CLOSE,
+            text: "",
+        },
+    ];
+    frames.extend(spoken_frames(head));
+    // The token the server counted and sent no frame for.
+    frames.push(Frame::Suppressed);
+    frames.extend(spoken_frames(tail));
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (2 + head.len() + 1 + tail.len()) as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    frames
+}
+
+/// The server counts a token it never sends a frame for, and the operator keeps
+/// the answer anyway.
+///
+/// `Frame::Suppressed` is llama.cpp's `process_token` skipping
+/// `send_partial_response` on an incomplete UTF-8 tail after `slot.stats.n_gen`
+/// has already advanced. The next frame then reads `advance 2, ids 1`, which is
+/// the exact shape seen twice in the operator's log.
+///
+/// Two things are asserted together because either alone is the wrong fix:
+/// **nothing after the bad frame is committed** — the guard did not move — and
+/// **everything before it is**, so the turn is a seam rather than a loss.
+#[test]
+fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
+    let _g = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let head = ids_of("Reading it now.");
+    let tail = ids_of(" And then some more.");
+    let canned = Canned::serve(suppressed_script(&head, &tail), 1);
+
+    let dir = std::env::temp_dir().join(format!("letibot-t23-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    engine.frame_capture = letibot_turn::FrameCapture::to_dir(&dir);
+    let mut session = session(&engine, "t23");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("go")], &mut sink)
+        .unwrap();
+    let before = session.ledger.tokens().len();
+
+    let ok = engine
+        .run_turn(&mut session, &mut sink)
+        .expect("the accounted prefix is a usable turn");
+
+    // The head was committed…
+    assert!(
+        session.ledger.tokens().len() > before,
+        "the whole turn was thrown away again"
+    );
+    assert_eq!(
+        ok.metrics.predicted_tokens as usize,
+        2 + head.len(),
+        "exactly the ids the counter accounted for, and not one more"
+    );
+    // …and the seam is visible rather than silent.
+    assert!(ok.truncated, "a turn missing its tail is not a complete one");
+    let (reason, kept) = sink
+        .events
+        .iter()
+        .find_map(|e| match e {
+            TurnEvent::TurnInterrupted {
+                reason,
+                partial_kept,
+                ..
+            } => Some((reason.clone(), *partial_kept)),
+            _ => None,
+        })
+        .expect("the interruption must be announced");
+    assert!(reason.starts_with("frame_mismatch"), "{reason}");
+    assert!(kept, "the partial was kept and must say so");
+
+    // The evidence T23 asked for, on disk, verbatim.
+    let path = sink
+        .warnings()
+        .iter()
+        .find(|(c, _)| *c == "frame_capture_written")
+        .map(|(_, d)| d.rsplit(' ').next().unwrap().to_string())
+        .expect("the capture path must be announced");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let offender: serde_json::Value = serde_json::from_str(v["frame"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        offender["tokens_predicted"].as_u64().unwrap() as usize,
+        2 + head.len() + 2,
+        "the captured frame is the one that was refused"
+    );
+    assert_eq!(
+        offender["tokens"].as_array().unwrap().len(),
+        1,
+        "…and it carried one id, which is the whole complaint"
+    );
+    assert!(
+        !v["before"].as_array().unwrap().is_empty(),
+        "the frames either side are the point of capturing at all"
+    );
+    assert!(
+        !v["after"].as_array().unwrap().is_empty(),
+        "the trailing frames are what say whether the id arrives late"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The guard is not relaxed, and this is the line that says so.
+///
+/// The id the refused frame carried, and every id after it, are absent from the
+/// ledger. A change that starts accepting them makes the ledger stop being a
+/// record of what the model produced — the one outcome the hash chain exists to
+/// prevent — and it would pass every other test in this file.
+#[test]
+fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
+    let _g = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let head = ids_of("Reading it now.");
+    let tail = ids_of(" And then some more.");
+    let canned = Canned::serve(suppressed_script(&head, &tail), 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    engine.frame_capture = letibot_turn::FrameCapture::disabled();
+    let mut session = session(&engine, "t23-guard");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("go")], &mut sink)
+        .unwrap();
+    engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let committed = session.ledger.tokens();
+    assert!(
+        committed.ends_with(&head[head.len() - 1..]),
+        "the ledger must end exactly where the accounting stopped"
+    );
+    assert!(
+        !committed.windows(tail.len()).any(|w| w == tail.as_slice()),
+        "ids from beyond the refused frame reached the ledger"
+    );
+    // And a capture that is switched off says so rather than passing silently.
+    assert!(
+        sink.warnings()
+            .iter()
+            .any(|(c, _)| *c == "frame_capture_disabled")
+    );
+}
