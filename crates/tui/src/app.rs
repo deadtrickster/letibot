@@ -405,6 +405,21 @@ pub struct App {
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
     picker: bool,
+    /// The head's own instrumentation, as a screen: `/status`.
+    ///
+    /// Every counter it shows was added because something was measured going
+    /// wrong, and every one of them used to live on the **bottom border of the
+    /// chat window** — `seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 ·
+    /// scrubbed 0 · resync 0 · s-1789023464202470853 h3`, in the operator's frame,
+    /// on every frame, next to the thing they are typing into. That is the wrong
+    /// place for a number that is zero: it costs a row of attention for ever in
+    /// exchange for being noticed once.
+    ///
+    /// So the border keeps only the alarm — the counters that are *not* zero, in
+    /// the attention role — and this screen keeps everything, with a line under
+    /// each counter saying what it means. Reachable, which is the obligation, and
+    /// not resident, which was never part of it.
+    stats: bool,
     quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
     redraw: bool,
@@ -553,6 +568,7 @@ impl App {
             notice_ttl: 0,
             help: false,
             picker: false,
+            stats: false,
             quit: false,
             redraw: false,
             now_ms: 0,
@@ -1401,9 +1417,10 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
-        if (self.help || self.picker) && matches!(k, Key::Esc | Key::CtrlC) {
+        if (self.help || self.picker || self.stats) && matches!(k, Key::Esc | Key::CtrlC) {
             self.help = false;
             self.picker = false;
+            self.stats = false;
             self.redraw = true;
             return None;
         }
@@ -1628,6 +1645,12 @@ impl App {
                 self.redraw = true;
                 None
             }
+            // Where the bottom border's telemetry went. See `App::stats`.
+            "status" | "stats" => {
+                self.stats = !self.stats;
+                self.redraw = true;
+                None
+            }
             "think" | "r" => {
                 self.reasoning = self.reasoning.flip();
                 self.refold();
@@ -1795,10 +1818,11 @@ impl App {
             let n = dec_rows
                 + usize::from(show_inflight)
                 + usize::from(show_notice)
-                // Unboxed still costs one row: the disclosure counters move off
-                // the border and back onto a line of their own. They are §13.2b
-                // obligations and are not what a narrow screen gives up.
-                + if boxed { 2 } else { 1 }
+                // Unboxed costs one row **only when there is an alarm to show**:
+                // the counters move off the border and back onto a line of their
+                // own, and a counter that has moved is not what a narrow screen
+                // gives up. A clean head owes that row to the transcript.
+                + if boxed { 2 } else { usize::from(self.alarmed()) }
                 + rows
                 + usize::from(hint);
             if n < h {
@@ -1837,16 +1861,8 @@ impl App {
         chrome.extend(input_rows);
         if boxed {
             chrome.push(self.box_edge(w, '╰', '╯', &self.status_line(w.saturating_sub(6))));
-        } else {
-            chrome.push(colour(
-                &self.cfg,
-                if self.dropped + self.scrubbed + self.resyncs > 0 {
-                    sgr::YELLOW
-                } else {
-                    sgr::GREY
-                },
-                &self.status_line(w),
-            ));
+        } else if self.alarmed() {
+            chrome.push(self.status_line(w));
         }
         if hint {
             chrome.push(self.hint_bar(w));
@@ -1875,6 +1891,10 @@ impl App {
             let mut help = help_lines(&self.cfg, w);
             help.truncate(room);
             help
+        } else if self.stats {
+            let mut rows = self.status_lines(w);
+            rows.truncate(room);
+            rows
         } else if self.picker {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
@@ -1975,10 +1995,17 @@ impl App {
     fn box_edge(&self, w: usize, open: char, close: char, legend: &str) -> String {
         let w = w.max(4);
         let inner = w - 2;
+        // A legend may arrive already painted — the bottom edge's alarm is in the
+        // attention role — and `Palette::paint` closes with a plain reset, which
+        // restores the *terminal default* and not the grey of the border it is
+        // inlaid into. So the border reopens itself on the far side of it. Same
+        // defect and same fix as `style::Painter::inside`, one layer up: a reset
+        // is not a restore.
+        let reopen = if self.cfg.color { sgr::GREY } else { "" };
         let text = if legend.is_empty() || inner < 10 {
             String::new()
         } else {
-            format!("─ {} ", trim_to(legend, inner - 4))
+            format!("─ {}{reopen} ", trim_to(legend, inner - 4))
         };
         let fill = inner.saturating_sub(visible_width(&text));
         colour(
@@ -2028,7 +2055,7 @@ impl App {
     fn hint_bar(&self, w: usize) -> String {
         let p = self.cfg.palette();
         let mut s = self.editor.hint(self.turn_running(), self.now_ms, p);
-        let tail = if self.help {
+        let tail = if self.help || self.stats {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
@@ -2644,39 +2671,136 @@ impl App {
     /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
     /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
     /// impossible to miss. Anything nonzero is promoted to the front.
+    /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
+    /// border has something to say at all.
+    fn alarmed(&self) -> bool {
+        self.dropped + self.scrubbed + self.resyncs > 0
+    }
+
+    /// The bottom border's legend: **the counters that are not zero, and nothing
+    /// else**.
+    ///
+    /// It used to be all of them, plus the sequence numbers, plus the verbosity,
+    /// plus the twenty-one-character session id and the head id, on every frame:
+    ///
+    /// ```text
+    /// ╰─ seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 · scrubbed 0 ·
+    ///    resync 0 · s-1789023464202470853 h3 ─╯
+    /// ```
+    ///
+    /// Every one of those was added because something was measured going wrong,
+    /// and none of that is an argument for keeping them resident. §13.2b's rule is
+    /// that *an absent field and a zero field must not look the same when the
+    /// field is the disclosure* — which is a rule about the moment the field is
+    /// **read**, not about where it lives the rest of the time. `/status` is where
+    /// it is read, it says `dropped 0` explicitly, and it says what the counter
+    /// means, which the border never had room to.
+    ///
+    /// What stays here is the case a person must not have to go looking for: a
+    /// counter that has moved. In [`Role::Attention`], not the border's grey,
+    /// because a second colour inside a border reads as damage and this *is*
+    /// damage — that was the argument for painting it grey and it was the wrong
+    /// way round.
     fn status_line(&self, w: usize) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        let alarms = self.dropped + self.scrubbed + self.resyncs;
-        if alarms > 0 {
-            parts.push(format!(
-                "dropped {} · scrubbed {} · resync {}",
-                self.dropped, self.scrubbed, self.resyncs
+        if !self.alarmed() {
+            return String::new();
+        }
+        let p = self.cfg.palette();
+        trim_to(
+            &p.paint(
+                Role::Attention,
+                &format!(
+                    "⚠ dropped {} · scrubbed {} · resync {} · /status",
+                    self.dropped, self.scrubbed, self.resyncs
+                ),
+            ),
+            w,
+        )
+    }
+
+    /// `/status`: this head's own instrumentation, with what each number means.
+    ///
+    /// The gloss is the part the border could never carry, and it is the reason
+    /// the counters are worth keeping at all — `scrubbed 4` is not actionable
+    /// unless you know that scrubbing is what a *late* head does to an
+    /// interactive-only frame, at which point it is the answer to "why is this
+    /// head quieter than the one next to it".
+    fn status_lines(&self, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let mut out = vec![p.paint(Role::Strong, "this head"), String::new()];
+        let mut row = |k: &str, v: String, why: &str| {
+            let head = format!("  {k:<12}");
+            out.push(format!(
+                "{}{}",
+                p.paint(Role::Faint, &head),
+                p.paint(Role::Plain, &v)
             ));
+            for l in wrap(why, w.saturating_sub(16)) {
+                out.push(format!("{:14}{}", "", p.paint(Role::Faint, &l)));
+            }
+            out.push(String::new());
+        };
+
+        if !self.session_id.is_empty() {
+            row(
+                "session",
+                self.session_id.clone(),
+                "In full, because this is the form a command takes. \
+                 The header shows the last eight characters, which is the part \
+                 two sessions differ in.",
+            );
         }
-        parts.push(format!("seq {}", self.seq));
-        parts.push(format!(
-            "rendered {} · filtered {} ({})",
-            self.rendered,
-            self.filtered,
-            self.verbosity.as_str()
-        ));
-        if self.heads > 1 {
-            parts.push(format!("heads {}", self.heads));
+        if !self.head_id.is_empty() {
+            row(
+                "head",
+                format!("{} · {} attached", self.head_id, self.heads.max(1)),
+                "Every head on this session sees the same stream from its own \
+                 read mark. Closing one does not stop the turn.",
+            );
         }
-        if alarms == 0 {
-            parts.push("dropped 0 · scrubbed 0 · resync 0".into());
+        row(
+            "seq",
+            format!("{} · {} rendered", self.seq, self.rendered),
+            "The log's monotonic, gap-free position, and how many of those events \
+             reached the screen. Both counted by this head, not by the daemon.",
+        );
+        row(
+            "filtered",
+            format!("{} ({})", self.filtered, self.verbosity.as_str()),
+            "Events this head chose not to show at the current verbosity. \
+             /verbosity walks terse → normal → loud.",
+        );
+        row(
+            "dropped",
+            self.dropped.to_string(),
+            "Events the daemon's bounded scrollback threw away before this head \
+             asked for them. Not a rendering choice: they are gone.",
+        );
+        row(
+            "scrubbed",
+            self.scrubbed.to_string(),
+            "Interactive-only frames withheld from a head that attached late — \
+             partial tool output and the like, which has no durable form.",
+        );
+        row(
+            "resync",
+            self.resyncs.to_string(),
+            "Times this head threw its state away and took a fresh snapshot, \
+             because the gap since its read mark was past the daemon's bound.",
+        );
+        let wiring = self.wiring.summary();
+        if !wiring.is_empty() {
+            row("wiring", wiring, "Model, dialect and endpoint, from the daemon's own command line.");
         }
-        // Not while they are empty: `--demo` and `--replay` have no session and no
-        // head, and a trailing separator with nothing after it reads as a field
-        // that failed to load.
-        if !self.session_id.is_empty() || !self.head_id.is_empty() {
-            parts.push(format!("{} {}", self.session_id, self.head_id).trim().into());
+        if !self.wiring.workspace.is_empty() {
+            row(
+                "workspace",
+                tilde(&self.wiring.workspace),
+                "Where the daemon is standing. Tools resolve relative paths here.",
+            );
         }
-        // Uncoloured: this is inlaid into the box's bottom edge, which is grey
-        // all the way across, and a second colour inside a border reads as
-        // damage. The alarm case is promoted to the front instead, which is what
-        // survives a truncation.
-        trim_to(&parts.join(" · "), w)
+        out.push(p.paint(Role::Faint, "  /status or esc closes this"));
+        out
     }
 
     /// Drop the transient notice, once the operator has had a frame to see it.
@@ -2961,7 +3085,8 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-t", "fold or unfold tool output"),
         ("ctrl-x", "show the raw <function=…> text of tool calls, as the model wrote it"),
         ("ctrl-l", "repaint the screen"),
-        ("/verbosity", "terse → normal → loud; the status line counts what is filtered"),
+        ("/status", "this head's counters — dropped, scrubbed, resync — and what each means"),
+        ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
@@ -3631,9 +3756,43 @@ mod tests {
             )));
         }
         assert_eq!(a.filtered - before, 10);
-        let status = a.status_line(200);
-        assert!(status.contains("filtered 10"), "{status}");
-        assert!(status.contains("terse"), "{status}");
+        // Where it says so is `/status`, not the bottom border. §13.2b's rule is
+        // about the moment the disclosure is READ — the count has to exist, be
+        // exact, and be reachable without restarting anything. It was never an
+        // argument for a resident row of zeros next to the prompt.
+        a.command("status");
+        let screen = a.screen(120, 40).join("\n");
+        assert!(screen.contains("filtered"), "{screen}");
+        assert!(screen.contains("10 (terse)"), "{screen}");
+        // And a head that has lost nothing says nothing on the border.
+        assert_eq!(a.status_line(200), "", "a clean head has a clean border");
+    }
+
+    /// The border is not silent about a counter that has **moved**.
+    ///
+    /// The half of §13.2b that does belong on a resident row: a head that dropped
+    /// events is a head whose transcript has a hole in it, and that must not wait
+    /// for somebody to type a command.
+    #[test]
+    fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        let mut a = app();
+        assert_eq!(a.status_line(200), "");
+        a.apply(ServerFrame::Resync {
+            reason: "queue overflow".into(),
+            dropped: 12,
+            snapshot: Box::new(hub.snapshot()),
+            scrubbed: Default::default(),
+        });
+        let border = a.status_line(200);
+        assert!(border.contains("dropped 12"), "{border}");
+        assert!(border.contains("resync 1"), "{border}");
+        assert!(border.contains("/status"), "and says where the rest is: {border}");
+        assert!(
+            a.screen(120, 24).join("\n").contains("dropped 12"),
+            "and it is on the screen without asking"
+        );
     }
 
     #[test]
@@ -3771,12 +3930,23 @@ mod tests {
         let joined = screen.join("\n");
         // The model is on the top edge…
         assert!(screen[row - 1].contains("normal"), "{:?}", screen[row - 1]);
-        // …the disclosure counters on the bottom edge…
-        assert!(screen[row + 1].contains("seq 1"), "{:?}", screen[row + 1]);
+        // …the bottom edge closes the box and says nothing, because nothing has
+        // gone wrong…
+        assert!(screen[row + 1].contains('╰'), "{:?}", screen[row + 1]);
+        assert!(
+            !screen[row + 1].contains("seq"),
+            "the telemetry is not resident in the operator's frame: {:?}",
+            screen[row + 1]
+        );
         // …and the keys on a bar below the box, never in the field.
         assert!(screen[row + 2].contains("ctrl-r"), "{:?}", screen[row + 2]);
         assert!(!screen[row].contains("ctrl-r"), "{:?}", screen[row]);
-        assert!(joined.contains("dropped 0"), "{joined}");
+        assert!(!joined.contains("dropped 0"), "{joined}");
+        // Reachable in one command, with the sequence numbers and the full id.
+        a.command("status");
+        let stats = a.screen(100, 40).join("\n");
+        assert!(stats.contains("dropped"), "{stats}");
+        assert!(stats.contains("seq"), "{stats}");
     }
 
     #[test]
