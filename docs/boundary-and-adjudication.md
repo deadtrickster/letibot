@@ -253,6 +253,65 @@ This is the closed loop pointed at the classifier itself — the audit log is th
 the operator's overrides are the error signal, a fine-tune is the correction. Same shape as
 the fidelity gate standing between the harness and its own source.
 
+## 4d. Neither layer is trustworthy alone, so four outcomes and earned authority
+
+Operator, on being shown the 7-of-7 probe:
+
+> *"tho not sure if i can trust that much lol. so stage A should have a fixed list of
+> things we ask a user about anyway … the problem as i see it is that not layer a not
+> layer b are ideal."*
+
+Correct on both counts, and the second is the design constraint. **Layer A can misread
+intent** — aliases the parse never sees, unresolvable constructs, the whole GuardFall
+class. **Layer B is calibrated on nothing** — seven hand-written cases is a smoke test.
+Two uncertain layers composed must not produce a confident auto-approve.
+
+### An always-ask list is not the block list §3 deleted
+
+A **block list** says *never*, and it was right to remove: `rm -rf /` can be the intent.
+An **always-ask list** says *the human decides this one, every time, however confident
+anything is*. It preserves the operator's authority to authorise anything while removing
+the model's authority to authorise it **on their behalf**.
+
+It is deterministic, it lives in layer A, and **the classifier cannot shrink it**. Only
+the operator can, and each removal is a recorded decision — a corpus row like any other.
+
+### Four outcomes, and they must not collapse
+
+| outcome | who decides | when |
+|---|---|---|
+| **inexpressible** | nobody, ever | secret bytes crossing the boundary — §3, and nothing else |
+| **always ask** | the operator, every time | layer A's fixed list, whatever layer B says |
+| **B may approve** | the model, if authorisation is clear | the rest, within earned scope |
+| **auto** | nothing is consulted | reads inside the boundary (clause 4) |
+
+**Layer B cannot promote out of the first two.** It can only move `B may approve` from ask
+to admit. That belongs in a signature that cannot return `Admit` for those classes, not in
+a check a later refactor can invert.
+
+### Layer B earns its scope; it does not start with it
+
+The answer to *"we cannot be sure it is calibrated"* is not to trust it less in prose. It
+is: **ship the narrowest useful authority, let every verdict and every override be a
+corpus row (§4c), and widen only on a measured agreement rate for a named class.**
+
+Tonight's numbers are the honest baseline and are **not** a calibration:
+
+| model | matched pairs discriminated | verdicts | warm latency |
+|---|---|---|---|
+| **Qwen3-4B-Instruct-2507-Q6_K** | **3 of 3** | 7/7 | **57.8 ms** [57–58] |
+| Qwen3-1.7B-Q6_K | 1 of 3 | 5/7, all errors over-refusal | 127 ms [84–305] |
+
+Seven hand-written cases. Cite it as a smoke test or not at all. Two things it did settle:
+the 4B is better on **both** axes because the 1.7B is a hybrid *thinking* model and the
+2507 Instruct line is not — a thinking model is the wrong shape for the tool path; and
+per-case accuracy **flatters** a model that always refuses, so the metric is **pairwise
+discrimination**, which moved the 1.7B from "5/7, decent" to "does not discriminate on
+restart or on path scope".
+
+Over-refusal is not the safe direction here. It is the direction that produces §4b's
+workaround loop.
+
 ## 5. Open
 
 - **How a denial is presented without becoming a nag.** §4b requires every denial to
