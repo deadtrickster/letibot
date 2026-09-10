@@ -74,7 +74,10 @@ pub fn proposed_on(turn_id: &str, call_id: &str, name: &str, target: &str) -> Se
 pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
         req_id: req_id.into(),
-        kind: "exec".into(),
+        // §11.6's `kind`: which of the two vocabularies settles it. Not the access
+        // class — `exec` was here and reads as one, and a permission over `exec` is
+        // still answered by option id.
+        kind: "permission".into(),
         call_id: Some("c1".into()),
         summary: summary.into(),
         options: vec![
@@ -89,6 +92,24 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
                 kind: OptionKind::RejectOnce,
             },
         ],
+        choices: Vec::new(),
+        because: String::new(),
+        deadline: None,
+        on_timeout: OnTimeout::Deny,
+    }
+}
+
+/// A **question**, not a permission: model-provided choices in plain text, no
+/// adjudication ladder, and the one line saying what the model is stuck on (T25/D10).
+pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> SessionEvent {
+    SessionEvent::DecisionRequested {
+        req_id: req_id.into(),
+        kind: "question".into(),
+        call_id: Some("c1".into()),
+        summary: text.into(),
+        options: Vec::new(),
+        choices: choices.iter().map(|c| (*c).into()).collect(),
+        because: because.into(),
         deadline: None,
         on_timeout: OnTimeout::Deny,
     }

@@ -148,6 +148,16 @@ pub struct DecisionOption {
 #[serde(rename_all = "snake_case")]
 pub enum OptionKind {
     AllowOnce,
+    /// This class, for the rest of **this session**. Dies with the daemon.
+    AllowSession,
+    /// This class, in **this project**, until the operator drops it
+    /// (`PROTOCOL_VERSION` 7).
+    ///
+    /// A separate value from [`OptionKind::AllowAlways`] because the two differ in
+    /// the one way an operator cares about — where it stops — and a head that
+    /// rendered both as *"allow always"* would be describing a project-scoped grant
+    /// by a scope it does not have.
+    AllowProject,
     AllowAlways,
     RejectOnce,
     RejectAlways,
@@ -327,10 +337,43 @@ pub enum SessionEvent {
     },
     DecisionRequested {
         req_id: String,
+        /// `permission` or `question`. §11.6: *"a permission and a question are one
+        /// mechanism, differing in `kind`"* — and the two payload fields below are
+        /// that difference made concrete rather than left to a head to infer.
         kind: String,
         call_id: Option<String>,
         summary: String,
+        /// **The adjudication ladder**, for a permission: allow once, allow for the
+        /// session, allow for the project, deny. Empty for a question, which does not
+        /// have a ladder — it has choices.
         options: Vec<DecisionOption>,
+        /// **The model's own options**, for a question (T25/D10). Plain text in the
+        /// person's vocabulary, not a policy vocabulary.
+        ///
+        /// This exists because it had nowhere to sit. `options` carries
+        /// [`OptionKind`], which answers *may this run*; a question answers *which way
+        /// should I go*, and squeezing "rebuild first" into an `AllowOnce` would put a
+        /// free-form sentence where a policy engine reads a grant. Two fields, one
+        /// event, and `kind` says which is populated.
+        ///
+        /// The index into this list is what
+        /// [`crate::question::QuestionAnswer::option`] names, so a head must not
+        /// reorder it.
+        ///
+        /// `#[serde(default)]` so a log recorded before `PROTOCOL_VERSION` 7 replays:
+        /// an old row has no choices and was a permission, which is what an empty list
+        /// says.
+        #[serde(default)]
+        choices: Vec<String>,
+        /// Why the model is stuck, in one line, for a question. Shown to the person
+        /// and never used to derive an answer.
+        ///
+        /// Carried verbatim rather than folded into `summary`, because a head that had
+        /// to split one string back into a question and its reason would be
+        /// reconstructing what it was sent — the same defect
+        /// [`crate::hub::Hub`]'s `shown` field exists to avoid one layer down.
+        #[serde(default)]
+        because: String,
         /// Unix millis. `None` means §11.5's "wait forever", which is a policy a
         /// human head may choose and an automated one may not.
         deadline: Option<u64>,

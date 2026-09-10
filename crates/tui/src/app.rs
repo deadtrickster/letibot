@@ -1084,6 +1084,8 @@ impl App {
                 call_id,
                 summary,
                 options,
+                choices,
+                because,
                 deadline,
                 on_timeout,
             } => {
@@ -1094,8 +1096,13 @@ impl App {
                     call_id,
                     summary,
                     options,
+                    choices,
+                    because,
                     deadline,
                     on_timeout,
+                    // Not `ts`. A head renders how long a decision has been waiting
+                    // from the view's own stamp, and this arm is the live one — the
+                    // snapshot path at `apply` carries the real `asked_ts`.
                     asked_ts: 0,
                 });
                 Disposition::Rendered

@@ -118,6 +118,38 @@ impl Reply {
     }
 }
 
+/// **Where an answer goes when somebody is blocked waiting for it.**
+///
+/// The command queue is the wrong door for an answer and the reason is a deadlock,
+/// not a preference. §13.2's one worker drains [`Hub::take_command`] and runs the
+/// turn; a gated tool call happens **inside** that turn, so the worker is inside
+/// `dispatch` when the adjudicator blocks. An answer pushed onto the same queue is
+/// drained by the thread that is waiting for it, which is never.
+///
+/// So an answer is delivered **on the socket reader's thread**, synchronously, the
+/// way [`crate::protocol::ClientFrame::ListSessions`] is answered off the queue for
+/// the same class of reason: it is not an act on the session's timeline, it is the
+/// second half of an act already in flight.
+///
+/// Installed by whoever holds the pending decisions — `letibot-harnessd`'s
+/// `Answers`. A hub with no sink keeps the old behaviour and queues the command,
+/// which is what every test in this crate drives and what a daemon with no
+/// adjudication still does.
+pub trait AnswerSink: Send + Sync {
+    /// Deliver an answer to whoever is waiting for `req_id`.
+    ///
+    /// Returns whether anybody was. `false` means the answer reached the sink and
+    /// found nothing waiting — a decision that already timed out, or one this
+    /// process never asked. The caller does **not** turn that into an error: the
+    /// head is told the command was accepted, and the late answer is dropped rather
+    /// than applied to a call that has already been refused. A late allow applied to
+    /// a call the gate reported as `not_run` is the worst available outcome.
+    fn answer(&self, req_id: &str, identity: &str, reply: &Reply) -> bool;
+
+    /// For the startup disclosure and `EXPLAIN`: who can actually answer here.
+    fn describe(&self) -> String;
+}
+
 impl CommandKind {
     fn verb(&self) -> &'static str {
         match self {
@@ -154,6 +186,9 @@ struct Inner {
     /// every test in this file: [`Hub::take_command`] blocks on this hub's own
     /// condvar and needs no bell at all.
     bell: Option<Arc<crate::registry::Bell>>,
+    /// Where a settled decision goes instead of the command queue. See
+    /// [`AnswerSink`] for why the queue cannot carry it.
+    answers: Option<Arc<dyn AnswerSink>>,
 }
 
 /// What a session looks like from outside it: enough for a picker, and cheap
@@ -216,6 +251,7 @@ impl Hub {
                 commands: VecDeque::new(),
                 closed: false,
                 bell: None,
+                answers: None,
             }),
             cv: Condvar::new(),
         })
@@ -229,6 +265,23 @@ impl Hub {
     /// bell does not know.
     pub fn set_bell(&self, bell: Arc<crate::registry::Bell>) {
         self.lock().bell = Some(bell);
+    }
+
+    /// **Install the answer sink**, so a settled decision reaches whoever is blocked
+    /// on it rather than the queue that whoever-is-blocked is supposed to drain.
+    ///
+    /// Called by the daemon when it opens a session with an adjudicator that asks a
+    /// head. Before it is called — and for every hub in a test — an answer is queued
+    /// as it always was.
+    pub fn set_answer_sink(&self, sink: Arc<dyn AnswerSink>) {
+        self.lock().answers = Some(sink);
+    }
+
+    /// Who can answer an open decision in this session, in the sink's own words.
+    /// `None` when nothing is installed, which is a different fact from "nobody is
+    /// attached".
+    pub fn answer_sink_describes(&self) -> Option<String> {
+        self.lock().answers.as_ref().map(|s| s.describe())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -492,6 +545,10 @@ impl Hub {
         // Declared, not initialised: every early return below leaves the function
         // without ringing, and `None` here would be a value nothing ever reads.
         let ring: Option<(Arc<crate::registry::Bell>, String)>;
+        // Declared beside `ring` and for the same reason: every early return below
+        // leaves without delivering, and a `None` initialiser would be a value
+        // nothing ever reads.
+        let delivery: Option<(Arc<dyn AnswerSink>, String, Reply, String)>;
         let frame = {
             let mut g = self.lock();
             let actual = g.log.head_seq();
@@ -529,8 +586,47 @@ impl Hub {
                 // letting the tool sort it out would leave a settled decision behind
                 // an unanswered question, which is the one state the view must never
                 // hold.
+                // **A vocabulary may not settle the other vocabulary's request.**
+                // The two types exist so that a free-form sentence cannot land where
+                // a policy engine reads a grant; without this check they could still
+                // be crossed at the door, and a `free` answer would settle a
+                // permission by validating against an empty ladder — accepted, and
+                // then meaning nothing to the gate waiting on it.
+                //
+                // The test is `kind == "question"` rather than a match on both names,
+                // and the asymmetry is the fail-closed direction: only a request that
+                // says it is a question accepts a person's sentence. A `kind` this
+                // build does not recognise is treated as a permission, so the
+                // vocabulary with the weaker consequence is the one that has to
+                // announce itself.
+                let is_question = open.kind == "question";
+                let mismatch = match (reply, is_question) {
+                    (Reply::Question(_), false) => Some(
+                        "that request is a permission and this is a question's answer; \
+                         a permission is settled by option id",
+                    ),
+                    (Reply::Permission { .. }, true) => Some(
+                        "that request is a question and this is a permission's answer; \
+                         a question is settled by a choice, a note or typed text",
+                    ),
+                    _ => None,
+                };
+                if let Some(why) = mismatch {
+                    return ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!("{}: {why}", crate::question::REJECT_MALFORMED_ANSWER),
+                        expected_seq,
+                        actual_seq: actual,
+                    };
+                }
+                // **Against `choices`, not `options`.** A question's options are its
+                // plain-text choices (`PROTOCOL_VERSION` 7); `options` is the
+                // adjudication ladder and is empty for one. Validating a question
+                // against `options.len()` was validating every answer against zero,
+                // which rejected `option: 0` — the single most common answer there is
+                // — as an option the question never offered.
                 if let Reply::Question(a) = reply
-                    && let Err(defect) = a.validate(open.options.len())
+                    && let Err(defect) = a.validate(open.choices.len())
                 {
                     return ServerFrame::Rejected {
                         client_request_id,
@@ -557,6 +653,20 @@ impl Hub {
             };
 
             let verb = kind.verb();
+            // **An answer does not go on the command queue when anybody is waiting
+            // for one.** See [`AnswerSink`]: the worker that drains this queue is the
+            // thread blocked inside the turn that asked, so queueing the answer hands
+            // it to its own waiter. Taken here, delivered after the lock is released,
+            // for the same reason the bell is: the sink takes its own mutex.
+            //
+            // A hub with no sink queues it exactly as before, which is what a daemon
+            // with no adjudication does and what every test in this file drives.
+            let deliver = match (&kind, g.answers.clone()) {
+                (CommandKind::Answer { req_id, reply }, Some(sink)) => {
+                    Some((sink, req_id.clone(), reply.clone()))
+                }
+                _ => None,
+            };
             // Taken here, rung *after* the lock is released: `Bell::ring` takes its
             // own mutex, and taking a second lock inside this one is how a lock
             // order gets invented by accident.
@@ -564,13 +674,16 @@ impl Hub {
                 .bell
                 .clone()
                 .map(|b| (b, g.log.session_id().to_string()));
-            g.commands.push_back(QueuedCommand {
-                head_id: head_id.to_string(),
-                identity: identity.clone(),
-                client_request_id: client_request_id.clone(),
-                at_seq: actual,
-                kind,
-            });
+            if deliver.is_none() {
+                g.commands.push_back(QueuedCommand {
+                    head_id: head_id.to_string(),
+                    identity: identity.clone(),
+                    client_request_id: client_request_id.clone(),
+                    at_seq: actual,
+                    kind,
+                });
+            }
+            delivery = deliver.map(|(sink, req_id, reply)| (sink, req_id, reply, identity.clone()));
             // The announcement §13.2 requires: "announced as an event so both heads
             // see it and who did it".
             let env = g.append_and_fan(SessionEvent::CommandIssued {
@@ -587,6 +700,17 @@ impl Hub {
             }
         };
         self.cv.notify_all();
+        // Outside the lock. The waiter wakes on the sink's own condition, takes its
+        // own mutex, and must not be doing that while this one is held.
+        //
+        // The return value is deliberately dropped. `false` means nothing was waiting
+        // — a decision that already timed out, or one another process asked — and the
+        // head has already been told `Accepted`, which was true: the answer was
+        // accepted and it settled nothing. Turning it into a rejection here would make
+        // a race look like a malformed frame.
+        if let Some((sink, req_id, reply, identity)) = delivery {
+            sink.answer(&req_id, &identity, &reply);
+        }
         if let Some((bell, id)) = ring {
             bell.ring(&id);
         }
@@ -894,7 +1018,12 @@ mod tests {
     fn a_question_answer_settles_the_same_request_a_permission_would() {
         let hub = Hub::new("s");
         let a = attach(&hub, 64);
-        hub.publish(requested("r1", "which approach?"));
+        hub.publish(asked(
+            "r1",
+            "which approach?",
+            &["rebuild first", "patch in place"],
+            "both work and they differ in cost",
+        ));
         let f = hub.submit(
             &a.head_id,
             "c1",
@@ -912,6 +1041,135 @@ mod tests {
         }
     }
 
+    /// **The deadlock this seam exists to avoid, as a test.**
+    ///
+    /// With a sink installed the answer must NOT be on the command queue, because the
+    /// only thread that drains that queue is the one blocked inside the turn that
+    /// asked. A test that only checked the sink saw the answer would still pass if the
+    /// command were queued as well, and the queued copy is what a later `dispatch`
+    /// would report as an answer to nothing.
+    #[test]
+    fn an_answer_reaches_the_sink_and_never_the_queue() {
+        struct Recorder(Mutex<Vec<(String, String, String)>>);
+        impl AnswerSink for Recorder {
+            fn answer(&self, req_id: &str, identity: &str, reply: &Reply) -> bool {
+                self.0.lock().unwrap().push((
+                    req_id.to_string(),
+                    identity.to_string(),
+                    reply.as_str().to_string(),
+                ));
+                true
+            }
+            fn describe(&self) -> String {
+                "recorder".into()
+            }
+        }
+        let hub = Hub::new("s");
+        let sink = Arc::new(Recorder(Mutex::new(Vec::new())));
+        hub.set_answer_sink(sink.clone());
+        let a = hub.attach("tui", "alice", Caps::default(), 0);
+        hub.publish(requested("r1", "write src/main.rs"));
+
+        let f = hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: "r1".into(),
+                reply: Reply::Permission {
+                    option_id: "allow".into(),
+                },
+            },
+        );
+        assert!(matches!(f, ServerFrame::Accepted { .. }), "{f:?}");
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            [("r1".to_string(), "alice".to_string(), "permission".to_string())],
+            "the answer must reach whoever is blocked on it, with who said it"
+        );
+        assert!(
+            hub.try_command().is_none(),
+            "an answer must not also be queued: the worker that would drain it is the \
+             thread waiting for it"
+        );
+        // And the announcement still happens, because a second head has to see that
+        // somebody answered.
+        let Delivery::Events(batch) = hub.next_batch(&a.head_id, 64) else {
+            panic!()
+        };
+        assert!(
+            batch.events().iter().any(|e| matches!(
+                &e.event,
+                SessionEvent::CommandIssued { command, .. } if command == "answer"
+            )),
+            "the answer is still announced on the log"
+        );
+    }
+
+    /// Without a sink nothing changes: the command queues, which is what a daemon
+    /// with no adjudication does and what every other test here drives.
+    #[test]
+    fn with_no_sink_an_answer_queues_exactly_as_it_did() {
+        let hub = Hub::new("s");
+        let a = attach(&hub, 64);
+        hub.publish(requested("r1", "rm -rf /"));
+        hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: "r1".into(),
+                reply: Reply::Permission {
+                    option_id: "allow".into(),
+                },
+            },
+        );
+        let cmd = hub.try_command().expect("queued as before");
+        assert!(matches!(cmd.kind, CommandKind::Answer { .. }));
+    }
+
+    /// A question's answer may not settle a permission. Both types exist so a
+    /// free-form sentence cannot land where a policy engine reads a grant, and
+    /// before this check it could — `free` validated against an empty ladder and was
+    /// accepted.
+    #[test]
+    fn the_two_answer_vocabularies_do_not_cross() {
+        let hub = Hub::new("s");
+        let a = attach(&hub, 64);
+        hub.publish(requested("r1", "write src/main.rs"));
+        hub.publish(asked("r2", "which?", &["a", "b"], "stuck"));
+
+        let f = hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: "r1".into(),
+                reply: Reply::Question(crate::question::QuestionAnswer::free("go ahead")),
+            },
+        );
+        assert!(
+            matches!(f, ServerFrame::Rejected { ref reason, .. } if reason.contains("permission")),
+            "{f:?}"
+        );
+
+        let f = hub.submit(
+            &a.head_id,
+            "c2",
+            0,
+            CommandKind::Answer {
+                req_id: "r2".into(),
+                reply: Reply::Permission {
+                    option_id: "allow".into(),
+                },
+            },
+        );
+        assert!(
+            matches!(f, ServerFrame::Rejected { ref reason, .. } if reason.contains("question")),
+            "{f:?}"
+        );
+    }
+
     #[test]
     fn a_malformed_question_answer_leaves_the_question_open() {
         // D10: an answer that does not conform is refused HERE, before anything acts
@@ -919,7 +1177,12 @@ mod tests {
         // question, which is the one state the view must never hold.
         let hub = Hub::new("s");
         let a = attach(&hub, 64);
-        hub.publish(requested("r1", "which approach?")); // two options
+        hub.publish(asked(
+            "r1",
+            "which approach?",
+            &["rebuild first", "patch in place"],
+            "both work",
+        ));
         for bad in [
             crate::question::QuestionAnswer::default(),
             crate::question::QuestionAnswer::choosing(9),

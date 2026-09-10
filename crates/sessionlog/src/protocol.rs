@@ -95,7 +95,31 @@ use crate::view::Snapshot;
 /// gate decides** rather than at turn end. Both sides refuse a mismatch by name, so
 /// a head built against 5 is told which version it is speaking to rather than
 /// silently missing every refusal — which would be the very defect, one layer down.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
+
+/// # 7: a head can answer
+///
+/// 6 gave the operator the *sight* of a refusal and 7 gives them the **reply**, which
+/// is the half §4b actually turns on: *"the grant path is reachable at the moment of
+/// denial, not after the task has died"*, and a path that only goes one way is not a
+/// path.
+///
+/// Two changes, and they are one seam rather than two because they are the same
+/// missing half:
+///
+/// - [`crate::SessionEvent::DecisionRequested`] grows `choices` and `because`. A
+///   question's plain-text options had nowhere to sit — `options` carries
+///   `OptionKind`, an adjudication vocabulary — so `ask_user_question` could be posed
+///   only by discarding the choices, which is why T25/D10 was specified and not
+///   built.
+/// - [`crate::event::OptionKind`] grows `AllowProject`, so a grant that outlives the
+///   session has a spelling on the wire. Without it a head would show *"allow
+///   always"* for a grant the daemon stores per project, which is the disclosure
+///   lying about its own scope.
+///
+/// Both sides refuse a mismatch by name. A head built against 6 that was handed a 7
+/// question would render an empty option list and a person would be asked to choose
+/// between nothing.
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.

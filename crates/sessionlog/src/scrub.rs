@@ -300,6 +300,8 @@ mod tests {
             call_id: None,
             summary: "run it".into(),
             options: vec![],
+            choices: vec![],
+            because: String::new(),
             deadline: Some(1),
             on_timeout: OnTimeout::Deny,
         });
