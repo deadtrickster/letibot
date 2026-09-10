@@ -47,7 +47,6 @@
 //! behind it is a safety property that ships broken the first time somebody
 //! refactors the mechanism.
 
-use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use letibot_transcript::ToolOutcome;
@@ -977,6 +976,28 @@ impl AdjudicationRow {
     }
 }
 
+/// **What a grant is keyed on**: the program the shell will actually run.
+///
+/// For a shell command it is the *last* stage's program name, which is a choice worth
+/// naming: a pipeline's stages can differ, and the tier is already the strictest of
+/// them (`Tier::strictest`), so the grant is keyed on the stage a person would name
+/// when they say what the command was. A pipeline whose stages differ from a granted
+/// one still falls out, because the **intent set** is the union across stages and the
+/// grant covers only what it was shown.
+///
+/// For a path-shaped tool call there is no program, and the tool's own name is not one
+/// — so it is `"<tool>"`, which matches nothing a command produces. A grant taken over
+/// `bash` must not silently cover a `write` call.
+fn grant_program(baseline: &crate::intent::Baseline) -> String {
+    baseline
+        .command
+        .as_ref()
+        .and_then(|n| n.stages.last())
+        .and_then(|s| s.program_name())
+        .map(str::to_string)
+        .unwrap_or_else(|| "<tool>".to_string())
+}
+
 /// §11.4's refuse-list, evaluated **before any adjudicator** and overridable by
 /// none of them.
 ///
@@ -1013,11 +1034,23 @@ pub struct AdjudicatedGate {
     adjudicator: Box<dyn Adjudicator>,
     session_id: String,
     agent: String,
-    /// Classes granted for the rest of the session by an `allow_session` or
-    /// `allow_always` selection. Keyed by `tool + class`, which is the finest key
-    /// this seam can honestly offer: a grant keyed by the *arguments* would be a
-    /// grant for one call, which is `allow_once`.
-    granted: BTreeSet<String>,
+    /// **Where this session sits in the four-dimensional space**, as a named point.
+    ///
+    /// [`crate::mode::Mode::ALWAYS_ASK`] by default, which is what an unseen project
+    /// gets: nothing that is not a read happens without the operator. The daemon
+    /// overrides it per project root.
+    mode: crate::mode::Mode,
+    /// Standing permissions taken from an `allow_session` answer, keyed on
+    /// **`(program, ActionClass, intents)`** rather than on `tool + class`.
+    ///
+    /// The old key's own comment was right about the half it argued — *"a grant keyed
+    /// by the arguments would be a grant for one call, which is `allow_once`"* — and
+    /// it was keyed one notch too coarse in the other direction. `tool + class` for
+    /// `bash` is a grant over every command `bash` can run that lands in one class,
+    /// and the program is exactly the thing a person means when they say *"stop
+    /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
+    /// the key because that is what an execution vehicle changes.
+    grants: Vec<crate::grant::Grant>,
     /// §11.5's rows. In memory: the durable journal is `letibot-sessionlog`'s, and
     /// wiring this into it is W11's, not W10's.
     pub log: Vec<AdjudicationRow>,
@@ -1049,7 +1082,8 @@ impl AdjudicatedGate {
             adjudicator,
             session_id: "session".into(),
             agent: "agent".into(),
-            granted: BTreeSet::new(),
+            mode: crate::mode::UNSEEN_PROJECT,
+            grants: Vec::new(),
             log: Vec::new(),
             seq: 0,
             surroundings: crate::intent::Surroundings::default(),
@@ -1058,6 +1092,28 @@ impl AdjudicatedGate {
             breaker: crate::authorise::Breaker::default(),
             shown: None,
         }
+    }
+
+    /// **Put this session at a named point.** See [`crate::mode`].
+    ///
+    /// The gate does not check the point's prerequisites — the caller does, before it
+    /// builds anything, because a prerequisite check that ran here would be a session
+    /// that has already opened, printed a banner and seated tools by the time it finds
+    /// out it cannot honour the point it named.
+    pub fn with_mode(mut self, mode: crate::mode::Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Which point this gate is at, for the disclosure.
+    pub fn mode(&self) -> crate::mode::Mode {
+        self.mode
+    }
+
+    /// The standing permissions in force, for a listing. A grant nobody can see is a
+    /// permanent widening nobody remembers making.
+    pub fn grants(&self) -> &[crate::grant::Grant] {
+        &self.grants
     }
 
     /// Tell layer A where it is standing, including whether the shell that will run a
@@ -1298,10 +1354,6 @@ impl AdjudicatedGate {
         }
     }
 
-    fn class_key(req: &AdjudicationRequest) -> String {
-        format!("{}|{}", req.tool, req.class)
-    }
-
     fn record(
         &mut self,
         request: AdjudicationRequest,
@@ -1461,26 +1513,72 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 2. A class already granted this session. Recorded as a row, because a
-        //    grant that stops appearing in the audit is a grant nobody can review.
+        // 2. **The point this session sits at.** See `crate::mode`.
         //
-        //    **Not for an always-ask.** A class grant is a standing permission, and a
-        //    standing permission over `sudo` or a deletion outside the project is
-        //    exactly the authority the fixed list withholds. An earlier yes to one of
-        //    those was a yes to that one.
-        let key = Self::class_key(&req);
-        if self.granted.contains(&key) && !matches!(req.tier, Tier::AlwaysAsk { .. }) {
+        //    It governs `Tier::MayApprove` and nothing else: `admits_unasked` answers
+        //    `false` for an always-ask and for an inexpressible at every point,
+        //    including automode, and there is no argument that makes it answer
+        //    otherwise. So this arm cannot be the one that widens something a point is
+        //    not allowed to widen — the check is in the type rather than here.
+        //
+        //    Recorded as a row like any other admission. A standing decision that
+        //    stops appearing in the audit is one nobody can review, and the corpus
+        //    wants it: *"what the operator decided"* includes the mode they put this
+        //    project at.
+        if self.mode.admits_unasked(&req.tier, call.access) {
             let d = AdjudicationDecision::selected(
                 &req,
-                "allow_session",
-                "gate:session-grant",
-                "this class was granted for the session by an earlier decision",
+                "allow_once",
+                "gate:mode",
+                &format!(
+                    "the `{}` mode admits {} calls without asking; nothing was consulted",
+                    self.mode.name,
+                    call.access.as_str()
+                ),
             );
+            self.breaker.admitted(&direction);
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
 
-        // 3. Ask.
+        // 3. A standing permission from an earlier `allow_session` in this session.
+        //
+        //    Keyed on `(program, ActionClass, intents)` and checked **per call against
+        //    the normalisation**, never against text. That is what makes
+        //    `git -c core.pager='sh -c …' log` fall out of a grant taken over
+        //    `git status` without the grant having enumerated a single escape hatch:
+        //    the vehicle flag changes the derived intents, and the grant covers what it
+        //    was shown rather than a superset of it.
+        //
+        //    `Grant::covers` is the only reader, and it refuses an unresolved action,
+        //    an always-ask and an inexpressible before it looks at coverage at all.
+        let program = grant_program(&baseline);
+        if let Some(g) = self.grants.iter().find(|g| {
+            g.covers(
+                &req.tier,
+                req.resolved,
+                &program,
+                req.class,
+                &baseline.intents,
+            )
+            .is_ok()
+        }) {
+            let basis = format!(
+                "a standing permission granted this session covers this call: {}",
+                g.why
+            );
+            let d = AdjudicationDecision::selected(
+                &req,
+                "allow_session",
+                "gate:session-grant",
+                &basis,
+            );
+            self.breaker.admitted(&direction);
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
+        // 4. Ask.
         let decision = self.adjudicator.decide(&req);
         // What it was shown, verbatim, for the corpus row.
         self.shown = self.adjudicator.last_brief();
@@ -1491,11 +1589,36 @@ impl Gate for AdjudicatedGate {
                 match kind {
                     Some(k) if k.admits() => {
                         // An always-ask can be admitted — by a human, this turn — but
-                        // never turned into a standing grant.
+                        // never turned into a standing grant. Three separate mechanisms
+                        // keep that true and this is the second: the tier mints no
+                        // `Adjudicable`, this refuses to record the grant, and
+                        // `always_ask_options` does not offer the option in the first
+                        // place, so an operator is never shown a button whose effect
+                        // the gate would then decline to honour.
+                        //
+                        // The grant is also refused when the mode's scope is `Once`.
+                        // At `always-ask` an answer settles that call and nothing else,
+                        // which is what the point means; recording a session grant
+                        // there would be the point saying one thing and the gate doing
+                        // another.
                         if matches!(k, OptionKind::AllowSession | OptionKind::AllowAlways)
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
+                            && self.mode.grants == crate::mode::GrantScope::Session
                         {
-                            self.granted.insert(key);
+                            self.grants.push(crate::grant::Grant {
+                                written: crate::grant::Written::Enumerated {
+                                    patterns: vec![format!("{program} ({})", req.class)],
+                                },
+                                coverage: vec![crate::grant::Coverage {
+                                    program: program.clone(),
+                                    class: req.class,
+                                    intents: baseline.intents.clone(),
+                                }],
+                                why: format!(
+                                    "granted for this session by an answer to {}: {}",
+                                    req.id, decision.basis
+                                ),
+                            });
                         }
                         // The loop closed, so the error signal is gone.
                         self.breaker.admitted(&direction);
@@ -1804,6 +1927,7 @@ mod tests {
     }
 
     use super::*;
+    use std::collections::BTreeSet;
     use serde_json::json;
 
     fn call<'a>(name: &'a str, args: &'a Value) -> GateCall<'a> {
@@ -1833,6 +1957,17 @@ mod tests {
         assert_eq!(g.log[0].effect, "refuse");
     }
 
+    /// An `allow_session` is not asked twice — **at a point whose grant scope is a
+    /// session**.
+    ///
+    /// The mode is named rather than left to the default, and that is the point of the
+    /// test rather than noise in it: the default is `always-ask`, whose scope is
+    /// `Once`, where an answer settles that call and nothing else. A test that relied
+    /// on the default here would have been asserting the old behaviour of a gate that
+    /// had no notion of where it was sitting.
+    ///
+    /// The coordinate is one nobody named — write asks, and the answer is remembered —
+    /// which is also the demonstration that the space is reachable beyond the four.
     #[test]
     fn an_allow_admits_and_a_session_grant_is_not_asked_twice() {
         let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1846,7 +1981,12 @@ mod tests {
                 "fine",
             ))
         });
-        let mut g = AdjudicatedGate::new(Box::new(adj));
+        let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode {
+            name: "ask about writes, remember the answer",
+            write: crate::mode::Disposition::Ask,
+            grants: crate::mode::GrantScope::Session,
+            ..crate::mode::Mode::WRITES_ALLOWED
+        });
         let args = json!({"path": "src/lib.rs"});
         assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
         assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
@@ -1856,6 +1996,66 @@ mod tests {
             "an allow_session must not be asked again"
         );
         assert_eq!(g.log.len(), 2, "both calls are rows, grant included");
+        assert_eq!(g.grants().len(), 1, "and the grant is listable");
+    }
+
+    /// **An answer at `always-ask` settles one call and nothing else.**
+    ///
+    /// The same adjudicator, the same two calls, and a different point: the scope is
+    /// `Once`, so the second call asks again. This is the half that makes the mode
+    /// mean something — a point that said *every action asks* and then quietly
+    /// honoured a standing grant would be the banner and the behaviour disagreeing.
+    #[test]
+    fn at_always_ask_an_allow_session_answer_does_not_stand() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
+            a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_session",
+                "human:test",
+                "fine",
+            ))
+        });
+        let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
+        let args = json!({"path": "src/lib.rs"});
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "always-ask means always ask, whatever option was chosen"
+        );
+        assert!(g.grants().is_empty());
+    }
+
+    /// **At `writes allowed` a write is not asked at all**, and the row still exists.
+    ///
+    /// The second half is the one worth a test: an admission nobody was consulted
+    /// about is exactly the kind that stops appearing in an audit, and §4c's corpus
+    /// wants it — *what the operator decided* includes the mode they put this project
+    /// at.
+    #[test]
+    fn at_writes_allowed_a_write_goes_through_and_is_still_a_row() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
+            a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(req, "deny", "human:test", "no"))
+        });
+        let mut g =
+            AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::WRITES_ALLOWED);
+        let args = json!({"path": "src/lib.rs"});
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "nothing was consulted"
+        );
+        assert_eq!(g.log.len(), 1, "and it is still in the audit");
+        assert_eq!(g.log[0].effect, "admit");
+        assert!(g.log[0].decision.by.contains("mode"), "{:?}", g.log[0].decision);
     }
 
     #[test]
@@ -2143,6 +2343,12 @@ mod tests {
                 Some(AdjudicationDecision::selected(req, widest, "human:test", "fine"))
             },
         )))
+        // At a point whose grants last a session, so the second half of this test —
+        // that an ORDINARY may-approve action still takes a standing grant — is
+        // actually exercising the grant path rather than the mode's scope. `bash` is
+        // `Access::Exec`, which still asks at this point, so the always-ask half is
+        // unchanged by naming it.
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
         .with_surroundings(pinned())
         .with_trail_source(|_| {
             crate::authorise::AuthorisationTrail::from_messages(vec![], 1)
