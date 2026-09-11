@@ -154,7 +154,111 @@ stream mid-reasoning, and the daemon's disclosure names the check.
 
 ---
 
+## R8 — `edit`'s near-miss recovery is defeated by exactly the error this model makes
+
+**Measured 2026-09-11**, in the live letibot session, twice in one turn.
+
+The model sent `old_string` beginning `                if!text.is_empty() {`. The file
+holds `                if !text.is_empty() {` at line 2543 — **one missing space** after
+`if`. That is a reproduction artefact of this model (` !` versus `!`), not a typo, and
+it is the same family as R7: GLM emitting something that is not quite the bytes it read.
+
+The edit failed, which is correct. What is wrong is that **both** recovery paths in
+`builtins/edit.rs::no_match` are defeated by that single space:
+
+- `probe()` normalises whitespace, indentation and case — but normalising cannot
+  **re-insert a deleted** character, so it finds nothing.
+- `anchor_lines()` anchors on *"the longest whitespace-delimited token"* of the first
+  line. Deleting the space **merges two tokens into one** — `if!text.is_empty()` —
+  producing a token that occurs nowhere in the file.
+
+So the tool honestly reports *"nothing in `…` matches that text, and no part of your
+first line occurs anywhere in it either"* and then prints the file's **first 20 lines**,
+which for `crates/tui/src/app.rs` is its module doc comment: pure waste, and no closer
+to the answer. Two rounds burned, and the operator watching.
+
+`text.is_empty() {` **does** occur, at 2543. One shorter anchor would have landed on it
+and the model would have seen its own missing space.
+
+**Still open?** `grep -n -A20 'fn no_match' crates/tools/src/builtins/edit.rs` — the
+`_ =>` arm that dumps `file.lf.lines().take(20)`.
+
+**Where.** `anchor_lines`, in the same file. When the longest token does not occur, fall
+back to progressively shorter ones — next-longest, then any token over a few characters —
+before giving up. Print the candidate lines, not the top of the file.
+
+**Done when.** An `old_string` differing from a real line by one inserted or deleted
+whitespace character comes back with that line and its number, and a test in this file
+asserts it on the `if !text` case verbatim. §2.1's rule is the bar: the miss is
+self-correcting **in the same call**.
+
+---
+
+## R9 — a refusal says `host_other` about a path inside the workspace
+
+**Seen 2026-09-10** in the live session, on an `edit` of `crates/tui/src/app.rs`:
+
+    reading: ask — intents [write_file] over [host_other]
+
+The path is plainly inside the workspace, and the classifier that **decides** agrees:
+`GateCall::path_is_inside` returns true for a relative path with no `..`, so
+`ActionClass::host(access, inside, creates)` yields `EffectScope::HostProject`. The
+grant key is right.
+
+What is wrong is the **reporting**. The `host_other` in that line comes from
+`crate::intent`'s `Region`, a different classifier written for shell-argument analysis,
+whose `region_of` falls back to `Region::HostOther` for anything it cannot place. It
+reaches the operator through the baseline string.
+
+**Why it is worth fixing rather than tolerating.** It cost real time: the wrong scope in
+that message was the first hypothesis for why `allow_session` did not stick, and it was
+wrong — the cause was the mode's grant scope. A misleading fact in a refusal is worse
+than no fact, because a refusal is what somebody reads when they are already confused.
+
+**Still open?** `grep -rn 'region_of' crates/tools/src/intent.rs` and read the
+`Region::HostOther` fallback at the end.
+
+**Where.** Either give `region_of` the workspace so a file path resolves the way
+`path_is_inside` does, or keep the baseline silent about region for a call whose class
+was decided from a path. The second is smaller and loses nothing.
+
+**Done when.** A gated `edit` inside the workspace reports a project-scoped region, or
+none, and never `host_other`. A test on the rendered refusal payload, not on the class.
+
+---
+
 # 2. NEEDS A NOD — small question first, then unblocked
+
+## N3 — a refusal claims "the operator has been told" without knowing it
+
+From the same refusal, verbatim:
+
+    The operator has been told, with this: grant `adj-…-0001` (edit) for this session,
+    or answer the pending decision.
+
+The operator had **not** been told: they were away from the keyboard, the 300-second
+window expired, and when they came back they asked *"what decision"*. The prompt was
+gone and the question was unrecoverable — the ask is not a transcript row, only the
+refusal is.
+
+This is the fleet's own rule inverted. *Guard the fact, not the proxy*: "a prompt was
+emitted" is not "the operator saw it", and the sentence states the second while knowing
+only the first.
+
+**Why this needs a nod rather than a fix.** The minimal change is honest and small —
+say what is true (*"a decision was raised and timed out unanswered"*) instead of
+asserting delivery. The larger change is the one that would actually help: make a
+pending or expired decision **recoverable**, so `what decision` has an answer after the
+window closes. That is a question about what the transcript records, which is N1's
+territory, and it should be decided with N1 rather than beside it.
+
+**Still open?** `grep -rn 'has been told' crates/tools/src/` — the payload builder.
+
+**The question:** does an ask become a transcript row, or does the head keep a durable
+list of expired decisions? Either answers *"what decision"*; they differ in whether the
+model sees it too.
+
+---
 
 ## N1 — Put content on `TranscriptAppended` (was T13.1)
 
@@ -1050,6 +1154,50 @@ needs the same guard.
 ---
 
 ---
+
+### 2026-09-11 — the sixth OOM, and why the disk tier did not save the turn
+
+GLM was **killed by the kernel OOM killer** at 01:35:34 (`status=9/KILL`), taking a live
+letibot turn with it: `malformed http response: connection closed mid-chunk: the server
+went away before the terminating 0-length chunk`. Host RAM, not VRAM.
+
+**The good news first, because it corrects a standing fear.** The spills survive a hard
+kill and are re-used. 957 GB across 506 files, and the restarted server indexed them:
+
+    L2: indexed 386 cache entries from disk (23,128,678 tokens, 931,079 MiB)
+
+and then served **6,427,050 cached prompt tokens against 240,831 prefilled** — 26.7×
+reuse, resuming a 171,901-token conversation rather than re-prefilling it. Critically,
+`forcing full prompt re-processing` appears **zero** times, so the plan's "Root cause B"
+— a disk restore that loaded the KV and then discarded it because `checkpoints` was
+empty, which is exactly the hybrid/recurrent case — is **fixed** in this build. That is
+the first evidence of it holding across a `SIGKILL`.
+
+**What is wrong is that the tier is read-only in practice.** Every idle cycle logs
+
+    flush: 0 sequence(s) with tokens, 0 saved, 0 already cached, 0 offloaded (0 saved),
+           cache now 386 entries / 0.0 MiB
+
+`0 sequence(s) with tokens` — by flush time no slot holds anything to save, which is
+`spill-only-writes-cached-prompts` in the memory dir: *prompt_save is false for an
+already-cached prompt, so live slots never spill*. So it serves brilliantly from what was
+written before the kill and **adds nothing**. Any conversation that grows from here has
+no disk entry, and that one really will prefill from zero after the next kill.
+
+**And the shape of it is perverse.** The RAM tier is **write-back** — entries reach disk
+on eviction or graceful shutdown — and write-back is precisely what a `SIGKILL` defeats.
+`--cache-ram 81920` therefore both raises the chance of the kill and maximises what the
+kill destroys. `/data` is a 7.3 GB/s NVMe with 5.3 T free; **write-through survives OOM
+by construction** and the read side is already proven fast enough at 26.7× reuse.
+
+**Also costing something:** 48 `index_disk` calls in one log, ~20 minutes apart, each
+re-reading metadata for 931 GB across 386 entries — the sleep/wake cycle
+(`--sleep-idle-seconds 600`) paying the index once per wake rather than once per start.
+
+**The decision, and it is the operator's:** lower `--cache-ram` (less pressure, less
+lost, more disk reads), or make the RAM tier write-through (survives the kill, costs
+NVMe bandwidth that is measurably spare). Not a letibot change either way — it is
+`~/bin/glm-flash-server` and llama.cpp's `server_prompt_cache`.
 
 ## T20 — Where the assembled parts did not fit — **integration findings, several serious**
 
