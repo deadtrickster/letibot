@@ -121,6 +121,17 @@ fn run() -> Result<i32, String> {
             // **The four flags that make anything reachable, and all four are
             // opt-in.** Nothing here changes what an invocation without them gets.
             "--role" => cfg.seat = Seat::parse(&next()?)?,
+            // **The approval policy, separate from the role.** `Config::mode` has
+            // existed and been disclosed at startup since roles and policy were split
+            // -- its own doc says `--role coder` used to mean both -- but nothing ever
+            // set it, so every session ran at the `always-ask` default and the other
+            // three named points were unreachable.
+            //
+            // This is why `allow_session` did not stick: `always-ask` is
+            // `GrantScope::Once`, so a session grant is never recorded. `writes allowed`
+            // is `GrantScope::Session` and is what an operator who wants to approve
+            // edits once per session is asking for.
+            "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
             "--bash" => cfg.allow_bash = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             "--intent-prose" => cfg.intent_prose = true,
