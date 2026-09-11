@@ -473,6 +473,35 @@ pub fn permission_options() -> Vec<DecisionOption> {
     ]
 }
 
+/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
+///
+/// Same as [`permission_options`] without `allow_session`, and the label says where
+/// the missing option went rather than leaving its absence to be guessed at. An
+/// operator who wants to stop being asked needs a different point, not a different
+/// answer, and naming it is the difference between a dead end and a next step.
+pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
+    vec![
+        DecisionOption {
+            id: "allow_once".into(),
+            label: "Allow this one".into(),
+            kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "deny".into(),
+            label: "Deny".into(),
+            kind: OptionKind::Deny,
+        },
+        DecisionOption {
+            id: "deny_and_tell".into(),
+            label: format!(
+                "Deny, and tell the model why  (mode `{mode_name}` settles one call at a \
+                 time; start with `--mode writes-allowed` to allow a class for the session)"
+            ),
+            kind: OptionKind::DenyAndTell,
+        },
+    ]
+}
+
 /// §11.2's request, minus the fields no adjudicator on this box can use yet.
 ///
 /// Dropped from §11.2 and why: `session_id`/`agent` are carried (the gate is
@@ -1332,10 +1361,23 @@ impl AdjudicatedGate {
             arguments_digest: digest,
             boundary_facts: facts,
             kind: RequestKind::Permission,
+            // **Offer only what the gate will honour.** The recording site below
+            // requires BOTH that the tier is not `AlwaysAsk` AND that the mode grants
+            // for the session; this used to test only the first, so at a point with
+            // `GrantScope::Once` -- which `always-ask`, the default, is -- an operator
+            // was shown *"Allow this class for the rest of the session"*, chose it, and
+            // the grant was silently dropped.
+            //
+            // Reported twice before it was found here, and the comment at the recording
+            // site already stated the rule this violated: *"an operator is never shown a
+            // button whose effect the gate would then decline to honour."* Two guards
+            // for one decision, and only one of them was kept in step.
             options: if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                 always_ask_options()
-            } else {
+            } else if self.mode.grants == crate::mode::GrantScope::Session {
                 permission_options()
+            } else {
+                once_only_options(self.mode.name)
             },
             // §11.5: `Deny` for a permission, and `AgentDecides` only for a
             // question. Nothing here is a question yet.
@@ -1999,6 +2041,44 @@ mod tests {
         assert_eq!(g.grants().len(), 1, "and the grant is listable");
     }
 
+    /// **A button that cannot work is not offered.**
+    ///
+    /// The sibling test below asserts that an `allow_session` answer does not stand at
+    /// a `Once` point. That is correct and it is not enough: for as long as the option
+    /// was still *shown* there, an operator chose it, watched the next call ask again,
+    /// and reported it twice as "allow_session doesn't stick".
+    ///
+    /// The cause was two guards for one decision. The recording site required the tier
+    /// not be `AlwaysAsk` AND the mode grant for the session; the option list tested
+    /// only the tier. This asserts they agree.
+    #[test]
+    fn a_once_scoped_point_does_not_offer_a_session_grant() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
+            s.lock().unwrap().extend(req.options.iter().map(|o| o.id.clone()));
+            Some(AdjudicationDecision::selected(req, "allow_once", "human:test", "ok"))
+        });
+        let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+
+        let ids = seen.lock().unwrap().clone();
+        assert!(
+            !ids.is_empty(),
+            "the adjudicator was never consulted, so this proves nothing"
+        );
+        assert!(
+            !ids.iter().any(|i| i == "allow_session"),
+            "a point whose grants are `Once` offered `allow_session`, which the gate \
+             then declines to record: {ids:?}"
+        );
+        assert!(
+            ids.iter().any(|i| i == "allow_once"),
+            "allowing this one call must still be offered: {ids:?}"
+        );
+    }
+
     /// **An answer at `always-ask` settles one call and nothing else.**
     ///
     /// The same adjudicator, the same two calls, and a different point: the scope is
@@ -2020,14 +2100,31 @@ mod tests {
         });
         let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
         let args = json!({"path": "src/lib.rs"});
-        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
-        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+
+        // **Stronger than it used to be, and the change is deliberate.** This asserted
+        // `Admit` twice: `allow_session` was offered here, so the answer conformed, each
+        // call was admitted, and only the *standing* part was refused.
+        //
+        // Now the option is not offered at a `Once` point, so naming it is a
+        // non-conforming answer and the gate fails closed instead of admitting. An
+        // adjudicator that answers with a button it was not given is not a decision this
+        // gate can act on, whatever the button meant.
+        let first = g.admit(&call("edit", &args));
+        assert!(
+            matches!(&first, GateDecision::Refuse { outcome, .. }
+                if format!("{outcome:?}").contains("did not offer")),
+            "an answer naming an unoffered option must fail closed, not admit: {first:?}"
+        );
+        let _ = g.admit(&call("edit", &args));
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
             2,
             "always-ask means always ask, whatever option was chosen"
         );
-        assert!(g.grants().is_empty());
+        assert!(
+            g.grants().is_empty(),
+            "and nothing standing is ever recorded at a Once point"
+        );
     }
 
     /// **At `writes allowed` a write is not asked at all**, and the row still exists.
