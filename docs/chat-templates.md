@@ -107,17 +107,20 @@ The template gives you two ways to do that without noticing:
 
 1. **The leak above.** The cache holds what the model generated; the replay holds
    the previous turn's thoughts injected by minja. They differ.
-2. **Sending reasoning as its own message.** The model emits one span,
-   `<|assistant|><think>R</think><tool_call>…`. If the client sends reasoning as a
-   *separate* message, the template emits an extra `<|assistant|>` turn marker the
-   model never produced — and then the leak fills the following message's empty
-   reasoning slot with the same text, so `R` appears twice.
+2. **Replaying reasoning.** Verified 2026-09-11 against the client itself
+   (`docs/evidence/opencode-reasoning-2026-09-11.md`): opencode stores reasoning
+   as separate parts but the OpenAI-compatible converter
+   (`OpenAIChat.lowerAssistantMessage` in the binary) fuses every part of an
+   assistant turn into one `reasoning_content` field on that same assistant
+   message. Reasoning is never sent as its own message, so the feared extra turn
+   marker cannot arise from message structure. This mechanism is REFUTED for
+   opencode.
 
 This is the residual behind the divergence we chased with `interleaved`. That fix
 was real and addressed the primary cause (reasoning missing from the replay
-entirely, `f_keep` p10 0.000 → 0.999) but it cannot address either mechanism above,
-because both fire *while* reasoning is being sent. It is consistent with p99
-re-prefill settling at 5,294 tokens rather than at zero.
+entirely, `f_keep` p10 0.000 -> 0.999). With mechanism 2 refuted (above), the
+residual — p99 re-prefill settling at 5,294 tokens rather than at zero — is
+mechanism 1 or a third, unidentified cause.
 
 ---
 
