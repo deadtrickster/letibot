@@ -517,3 +517,113 @@ failure. Nobody has measured how often either occurs.
 > refuse-and-hand-back-the-handle-form design and coverage in
 > `crates/tools/tests/exec.rs`. T21.3 was recorded JOINED the same day.
 
+
+---
+
+## R1 — `TranscriptItem::Assistant` has no `truncated` field — **SETTLED 2026-09-11**
+
+Field added with `#[serde(default, skip_serializing_if)]`; a row written before the
+field existed reads as `truncated: false` (test pinned). The engine stamps it from the
+same formula `TurnOk::truncated` uses — interrupt or `LengthVerdict::TruncatedText` —
+so the committed rows and the turn record answer the question identically and cannot
+drift. §5.8's steering was already built (`crates/turn/src/steering.rs`); the flag
+completes the kept-partial path (`AbortCause::Steering` → `mark_truncated(true)`).
+Nothing was left to file as a follow-up.
+
+*Bookkeeping note:* the working-tree change was committed by another agent's
+`git add -A` inside `e5a1137` (session-role work) — that commit message acknowledges
+the sweep. The content is this item's and was verified before and after.
+
+Verified: `cargo check --workspace --all-targets` clean; transcript 6, turn --lib 63,
+turn restore 3, tokencore 40, sessionlog --lib 71, harnessd --lib 45, tools --lib 392,
+tui --lib 88, dialect-glm 22, dialect-qwen 24 — 0 failed. Live-model tests were not
+run: the server on :8080 serves the operator's own session.
+
+---
+
+## R2 — `ParsedSpan` carries no token offsets — **SETTLED 2026-09-11 — reduced, not deleted, and why**
+
+`ParsedSpan` variants now carry `Range<usize>` into the parsed slice, and
+`Parser::parse` takes `reasoning_open` — the channel state the caller owns because it
+owns the lead. With offsets in the parser, two things fell out:
+
+- **GLM's final flush now honours its mode**: a turn cut mid-thought is a `Reasoning`
+  span, not content. Qwen's parser always did this; GLM's did not, and that defect is
+  why `items.rs` re-segmented the stream by control roles after the fact. That whole
+  pass — `segment()`, `SegKind`, the unterminated-think rescue — is deleted.
+- **A new invariant is tested**: parsed spans tile the token stream contiguously from
+  zero (`dialect-glm/tests/invariants.rs`).
+
+`items.rs` went 571 → 506 lines. What remains is span→item grouping, the lead/stop
+policies and the coverage invariant — genuinely not parser work, because
+`TranscriptItem` lives in `letibot-transcript` and the dialect crate's Cargo.toml
+declines dependencies ("no dependencies, and that is the point"). Deleting the module
+outright would mean either that dependency or a duplicated item type; reported rather
+than done, per the item's own terms.
+
+Verified: workspace `--all-targets` clean; the same eleven crate targets green as R1;
+fidelity gate GATE PASS. `engine_decisions.rs` is compile-verified only — waived
+because it drives live inference on :8080, which the operator forbade for this session.
+
+---
+
+## R3 — `DialectSpec` has no `ReasoningField` — **SETTLED 2026-09-11**
+
+The spec carries `reasoning_field`; GLM declares `ReasoningContent`, Qwen `Inline`.
+It is a dialect-local enum rather than transcript's: the dialect crate's written
+zero-dependency contract decides, and `crates/turn` maps between the two at its single
+`produce` call, with a keep-the-variants-in-step note on the type. The engine reads it
+from the spec; the config parameter is gone from `TurnEngine::new` (now seven
+arguments) and `harnessd`'s `Dialect::reasoning_field()` accessor with it.
+
+Verified: `--all-targets` clean; dialect 4, glm 22, qwen 24, turn --lib 63, restore 3,
+harnessd --lib 45, transcript 6; GATE PASS.
+
+---
+
+## R4 — `cargo:rustc-link-arg` does not propagate across crates — **SETTLED 2026-09-11**
+
+`docs/build-notes.md` (new): the exec-time failure signature, why link-args stop at
+the emitting package, the per-crate build.rs fix, the `LETIBOT_LLAMA_LIB` override,
+and which crates are already covered. `crates/turn/build.rs`'s doc comment points at
+it (that one-line pointer landed inside `e5a1137` via the same sweep as R1). No code
+change, as specified.
+
+---
+
+## R5 — §18.1-I1's observable form is wrong in the plan text — **SETTLED 2026-09-11**
+
+`docs/implementation-plan.md` §18.1 now states the exact hash form
+(`H(prompt_N ‖ committed_generated_N)`) as the assertion and demotes the token-count
+form to **a measurement of the server**, with the hybrid/recurrent caveat stated —
+llama.cpp resumes from a context checkpoint and snaps `n_past` back, measured 48/52
+and 38/44 against prompts proven identical over the shared span, so a shortfall there
+is not a violation. The generation term is **committed** tokens throughout, with the
+stop-token-stripping reason. The §18.2 C3 row and the UNVERIFIED-5 registry entry were
+aligned; no `predicted_tokens` remains in the plan. Prose only, as specified.
+
+---
+
+## R6 — Verify what opencode actually sends — **SETTLED 2026-09-11 — mechanism 2 REFUTED**
+
+**Answer: reasoning is replayed fused onto the assistant message as
+`reasoning_content` — never as its own message.** opencode stores reasoning as
+separate parts, and its OpenAI-compatible converter (`OpenAIChat.lowerAssistantMessage`,
+read out of the compiled binary) joins every part of a turn into one
+`reasoning_content` field on that same assistant message. The feared extra turn
+marker cannot arise from message structure. docs/chat-templates.md §3 is updated; the
+residual p99 re-prefill after `interleaved` is mechanism 1 or a third, unidentified
+cause.
+
+Raw evidence: `docs/evidence/opencode-reasoning-2026-09-11.md` — provider config
+excerpt, the stored part shape from `opencode.db`, the converter code verbatim, and
+the chain between them. Two findings beyond the question: the GLM provider points
+**directly** at :8080 (the qwen-proxy is not in its path — this file's premise was
+stale), and the provider declares no `reasoning` capability flag, which gates
+presentation, not replay shape.
+
+*Method, stated because it is unusual:* no wire capture was possible (no root, tcpdump
+without capabilities, ptrace_scope 1), so the evidence is client-side storage plus the
+sending code, which determines the wire bytes deterministically. Two subagents died
+mid-turn on this task — the control-token emission hazard R7 names — leaving nothing;
+the third attempt wrote the evidence file incrementally as it went and was done by hand.

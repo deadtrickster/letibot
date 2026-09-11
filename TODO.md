@@ -40,117 +40,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 *Verified open by inspection on 2026-09-10; each says how to re-check.*
 
 
-## R1 — `TranscriptItem::Assistant` has no `truncated` field
-
-*(was T10.1)*
-
-**Why it matters.** §5.7 and §5.8 both require it. It is currently tracked on the
-turn record instead, and that is why **one piece of steering is unbuilt** — the only
-T10 item that blocks a feature rather than costing elegance.
-
-**Still open?** `sed -n '39,43p' crates/transcript/src/lib.rs` — the variant has
-`text` and `tool_calls` and nothing else.
-
-**Where.** `crates/transcript/src/lib.rs`, the `Assistant` variant. Adding a field to
-a serialised enum: give it `#[serde(default, skip_serializing_if = ...)]` like
-`tool_calls` has, so old rows still load.
-
-**Done when.** The field exists, `cargo test -p letibot-transcript -p letibot-turn`
-passes, previously-written session rows still deserialise, and the §5.8 steering that
-wanted it is either built or filed as a follow-up naming what is left.
-
 ---
-
-## R2 — `ParsedSpan` carries no token offsets
-
-*(was T10.2)*
-
-**Why it matters.** A `Parser` cannot say which ids an item owns. Working around that
-cost an entire module — `crates/turn/src/items.rs`, 22 KB — which adding a span to
-`ParsedSpan` would **delete**.
-
-**Still open?** `ls -l crates/turn/src/items.rs` — still present.
-
-**Where.** `crates/dialect` for the type; `crates/turn/src/items.rs` is what should
-shrink or vanish.
-
-**Done when.** `ParsedSpan` carries the offsets, `items.rs` is deleted or reduced to
-what genuinely is not parser work, and `cargo test -p letibot-turn` passes including
-`engine_decisions.rs`. Deleting the module is the point — if it survives intact, the
-change did not pay and should be reported that way rather than merged.
-
----
-
-## R3 — `DialectSpec` has no `ReasoningField`
-
-*(was T10.3)*
-
-**Why it matters.** A per-model fact sitting in config instead of in the crate that
-exists to model per-model facts as data. The engine takes it as config and works; the
-fact is in the wrong place.
-
-**Still open?** `grep -rn 'ReasoningField' crates/dialect/src/` — absent from the spec.
-
-**Done when.** The spec carries it, both dialects declare it, the engine reads it from
-there rather than from config, and `cargo test -p letibot-turn -p letibot-dialect-glm`
-passes.
-
----
-
-## R4 — `cargo:rustc-link-arg` does not propagate across crates
-
-*(was T10.5)*
-
-**Why it matters.** Every crate linking `libllama` needs its own `build.rs` to bake
-the rpath. Without it, test binaries **link fine and fail at exec** looking like a
-missing library — a failure that reads as an environment problem. Fixed in
-`crates/turn`; this is so the third crate does not rediscover it.
-
-**Still open?** This is a documentation task; check `docs/` for an existing note.
-
-**Done when.** It is written down where someone adding a crate will meet it — a note
-in `docs/` and a comment in `crates/turn/build.rs` pointing at it. No code change.
-
----
-
-## R5 — §18.1-I1's observable form is wrong in the plan text
-
-*(was T11)*
-
-**Why it matters.** Resolved in code; the prose still states an invariant that
-**cannot pass** on this box, for a reason that is not a violation: Qwen3-Next is
-hybrid/recurrent, so llama.cpp resumes from a context checkpoint and snaps `n_past`
-back to it. Anyone checking the plan against reality concludes the harness is broken.
-
-**Still open?** Read T11 below for the measurement; then check whether the plan text
-has been corrected.
-
-**Done when.** The plan states the invariant in a form checkable on a hybrid model,
-and says why the naive form is not. Prose only.
-
----
-
-## R6 — Verify what opencode actually sends
-
-*(was T4)*
-
-**Why it matters.** Decides whether the residual prompt-cache divergence after the
-`interleaved` fix is one mechanism or two, and whether T3 affects opencode at all.
-Filed as needing the W1 recording proxy, but **`~/bin/qwen-proxy` already sits in that
-path** and can log — this does not have to wait for W1.
-
-**Still open?** `docs/chat-templates.md` §3 lists the two mechanisms; the second is
-marked unverified.
-
-**Done when.** A capture of real opencode traffic shows whether reasoning arrives as
-its own message or fused onto the assistant message, written into
-`docs/chat-templates.md` §3 with the raw evidence kept.
-
-**Care.** `qwen-proxy` is production for opencode. Do not restart it mid-session
-without saying so; log alongside rather than replacing.
-
----
-
 
 ## R7 — A turn that ends inside its own reasoning is reported as success
 
@@ -1070,7 +960,7 @@ do not forget" goal, not as a schema nicety.
 
 ---
 
-## T10 — Contract gaps found by W6 — **small, concrete, one blocks a §5.8 feature**
+## T10 — Contract gaps found by W6 — **items 1, 2, 3 and 5 SETTLED 2026-09-11, see TODO-settled.md (R1, R2, R3, R4)**
 
 The turn engine is the first real consumer of the crates below, and it found five
 things. Listed in the order I would fix them.
@@ -1098,7 +988,7 @@ things. Listed in the order I would fix them.
 
 ---
 
-## T11 — §18.1-I1's observable form is not checkable on a hybrid model — **resolved in code, plan text still wrong**
+## T11 — §18.1-I1's observable form is not checkable on a hybrid model — **SETTLED 2026-09-11, plan text corrected, see TODO-settled.md (R5)**
 
 §18.1-I1 states the prefix invariant observably as
 `cached_tokens(N+1) >= prompt_tokens(N) + predicted_tokens(N)`. On this box it
@@ -1128,7 +1018,7 @@ Both need fixing in `docs/implementation-plan.md` §18.1. The code is already ri
 
 ---
 
-## T4 — Verify what opencode actually sends — **cheap, decides whether T3 affects it**
+## T4 — Verify what opencode actually sends — **SETTLED 2026-09-11, mechanism 2 refuted, see TODO-settled.md (R6)**
 
 `docs/chat-templates.md` §3 lists two ways a client causes prompt-cache divergence.
 The second — sending reasoning as its own message rather than fused onto the
