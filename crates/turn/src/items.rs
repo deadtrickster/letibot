@@ -2,39 +2,37 @@
 //!
 //! # Why this is one operation and not two
 //!
-//! `Parser` answers "what did the model say"; the ledger asks "which tokens are
-//! this item". Both answers have to come out of the same walk of the same ids, or
-//! the rows and the items disagree about where a turn's reasoning ended — and then
-//! §5.5's fork and §10's compaction address the wrong tokens.
+//! `Parser` answers "what did the model say" and, since `ParsedSpan` carries token
+//! offsets, "which tokens are this item" — both out of the same walk of the same
+//! ids. This module groups those spans into transcript items and assigns each item
+//! the exact token range it owns, so the rows and the items cannot disagree about
+//! where a turn's reasoning ended — which is what §5.5's fork and §10's compaction
+//! address.
 //!
-//! `ParsedSpan` carries no token offsets, so the parser alone cannot answer the
-//! second question. Rather than reimplement the parser to get them, this module
-//! **segments first** on the two boundaries every dialect spells as single vocab
-//! entries (`ThinkOpen`, `ThinkClose`), then runs the real `Parser` over each
-//! segment. Every generated token therefore lands in exactly one row, by
-//! construction, and the parser stays the only thing that knows a dialect's
-//! tool-call grammar.
+//! Two facts the parser cannot see are handled here, because they are the caller's
+//! and not the parser's:
+//!
+//! * **The lead is never parsed.** The generation prompt is harness-written; parsing
+//!   it turns a renderer's own bytes into model output. Its tokens still need a row,
+//!   so the first item's range starts at zero and owns them.
+//! * **Trailing stop tokens are stripped.** A stop is a boundary, boundaries belong
+//!   to the renderer, and keeping the emitted one would put a second user-turn
+//!   opener in the next prompt. The price is visible in the cache: the slot retains
+//!   what it decoded, so the next prompt's common prefix with it is one token
+//!   shorter — which is why the prefix witness records **committed** generated
+//!   tokens rather than the server's `predicted` count. See `crate::prefix`.
 //!
 //! # The interleaving is the point
 //!
-//! One turn is `[reasoning, tool_call, reasoning, …, message]` and that order is
+//! One turn is `[reasoning, tool_call, reasoning, ..., message]` and that order is
 //! byte-stable across turns — which is what makes the server's prefix cache hit.
-//! Segmentation preserves it: a second `<think>` after content opens a second
-//! `Reasoning` item rather than overwriting the first.
+//! Grouping by span kind preserves it: a second reasoning block after content
+//! becomes a second `Reasoning` item rather than overwriting the first.
 //!
-//! # Trailing stop tokens are stripped, and that is a decision with a price
-//!
-//! A dialect's stop token is a **boundary**, and boundaries belong to the renderer.
-//! GLM's assistant turn is terminated by the next `<|user|>`; keeping the emitted
-//! one would put a second `<|user|>` in the prompt when the next user item renders.
-//! So the trailing stop is stripped and counted.
-//!
-//! The price is visible in the cache: llama.cpp's slot retains what it decoded,
-//! including the stop, so the next prompt's common prefix with that slot is one
-//! token shorter than the slot holds. That is why the prefix witness records
-//! **committed** generated tokens rather than the server's `predicted` count — see
-//! `crate::prefix`. §18.1 states the invariant with `predicted_tokens(N)`, which is
-//! the wrong term for any harness that strips a boundary token.
+//! An unterminated reasoning block — a turn cut mid-thought — needs no special
+//! handling here any more: the parser ends in reasoning mode and reports the buffer
+//! as a `Reasoning` span (Qwen's always did; GLM's was fixed when the offsets
+//! landed, which is what deleted this module's old re-segmentation pass).
 
 use std::ops::Range;
 
@@ -95,43 +93,6 @@ pub fn split_trailing_stops(ids: &[TokenId], stops: &[TokenId]) -> (Vec<TokenId>
     (ids[..end].to_vec(), ids[end..].to_vec())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SegKind {
-    Reasoning,
-    Assistant,
-}
-
-/// Split `tokens` at reasoning boundaries.
-fn segment(tokens: &[TokenId], decoder: &dyn TokenDecoder) -> Vec<(SegKind, Range<usize>)> {
-    let mut out: Vec<(SegKind, Range<usize>)> = Vec::new();
-    let mut start = 0usize;
-    let mut past_first_reasoning = false;
-
-    for (i, id) in tokens.iter().enumerate() {
-        match decoder.control_role(*id) {
-            Some(ControlRole::ThinkOpen) => {
-                // Only a `<think>` that follows a completed reasoning block starts a
-                // new item. The first one is preceded by the turn-start token the
-                // generation prompt supplied, and those two belong together.
-                if past_first_reasoning && start < i {
-                    out.push((SegKind::Assistant, start..i));
-                    start = i;
-                }
-            }
-            Some(ControlRole::ThinkClose) => {
-                out.push((SegKind::Reasoning, start..i + 1));
-                start = i + 1;
-                past_first_reasoning = true;
-            }
-            _ => {}
-        }
-    }
-    if start < tokens.len() || out.is_empty() {
-        out.push((SegKind::Assistant, start..tokens.len()));
-    }
-    out
-}
-
 /// Which channel the model is speaking on **before it has generated anything**.
 ///
 /// A per-dialect fact, and the only honest source of it is the dialect's own
@@ -188,137 +149,111 @@ pub fn produce(
     tokens.extend_from_slice(lead);
     tokens.extend_from_slice(&body);
 
+    // **Only the generated tokens are parsed.** The lead is the generation
+    // prompt: the harness wrote it, the model did not, and it is present here
+    // solely so the first item's ledger row owns the turn-start tokens the
+    // model was handed. Parsing it turns a renderer's own bytes into model
+    // output — with the ChatML lead it makes the literal text "assistant" the
+    // turn's visible content, which is enough to turn a §5.7 `ReasoningOnly`
+    // failure into a `TruncatedText` success. Whether the lead leaves the
+    // reasoning block open is the one fact the parser needs from outside, and
+    // `lead_opens_reasoning` is its single source.
+    let opens_in_reasoning = lead_opens_reasoning(lead, decoder);
+    let spans = parser.parse(&tokens[lead.len()..], decoder, opens_in_reasoning);
+
     let mut items: Vec<ProducedItem> = Vec::new();
     let mut visible_text = String::new();
     let mut reasoning_text = String::new();
-    // Tokens from a segment that produced no item — an empty `<think></think>`, or
-    // a bare turn-start — are carried forward onto the next item rather than
-    // dropped. A token with no row is a token the next turn will re-send.
-    let mut carried: Option<usize> = None;
-    let lead_leaves_think_open = lead_opens_reasoning(lead, decoder);
+    // Absolute index into `tokens` up to which emitted items claim coverage. The
+    // lead is never parsed, so the first item starts at 0; a gap between spans —
+    // an empty think block the parser skips — is absorbed into the next item's
+    // range rather than dropped, because a token with no row is a token the next
+    // turn will re-send.
+    let mut covered_to = 0usize;
+    // The assistant item under construction, if the current run of spans is
+    // content-shaped: (text, calls, first token).
+    let mut assistant: Option<(String, Vec<ToolCall>, usize)> = None;
 
-    for (kind, range) in segment(&tokens, decoder) {
-        let start = carried.take().unwrap_or(range.start);
-        // **Only the generated tokens are parsed.** The lead is the generation
-        // prompt: the harness wrote it, the model did not, and it is present here
-        // solely so the first item's ledger row owns the turn-start tokens the
-        // model was handed. Parsing it turns a renderer's own bytes into model
-        // output — with GLM's `<|assistant|><think>` that is invisible because both
-        // are control tokens, and with ChatML's `<|im_start|>assistant\n` it makes
-        // the literal text "assistant" the turn's visible content, which is enough
-        // to turn a §5.7 `ReasoningOnly` failure into a `TruncatedText` success.
-        let parsed_from = range.start.max(lead.len());
-        // An `Assistant` segment holding a `<think>` holds an **unterminated** one:
-        // a closed block always ends its own segment. That matters because the
-        // parser cannot tell — GLM's flushes whatever is in its buffer as
-        // `Content` when the stream ends mid-thought, which would promote a cut-off
-        // deliberation to visible content and hide §5.7's `ReasoningOnly` case
-        // behind a `TruncatedText` verdict. So the split is made here, by token id,
-        // before the parser sees it.
-        let unterminated = if kind != SegKind::Assistant {
-            None
-        } else if lead_leaves_think_open && range.start < lead.len() {
-            // The lead opened `<think>` and nothing closed it: every generated token
-            // in this segment is reasoning.
-            Some(parsed_from)
-        } else {
-            tokens[parsed_from..range.end]
-                .iter()
-                .position(|id| decoder.control_role(*id) == Some(ControlRole::ThinkOpen))
-                .map(|k| parsed_from + k)
-        };
-        let parse_range = unterminated.map_or(parsed_from..range.end, |k| parsed_from..k);
-        let spans = parser.parse(&tokens[parse_range], decoder);
-        if let Some(k) = unterminated {
-            // Everything after the unmatched `<think>` is reasoning, whatever the
-            // parser would have called it.
-            for span in parser.parse(&tokens[k..range.end], decoder) {
-                if let ParsedSpan::Content(t) | ParsedSpan::Reasoning(t) = span {
-                    reasoning_text.push_str(&t);
-                }
-            }
-        }
-        match kind {
-            SegKind::Reasoning => {
-                let text = spans
-                    .iter()
-                    .filter_map(|s| match s {
-                        ParsedSpan::Reasoning(t) => Some(t.as_str()),
-                        _ => None,
-                    })
-                    .collect::<String>();
-                if text.is_empty() {
-                    // An empty think block is not recoverable as a distinct item —
-                    // it is how an assistant turn with no reasoning renders. Its
-                    // tokens go to the next item.
-                    carried = Some(start);
-                    continue;
+    for span in spans {
+        match span {
+            ParsedSpan::Reasoning { text, range } => {
+                if let Some((atext, calls, start)) = assistant.take() {
+                    items.push(ProducedItem {
+                        item: TranscriptItem::Assistant {
+                            text: atext,
+                            tool_calls: calls,
+                            truncated: false,
+                        },
+                        range: start..covered_to,
+                    });
                 }
                 reasoning_text.push_str(&text);
+                let end = lead.len() + range.end;
                 items.push(ProducedItem {
                     item: TranscriptItem::Reasoning {
                         text,
                         field: reasoning_field,
                     },
-                    range: start..range.end,
+                    range: covered_to..end,
                 });
+                covered_to = end;
             }
-            SegKind::Assistant => {
-                let mut text = String::new();
-                let mut calls = Vec::new();
-                for span in &spans {
-                    match span {
-                        ParsedSpan::Content(t) => text.push_str(t),
-                        // Already accounted for above; a closed reasoning block
-                        // never lands in an Assistant segment.
-                        ParsedSpan::Reasoning(t) => reasoning_text.push_str(t),
-                        ParsedSpan::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        } => calls.push(ToolCall {
-                            // GLM's wire format carries no call id, so the harness
-                            // assigns one. Positional and stable within the turn.
-                            id: id
-                                .clone()
-                                .unwrap_or_else(|| format!("call_{}", calls.len())),
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        }),
-                        ParsedSpan::Control(_) => {}
-                    }
-                }
-                if range.is_empty() && text.is_empty() && calls.is_empty() {
-                    // Nothing at all: no tokens, no content. Do not manufacture an
-                    // item, and there is nothing to carry.
-                    continue;
-                }
+            ParsedSpan::Content { text, range } => {
+                let group =
+                    assistant.get_or_insert_with(|| (String::new(), Vec::new(), covered_to));
+                group.0.push_str(&text);
                 visible_text.push_str(&text);
-                items.push(ProducedItem {
-                    item: TranscriptItem::Assistant {
-                        text,
-                        tool_calls: calls,
-                        truncated: false,
-                    },
-                    range: start..range.end,
+                covered_to = lead.len() + range.end;
+            }
+            ParsedSpan::ToolCall {
+                id,
+                name,
+                arguments,
+                range,
+            } => {
+                let group =
+                    assistant.get_or_insert_with(|| (String::new(), Vec::new(), covered_to));
+                // GLM's wire format carries no call id, so the harness assigns one.
+                // Positional and stable within the turn.
+                group.1.push(ToolCall {
+                    id: id.unwrap_or_else(|| format!("call_{}", group.1.len())),
+                    name,
+                    arguments,
                 });
+                covered_to = lead.len() + range.end;
+            }
+            ParsedSpan::Control { range, .. } => {
+                // A control token belongs to whatever item owns its neighbours: the
+                // open assistant group if there is one, the next item otherwise.
+                covered_to = lead.len() + range.end;
             }
         }
     }
+    if let Some((text, calls, start)) = assistant.take() {
+        // Nothing at all — no tokens, no text, no calls — does not make an item.
+        if !text.is_empty() || !calls.is_empty() || start < covered_to {
+            items.push(ProducedItem {
+                item: TranscriptItem::Assistant {
+                    text,
+                    tool_calls: calls,
+                    truncated: false,
+                },
+                range: start..covered_to,
+            });
+        }
+    }
 
-    // A trailing carry means the turn ended inside an empty think block. Its tokens
-    // still need a row, and §5.4 says an assistant item with empty text must exist
-    // and emit its boundary tokens anyway.
-    if let Some(start) = carried
-        && start < tokens.len()
-    {
+    // Coverage that stops short means the turn ended inside an empty think block.
+    // Its tokens still need a row, and §5.4 says an assistant item with empty text
+    // must exist and emit its boundary tokens anyway.
+    if covered_to < tokens.len() {
         items.push(ProducedItem {
             item: TranscriptItem::Assistant {
                 text: String::new(),
                 tool_calls: Vec::new(),
                 truncated: false,
             },
-            range: start..tokens.len(),
+            range: covered_to..tokens.len(),
         });
     }
 

@@ -31,7 +31,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use letibot_backend::BackendCaps;
 use letibot_dialect::StablePrefix;
 use letibot_tokencore::Vocab;
-use letibot_transcript::{ReasoningField, TranscriptItem, UserPart};
+use letibot_transcript::{TranscriptItem, UserPart};
 use letibot_turn::{
     Endpoint, PrefixCheck, RecordingSink, Session, TurnEngine, TurnEvent, prefix::PrefixWitness,
 };
@@ -103,7 +103,6 @@ fn engine<'a>(renderer: &'a ChatMlRenderer, parser: &'a ChatMlParser) -> TurnEng
         // wall-clock meter, structural prefix guarantee.
         BackendCaps::OWN_SERVER,
         "qwen-3.8-flash-next",
-        ReasoningField::Inline,
         serde_json::json!({"temperature": 0.0, "top_k": 1, "seed": 7}),
     )
     .expect("every control token and stop literal must resolve to one vocab entry")

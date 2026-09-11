@@ -47,6 +47,7 @@
 //! See `docs/implementation-plan.md` §7 and `docs/workstreams.md` §3.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 /// The cached, unchanging head of a prompt: bootstrap system prompt and tool schemas.
 ///
@@ -253,16 +254,32 @@ impl StopToken {
 /// `parse ∘ render` must be the identity on the round-trippable parts: render an
 /// assistant turn with reasoning and two tool calls, parse it back, get the same
 /// structure. That property catches a control-token mistake before a model does.
+///
+/// Every span carries the `Range<usize>` of the token ids it was parsed from —
+/// indices into the slice handed to [`Parser::parse`]. The ledger needs to know
+/// which tokens belong to an item, and only the parser walks the ids; without the
+/// offsets, the caller had to re-segment the stream on control roles and parse
+/// segment by segment, which is a second parser in every consumer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSpan {
-    Reasoning(String),
-    Content(String),
+    Reasoning {
+        text: String,
+        range: Range<usize>,
+    },
+    Content {
+        text: String,
+        range: Range<usize>,
+    },
     ToolCall {
         id: Option<String>,
         name: String,
         arguments: String,
+        range: Range<usize>,
     },
-    Control(ControlRole),
+    Control {
+        role: ControlRole,
+        range: Range<usize>,
+    },
 }
 
 /// The vocabulary, as much of it as a parser is allowed to know.
@@ -320,6 +337,22 @@ pub enum Guard {
     ReasoningStall { tokens: u32 },
 }
 
+/// Which wire field a model replays its own reasoning into.
+///
+/// A per-model fact, which is why [`DialectSpec`] carries it and the engine reads
+/// it from there rather than from configuration. `letibot-transcript` has a
+/// mirrored enum it stamps on `TranscriptItem::Reasoning` rows as provenance —
+/// this crate cannot see that one without taking a dependency, which its
+/// Cargo.toml declines, so `crates/turn` maps between them at its single
+/// `produce` call. Keep the variants in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningField {
+    /// GLM: replayed as `reasoning_content`.
+    ReasoningContent,
+    /// Qwen: replayed inside the rendered turn, gated by `preserve_thinking`.
+    Inline,
+}
+
 /// Everything about a model that rendering needs — as a value.
 ///
 /// This is the half of the old `Dialect` trait that T1 dissolved. There is no method
@@ -341,6 +374,8 @@ pub struct DialectSpec {
     pub control_tokens: ControlTokens,
     pub stop_tokens: Vec<StopToken>,
     pub system_update_mode: SystemUpdateMode,
+    /// Which wire field this model replays its own reasoning into.
+    pub reasoning_field: ReasoningField,
     pub guards: Vec<Guard>,
 }
 
@@ -352,7 +387,19 @@ pub struct DialectSpec {
 pub trait Parser {
     /// Takes `u32` rather than a `llama_token` alias so this crate stays free of the
     /// FFI, and takes the `decoder` because it must: see [`TokenDecoder`].
-    fn parse(&self, tokens: &[u32], decoder: &dyn TokenDecoder) -> Vec<ParsedSpan>;
+    ///
+    /// `reasoning_open` is the channel the model is speaking on **before the first
+    /// token of the slice**: a generation prompt commonly leaves the reasoning block
+    /// open, and a slice parsed from a stateless `Content` start would promote a cut
+    /// -off deliberation to visible content — §5.7's `ReasoningOnly` failure
+    /// masquerading as a `TruncatedText` success. The caller owns that fact because
+    /// the caller owns the lead; the parser cannot recover it from ids alone.
+    fn parse(
+        &self,
+        tokens: &[u32],
+        decoder: &dyn TokenDecoder,
+        reasoning_open: bool,
+    ) -> Vec<ParsedSpan>;
 }
 
 /// Concatenate the text of a span sequence. The detokenized form of a render must
@@ -467,6 +514,7 @@ mod tests {
             ),
             stop_tokens: vec![StopToken::owned(ControlRole::EndOfTurn, "<|endoftext|>")],
             system_update_mode: SystemUpdateMode::InHistory,
+            reasoning_field: ReasoningField::Inline,
             guards: vec![Guard::RepetitionRun { run: 64 }],
         };
 

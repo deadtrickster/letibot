@@ -1133,7 +1133,6 @@ impl<'a> Harness<'a> {
             // post-flight assertion is allowed to run rather than being skipped.
             letibot_backend::BackendCaps::OWN_SERVER,
             cfg.model.clone(),
-            cfg.dialect.reasoning_field(),
             cfg.sampling.clone(),
         )
         .map_err(|e| {
@@ -1706,7 +1705,22 @@ impl<'a> Harness<'a> {
                     Err(e) => return Err(e.into()),
                 };
 
-            let appended = ok.items.clone();
+            // **Pair against everything the ledger took, not just the model's rows.**
+            //
+            // A steering message is appended inside the turn (`engine.rs`: "let
+            // steering_items = pending.take_items(); session.append_items(...)"), through
+            // the SAME sink, so it emits a `TranscriptAppended` like any other row — but
+            // `TurnOk` reports it in `steering_applied` rather than in `items`.
+            // Reconciling against `items` alone therefore left one unmatched id per
+            // steering message, `record_item_pairing` fired, and the head drew the
+            // steering rows empty.
+            //
+            // Harmless until T21.3 joined the intent check to the steering source, which
+            // made an injection ordinary rather than rare. Append order is the model's
+            // items first, then the steering, and `reconcile` zips positionally, so the
+            // order here is load-bearing.
+            let mut appended = ok.items.clone();
+            appended.extend(ok.steering_applied.iter().cloned());
             self.reconcile(&mut sink, &appended);
             self.persist()?;
             truncated |= ok.truncated;

@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use letibot_backend::BackendCaps;
 use letibot_dialect::{Guard, StablePrefix};
 use letibot_tokencore::Vocab;
-use letibot_transcript::{ReasoningField, TranscriptItem, UserPart};
+use letibot_transcript::{TranscriptItem, UserPart};
 use letibot_turn::{
     DeltaTarget, EmptyReason, Endpoint, PrefixCheck, RecordingSink, Session, SteeringMessage,
     SteeringSource, TurnEngine, TurnEvent, TurnFailure,
@@ -70,7 +70,6 @@ fn engine<'a>(
         endpoint,
         BackendCaps::OWN_SERVER,
         "canned",
-        ReasoningField::Inline,
         serde_json::json!({}),
     )
     .expect("the fixture dialect resolves against Qwen's vocabulary")

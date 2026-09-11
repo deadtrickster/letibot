@@ -50,23 +50,46 @@ enum Mode {
 }
 
 impl Parser for GlmParser {
-    fn parse(&self, tokens: &[u32], decoder: &dyn TokenDecoder) -> Vec<ParsedSpan> {
+    fn parse(
+        &self,
+        tokens: &[u32],
+        decoder: &dyn TokenDecoder,
+        reasoning_open: bool,
+    ) -> Vec<ParsedSpan> {
         let mut out: Vec<ParsedSpan> = Vec::new();
-        let mut mode = Mode::Content;
+        let mut mode = if reasoning_open {
+            Mode::Reasoning
+        } else {
+            Mode::Content
+        };
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
+        // Offsets into `tokens`: where the buffered run began, where the open
+        // reasoning block began, where the open tool call began. Every span's range
+        // is expressed in these, so a caller can commit exactly the tokens a span
+        // owns without re-walking the stream.
+        let mut run_start = 0usize;
+        let mut block_start = 0usize;
+        let mut call_start = 0usize;
         let mut call_name = String::new();
         let mut arg_key = String::new();
         let mut args: Map<String, Value> = Map::new();
 
-        let flush_content = |buf: &mut String, out: &mut Vec<ParsedSpan>| {
-            if !buf.is_empty() {
-                out.push(ParsedSpan::Content(std::mem::take(buf)));
-            }
-        };
+        let flush_content =
+            |buf: &mut String, out: &mut Vec<ParsedSpan>, start: usize, end: usize| {
+                if !buf.is_empty() {
+                    out.push(ParsedSpan::Content {
+                        text: std::mem::take(buf),
+                        range: start..end,
+                    });
+                }
+            };
 
-        for &id in tokens {
+        for (i, &id) in tokens.iter().enumerate() {
             let Some(role) = decoder.control_role(id) else {
+                if run.is_empty() {
+                    run_start = i;
+                }
                 run.push(id);
                 continue;
             };
@@ -77,21 +100,26 @@ impl Parser for GlmParser {
 
             match role {
                 ControlRole::ThinkOpen => {
-                    flush_content(&mut buf, &mut out);
+                    flush_content(&mut buf, &mut out, run_start, i);
                     mode = Mode::Reasoning;
+                    block_start = i;
                 }
                 ControlRole::ThinkClose => {
                     // An empty think block is what an assistant turn with no reasoning
                     // renders as, so it is not recoverable as a distinct item.
                     // Documented as outside "the round-trippable parts".
                     if !buf.is_empty() {
-                        out.push(ParsedSpan::Reasoning(std::mem::take(&mut buf)));
+                        out.push(ParsedSpan::Reasoning {
+                            text: std::mem::take(&mut buf),
+                            range: block_start..i + 1,
+                        });
                     }
                     buf.clear();
                     mode = Mode::Content;
                 }
                 ControlRole::ToolCallOpen => {
-                    flush_content(&mut buf, &mut out);
+                    flush_content(&mut buf, &mut out, run_start, i);
+                    call_start = i;
                     call_name.clear();
                     args = Map::new();
                     mode = Mode::ToolName;
@@ -109,6 +137,7 @@ impl Parser for GlmParser {
                         name: std::mem::take(&mut call_name),
                         arguments: serde_json::to_string(&Value::Object(std::mem::take(&mut args)))
                             .expect("a JSON object always serialises"),
+                        range: call_start..i + 1,
                     });
                     mode = Mode::Content;
                 }
@@ -135,16 +164,35 @@ impl Parser for GlmParser {
                     mode = Mode::Content;
                 }
                 other => {
-                    flush_content(&mut buf, &mut out);
-                    out.push(ParsedSpan::Control(other));
+                    flush_content(&mut buf, &mut out, run_start, i);
+                    out.push(ParsedSpan::Control {
+                        role: other,
+                        range: i..i + 1,
+                    });
                     mode = Mode::Content;
                 }
             }
         }
+        let end = tokens.len();
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
-        flush_content(&mut buf, &mut out);
+        // The final flush honours the mode. A turn cut inside its reasoning ends in
+        // `Mode::Reasoning`, and flushing that buffer as content would promote the
+        // deliberation to visible output — §5.7's `ReasoningOnly` failure reading as
+        // a `TruncatedText` success. Qwen's parser has always done this; this one
+        // did not, which is why `crates/turn` carried a re-segmentation pass that
+        // re-derived the channel from token ids after the fact.
+        if mode == Mode::Reasoning {
+            if !buf.is_empty() {
+                out.push(ParsedSpan::Reasoning {
+                    text: std::mem::take(&mut buf),
+                    range: block_start..end,
+                });
+            }
+        } else {
+            flush_content(&mut buf, &mut out, run_start, end);
+        }
         out
     }
 }

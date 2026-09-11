@@ -31,8 +31,8 @@
 use std::borrow::Cow;
 
 use letibot_dialect::{
-    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, ParsedSpan, Parser, RenderSpan,
-    StablePrefix, StopToken, SystemUpdateMode, TokenDecoder,
+    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, ParsedSpan, Parser,
+    ReasoningField, RenderSpan, StablePrefix, StopToken, SystemUpdateMode, TokenDecoder,
 };
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use letibot_turn::PromptRenderer;
@@ -76,6 +76,7 @@ pub fn spec() -> DialectSpec {
             StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
         ],
         system_update_mode: SystemUpdateMode::InHistory,
+        reasoning_field: ReasoningField::Inline,
         // Generous: these must not fire during a live test, and a guard that fires
         // on ordinary prose would make the test measure the guard.
         guards: vec![Guard::RepetitionRun { run: 128 }],
@@ -313,15 +314,26 @@ impl PromptRenderer for ChatMlRenderer {
 pub struct ChatMlParser;
 
 impl Parser for ChatMlParser {
-    fn parse(&self, tokens: &[u32], decoder: &dyn TokenDecoder) -> Vec<ParsedSpan> {
+    fn parse(
+        &self,
+        tokens: &[u32],
+        decoder: &dyn TokenDecoder,
+        reasoning_open: bool,
+    ) -> Vec<ParsedSpan> {
         let mut out = Vec::new();
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
-        let mut in_reasoning = false;
+        let mut in_reasoning = reasoning_open;
         let mut in_call = false;
+        let mut run_start = 0usize;
+        let mut block_start = 0usize;
+        let mut call_start = 0usize;
 
-        for &id in tokens {
+        for (i, &id) in tokens.iter().enumerate() {
             let Some(role) = decoder.control_role(id) else {
+                if run.is_empty() {
+                    run_start = i;
+                }
                 run.push(id);
                 continue;
             };
@@ -331,51 +343,64 @@ impl Parser for ChatMlParser {
             }
             match role {
                 ControlRole::ThinkOpen => {
-                    flush(&mut buf, &mut out, in_reasoning);
+                    flush(&mut buf, &mut out, in_reasoning, run_start, i);
                     in_reasoning = true;
+                    block_start = i;
                 }
                 ControlRole::ThinkClose => {
-                    flush(&mut buf, &mut out, true);
+                    flush(&mut buf, &mut out, true, block_start, i + 1);
                     in_reasoning = false;
                 }
                 ControlRole::ToolCallOpen => {
-                    flush(&mut buf, &mut out, in_reasoning);
+                    flush(&mut buf, &mut out, in_reasoning, run_start, i);
                     in_call = true;
+                    call_start = i;
                 }
                 ControlRole::ToolCallClose => {
                     let raw = std::mem::take(&mut buf);
-                    out.push(tool_call_from(&raw));
+                    out.push(tool_call_from(&raw, call_start..i + 1));
                     in_call = false;
                 }
                 other => {
                     if !in_call {
-                        flush(&mut buf, &mut out, in_reasoning);
-                        out.push(ParsedSpan::Control(other));
+                        flush(&mut buf, &mut out, in_reasoning, run_start, i);
+                        out.push(ParsedSpan::Control {
+                            role: other,
+                            range: i..i + 1,
+                        });
                     }
                 }
             }
         }
+        let end = tokens.len();
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
-        flush(&mut buf, &mut out, in_reasoning);
+        flush(&mut buf, &mut out, in_reasoning, run_start, end);
         out
     }
 }
 
-fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool) {
+fn flush(
+    buf: &mut String,
+    out: &mut Vec<ParsedSpan>,
+    reasoning: bool,
+    start: usize,
+    end: usize,
+) {
     if buf.is_empty() {
         return;
     }
     let text = std::mem::take(buf);
+    let range = start..end;
     out.push(if reasoning {
-        ParsedSpan::Reasoning(text)
+        ParsedSpan::Reasoning { text, range }
     } else {
-        ParsedSpan::Content(text)
+        ParsedSpan::Content { text, range }
     });
 }
 
-fn tool_call_from(raw: &str) -> ParsedSpan {
+fn tool_call_from(raw: &str, range: std::ops::Range<usize>) -> ParsedSpan {
     let v: serde_json::Value = serde_json::from_str(raw.trim()).unwrap_or(serde_json::Value::Null);
     ParsedSpan::ToolCall {
         id: None,
@@ -391,5 +416,6 @@ fn tool_call_from(raw: &str) -> ParsedSpan {
             // rather than replaced with `{}`: §5.7 has to be able to tell a
             // truncated argument from an empty one.
             .unwrap_or_else(|| raw.trim().to_string()),
+        range,
     }
 }

@@ -249,27 +249,42 @@ fn parse_round_trips_reasoning_and_two_tool_calls() {
     let spans = GlmRenderer::new().render_incremental(&history, &turn);
 
     let (tokens, decoder) = tokenize(&spans);
-    let parsed = GlmParser::new().parse(&tokens, &decoder);
+    let parsed = GlmParser::new().parse(&tokens, &decoder, false);
 
+    // Kind and payload must round-trip exactly. The ranges are not asserted here by
+    // value — they are checked below by tiling, which is the property the ledger
+    // actually needs and which hand-written offsets would only imitate.
+    let shape = |s: &ParsedSpan| match s {
+        ParsedSpan::Control { role, .. } => format!("control:{role:?}"),
+        ParsedSpan::Reasoning { text, .. } => format!("reasoning:{text}"),
+        ParsedSpan::Content { text, .. } => format!("content:{text}"),
+        ParsedSpan::ToolCall { name, arguments, .. } => format!("call:{name}:{arguments}"),
+    };
     assert_eq!(
-        parsed,
+        parsed.iter().map(shape).collect::<Vec<_>>(),
         vec![
-            ParsedSpan::Control(ControlRole::TurnStartAssistant),
-            ParsedSpan::Reasoning("read both, then diff".into()),
-            ParsedSpan::Content("on it".into()),
-            ParsedSpan::ToolCall {
-                // GLM's wire format carries no id. Not round-trippable, and not invented.
-                id: None,
-                name: "read".into(),
-                arguments: r#"{"path":"a.txt"}"#.into(),
-            },
-            ParsedSpan::ToolCall {
-                id: None,
-                name: "read".into(),
-                arguments: r#"{"path":"b.txt","limit":40}"#.into(),
-            },
+            "control:TurnStartAssistant",
+            "reasoning:read both, then diff",
+            "content:on it",
+            // GLM's wire format carries no id. Not round-trippable, and not invented.
+            "call:read:{\"path\":\"a.txt\"}",
+            "call:read:{\"path\":\"b.txt\",\"limit\":40}",
         ]
     );
+    // And the spans must tile the token stream: every id owned by exactly one span,
+    // contiguously from zero.
+    let mut next = 0usize;
+    for s in &parsed {
+        let range = match s {
+            ParsedSpan::Control { range, .. }
+            | ParsedSpan::Reasoning { range, .. }
+            | ParsedSpan::Content { range, .. }
+            | ParsedSpan::ToolCall { range, .. } => range,
+        };
+        assert_eq!(range.start, next, "span does not tile: {s:?}");
+        next = range.end;
+    }
+    assert_eq!(next, tokens.len(), "spans do not cover the turn");
 }
 
 /// Argument key order survives, because it is prompt bytes.
@@ -286,7 +301,7 @@ fn argument_key_order_is_preserved_through_the_round_trip() {
     }];
     let spans = GlmRenderer::new().render_incremental(&[user("go")], &turn);
     let (tokens, decoder) = tokenize(&spans);
-    let parsed = GlmParser::new().parse(&tokens, &decoder);
+    let parsed = GlmParser::new().parse(&tokens, &decoder, false);
     let ParsedSpan::ToolCall { arguments, .. } = &parsed[parsed.len() - 1] else {
         panic!("expected a tool call, got {parsed:?}");
     };
@@ -311,7 +326,7 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
     }];
     let spans = GlmRenderer::new().render_incremental(&[user("go")], &turn);
     let (tokens, decoder) = tokenize(&spans);
-    let parsed = GlmParser::new().parse(&tokens, &decoder);
+    let parsed = GlmParser::new().parse(&tokens, &decoder, false);
     let ParsedSpan::ToolCall { arguments, .. } = parsed.last().unwrap() else {
         panic!()
     };

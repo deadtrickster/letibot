@@ -35,11 +35,13 @@
 use std::time::Instant;
 
 use letibot_backend::BackendCaps;
-use letibot_dialect::{ControlRole, DialectSpec, Parser, RenderSpan, StablePrefix, TokenDecoder};
+use letibot_dialect::{
+    ControlRole, DialectSpec, Parser, ReasoningField, RenderSpan, StablePrefix, TokenDecoder,
+};
 use letibot_tokencore::{
     ControlMap, TokenId, TokenLedger, Vocab, VocabDecoder, resolve, resolve_stops, tokenize_spans,
 };
-use letibot_transcript::{ReasoningField, TranscriptItem};
+use letibot_transcript::TranscriptItem;
 use serde_json::Value;
 
 use crate::capture::FrameCapture;
@@ -215,12 +217,6 @@ pub struct TurnEngine<'a> {
     pub endpoint: Endpoint,
     pub caps: BackendCaps,
     pub model: String,
-    /// Which wire field this model replays its own reasoning into.
-    ///
-    /// It belongs on `DialectSpec` — it is a per-model fact of exactly the kind
-    /// that crate models as data — but the type does not carry it yet, so the
-    /// engine takes it as configuration rather than guessing.
-    pub reasoning_field: ReasoningField,
     pub sampling: Value,
     pub salvage: SalvageBudget,
     /// Where a refused frame and its neighbours are written (T23). On by default;
@@ -233,7 +229,7 @@ impl<'a> TurnEngine<'a> {
     /// fit. Every failure this can raise is one that is otherwise silent at
     /// runtime.
     ///
-    /// Eight arguments, and a builder would be worse: every one of them is a fact
+    /// Seven arguments, and a builder would be worse: every one of them is a fact
     /// the engine cannot invent, and a builder's `Option` per field is an
     /// invitation to leave one out. The clippy lint is about ergonomics; the
     /// alternative here trades an awkward call site for a silently mis-wired one.
@@ -245,7 +241,6 @@ impl<'a> TurnEngine<'a> {
         endpoint: Endpoint,
         caps: BackendCaps,
         model: impl Into<String>,
-        reasoning_field: ReasoningField,
         sampling: Value,
     ) -> Result<Self, EngineError> {
         let spec = renderer.spec().clone();
@@ -276,7 +271,6 @@ impl<'a> TurnEngine<'a> {
             endpoint,
             caps,
             model: model.into(),
-            reasoning_field,
             sampling,
             salvage: SalvageBudget::default(),
             frame_capture: FrameCapture::default(),
@@ -526,13 +520,19 @@ impl TurnEngine<'_> {
         }
 
         let decoder = self.decoder();
+        let reasoning_field = match self.spec.reasoning_field {
+            ReasoningField::ReasoningContent => {
+                letibot_transcript::ReasoningField::ReasoningContent
+            }
+            ReasoningField::Inline => letibot_transcript::ReasoningField::Inline,
+        };
         let mut produced = items::produce(
             &lead,
             &outcome.ids,
             &self.stop_ids,
             self.parser,
             &decoder,
-            self.reasoning_field,
+            reasoning_field,
         );
         if let Err(gap) = items::rows_cover_every_token(&produced) {
             // Not recoverable by guessing: a token with no row is a token the next

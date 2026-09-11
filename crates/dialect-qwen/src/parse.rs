@@ -28,15 +28,30 @@ use crate::json::hf_tojson;
 pub struct QwenParser;
 
 impl Parser for QwenParser {
-    fn parse(&self, tokens: &[u32], decoder: &dyn TokenDecoder) -> Vec<ParsedSpan> {
+    fn parse(
+        &self,
+        tokens: &[u32],
+        decoder: &dyn TokenDecoder,
+        reasoning_open: bool,
+    ) -> Vec<ParsedSpan> {
         let mut out = Vec::new();
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
-        let mut in_reasoning = false;
+        let mut in_reasoning = reasoning_open;
         let mut in_call = false;
+        // Offsets into `tokens` for the span ranges: where the buffered run began,
+        // where the open reasoning block began, where the open tool call began. With
+        // `reasoning_open` seeded the block began before this slice, so its range
+        // starts at 0 and the caller's lead tokens stay the caller's to commit.
+        let mut run_start = 0usize;
+        let mut block_start = 0usize;
+        let mut call_start = 0usize;
 
-        for &id in tokens {
+        for (i, &id) in tokens.iter().enumerate() {
             let Some(role) = decoder.control_role(id) else {
+                if run.is_empty() {
+                    run_start = i;
+                }
                 run.push(id);
                 continue;
             };
@@ -48,32 +63,38 @@ impl Parser for QwenParser {
             }
             match role {
                 ControlRole::ThinkOpen => {
-                    flush(&mut buf, &mut out, in_reasoning);
+                    flush(&mut buf, &mut out, in_reasoning, run_start, i);
                     in_reasoning = true;
+                    block_start = i;
                 }
                 ControlRole::ThinkClose => {
-                    flush(&mut buf, &mut out, true);
+                    flush(&mut buf, &mut out, true, block_start, i + 1);
                     in_reasoning = false;
                 }
                 ControlRole::ToolCallOpen => {
-                    flush(&mut buf, &mut out, in_reasoning);
+                    flush(&mut buf, &mut out, in_reasoning, run_start, i);
                     in_call = true;
+                    call_start = i;
                 }
                 ControlRole::ToolCallClose => {
                     let raw = std::mem::take(&mut buf);
-                    out.push(parse_call_body(&raw));
+                    out.push(parse_call_body(&raw, call_start..i + 1));
                     in_call = false;
                 }
                 other => {
                     // A boundary inside an unterminated call is not a boundary: the
                     // model is still writing arguments. Everything else flushes.
                     if !in_call {
-                        flush(&mut buf, &mut out, in_reasoning);
-                        out.push(ParsedSpan::Control(other));
+                        flush(&mut buf, &mut out, in_reasoning, run_start, i);
+                        out.push(ParsedSpan::Control {
+                            role: other,
+                            range: i..i + 1,
+                        });
                     }
                 }
             }
         }
+        let end = tokens.len();
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
@@ -86,23 +107,31 @@ impl Parser for QwenParser {
                 id: None,
                 name: function_name(&buf).unwrap_or_default(),
                 arguments: buf,
+                range: call_start..end,
             });
         } else {
-            flush(&mut buf, &mut out, in_reasoning);
+            flush(&mut buf, &mut out, in_reasoning, run_start, end);
         }
         out
     }
 }
 
-fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool) {
+fn flush(
+    buf: &mut String,
+    out: &mut Vec<ParsedSpan>,
+    reasoning: bool,
+    start: usize,
+    end: usize,
+) {
     if buf.is_empty() {
         return;
     }
     let text = std::mem::take(buf);
+    let range = start..end;
     out.push(if reasoning {
-        ParsedSpan::Reasoning(text)
+        ParsedSpan::Reasoning { text, range }
     } else {
-        ParsedSpan::Content(text)
+        ParsedSpan::Content { text, range }
     });
 }
 
@@ -111,7 +140,7 @@ fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool) {
 /// Written as a scan rather than a regex for the same reason `letibot-tools` has no
 /// `regex` dependency: the grammar is fixed, it is six literals long, and a partial
 /// match has to be reportable rather than approximated.
-pub fn parse_call_body(raw: &str) -> ParsedSpan {
+pub fn parse_call_body(raw: &str, range: std::ops::Range<usize>) -> ParsedSpan {
     let Some(name) = function_name(raw) else {
         // No `<function=…>` at all. Keep the bytes; something upstream will have to
         // decide whether this was truncation or a format the model invented.
@@ -119,6 +148,7 @@ pub fn parse_call_body(raw: &str) -> ParsedSpan {
             id: None,
             name: String::new(),
             arguments: raw.trim().to_string(),
+            range,
         };
     };
 
@@ -149,12 +179,14 @@ pub fn parse_call_body(raw: &str) -> ParsedSpan {
             id: None,
             name,
             arguments: raw.trim().to_string(),
+            range,
         };
     }
     ParsedSpan::ToolCall {
         id: None,
         name,
         arguments: hf_tojson(&Value::Object(args)),
+        range,
     }
 }
 
@@ -284,7 +316,7 @@ mod tests {
     fn roundtrip(text: &str) -> Vec<ParsedSpan> {
         let mut d = TableDecoder::new();
         let ids = d.encode(text);
-        QwenParser.parse(&ids, &d)
+        QwenParser.parse(&ids, &d, false)
     }
 
     #[test]
@@ -335,13 +367,15 @@ mod tests {
         // Only the assistant turn's own bytes, which is what a stream carries.
         let turn = whole.split("<|im_start|>assistant\n").nth(1).unwrap();
         let spans = roundtrip(turn);
-        assert!(spans.contains(&ParsedSpan::Reasoning("\nRead it.\n".into())), "{spans:?}");
         assert!(
-            spans.contains(&ParsedSpan::ToolCall {
-                id: None,
-                name: "grep".into(),
-                arguments: r#"{"pattern": "fn main", "glob": "*.rs"}"#.into(),
-            }),
+            spans
+                .iter()
+                .any(|s| matches!(s, ParsedSpan::Reasoning { text, .. } if text == "\nRead it.\n")),
+            "{spans:?}"
+        );
+        assert!(
+            spans.iter().any(|s| matches!(s, ParsedSpan::ToolCall { name, arguments, .. }
+                if name == "grep" && arguments == r#"{"pattern": "fn main", "glob": "*.rs"}"#)),
             "{spans:?}"
         );
     }

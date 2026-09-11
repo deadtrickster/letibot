@@ -101,7 +101,8 @@
 use std::sync::OnceLock;
 
 use letibot_dialect::{
-    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, StopToken, SystemUpdateMode,
+    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, ReasoningField, StopToken,
+    SystemUpdateMode,
 };
 
 mod json;
@@ -247,6 +248,7 @@ pub fn glm_spec() -> DialectSpec {
         control_tokens: ControlTokens::borrowed(GLM_TOKENS),
         stop_tokens: GLM_STOP_TOKENS.to_vec(),
         system_update_mode: SystemUpdateMode::InHistory,
+        reasoning_field: ReasoningField::ReasoningContent,
         guards: GLM_GUARDS.to_vec(),
     }
 }

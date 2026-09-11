@@ -87,7 +87,8 @@
 use std::sync::OnceLock;
 
 use letibot_dialect::{
-    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, StopToken, SystemUpdateMode,
+    ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, ReasoningField, StopToken,
+    SystemUpdateMode,
 };
 use letibot_transcript::{SystemOrigin, TranscriptItem};
 
@@ -205,6 +206,7 @@ pub fn qwen_spec() -> DialectSpec {
         // Not a preference. The template raises on a system message that is not in
         // the leading run, so `InHistory` is not renderable at all here.
         system_update_mode: SystemUpdateMode::Envelope,
+        reasoning_field: ReasoningField::Inline,
         guards: QWEN_GUARDS.to_vec(),
     }
 }

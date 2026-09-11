@@ -27,7 +27,7 @@
 //! other strands are built on.
 
 use letibot_dialect::{DialectSpec, Parser, RenderSpan, StablePrefix};
-use letibot_transcript::{ReasoningField, TranscriptItem};
+use letibot_transcript::TranscriptItem;
 use letibot_turn::PromptRenderer;
 use serde_json::Value;
 
@@ -55,18 +55,6 @@ impl Dialect {
         match self {
             Dialect::Glm => "glm-5.3-flash",
             Dialect::Qwen => "qwen3.8",
-        }
-    }
-
-    /// Which wire field this model replays its own reasoning into.
-    ///
-    /// It belongs on `DialectSpec` — it is exactly the kind of per-model fact that
-    /// crate models as data — but the type does not carry it, so the daemon
-    /// supplies it here rather than the engine guessing.
-    pub fn reasoning_field(self) -> ReasoningField {
-        match self {
-            Dialect::Glm => ReasoningField::ReasoningContent,
-            Dialect::Qwen => ReasoningField::Inline,
         }
     }
 

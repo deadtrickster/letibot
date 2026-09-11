@@ -38,7 +38,7 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::serve;
 use letibot_sessionlog::view::TurnState;
 use letibot_tokencore::Vocab;
-use letibot_transcript::{ReasoningField, TranscriptItem, UserPart};
+use letibot_transcript::{TranscriptItem, UserPart};
 use letibot_turn::{Endpoint, TurnEngine};
 
 use chatml::{ChatMlParser, ChatMlRenderer};
@@ -112,7 +112,6 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
             endpoint(),
             BackendCaps::OWN_SERVER,
             "qwen-3.8-flash-next",
-            ReasoningField::Inline,
             serde_json::json!({"temperature": 0.0, "top_k": 1, "seed": 7}),
         )
         .expect("the dialect must resolve against the vocabulary");
