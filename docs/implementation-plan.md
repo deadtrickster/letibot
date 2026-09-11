@@ -2445,7 +2445,7 @@ Two mechanisms carry all of them:
 |---|---|---|
 | C1 | **prefix extension, exact** | proxy: request N's prompt must be an exact prefix of N+1's — as `messages` for an unfused client, as the token array for ours. grok's `assert_prefix_stable_pair`, re-expressed. For our harness it holds by construction (§4.3); the test exists to measure *other* clients on the same axis and to catch a regression in the ledger. |
 | C2 | **renderer fidelity** | `/apply-template` on each fixture → exact string equality against our renderer (§7.2). Subsumes render-level prefix stability, and is the required CI gate. |
-| C3 | **generation-inclusive prefix** | `cached_tokens(N+1) ≥ prompt_tokens(N) + predicted_tokens(N)`. §18.1-I1. **This is the real invariant and nothing surveyed tests it.** |
+| C3 | **generation-inclusive prefix** | asserted exact: `H(prompt_N ‖ committed_generated_N)` must re-hash as a span of N+1's prompt — a mismatch is `Warning{prefix_divergence}` and the only defect in us (§18.1-I1). The token-count form `cached_tokens(N+1) ≥ prompt_tokens(N) + committed_generated_tokens(N)` is a **measurement of the server**: on a hybrid/recurrent model it undershoots by design (llama.cpp context checkpoints), so a shortfall there is not a violation. **This is the real invariant and nothing surveyed tests it.** |
 | C4 | **`f_keep` distribution** | from `usage.prompt_tokens_details.cached_tokens / prompt_tokens` over a scripted 30-turn session; report p10/p50/p99 and p99 re-prefill tokens. Directly comparable to the 0.000 → 0.999 measurement. |
 | C5 | **reasoning replay** | omp's #3528 scenario, scripted end to end: assert `cached_tokens` does not collapse on the turn that adds a prior assistant turn plus a synthetic nudge. |
 | C6 | **`content: ""` never `null`** | proxy: on a tool-call-only assistant history turn, `content === ""`. |
@@ -2772,25 +2772,39 @@ instead of a hang. None of that requires compaction, permissions, firecode or a 
 **I1 — the generation-inclusive prefix invariant.** *This is the real one, and it is stronger than
 anything in the survey.*
 
-> Request N's prompt **plus what the model generated in turn N** must be a prefix of request N+1's
-> prompt.
+> Request N's prompt **plus the generated tokens the harness committed in turn N** must be a prefix
+> of request N+1's prompt.
 
 Grok's test pins only "request N is a prefix of request N+1". But llama.cpp caches prompt *and*
 generated tokens — that is the whole mechanism of F1 — so the invariant that actually protects the
 cache includes the generation. A harness can satisfy Grok's test and still diverge, and that
 divergence is exactly what the 612 GB was.
 
-Two ways to check it, and both should exist:
+Two forms, and they are not the same kind of thing. The generation term in both is **committed**
+generated tokens, not the server's `predicted`: a trailing stop token is a boundary the harness owns
+and is stripped before commit — keeping GLM's emitted `<arg_key>` would put a second one in the next
+prompt — so with `predicted` every turn warns by one, forever.
 
-- **Observable, cheap, runs in production:**
-  `cached_tokens(N+1) ≥ prompt_tokens(N) + predicted_tokens(N)`.
-  Every term is in the standard `usage` object. A shortfall is the divergence, and its size says
-  roughly where. This runs as a post-flight assertion on every turn, raising
-  `Warning{code: prefix_divergence, shortfall}` and feeding §6.
-- **Exact, offline, in the suite:** `/tokenize` the rendered prefix N+1 and compare against
-  `tokens(prefix N) ++ generated_token_ids(N)`. **UNVERIFIED-5**: whether the chat-completions path
-  can return generated token ids (`/completion` has `return_tokens`); if not, the observable form is
-  the only one and that is acceptable.
+- **Exact — the invariant, and the assertion.** Hash turn N's submitted prompt together with the
+  generated tokens the harness committed, and re-hash that span of N+1's submitted prompt
+  (`H(prompt_N ‖ committed_generated_N)`). A mismatch is the violation — the 612 GB failure with the
+  lid off — and it is the only verdict here that is a defect in us. It runs post-flight on every
+  turn, raising `Warning{code: prefix_divergence}` and feeding §6, with the verdict recorded in
+  `TurnMetrics.prefix_check`; only `Held` answers `held() == true`. The form is a property of
+  submitting token ids we rendered ourselves, so the gate is the backend's
+  `may_assert_structural_prefix`: over a `messages` API the check is skipped loudly —
+  `Warning{code: prefix_check_skipped}` carrying the reason verbatim, `held()` still false — never
+  silently green. It needs no token ids from the server, so **UNVERIFIED-5** is no longer a
+  dependency of the assertion (see the registry).
+- **Token-count — a measurement of the server, not an invariant.**
+  `cached_tokens(N+1) ≥ prompt_tokens(N) + committed_generated_tokens(N)`, every term in the standard
+  `usage` object; the shortfall sizes how far the server's reuse fell below what the invariant
+  permits. When the exact form held and the server still reused less, the check raises
+  `Warning{code: cache_reuse_shortfall}` whose text says which it is: a measurement of the server's
+  cache, not a divergence. On a hybrid/recurrent model (Qwen3-Next) the undershoot is by design —
+  llama.cpp resumes from a context checkpoint and snaps `n_past` back to it
+  (`server-context.cpp:5910`); measured 48/52 and 38/44 against prompts proven identical over the
+  shared span. **A shortfall there is not a violation.**
 
 **I2 — exact prefix extension of the token array.** grok's `assert_prefix_stable_pair`, ported, but
 running over token ids through the real renderer and the real tokenizer. Under §4.3 it holds by
@@ -3037,9 +3051,11 @@ footnote.
   Either the checkout moved or the citation is off. *Settled by:* checking the exact v1.18.29 tag
   before the claim is repeated. The *behavioural* finding (an empty subagent recorded as success) is
   independently supported by the nine database rows and is not in doubt.
-- **UNVERIFIED-5 — Can the chat-completions path return generated token ids?** Would make I1's exact
-  form available offline. `/completion` has `return_tokens`; the chat path is unchecked. The
-  observable form of I1 works regardless.
+- **UNVERIFIED-5 — Can the chat-completions path return generated token ids?** No longer a dependency
+  of I1: the exact form hashes the token ids the harness itself rendered and committed, so it needs
+  nothing from the server. It would only enable a server-side cross-check of our rendering.
+  `/completion` has `return_tokens`; the chat path is unchecked. The token-count measurement of I1
+  works regardless.
 - **UNVERIFIED-6 — Does `/apply-template` behave identically under the model router
   (`--models-max`)?** `server.cpp:239` routes it to `models_routes->proxy_post` in router mode, which
   is a different code path from the single-model handler at `server-context.cpp:7745`. If it proxies
