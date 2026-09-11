@@ -229,6 +229,55 @@ none, and never `host_other`. A test on the rendered refusal payload, not on the
 
 # 2. NEEDS A NOD — small question first, then unblocked
 
+## N4 — a coder can write a test and cannot run it
+
+**Observed 2026-09-11**: letibot wrote a regression test and then had no way to execute
+it. Not a bug — a consequence, and the role table shows it plainly:
+
+    coder()       write,edit + bash       <- §8.4's spec
+    m2_coder()    write,edit, NO bash     <- what the daemon seats
+    m2_runner()   bash, NO write,edit     <- the only role with a shell
+
+**No implemented role can both change the code and run it.** This is the same shape as
+`todo` before it was seated, one level up and costlier: there the encoder was missing, here
+it is the *verifier*. A model that writes and cannot check is the closed loop of
+`docs/closed-loop.md` §2 left open at the point where it would have paid.
+
+**Why `bash` is not the answer, and the reason is good.** From the daemon's own
+disclosure: *"`bash` is the tool whose result is an **arbitrary byte stream**. The job
+verbs and `monitor` are seated and shaped."* §5's choke point — the single place every
+tool result would pass through — does not exist, so nothing stops a result carrying bytes
+from inside the view into the transcript. Every other tool's result is shaped: `read`
+returns numbered lines, `grep` returns matches, the job verbs return structured state.
+Seating `bash` on `coder` would widen the hole and add a capability by side effect, which
+is exactly what `m2_coder`'s comment refuses.
+
+**Nor does role switching help yet.** The mechanism exists (branch `role-switch`: the
+registry holds the union, `ToolRuntime::active` gates admission, so a switch moves no
+prompt byte) — but switching to `runner` still needs `bash` to be seated somewhere, so it
+is blocked on the same §5 hole.
+
+### The question, which is why this is a nod and not a task
+
+**Is a shaped test verb acceptable where a shell is not?**
+
+A `test` tool that takes **no command from the model**, runs the workspace's test command,
+and returns a *shaped* result — passed, failed, and per-failure the test name and its
+assertion — is not an arbitrary byte stream. `cargo test`'s output is parseable into
+exactly those fields.
+
+It narrows the hole rather than closing it: a failing assertion can still print whatever
+the test printed, so the result is bounded to *test-framework output* instead of *anything
+at all*. That is a real reduction and not zero, which is precisely why it wants a decision
+rather than an implementation. Per-failure spill and truncation are available if the
+answer is "yes, but bounded".
+
+**If the answer is no**, the honest consequence should be written into the disclosure: a
+`coder` session states that it can write tests and not run them, so the operator runs them
+and nobody is surprised.
+
+---
+
 ## N3 — a refusal claims "the operator has been told" without knowing it
 
 From the same refusal, verbatim:
