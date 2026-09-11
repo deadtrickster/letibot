@@ -227,7 +227,160 @@ none, and never `host_other`. A test on the rendered refusal payload, not on the
 
 ---
 
+## R10 — layer 1's two env-hygiene lines, which `bash` waits on
+
+`docs/boundary-and-adjudication.md` §5 states these as **requirements rather than
+assumptions**, *"because a requirement crosses a merge where an assumption does not"* —
+and they are what stands between the exec substrate and
+`Surroundings::with_pinned_shell` being honestly callable:
+
+1. **`env_clear()` before the explicit `env` pairs**, so `PATH` is *pinned* rather than
+   inherited.
+2. **Unset `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`.** `BASH_ENV` **is** sourced by bash
+   for non-interactive shells, so a distribution where `/bin/sh` is bash has a real
+   injection point this box does not — which is exactly the kind of thing that is true
+   here and false one machine over.
+
+**Why this is the prerequisite and not caution.** *"A resolved parse is not a resolved
+meaning."* A grammar reads text; a shell resolves a bare command name through aliases,
+functions and `PATH`, none of which are **in** the text — which is how the survey's best
+parser is defeated. So `intent::ShellTrust` defaults to `Unknown`: a bare name is
+unresolved and the command is `not_run`, while an absolute path is not shadowable and
+passes. Layer A can only mean something if layer 1 pins what the words resolve to.
+
+The gap is small because `exec/host.rs` already spawns `/bin/sh -c`, non-interactive and
+non-login, so no rc file is read, and `/bin/sh` here is `dash`, which reads `$ENV` only
+when interactive.
+
+**Still open?** `grep -rn 'env_clear\|BASH_ENV' crates/tools/src/exec/host.rs`
+
+**Where.** The spawn path in `crates/tools/src/exec/host.rs`. `Prereq::Confinement`
+already exists as the seam to assert it against.
+
+**Done when.** The spawn clears the environment before setting its own pairs, the four
+variables are unset, a test asserts a `BASH_ENV` planted in the parent does not reach the
+child, and `Surroundings::with_pinned_shell` is called where it was previously only
+described. Note what this does **not** do: it does not seat `bash` — see N4 and the
+transcript-edge choke point, which is the other half.
+
+---
+
+## R11 — the audit rows are written and never read
+
+§4h, verbatim: *"Inputs 1, 3 and 4 are all deterministic lookups against things that
+already exist or are being built. **The audit rows are written and never read** — closing
+that loop is the cheapest large improvement available, and it does not wait on VRAM. Only
+the 1↔2 join does."*
+
+The adjudicator's four inputs, and where they stand as of 2026-09-11:
+
+    1  the normalised action (intent, scope, program class)   layer A     DONE
+    2  the authorisation trail — what was said, how long ago  transcript  DONE (`Harness::trail`)
+    3  standing config — ALWAYS_ASK, globs, per-project point §4e/§4f    partly
+    4  previous answers on actions of this shape              §11.5 rows  NEVER READ  <- this
+
+Input 4 was originally filed as fine-tuning corpus. §4h corrects that: read back **at
+decision time** they improve the classifier with **no retrain**, and its reasoning stays
+legible — *"you allowed this shape twice in this project"* is inspectable in a way a
+weight is not. Nobody has fine-tuned anything here, so this is the difference between
+history being useful now and useful eventually.
+
+### The discipline is already specified, and it is the hard part
+
+*"History is evidence, never precedent."* The failure it invites is an answer given once
+by accident arguing for itself forever, until the classifier entrenches a mistake it can
+no longer be talked out of. So, from §4h:
+
+- prior answers are **shown to the decision, not substituted for it**
+- they carry their **count and their age** — *"once, three weeks ago"* and *"nine times
+  this week"* are different facts, and a bare *"previously allowed"* hides which
+- **a denial is history too.** A classifier shown only the approvals is being told a
+  one-sided story about its own record
+- they **never lift a tier**: history cannot promote out of `AlwaysAsk` or
+  `Inexpressible`, for the same reason a glob cannot (§4f)
+
+**Still open?** `grep -rn 'audit\|AdjudicationRow' crates/tools/src/adjudicate.rs` — rows
+are written; nothing queries them when a decision is being made.
+
+**Where.** A lookup keyed the way `TaskDirection` is — `(tool, intent set, effect scope,
+region set)` — not on arguments, which change on every re-spelling. Then a field on
+`ModelBrief` carrying the matches with counts and ages, and the two rules above enforced
+where the brief is built rather than trusted to the prompt.
+
+**Done when.** A second call of the same shape shows the operator's earlier answer with
+its count and age; a denial appears alongside approvals; a test asserts a history of
+approvals cannot move an `AlwaysAsk` action; and the raw command text still never reaches
+the oracle — there is already a test for that last one and it caught a leak once.
+
+---
+
 # 2. NEEDS A NOD — small question first, then unblocked
+
+## N5 — the agent should know the view is hermetic, and propose the grant it needs
+
+Operator, 2026-09-11: *"i guess the agent should know it is hermetic and prompt me with
+his idea of shared data which i can allow."*
+
+**Measured 2026-09-11, and it is why this matters now.** The confined backend builds on
+this box — `bubblewrap 0.11.1`, cgroup entered, nested-namespaces held, no-new-privs
+held — and it is `writable + EXEC`, so confinement costs no file access. But its view is:
+
+    project /home/dead/Projects/letibot (rw); 19 read-only system paths;
+    $HOME is a FRESH TMPFS at /run/letibot/home
+      (so a build cache under $HOME is empty every run); no grants
+    egress: DENIED — no interfaces, no routes, no DNS
+
+So `cargo test` cannot run: `~/.cargo` is absent and there is no network to refetch it.
+That is the boundary working — *"a secret outside it is ABSENT, not denied"* — pointed at
+a toolchain instead of a secret.
+
+### Most of this exists
+
+`exec/confine.rs` already has the mechanism, and its discipline is the interesting part:
+
+- `Grant::{ReadOnly, ReadWrite, AgentSocket}`, each carrying a **`why`**, because *"a
+  grant nobody can explain is a grant nobody can revoke"*
+- `ViewSpec::granting()`, and `Boundary::describe` prints **the consequence next to the
+  grant** — `ReadOnly` means readable *into the transcript*, since §3's second half is not
+  enforced by that module
+- the `agent_from_env` precedent: when a key is needed there is no grant that binds it.
+  The socket is bound, the key is not, and *"the error path is the important half"* — the
+  refusal names the mechanism nobody built rather than quietly widening
+
+### What is missing is the loop, and it is three things
+
+1. **The model does not know it is hermetic.** The boundary description is a startup
+   banner for the operator; nothing puts it in the model's context, so a failure inside
+   the view looks like a broken toolchain rather than an absent one.
+2. **An absence does not say what would fix it.** `cargo: command not found` or a missing
+   registry should come back as *absent because outside the view*, with the grant that
+   would change it — the same shape as `edit`'s read-before-write refusal and R8's
+   near-miss, self-correcting in the same call.
+3. **Grants are construction-time.** `ViewSpec` is built before the spawn; nothing adds
+   one for the rest of a session after an operator approves it.
+
+### The questions, which is why this is a nod
+
+**Does a grant go through the gate like any other decision?** It should — the prompt is
+*"the model wants `~/.cargo` read-only, because: to run the workspace's tests"*, and
+`grants session` then makes it stick for the session, which is the machinery that already
+exists. The consequence line has to be in the prompt, not only in the banner: binding
+`~/.cargo` read-only means its contents can reach the transcript.
+
+**And which asks must be refused rather than prompted?** The ssh case is the precedent
+and the flow rule (§3) is the test: a grant that would make secret bytes *readable* is
+inexpressible, not adjudicable, however politely the model asks for it. A model that can
+propose grants must not be able to propose that one and have it arrive as an ordinary
+prompt. `NEVER_WRITE` is the first precheck and the tier mints no `Adjudicable` for an
+inexpressible action — so the pieces are there; what is undecided is that a
+model-proposed grant is routed through them rather than around them.
+
+**Smallest version that closes the loop for tests:** the view learns one grant shape
+(`ReadOnly` on a path), the model is told the view is hermetic and what it holds, an exec
+failure names the absence, and the grant prompt carries its `why` and its consequence.
+That is N4's answer too — see there for why a shaped runner is wanted rather than `bash`.
+
+---
 
 ## N4 — a coder can write a test and cannot run it
 
@@ -271,6 +424,21 @@ the test printed, so the result is bounded to *test-framework output* instead of
 at all*. That is a real reduction and not zero, which is precisely why it wants a decision
 rather than an implementation. Per-failure spill and truncation are available if the
 answer is "yes, but bounded".
+
+### Measured 2026-09-11, after this was filed — the blocker is not the choke point
+
+A confined backend **builds on this box** (bwrap 0.11.1, cgroup entered, nested-namespaces
+held) and is `writable + EXEC`, so it costs no file access. `needs_exec_backend()` is
+`matches!(self, Seat::Runner)` — one line from covering `Coder`.
+
+Two things stand in the way and neither is §5's transcript edge:
+
+1. **Nothing starts a process.** `m2_runner` seats `job_list`, `job_output`, `job_wait`,
+   `job_kill` and `monitor` — the verbs that *manage* a job. `bash` is the only one that
+   *starts* one, and it is off. A shaped starter is the gap.
+2. **`cargo` cannot run inside.** `$HOME` is a fresh tmpfs, so `~/.cargo` is absent, and
+   egress is denied so it cannot be refetched. See **N5** — the boundary already has a
+   grant mechanism and what is missing is the loop that proposes one.
 
 **If the answer is no**, the honest consequence should be written into the disclosure: a
 `coder` session states that it can write tests and not run them, so the operator runs them
