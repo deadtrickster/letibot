@@ -4,7 +4,7 @@
 //! than a handful of examples, because the renderer is a pure function and there is
 //! therefore no excuse for sampling it.
 
-use letibot_dialect::{ControlRole, ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
+use letibot_dialect::{ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
     Anomaly, GlmParser, GlmRenderer, TableDecoder, check_transcript, generation_prompt,
     glm_tool_json,
