@@ -1633,6 +1633,15 @@ pub struct Baseline {
     /// disclosure: **using** the key is an ask, and the operator's own framing is that
     /// it is fine when they said so.
     pub authenticating: Option<String>,
+    /// True when the class of this action was decided from a **path** —
+    /// [`Baseline::of_paths`], so `ActionClass::host` and `GateCall::path_is_inside`
+    /// own the decision and the [`Region`] values here are a second classifier's
+    /// opinion. That classifier cannot place a relative path, and reporting it said
+    /// `host_other` about a file inside the workspace (R9) — a misleading fact in a
+    /// refusal, which is worse than no fact. The one-line summary stays silent about
+    /// regions for such an action; the regions themselves are unchanged and still
+    /// drive the tier rules that consume them.
+    pub path_decided: bool,
 }
 
 impl Baseline {
@@ -1649,6 +1658,7 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            path_decided: false,
         };
 
         // 0. Can a name mean itself here? A grammar reads text; a shell resolves a
@@ -1847,6 +1857,7 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            path_decided: true,
         };
         b.intents.insert(if writes {
             Intent::WriteFile
@@ -1910,14 +1921,26 @@ impl Baseline {
     }
 
     /// A one-line summary for a human deciding, and for the audit row.
+    ///
+    /// R9: a path-decided action (write, edit, read — anything built by
+    /// [`Baseline::of_paths`]) has its class decided by `path_is_inside`, not by the
+    /// region set, and the region classifier cannot place a relative path — so
+    /// reporting the regions said `host_other` about a file inside the workspace.
+    /// The summary omits the clause entirely rather than repeat a fact nobody
+    /// decided on; a shell action's regions are its own reading and still reported.
     pub fn summary(&self) -> String {
         let intents: Vec<&str> = self.intents.iter().map(Intent::as_str).collect();
         let regions: Vec<&str> = self.regions.iter().map(Region::as_str).collect();
+        let regions_part = if self.path_decided {
+            String::new()
+        } else {
+            format!(" over [{}]", regions.join(" "))
+        };
         format!(
-            "{} — intents [{}] over [{}]{}",
+            "{} — intents [{}]{}{}",
             self.verdict.as_str(),
             intents.join(" "),
-            regions.join(" "),
+            regions_part,
             match &self.tier {
                 Tier::Auto => " — auto (a read inside the boundary)".to_string(),
                 Tier::MayApprove => String::new(),
@@ -2397,6 +2420,32 @@ mod tests {
         // Even as a shell command, the mention is an argument to a search, not a read.
         let y = b("echo 'how does .password-store work'");
         assert!(!y.tier.is_inexpressible(), "{:?} {:?}", y.tier, y.flows);
+    }
+
+    #[test]
+    fn a_path_decided_baseline_does_not_report_a_region_it_did_not_decide() {
+        // R9, seen live: an edit of `crates/tui/src/app.rs` rendered as
+        // "intents [write_file] over [host_other]". The class was decided by
+        // `path_is_inside` — inside — and the region classifier cannot place a
+        // relative path, so its `host_other` was a second opinion nobody asked
+        // for, presented as a fact. The summary is silent instead; the regions
+        // are unchanged for the rules that consume them.
+        let x = Baseline::of_paths(["crates/tui/src/app.rs"], true, false, &env());
+        let s = x.summary();
+        assert!(!s.contains("host_other"), "{s}");
+        assert!(!s.contains("over ["), "{s}");
+        assert!(s.contains("intents [write_file]"), "{s}");
+        assert!(x.regions.contains(&Region::HostOther));
+    }
+
+    #[test]
+    fn a_shell_baseline_still_reports_the_regions_it_read_itself() {
+        let y = b("cat /etc/hostname");
+        assert!(
+            y.summary().contains("over [system_config]"),
+            "{}",
+            y.summary()
+        );
     }
 
     #[test]

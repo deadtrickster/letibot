@@ -595,7 +595,7 @@ fn lines_containing(file: &FileText, token: &str) -> Vec<(usize, String)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{writable_harness, writable_harness_with_gate};
+    use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]
     fn an_edit_replaces_exactly_and_hands_the_head_both_sides() {
@@ -763,6 +763,24 @@ mod tests {
         assert!(out.contains("if !text.is_empty() {"), "{out}");
         assert!(out.contains("     2|"), "{out}");
         assert!(out.contains("nothing was written"), "{out}");
+    }
+
+    #[test]
+    fn a_gated_edit_inside_the_workspace_never_says_host_other() {
+        // R9's done-when, on the rendered payload rather than the class: a refusal
+        // must not repeat a region the deciding classifier never used. Seen live as
+        // "reading: ask — intents [write_file] over [host_other]" for a path the
+        // same gate had just classed as inside the project.
+        let mut h = writable_harness_with_gate(Some(deny_all()));
+        h.call("read", r#"{"path":"src/lib.rs"}"#);
+        let r = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
+        );
+        let out = r.render();
+        assert!(!out.contains("host_other"), "{out}");
+        assert!(out.contains("intents [write_file]"), "{out}");
+        assert!(out.contains("Nothing was executed"), "{out}");
     }
 
     #[test]

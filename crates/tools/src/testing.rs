@@ -186,6 +186,29 @@ pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
     )
 }
 
+/// The gate that refuses every gated call, with a workspace in its surroundings,
+/// so a refusal's payload can be asserted on: R9's test reads what the model
+/// would read.
+pub fn deny_all() -> Box<dyn crate::runtime::Gate> {
+    use crate::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
+    let surroundings =
+        crate::intent::Surroundings::from_env("/home/dead/Projects/letibot");
+    Box::new(
+        AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "test",
+            |req: &crate::adjudicate::AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny",
+                    "human:test",
+                    "the test harness refuses every gated call",
+                ))
+            },
+        )))
+        .with_surroundings(surroundings),
+    )
+}
+
 /// A session that can run commands, or the reason it cannot.
 ///
 /// **Deliberately a `Result` and not an `Option`.** A test that silently skipped
