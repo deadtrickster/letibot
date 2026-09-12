@@ -44,8 +44,8 @@ use super::confine::{ConfinePlan, Confinement, Unconfined};
 use super::jobs::{Job, JobId, JobState, Lifetime, OutputSlice};
 use super::monitor::Monitors;
 use super::scope::{
-    Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree, cmdline_of,
-    join_script,
+    Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
+    cmdline_of, join_script,
 };
 use letibot_transcript::Backgrounding;
 
@@ -350,6 +350,11 @@ pub struct HostProcesses {
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
     promotions: Mutex<Vec<Promotion>>,
+    /// The `PATH` this host was constructed with, set explicitly on every spawn
+    /// after `env_clear()`, so a bare name resolves through a `PATH` fixed at
+    /// seat time rather than whatever the environment carries when the command
+    /// runs (R10 / `docs/boundary-and-adjudication.md` §5, layer 1).
+    pinned_path: String,
     /// The monitors this session declared. **On the host, not beside it**,
     /// because a monitor's owner is one of this host's scopes and the reaping
     /// path has to be able to take its watchers with it.
@@ -434,6 +439,8 @@ impl HostProcesses {
             jobs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
             promotions: Mutex::new(Vec::new()),
+            pinned_path: std::env::var("PATH")
+                .unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
@@ -470,7 +477,9 @@ impl HostProcesses {
             let why = if pid == me {
                 "this is the process evaluating your command".to_string()
             } else {
-                format!("this is an ancestor of the process evaluating your command (depth {depth})")
+                format!(
+                    "this is an ancestor of the process evaluating your command (depth {depth})"
+                )
             };
             self.protect_with(pid, why, false);
             match parent_of(pid) {
@@ -536,7 +545,12 @@ impl HostProcesses {
     /// the pid it found, or `None` — and `None` is a real answer here, since the
     /// socket may be held by another user's process whose `/proc/<pid>/fd` this
     /// process may not read.
-    pub fn protect_listener(&self, port: u16, why: impl Into<String>, outlives: bool) -> Option<u32> {
+    pub fn protect_listener(
+        &self,
+        port: u16,
+        why: impl Into<String>,
+        outlives: bool,
+    ) -> Option<u32> {
         let pid = listener_pid(port)?;
         self.protect_with(pid, why.into(), outlives);
         Some(pid)
@@ -621,7 +635,9 @@ impl ProcessHost for HostProcesses {
                 if let Some(id) = s.as_ref() {
                     return Ok(id.clone());
                 }
-                let id = self.tree.open(ScopeKind::Session, &self.session_name, None)?;
+                let id = self
+                    .tree
+                    .open(ScopeKind::Session, &self.session_name, None)?;
                 *s = Some(id.clone());
                 Ok(id)
             }
@@ -634,7 +650,9 @@ impl ProcessHost for HostProcesses {
                 if let Some(id) = t.as_ref() {
                     return Ok(id.clone());
                 }
-                let id = self.tree.open(ScopeKind::Turn, &unique("t"), Some(&parent))?;
+                let id = self
+                    .tree
+                    .open(ScopeKind::Turn, &unique("t"), Some(&parent))?;
                 *t = Some(id.clone());
                 Ok(id)
             }
@@ -695,8 +713,22 @@ impl ProcessHost for HostProcesses {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // **Env hygiene is layer 1 (R10 / `docs/boundary-and-adjudication.md` §5).**
+        // The environment is cleared before anything is set, so `PATH` is the
+        // pinned one captured at construction and a bare name resolves through
+        // nothing else. `BASH_ENV`, `ENV`, `SHELLOPTS` and `BASHOPTS` are then
+        // dropped from the session's own pairs as well, because bash sources
+        // `$BASH_ENV` for *non-interactive* shells — a real injection point on a
+        // distribution where `/bin/sh` is bash, even though this box's dash reads
+        // `$ENV` only when interactive. The clear is what kills a variable
+        // planted in this process's own parent; the filter is what keeps a
+        // session's env configuration from re-arming it.
+        cmd.env_clear();
+        cmd.env("PATH", &self.pinned_path);
         for (k, v) in &req.env {
-            cmd.env(k, v);
+            if !matches!(k.as_str(), "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS") {
+                cmd.env(k, v);
+            }
         }
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -996,9 +1028,7 @@ impl ProcessHost for HostProcesses {
             }));
         }
 
-        let fresh = self
-            .tree
-            .open(to, &format!("job-{id}"), Some(&target))?;
+        let fresh = self.tree.open(to, &format!("job-{id}"), Some(&target))?;
         let migration = match self.tree.migrate(&life.scope, &fresh) {
             Ok(m) => m,
             Err(e) => {
@@ -1247,10 +1277,8 @@ mod tests {
 
     #[test]
     fn the_harness_protects_itself_without_being_asked() {
-        let h = HostProcesses::with_tree(
-            "/tmp",
-            Box::new(super::super::scope::NoScopes::new("test")),
-        );
+        let h =
+            HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
         let p = h.protected();
         assert!(
             p.iter().any(|e| e.pid == std::process::id()),
@@ -1259,7 +1287,10 @@ mod tests {
         // And the reason is a sentence a refusal can quote, not a category.
         let me = p.iter().find(|e| e.pid == std::process::id()).unwrap();
         assert!(me.why.contains("evaluating"), "{}", me.why);
-        assert!(p.len() > 1, "the parent chain is protected too, not just self");
+        assert!(
+            p.len() > 1,
+            "the parent chain is protected too, not just self"
+        );
     }
 
     #[test]
@@ -1298,5 +1329,51 @@ mod tests {
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
+    }
+
+    #[test]
+    fn a_bash_env_planted_in_the_parent_never_reaches_the_child() {
+        // R10 / `docs/boundary-and-adjudication.md` §5, layer 1. The spawn clears
+        // the environment before setting its own pairs, so nothing planted in
+        // this process — including `BASH_ENV`, which bash sources even for
+        // non-interactive shells — can reach the child, and `PATH` is the pinned
+        // one rather than whatever the parent carries at spawn time.
+        let root = std::env::temp_dir().join(format!("letibot-r10-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Edition 2024: touching the process environment is unsafe, and this is
+        // the one test that needs to. `env_clear()` in the spawn path undoes it
+        // for every child this host starts.
+        unsafe {
+            std::env::set_var("BASH_ENV", "/tmp/letibot-absent.rc");
+            std::env::set_var("SHELLOPTS", "xtrace");
+        }
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        let id = h
+            .spawn(&SpawnRequest {
+                // Both printf and the `${var-}` expansion are builtins, so the
+                // assertion does not depend on anything outside the pinned PATH.
+                command: "printf 'be=%s\\n' \"${BASH_ENV-}\"; printf 'path=%s\\n' \"$PATH\"".into(),
+                cwd: "/".into(),
+                scope: ScopeKind::Turn,
+                scope_name: None,
+                background: false,
+                // A session's env configuration must not re-arm what the clear
+                // removed: the four are filtered even when asked for by name.
+                env: vec![("BASH_ENV".into(), "/tmp/letibot-absent.rc".into())],
+            })
+            .unwrap();
+        let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();
+        let Waited::Happened { state, .. } = waited else {
+            panic!("the job did not finish inside 30s: {waited:?}");
+        };
+        assert_eq!(
+            state,
+            Some(JobState::Exited { code: 0 }),
+            "the child exited nonzero"
+        );
+        let out = h.output(&id, 0, 4096).unwrap();
+        let text = String::from_utf8(out.bytes).unwrap();
+        assert!(text.starts_with("be=\npath=/"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -2089,27 +2089,37 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
 ///
 /// `docs/boundary-and-adjudication.md` §5 states the requirement rather than
 /// assuming it, *"because a requirement crosses a merge where an assumption does
-/// not"*: before `Surroundings::with_pinned_shell` can honestly be called, the
-/// spawn path must `env_clear()` before its explicit pairs so `PATH` is pinned
-/// rather than inherited, and must unset `BASH_ENV`, `ENV`, `SHELLOPTS` and
-/// `BASHOPTS` — `BASH_ENV` **is** sourced by bash for non-interactive shells, so a
+/// not"*: `Surroundings::with_pinned_shell` is honest only where the spawn path
+/// `env_clear()`s before its explicit pairs so `PATH` is pinned rather than
+/// inherited, and unsets `BASH_ENV`, `ENV`, `SHELLOPTS` and `BASHOPTS` —
+/// `BASH_ENV` **is** sourced by bash for non-interactive shells, so a
 /// distribution where `/bin/sh` is bash has a real injection point.
 ///
-/// This daemon does not verify either, so it does not claim either.
-/// [`letibot_tools::Surroundings::default`] leaves
-/// [`letibot_tools::ShellTrust`] at `Unknown`, under which a **bare** command name
-/// is unresolved and the call is `not_run` — a resolved parse is not a resolved
-/// meaning, and a shell resolves a bare name through aliases, functions and `PATH`,
-/// none of which are in the text. An absolute path is not shadowable and is
-/// unaffected, so the gap is small and specific.
+/// Since R10 the host spawn does exactly that — `HostProcesses` pins the `PATH`
+/// it was constructed with, clears the rest, filters the four by name, and the
+/// test `a_bash_env_planted_in_the_parent_never_reaches_the_child` holds the
+/// claim — so a seat with an exec backend declares the pin. A seat without one
+/// spawns no shell at all, so there is nothing to claim and `Unknown` stays,
+/// under which a **bare** command name is unresolved and the call is `not_run` —
+/// the fail-closed direction. A resolved parse is not a resolved meaning, and a
+/// shell resolves a bare name through aliases, functions and `PATH`, none of
+/// which are in the text.
 ///
-/// What is filled in is the part this daemon **does** know: the workspace root and
-/// `$HOME`, both of which layer A needs to place a path.
-/// [`letibot_tools::Surroundings::from_env`] is the constructor that says reading
-/// the environment is a decision at a call site, and it leaves the shell
-/// `Unknown` — which is the honest answer here.
+/// What is filled in either way is the part this daemon **does** know: the
+/// workspace root and `$HOME`, both of which layer A needs to place a path.
+/// [`letibot_tools::Surroundings::from_env`] is the constructor that says
+/// reading the environment is a decision at a call site.
 fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
-    letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
+    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
+    if cfg.seat.needs_exec_backend() {
+        env.with_pinned_shell(
+            "the exec backend spawns /bin/sh -c, non-interactive, with the \
+             environment cleared before its own pairs; PATH is the one fixed at \
+             seat time and BASH_ENV, ENV, SHELLOPTS, BASHOPTS are never set",
+        )
+    } else {
+        env
+    }
 }
 
 fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
@@ -2153,6 +2163,28 @@ mod tests {
         let l = Arc::new(l);
         drop(IntentSink::new(l.clone(), letibot_tools::NullToolSink));
         Arc::try_unwrap(l).expect("the sink was just dropped")
+    }
+
+    #[test]
+    fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
+        // R10's wiring. The pin claim rides on the host spawn's env hygiene —
+        // `a_bash_env_planted_in_the_parent_never_reaches_the_child` in
+        // `letibot-tools` holds that — so a seat with an exec backend declares
+        // it, and a seat without one leaves `Unknown`, under which a bare name
+        // is `not_run`: the fail-closed direction.
+        let mut cfg = Config::for_this_box(std::env::temp_dir());
+        cfg.seat = Seat::Runner;
+        match surroundings_for(&cfg).shell {
+            letibot_tools::ShellTrust::Pinned { how } => {
+                assert!(how.contains("cleared before its own pairs"), "{how}");
+            }
+            other => panic!("a runner seat must declare the pin, got {other:?}"),
+        }
+        cfg.seat = Seat::Orchestrator;
+        assert_eq!(
+            surroundings_for(&cfg).shell,
+            letibot_tools::ShellTrust::Unknown
+        );
     }
 
     /// **The stop must not blame the model for working.**
