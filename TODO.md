@@ -154,7 +154,7 @@ stream mid-reasoning, and the daemon's disclosure names the check.
 
 ---
 
-## R8 — `edit`'s near-miss recovery is defeated by exactly the error this model makes
+## R8 — `edit`'s near-miss recovery is defeated by exactly the error this model makes — **SETTLED 2026-09-12, see TODO-settled.md (R8) — ad23f39**
 
 **Measured 2026-09-11**, in the live letibot session, twice in one turn.
 
@@ -227,7 +227,7 @@ none, and never `host_other`. A test on the rendered refusal payload, not on the
 
 ---
 
-## R10 — layer 1's two env-hygiene lines, which `bash` waits on
+## R10 — layer 1's two env-hygiene lines, which `bash` waits on — **SETTLED 2026-09-12, see TODO-settled.md (R10) — 61afc57**
 
 `docs/boundary-and-adjudication.md` §5 states these as **requirements rather than
 assumptions**, *"because a requirement crosses a merge where an assumption does not"* —

@@ -627,3 +627,54 @@ without capabilities, ptrace_scope 1), so the evidence is client-side storage pl
 sending code, which determines the wire bytes deterministically. Two subagents died
 mid-turn on this task — the control-token emission hazard R7 names — leaving nothing;
 the third attempt wrote the evidence file incrementally as it went and was done by hand.
+
+---
+
+## R8 — `edit`'s near-miss recovery vs the missing-space artefact — **SETTLED 2026-09-12 — ad23f39**
+
+**The defect was narrower than "find a shorter token".** The model sent
+`if!text.is_empty() {` where the file holds `if !text.is_empty() {`. The missing space
+fuses `if` and `!text` into one token that occurs nowhere, and `anchor_lines` took a
+single longest token with no fallback — the refusal then dumped the top of the file,
+which for a 5k-line file is noise, not a hint. A fallback to the *next-longest token*
+cannot save this case: there are no other tokens over three characters. The fallback has
+to be able to cut into the merged token.
+
+`anchor_lines` now tries whole whitespace-delimited tokens longest-first, and only when
+none occurs anywhere splits each on non-alphanumeric boundaries and tries the pieces
+longest-first (minimum four characters). `text` and `is_empty` land on the line the model
+meant. The near-miss test that previously passed through the file-top dump now exercises
+the anchor branch; the new test asserts the R8 case verbatim — the real line and its
+number come back, nothing is written.
+
+Done-when: an `old_string` differing from a real line by one inserted whitespace
+character returns that line and its number — asserted on the `if !text` case verbatim.
+Verified by `cargo test -p letibot-tools --lib` (395/396 green before/after, new and
+upgraded tests both pass). Commit carries a live agent's rustfmt reflow of the file.
+
+---
+
+## R10 — layer 1's two env-hygiene lines in the host spawn — **SETTLED 2026-09-12 — 61afc57**
+
+**Done-when, all four clauses.** (1) The spawn `env_clear()`s before setting anything.
+One wrinkle the filing did not name: the exec tool passes `env: vec![]`, so a bare clear
+leaves the child with no `PATH` at all — every bare name would fail with ENOENT. So
+`HostProcesses` captures the parent's `PATH` at construction ("seat time") and sets it
+explicitly per spawn: pinned for the session's life, immune to mid-session environment
+change, with a fallback default when the parent has none. (2) `BASH_ENV`, `ENV`,
+`SHELLOPTS`, `BASHOPTS` are filtered even from a session's own env pairs — the clear
+kills what the parent planted, the filter keeps the configuration from re-arming it.
+(3) `a_bash_env_planted_in_the_parent_never_reaches_the_child` plants `BASH_ENV` in the
+test process, re-adds it via the request's pairs, spawns for real through a real cgroup
+tree, and asserts the child sees neither and a pinned `PATH` (both `printf` and
+`${var-}` are dash builtins, so the assertion depends on nothing outside the pin).
+(4) `surroundings_for` in harnessd now calls `Surroundings::with_pinned_shell` — the
+call previously only described — for seats with an exec backend, with a falsifying
+`how` sentence; seats without one keep `Unknown`, under which a bare name is `not_run`.
+`the_shell_is_declared_pinned_only_where_an_exec_backend_exists` holds the wiring.
+
+Verified by `cargo test -p letibot-tools --lib` (396 green) and
+`cargo test -p letibot-harnessd --lib` (46 green). harnessd's harness.rs was staged
+surgically: the commit contains HEAD plus the `surroundings_for` wiring and its test
+only; the worktree's other harness.rs hunks are a live agent's in-flight work and are
+deliberately absent from 61afc57.
