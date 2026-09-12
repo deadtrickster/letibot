@@ -194,7 +194,7 @@ self-correcting **in the same call**.
 
 ---
 
-## R9 — a refusal says `host_other` about a path inside the workspace
+## R9 — a refusal says `host_other` about a path inside the workspace — **SETTLED 2026-09-12, see TODO-settled.md (R9) — 545d9d7**
 
 **Seen 2026-09-10** in the live session, on an `edit` of `crates/tui/src/app.rs`:
 

@@ -678,3 +678,30 @@ Verified by `cargo test -p letibot-tools --lib` (396 green) and
 surgically: the commit contains HEAD plus the `surroundings_for` wiring and its test
 only; the worktree's other harness.rs hunks are a live agent's in-flight work and are
 deliberately absent from 61afc57.
+
+---
+
+## R9 — a refusal says `host_other` about a path inside the workspace — **SETTLED 2026-09-12 — 545d9d7**
+
+**Root cause, narrower than "region_of is wrong".** `region_of` places absolute paths
+under the workspace fine; what it cannot place is a **relative** path — `under("crates/
+tui/src/app.rs", "/home/dead/Projects/letibot")` is false, so the path fell through
+every prefix to `Region::HostOther`. The deciding classifier (`path_is_inside`) had it
+right; the summary printed the other one's opinion.
+
+**The filing offered two fixes and preferred the second; that is the one taken.**
+Option 1 (teach `region_of` the workspace) would have fixed the report by changing
+**decisions**: `Region` feeds `settle`'s all-workspace Auto rule and the
+Destroy-outside trigger, so relative shell arguments would have started satisfying
+rules they currently fail — a policy widening that deserves its own analysis, not a
+rider on a reporting fix. Option 2: `Baseline::of_paths` sets `path_decided`, and
+`summary()` omits the `over [...]` clause for such actions. The regions themselves are
+unchanged and still drive the tier rules.
+
+Done-when met on the rendered payload: a gated `edit` of `src/lib.rs` under a deny
+gate renders `reading: ask — intents [write_file]` — no `host_other`, nothing lost
+that was decided. New tests: the path-decided summary is silent while its regions
+stay intact internally; a shell baseline still reports `over [system_config]`; the
+harness-level refusal test. A `deny_all` fixture (with a workspace in its
+surroundings) was added to testing.rs. Verified by tools `--lib` 399 green, the full
+workspace `--lib` battery green, harnessd `resume` green, fidelity gate GATE PASS.
