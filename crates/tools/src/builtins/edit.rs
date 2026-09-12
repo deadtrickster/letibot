@@ -24,9 +24,7 @@
 use serde_json::Value;
 
 use crate::backend::BackendError;
-use crate::edit::{
-    Candidate, FileEdit, FileText, changed_span, display_lines, occurrences, probe,
-};
+use crate::edit::{Candidate, FileEdit, FileText, changed_span, display_lines, occurrences, probe};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -549,15 +547,44 @@ fn numbered(text: &str) -> String {
 /// whitespace-delimited token of `old_string`'s first line"* and reports the
 /// first line containing it. Same idea, and every line rather than the first,
 /// because "it occurs eleven times" is itself the answer sometimes.
+///
+/// With one refinement this model needs (R8): a missing space fuses two tokens
+/// into one that occurs nowhere — `if!text.is_empty()` — and no other whole
+/// token may remain to fall back on. So whole tokens are tried longest-first,
+/// and only if none occurs anywhere is each split on non-alphanumeric
+/// boundaries and the pieces tried the same way: `text` and `is_empty` land
+/// on the line the model meant.
 fn anchor_lines(file: &FileText, first: &str) -> Vec<(usize, String)> {
-    let Some(token) = first
-        .split_whitespace()
-        .filter(|t| t.len() >= 3)
-        .max_by_key(|t| t.len())
-    else {
-        return Vec::new();
-    };
+    let mut tokens: Vec<&str> = first.split_whitespace().filter(|t| t.len() >= 3).collect();
+    tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    tokens.dedup();
 
+    for token in &tokens {
+        let hits = lines_containing(file, token);
+        if !hits.is_empty() {
+            return hits;
+        }
+    }
+
+    let mut pieces: Vec<&str> = tokens
+        .iter()
+        .flat_map(|t| t.split(|c: char| !c.is_alphanumeric()))
+        .filter(|p| p.len() >= 4)
+        .collect();
+    pieces.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    pieces.dedup();
+
+    for piece in &pieces {
+        let hits = lines_containing(file, piece);
+        if !hits.is_empty() {
+            return hits;
+        }
+    }
+
+    Vec::new()
+}
+
+fn lines_containing(file: &FileText, token: &str) -> Vec<(usize, String)> {
     file.lf
         .lines()
         .enumerate()
@@ -598,7 +625,10 @@ mod tests {
         let out = r.render();
         assert!(out.contains("has not read"), "{out}");
         assert!(out.contains("     1| use std::io;"), "{out}");
-        assert!(h.read_file("src/lib.rs").contains("parse_args"), "untouched");
+        assert!(
+            h.read_file("src/lib.rs").contains("parse_args"),
+            "untouched"
+        );
 
         // …and the retry, with the same arguments, works. That is the whole point
         // of recording on the refusal.
@@ -635,7 +665,10 @@ mod tests {
         );
         let out = r.render();
         assert!(out.contains("occurs 2 times"), "{out}");
-        assert!(out.contains("at line 1:") && out.contains("at line 3:"), "{out}");
+        assert!(
+            out.contains("at line 1:") && out.contains("at line 3:"),
+            "{out}"
+        );
         assert!(out.contains("replace_all"), "{out}");
         assert_eq!(
             h.read_file("dup.rs"),
@@ -654,7 +687,10 @@ mod tests {
             r#"{"path":"dup.rs","old_string":"let x = 1;","new_string":"let x = 3;","replace_all":true}"#,
         );
         assert!(r.is_grounded(), "{}", r.render());
-        assert_eq!(h.read_file("dup.rs"), "let x = 3;\nlet y = 2;\nlet x = 3;\n");
+        assert_eq!(
+            h.read_file("dup.rs"),
+            "let x = 3;\nlet y = 2;\nlet x = 3;\n"
+        );
         assert_eq!(r.edit.as_ref().unwrap().replacements, 2);
     }
 
@@ -703,6 +739,29 @@ mod tests {
         );
         let out = r.render();
         assert!(out.contains("TokenLedger"), "{out}");
+        assert!(out.contains("nothing was written"), "{out}");
+    }
+
+    #[test]
+    fn a_missing_space_merges_two_tokens_and_a_shorter_anchor_still_lands() {
+        // R8, verbatim from the live session: the model sent `if!text.is_empty() {`
+        // where the file holds `if !text.is_empty() {`. probe() cannot re-insert
+        // the missing character and the merged token occurs nowhere, so the only
+        // way back to the right line is a shorter anchor carved out of that token.
+        let mut h = writable_harness();
+        h.write_file(
+            "src/gate.rs",
+            "pub fn gate(text: &str) -> bool {\n    if !text.is_empty() {\n        return true;\n    }\n    false\n}\n",
+        );
+        h.call("read", r#"{"path":"src/gate.rs"}"#);
+        let r = h.call(
+            "edit",
+            r#"{"path":"src/gate.rs","old_string":"    if!text.is_empty() {\n        return true;\n    }","new_string":"x"}"#,
+        );
+        let out = r.render();
+        assert!(out.contains("does occur"), "{out}");
+        assert!(out.contains("if !text.is_empty() {"), "{out}");
+        assert!(out.contains("     2|"), "{out}");
         assert!(out.contains("nothing was written"), "{out}");
     }
 
