@@ -426,4 +426,3 @@ fn class_hit(item: &ClassItem, c: char, ci: bool) -> bool {
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
-

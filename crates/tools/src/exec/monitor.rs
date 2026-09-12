@@ -296,7 +296,10 @@ impl PathFacts {
             return None;
         }
         if self.len != base.len {
-            return Some(format!("its size went from {} to {} bytes", base.len, self.len));
+            return Some(format!(
+                "its size went from {} to {} bytes",
+                base.len, self.len
+            ));
         }
         if self.mtime != base.mtime {
             return Some("its modification time moved".into());
@@ -396,20 +399,16 @@ impl Monitor {
                 self.seen_populated.store(true, Ordering::Relaxed);
                 None
             }
-            Probe::Path { path, baseline } => {
-                PathFacts::read(path).changed_from(baseline).map(|w| {
-                    format!("`{}`: {w}", path.display())
-                })
-            }
+            Probe::Path { path, baseline } => PathFacts::read(path)
+                .changed_from(baseline)
+                .map(|w| format!("`{}`: {w}", path.display())),
             Probe::Port { port, want } => {
                 let now = if super::host::port_is_listening(*port) {
                     PortState::Listening
                 } else {
                     PortState::Closed
                 };
-                (now == *want).then(|| {
-                    format!("loopback port {port} is {}", want.as_str())
-                })
+                (now == *want).then(|| format!("loopback port {port} is {}", want.as_str()))
             }
         }
     }
@@ -604,9 +603,7 @@ impl Monitors {
         let probe = match (&watch, job) {
             (Watch::Job(_), Some(j)) => Probe::Job(j),
             (Watch::Job(id), None) => {
-                return Err(Box::new(MonitorError::NoSuchJob {
-                    name: id.0.clone(),
-                }));
+                return Err(Box::new(MonitorError::NoSuchJob { name: id.0.clone() }));
             }
             (Watch::Scope(s), _) => Probe::Scope(s.clone()),
             (Watch::Path(p), _) => Probe::Path {
@@ -739,14 +736,21 @@ impl Monitors {
     /// one that just did its job.
     pub fn get(&self, name: &str) -> Option<Arc<Monitor>> {
         let reg = self.inner.lock().expect("monitors");
-        reg.live.get(name).cloned().or_else(|| {
-            reg.history.iter().rev().find(|m| m.name == name).cloned()
-        })
+        reg.live
+            .get(name)
+            .cloned()
+            .or_else(|| reg.history.iter().rev().find(|m| m.name == name).cloned())
     }
 
     /// The names watching right now, for a refusal that has to say what there is.
     pub fn live_names(&self) -> Vec<String> {
-        self.inner.lock().expect("monitors").live.keys().cloned().collect()
+        self.inner
+            .lock()
+            .expect("monitors")
+            .live
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// **The wake seam.** Block until a monitor settles, or until the deadline.
@@ -779,7 +783,10 @@ impl Monitors {
         let mut settled = Vec::new();
         let live: Vec<(String, Arc<Monitor>)> = {
             let reg = self.inner.lock().expect("monitors");
-            reg.live.iter().map(|(n, m)| (n.clone(), Arc::clone(m))).collect()
+            reg.live
+                .iter()
+                .map(|(n, m)| (n.clone(), Arc::clone(m)))
+                .collect()
         };
         for (name, m) in live {
             // The owner first. A monitor whose scope is gone must not fire on a
@@ -891,7 +898,14 @@ mod tests {
         )
         .expect("first");
         let e = ms
-            .declare("build", scope(&dir), Watch::Path(p), None, "turn-2", DEFAULT_TTL)
+            .declare(
+                "build",
+                scope(&dir),
+                Watch::Path(p),
+                None,
+                "turn-2",
+                DEFAULT_TTL,
+            )
             .unwrap_err();
         let msg = e.to_string();
         assert!(msg.contains("already watching"), "{msg}");
@@ -910,8 +924,15 @@ mod tests {
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
         let p = dir.join("out.log");
-        ms.declare("log", scope(&dir), Watch::Path(p.clone()), None, "turn-1", DEFAULT_TTL)
-            .unwrap();
+        ms.declare(
+            "log",
+            scope(&dir),
+            Watch::Path(p.clone()),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+        )
+        .unwrap();
         assert!(ms.tick().is_empty(), "nothing has changed yet");
         std::fs::write(&p, b"hello").unwrap();
         let fired = ms.tick();
@@ -981,15 +1002,25 @@ mod tests {
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
         let owner = scope(&dir);
-        ms.declare("w", owner.clone(), Watch::Path(dir.join("x")), None, "turn-1", DEFAULT_TTL)
-            .unwrap();
+        ms.declare(
+            "w",
+            owner.clone(),
+            Watch::Path(dir.join("x")),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+        )
+        .unwrap();
         let retired = ms.retire_under(&owner);
         assert_eq!(retired.len(), 1);
         match retired[0].settled().unwrap() {
             Fired::OwnerEnded { scope, .. } => assert_eq!(scope, owner),
             other => panic!("{other:?}"),
         }
-        assert!(ms.list().is_empty(), "a retired monitor is not still listed");
+        assert!(
+            ms.list().is_empty(),
+            "a retired monitor is not still listed"
+        );
         assert_eq!(ms.history().len(), 1, "and it is still in the record");
         let _ = std::fs::remove_dir_all(&dir);
     }

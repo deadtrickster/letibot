@@ -80,12 +80,12 @@ pub mod predicate;
 pub mod scope;
 
 pub use confine::{
-    Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, NoConfinement, Namespace,
+    Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace, NoConfinement,
     NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
 };
 pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
-pub use monitor::{Fired, Monitor, MonitorError, Monitors, PortState, Watch};
 pub use jobs::{JobId, JobState, OutputSlice};
+pub use monitor::{Fired, Monitor, MonitorError, Monitors, PortState, Watch};
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
 

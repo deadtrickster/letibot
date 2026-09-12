@@ -370,8 +370,7 @@ impl Tool for Bash {
             // model asked for — and nothing blocks, because the turn is what the
             // operator is waiting on.
             JobState::Running => {
-                let promoted =
-                    host.promote(&id, ScopeKind::Session, None, Backgrounding::Promoted);
+                let promoted = host.promote(&id, ScopeKind::Session, None, Backgrounding::Promoted);
                 let next = format!(
                     "call `job_wait` with job=\"{id}\" and a `timeout_ms` to block \
                      until it finishes, or `job_output` with job=\"{id}\" to read what \
@@ -439,7 +438,9 @@ impl Tool for Bash {
             // Checked before the exit code is read as an answer, because that is
             // exactly the reading it must not get.
             _ if launcher_failed.is_some() => Invocation::failed(
-                format!("`{id}`'s boundary did not come up, so nothing can be concluded from its exit"),
+                format!(
+                    "`{id}`'s boundary did not come up, so nothing can be concluded from its exit"
+                ),
                 format!(
                     "{body}\n\n{}\n\nThis is `not_run` in substance: the confinement is \
                      the thing that failed, and running the command without it is not \
@@ -495,9 +496,7 @@ fn wait_with_progress(
             break;
         }
         match host.wait_job(id, step.min(left)) {
-            Ok(Waited::Happened {
-                state: Some(s), ..
-            }) => return s,
+            Ok(Waited::Happened { state: Some(s), .. }) => return s,
             Ok(_) => {}
             Err(_) => break,
         }

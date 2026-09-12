@@ -298,7 +298,8 @@ fn render_results(call_id: &str, q: &SearchQuery, r: SearchResults) -> Invocatio
             listing.push_str(&format!("   {}\n", h.snippet.trim()));
         }
     }
-    let (quarantined, note) = super::quarantine(call_id, &format!("{} results", r.provider), &listing);
+    let (quarantined, note) =
+        super::quarantine(call_id, &format!("{} results", r.provider), &listing);
     if let Some(n) = note {
         notes.push(n);
     }
@@ -388,7 +389,10 @@ pub enum FetchError {
     /// that is not on an allow-list. **A decision, and it is reported as one.**
     Refused(String),
     /// The server answered, and not with a page.
-    Status { code: u16, url: String },
+    Status {
+        code: u16,
+        url: String,
+    },
     Transport(String),
 }
 
@@ -593,8 +597,7 @@ fn check_url(url: &str) -> Result<(), UrlRefusal> {
     if authority.is_empty() {
         return Err(UrlRefusal {
             reason: "the address has no host".into(),
-            guidance: "nothing was requested. Give the full address, including the host."
-                .into(),
+            guidance: "nothing was requested. Give the full address, including the host.".into(),
         });
     }
     Ok(())
@@ -622,7 +625,10 @@ fn render_page(call_id: &str, req: &FetchRequest, page: FetchedPage) -> Invocati
         // claim about the page, so it is an abstention and not an `Ok` with an
         // empty body.
         let mut inv = Invocation::abstained(
-            format!("{} returned {} with no readable text", page.final_url, page.status),
+            format!(
+                "{} returned {} with no readable text",
+                page.final_url, page.status
+            ),
             format!(
                 "fetched {} — {} {}, {} bytes, and no text survived rendering as {}.\n\
                  The request happened; there is nothing here to read. A different \

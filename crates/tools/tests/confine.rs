@@ -19,12 +19,12 @@
 use std::path::{Path, PathBuf};
 
 use letibot_tools::exec::confine::{
-    BWRAP_ENV, Boundary, ConfinePlan, Confinement, Egress, Grant, HomeView, NoConfinement,
-    Namespace, NsState, Seal, SealKind, Unconfined, ViewSpec,
+    BWRAP_ENV, Boundary, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace,
+    NoConfinement, NsState, Seal, SealKind, Unconfined, ViewSpec,
 };
 use letibot_tools::exec::{Bwrap, ExecError, HostProcesses, ProcessHost, ScopeKind, SpawnRequest};
-use letibot_transcript::ToolOutcome;
 use letibot_tools::testing::{confined_harness, confined_harness_with};
+use letibot_transcript::ToolOutcome;
 
 /// The branch a test took, printed so a green run says which half of the world it
 /// was measured against.
@@ -146,7 +146,9 @@ fn a_host_with_no_confinement_refuses_every_spawn_and_starts_nothing() {
 fn a_bash_call_on_a_refusing_boundary_says_nothing_ran_and_is_not_a_denial() {
     let Ok(host) = HostProcesses::confined(
         std::env::temp_dir(),
-        Box::new(NoConfinement::new("`bwrap` is not on `PATH` in this fixture")),
+        Box::new(NoConfinement::new(
+            "`bwrap` is not on `PATH` in this fixture",
+        )),
     ) else {
         eprintln!("no cgroup v2 subtree here");
         return;
@@ -325,12 +327,22 @@ fn unconfined_is_a_declared_state_and_not_an_absent_one() {
     assert!(!d.contains("refuses to exec"), "{d}");
 
     let refusing = Unconfined::because("x");
-    assert!(refusing
-        .wrap(&ConfinePlan { cwd: Path::new("/"), env: &[] })
-        .is_ok());
-    assert!(NoConfinement::new("y")
-        .wrap(&ConfinePlan { cwd: Path::new("/"), env: &[] })
-        .is_err());
+    assert!(
+        refusing
+            .wrap(&ConfinePlan {
+                cwd: Path::new("/"),
+                env: &[]
+            })
+            .is_ok()
+    );
+    assert!(
+        NoConfinement::new("y")
+            .wrap(&ConfinePlan {
+                cwd: Path::new("/"),
+                env: &[]
+            })
+            .is_err()
+    );
 }
 
 // ------------------------------- rule 3: the mount view is the enforcement point
@@ -738,7 +750,11 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
     std::fs::create_dir_all(&dir).expect("dir");
     let keydir = dir.join("keys");
     std::fs::create_dir_all(&keydir).expect("keydir");
-    std::fs::write(keydir.join("id_rsa"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").expect("key");
+    std::fs::write(
+        keydir.join("id_rsa"),
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+    )
+    .expect("key");
     let sock = dir.join("agent.sock");
     let _ = std::fs::remove_file(&sock);
     let listener = std::os::unix::net::UnixListener::bind(&sock).expect("agent socket");
@@ -784,7 +800,10 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
     drop(listener);
     let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(text.contains("is-a-socket"), "the agent must be usable: {text}");
+    assert!(
+        text.contains("is-a-socket"),
+        "the agent must be usable: {text}"
+    );
     assert!(
         text.contains("/run/letibot/agent.sock"),
         "at a fixed path, so the operator's own socket path does not travel: {text}"
@@ -893,11 +912,17 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
         })
         .expect("spawn");
     let _ = host.wait_job(&id, std::time::Duration::from_secs(20));
-    let text = host.output(&id, 0, usize::MAX).map(|o| o.text()).unwrap_or_default();
+    let text = host
+        .output(&id, 0, usize::MAX)
+        .map(|o| o.text())
+        .unwrap_or_default();
     unsafe { std::env::remove_var("LETIBOT_TEST_FAKE_TOKEN") };
     let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(text.contains("token=absent"), "the token must not cross: {text}");
+    assert!(
+        text.contains("token=absent"),
+        "the token must not cross: {text}"
+    );
     assert!(!text.contains("s3cr3t-value"), "{text}");
     // The keep-list survived, so a command is still a command...
     assert!(text.contains("path=set"), "{text}");
@@ -920,8 +945,16 @@ fn a_tmpfs_home_is_declared_with_its_cost_and_a_declared_home_persists() {
     };
     // The cost is stated, because a build cache that is empty every run is a
     // slowdown somebody will otherwise spend an evening on.
-    assert!(tmpfs.describe().contains("FRESH TMPFS"), "{}", tmpfs.describe());
-    assert!(tmpfs.describe().contains("build cache"), "{}", tmpfs.describe());
+    assert!(
+        tmpfs.describe().contains("FRESH TMPFS"),
+        "{}",
+        tmpfs.describe()
+    );
+    assert!(
+        tmpfs.describe().contains("build cache"),
+        "{}",
+        tmpfs.describe()
+    );
 
     let declared = Bwrap::probe(
         ViewSpec::project_only(&project).with_home(HomeView::Dir(home.clone())),

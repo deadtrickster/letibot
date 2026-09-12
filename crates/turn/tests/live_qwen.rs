@@ -50,7 +50,21 @@ fn endpoint() -> Endpoint {
     let url =
         std::env::var("LETIBOT_COMPLETION_URL").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let (host, port) = url.rsplit_once(':').expect("HOST:PORT");
-    Endpoint::new(host, port.parse().expect("port"))
+    let ep = Endpoint::new(host, port.parse().expect("port"));
+    // Ask what is actually behind the port before tokenising for it. These three
+    // model services are singletons that evict each other and have shared `:8080`,
+    // so the wrong one being up is the ordinary case rather than the strange one —
+    // and the failure it produces (`400 Prompt contains invalid tokens`) names the
+    // tokenizer for what is really a different model. Once per binary.
+    static CHECKED: OnceLock<()> = OnceLock::new();
+    CHECKED.get_or_init(|| {
+        letibot_turn::serving::expect(
+            &ep,
+            &std::env::var("LETIBOT_MODEL_ALIAS")
+                .unwrap_or_else(|_| "qwen-3.8-flash-next".to_string()),
+        )
+    });
+    ep
 }
 
 fn vocab() -> &'static Vocab {

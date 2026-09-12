@@ -55,6 +55,7 @@ pub mod metrics;
 pub mod prefix;
 pub mod renderer;
 pub mod resume;
+pub mod serving;
 pub mod steering;
 pub mod stream;
 

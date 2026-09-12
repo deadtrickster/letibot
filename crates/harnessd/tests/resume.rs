@@ -62,25 +62,52 @@ fn store_copy(tag: &str) -> Option<(TempDir, std::path::PathBuf)> {
     Some((dir, dst))
 }
 
-/// The session in the copied store with the most rows, and how many.
+/// The session in the copied store with the most rows **that this test's dialect
+/// could actually resume**, and how many.
+///
+/// The filter is not tidiness. A session's tokens came out of one renderer, and
+/// `Harness::open` refuses to append another's bytes to them — correctly, and by
+/// design. This file configures [`Dialect::Qwen`], so picking the biggest session
+/// outright measures nothing the moment the operator's newest sessions are GLM:
+/// the run fails on the guard rather than on resume, and the failure names a
+/// dialect mismatch that is the test's own doing.
+///
+/// Selecting by model here keeps the vocabulary right too — `Config::for_this_box`
+/// names the qwen GGUF, and a GLM session resumed against it would be the same
+/// defect one layer down.
 fn biggest(path: &std::path::Path) -> (String, u32, String) {
     let store = Store::open(path).expect("opening the copy");
-    let s = store
-        .list_sessions()
-        .expect("listing")
+    let all = store.list_sessions().expect("listing");
+    let total = all.len();
+    let s = all
         .into_iter()
+        .filter(|s| Dialect::parse(&s.model_id) == Some(WANTED))
         .max_by_key(|s| s.items)
-        .expect("the store has sessions");
+        .unwrap_or_else(|| {
+            panic!(
+                "none of the {total} stored session(s) was recorded under `{}`, so there \
+                 is nothing this test can resume. That is a fact about the store and not \
+                 a pass: run a session on that model, or set LETIBOT_STORE to a store \
+                 that has one.",
+                WANTED.name()
+            )
+        });
     assert!(
         s.items > 0,
-        "every stored session is empty, so this measured nothing"
+        "every stored `{}` session is empty, so this measured nothing",
+        WANTED.name()
     );
     (s.id, s.items, s.workspace_root)
 }
 
+/// The dialect this file configures, named once so the selector and the config
+/// cannot drift apart — which is exactly how the selector came to pick a session
+/// the config could not open.
+const WANTED: Dialect = Dialect::Qwen;
+
 fn config(store: &std::path::Path, session_id: &str, workspace: &str) -> Config {
     let mut cfg = Config::for_this_box(workspace);
-    cfg.dialect = Dialect::Qwen;
+    cfg.dialect = WANTED;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {

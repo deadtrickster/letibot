@@ -493,7 +493,47 @@ pub mod roles {
     pub fn m2_coder() -> Role {
         Role::new(
             "coder",
-            &["read", "write", "edit", "grep", "glob", "read_spill"],
+            // `todo` is seated here and the reason is not convenience.
+            //
+            // It was seated only by `planner`, which has no `write` or `edit` — so no
+            // role could both DO the work and record what it meant to do. That put the
+            // error signal of `docs/closed-loop.md` §2 in the one role that produces no
+            // effects to compare it against: `planner` recorded intentions it could not
+            // carry out, `coder` carried out work it could not declare, and
+            // `intent::ledger`'s intent-versus-effect diff had nothing to diff.
+            //
+            // What it cost, observed 2026-09-10 in a real session: asked for a todo
+            // list, the model spent 13 tool calls and ~15,000 tokens of reasoning
+            // reading `board.rs` and `ledger.rs` to EMULATE the tool it had not been
+            // given, then wrote 1,926 tokens describing what it would have printed.
+            // That is §4b — a capability that exists but is hidden manufactures the
+            // workaround — at maximum price.
+            //
+            // It needs no gate change: `todo` is `Access::Session` (asserted in
+            // `builtins::intent::mod`), so it is neither a read nor a write and nothing
+            // the operator owns is touched. With no board mounted it records into this
+            // session's own ledger — no node, no token, no network.
+            //
+            // Seven tools against a ceiling of eight. `goal` is deliberately NOT added
+            // with it: a separate capability is a separate decision.
+            // `bash` is listed and then STRIPPED unless `--bash` was passed — the same
+            // shape `m2_runner` has. Listing it here is what makes the flag mean
+            // something for this seat; without the entry the flag would be ignored and
+            // the operator would be told a capability was on while it was not.
+            //
+            // Eight tools against a ceiling of eight when the flag is given, seven
+            // without. `goal` is still not here: a separate capability is a separate
+            // decision.
+            &[
+                "read",
+                "write",
+                "edit",
+                "grep",
+                "glob",
+                "read_spill",
+                "todo",
+                "bash",
+            ],
         )
     }
 
@@ -865,8 +905,8 @@ impl ToolRuntime {
                 target_exists,
             };
             if let GateDecision::Refuse { outcome, tell } = self.gate.admit(&gate_call) {
-                let r = ToolResult::new(call.id.clone(), call.name.clone(), outcome)
-                    .with_payload(tell);
+                let r =
+                    ToolResult::new(call.id.clone(), call.name.clone(), outcome).with_payload(tell);
                 sink.emit(finished_event(turn_id, &r));
                 return r;
             }

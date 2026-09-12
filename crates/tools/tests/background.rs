@@ -18,7 +18,10 @@ macro_rules! runner {
         match runner_harness() {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("{}: no cgroup v2 subtree here, checking the refusal: {e}", $name);
+                eprintln!(
+                    "{}: no cgroup v2 subtree here, checking the refusal: {e}",
+                    $name
+                );
                 let msg = format!("{e}");
                 assert!(
                     msg.contains("nothing would reap it") || msg.contains("cgroup"),
@@ -124,7 +127,11 @@ fn a_promotion_reaches_the_model_as_its_own_outcome_with_the_handle_and_the_verb
     }
     let rendered = r.render();
     // Its own envelope. Not the error one, not the no-result one.
-    assert_eq!(Envelope::classify(&rendered), Some("STILL_RUNNING"), "{rendered}");
+    assert_eq!(
+        Envelope::classify(&rendered),
+        Some("STILL_RUNNING"),
+        "{rendered}"
+    );
     assert!(rendered.contains("STILL RUNNING"), "{rendered}");
     assert!(rendered.contains("Do NOT start it again"), "{rendered}");
     assert!(rendered.contains("did not ask"), "{rendered}");
@@ -304,7 +311,11 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
         "{}",
         second.render()
     );
-    assert!(second.payload.contains("already watching"), "{}", second.payload);
+    assert!(
+        second.payload.contains("already watching"),
+        "{}",
+        second.payload
+    );
     assert!(
         second.payload.contains("NOTHING was declared"),
         "{}",
@@ -395,19 +406,18 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
     // And the seated schema has nowhere to put a pattern. This is the assertion
     // that matters: a process check self-matched its own shell seven times in one
     // session on this box, and the seventh killed a running command mid-flight.
-    let names: Vec<String> = h
-        .rt
-        .registry
-        .schemas()
-        .into_iter()
-        .filter(|s| s.name == "monitor")
-        .flat_map(|s| {
-            s.param_names()
-                .into_iter()
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let names: Vec<String> =
+        h.rt.registry
+            .schemas()
+            .into_iter()
+            .filter(|s| s.name == "monitor")
+            .flat_map(|s| {
+                s.param_names()
+                    .into_iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
     assert!(!names.is_empty(), "the monitor tool is seated");
     for banned in ["pattern", "match", "cmdline", "command", "regex", "host"] {
         assert!(

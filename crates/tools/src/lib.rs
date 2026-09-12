@@ -88,8 +88,8 @@
 
 pub mod adjudicate;
 pub mod args;
-pub mod authorise;
 pub mod attach;
+pub mod authorise;
 pub mod backend;
 pub mod builtins;
 pub mod edit;
@@ -108,27 +108,27 @@ pub mod spill;
 pub mod testing;
 
 pub use adjudicate::{
-    ActionClass, AdjudicatedGate, Adjudicator, AdjudicationDecision, AdjudicationRequest,
-    AdjudicationRow, AskAdjudicator, ConsoleAdjudicator, Cost, DecisionOption, DecisionOutcome,
-    Adjudicable, EffectScope, FlowRule, NEVER_WRITE, NoAdjudicator, OnTimeout, OptionKind,
+    ActionClass, Adjudicable, AdjudicatedGate, AdjudicationDecision, AdjudicationRequest,
+    AdjudicationRow, Adjudicator, AskAdjudicator, ConsoleAdjudicator, Cost, DecisionOption,
+    DecisionOutcome, EffectScope, FlowRule, NEVER_WRITE, NoAdjudicator, OnTimeout, OptionKind,
     RequestKind, Reversibility, Tier, always_ask_options, permission_options,
 };
+pub use args::{Repair, SalvageError, Salvaged, salvage};
+pub use attach::NotAttached;
 pub use authorise::{
     AuthorisationOracle, AuthorisationTrail, Breaker, BreakerState, Budgeted, CorpusRow,
     DenialNotice, DenialSink, ModelAdjudicator, ModelBrief, OperatorOverride, OracleAnswer,
     OracleScope, RecordingDenialSink, ScriptedOracle, Speaker, TaskDirection, TrailProvenance,
     Utterance, Widening, refusal_text,
 };
-pub use args::{Repair, SalvageError, Salvaged, salvage};
-pub use attach::NotAttached;
 pub use backend::{BackendError, Command, DirEntry, ExecBackend, HostBackend, Output};
 pub use builtins::external::{ExternalBackends, ExternalDisclosure, ExternalWiring};
 pub use edit::{ChangedSpan, FileEdit, FileText, Relax};
+pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use exec::{
     Cgroup2, ExecError, HostProcesses, JobId, JobState, JobView, NoScopes, ProcessHost, Reaped,
     Reaping, ScopeId, ScopeKind, ScopeTree, SpawnRequest, Waited, exec_budget,
 };
-pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use files::{FileLedger, Seen};
 pub use intent::{
     ALWAYS_ASK, AlwaysAskRule, Baseline, BaselineVerdict, Intent, Region, ScopedIntent, SecretFlow,
@@ -186,7 +186,10 @@ pub fn external_tools(
     mut reg: Registry,
     backends: &ExternalBackends,
 ) -> Result<Registry, RegisterError> {
-    use builtins::external::{github::Github, web::{WebFetch, WebSearch}};
+    use builtins::external::{
+        github::Github,
+        web::{WebFetch, WebSearch},
+    };
     reg.register(Box::new(WebSearch::new(backends.search.clone())))?;
     reg.register(Box::new(WebFetch::new(backends.fetch.clone())))?;
     reg.register(Box::new(Github::new(backends.github.clone())))?;

@@ -104,9 +104,9 @@ impl Tool for Write {
 fn create(ctx: &mut InvokeCtx<'_>, path: &str, content: &str) -> Invocation {
     // A new file with no parent is a typo often enough to be worth naming: the
     // listing says whether `src/parser/` was meant to exist.
-    let parent_missing = path.rsplit_once('/').is_some_and(|(dir, _)| {
-        !dir.is_empty() && ctx.backend.stat(dir).is_none()
-    });
+    let parent_missing = path
+        .rsplit_once('/')
+        .is_some_and(|(dir, _)| !dir.is_empty() && ctx.backend.stat(dir).is_none());
 
     if let Err(e) = ctx.backend.write(path, content.as_bytes()) {
         return write_failed(ctx, path, e);
@@ -292,10 +292,17 @@ mod tests {
     #[test]
     fn missing_parent_directories_are_created_and_the_fact_is_reported() {
         let mut h = writable_harness();
-        let r = h.call("write", r#"{"path":"src/parser/mod.rs","content":"// x\n"}"#);
+        let r = h.call(
+            "write",
+            r#"{"path":"src/parser/mod.rs","content":"// x\n"}"#,
+        );
         assert!(r.is_grounded(), "{}", r.render());
         assert_eq!(h.read_file("src/parser/mod.rs"), "// x\n");
-        assert!(r.render().contains("did not exist and was created"), "{}", r.render());
+        assert!(
+            r.render().contains("did not exist and was created"),
+            "{}",
+            r.render()
+        );
     }
 
     #[test]
@@ -325,7 +332,10 @@ mod tests {
         assert!(r.is_grounded());
         assert!(r.render().contains("was not touched"), "{}", r.render());
         assert_eq!(h.mtime("README.md"), before);
-        assert!(r.edit.is_none(), "nothing changed, so the head has no diff to draw");
+        assert!(
+            r.edit.is_none(),
+            "nothing changed, so the head has no diff to draw"
+        );
     }
 
     #[test]

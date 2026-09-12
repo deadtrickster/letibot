@@ -247,11 +247,14 @@ pub fn confined_harness_with(
     // Canonicalised, because the backend canonicalises its root and the view is
     // compared lexically. A `/tmp` that is a symlink would otherwise put the
     // project outside its own view.
-    let root = dir.path().canonicalize().unwrap_or_else(|_| dir.path().to_path_buf());
+    let root = dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| dir.path().to_path_buf());
     let confine = build(&root)?;
     let host = Arc::new(crate::exec::HostProcesses::confined(&root, confine)?);
-    let backend =
-        crate::backend::HostBackend::executable_with(&root, Arc::clone(&host)).expect("fixture root");
+    let backend = crate::backend::HostBackend::executable_with(&root, Arc::clone(&host))
+        .expect("fixture root");
     let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
     let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(allow_all());
     Ok(Harness {
@@ -277,7 +280,13 @@ pub fn external_harness_with_gate(
     backends: crate::ExternalBackends,
     gate: Option<Box<dyn crate::runtime::Gate>>,
 ) -> Harness {
-    build_ext(Spiller::unset(), Arc::new(Unavailable), false, gate, Some(backends))
+    build_ext(
+        Spiller::unset(),
+        Arc::new(Unavailable),
+        false,
+        gate,
+        Some(backends),
+    )
 }
 
 fn build(

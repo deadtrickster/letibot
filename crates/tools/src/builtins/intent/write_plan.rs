@@ -83,7 +83,11 @@ fn plan_path(name: &str) -> Result<String, String> {
                  a name and puts the document under `{PLAN_DIR}/` itself — there is no \
                  argument here that can name a file anywhere else, which is why plan mode \
                  can write a plan without being able to touch the work.",
-                if bad == '\0' { "NUL".into() } else { bad.to_string() }
+                if bad == '\0' {
+                    "NUL".into()
+                } else {
+                    bad.to_string()
+                }
             ));
         }
     }
@@ -238,8 +242,15 @@ mod tests {
             r##"{"name":"rewrite-the-parser","content":"# Plan\n\nread it first.\n"}"##,
         );
         assert_eq!(r.outcome, ToolOutcome::Ok, "{r:?}");
-        assert!(r.render().contains("plans/rewrite-the-parser.md"), "{}", r.render());
-        assert!(h.read_file("plans/rewrite-the-parser.md").contains("read it first"));
+        assert!(
+            r.render().contains("plans/rewrite-the-parser.md"),
+            "{}",
+            r.render()
+        );
+        assert!(
+            h.read_file("plans/rewrite-the-parser.md")
+                .contains("read it first")
+        );
     }
 
     #[test]
@@ -285,10 +296,16 @@ mod tests {
     fn appending_keeps_what_was_there() {
         let mut h = harness();
         h.call("write_plan", r#"{"name":"p","content":"first"}"#);
-        let r = h.call("write_plan", r#"{"name":"p","content":"second","append":true}"#);
+        let r = h.call(
+            "write_plan",
+            r#"{"name":"p","content":"second","append":true}"#,
+        );
         assert_eq!(r.outcome, ToolOutcome::Ok);
         let on_disk = h.read_file("plans/p.md");
-        assert!(on_disk.contains("first") && on_disk.contains("second"), "{on_disk}");
+        assert!(
+            on_disk.contains("first") && on_disk.contains("second"),
+            "{on_disk}"
+        );
         assert!(r.render().contains("appended to"), "{}", r.render());
     }
 
@@ -305,7 +322,10 @@ mod tests {
         let args = serde_json::json!({"name": "big", "content": big}).to_string();
         let r = h.call("write_plan", &args);
         assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
-        assert!(h.read_file("plans/big.md").is_empty(), "nothing was written");
+        assert!(
+            h.read_file("plans/big.md").is_empty(),
+            "nothing was written"
+        );
         assert!(r.render().contains("is work"), "{}", r.render());
     }
 

@@ -206,7 +206,12 @@ impl OutlineTool {
         filter: Option<&[String]>,
         max: usize,
     ) -> Invocation {
-        let (entries, _) = walk(ctx.backend, root, ctx.limits.max_walk_entries, &default_skip);
+        let (entries, _) = walk(
+            ctx.backend,
+            root,
+            ctx.limits.max_walk_entries,
+            &default_skip,
+        );
         let files: Vec<&DirEntry> = entries.iter().filter(|e| !e.is_dir).collect();
         let mut skipped: Vec<String> = Vec::new();
         let mut parsed = 0usize;
@@ -322,9 +327,7 @@ impl OutlineTool {
             return inv;
         }
 
-        let head = format!(
-            "{total} definition(s) in {parsed} parsed file(s) under `{root}`\n\n"
-        );
+        let head = format!("{total} definition(s) in {parsed} parsed file(s) under `{root}`\n\n");
         let mut inv = Invocation::ok(format!("{head}{body}"));
         if capped {
             inv = inv.with_note(format!(
@@ -431,10 +434,7 @@ fn render_file(path: &str, o: &Outline, kept: &[&Symbol], max: usize) -> (String
         // container into somebody else's syntax is a guess.
         out.push_str(&format!(
             "  {:>5}  {:<9} {:<name_w$}  {}\n",
-            s.line,
-            s.kind,
-            q,
-            s.signature
+            s.line, s.kind, q, s.signature
         ));
     }
     if kept.len() > max {
@@ -536,7 +536,10 @@ mod tests {
         // The line number, the kind, the container, and the signature: the four
         // things the rano session asked five greps for.
         assert!(seen.contains("Editor::insert"), "{seen}");
-        assert!(seen.contains("pub fn insert(&mut self, c: char) -> bool"), "{seen}");
+        assert!(
+            seen.contains("pub fn insert(&mut self, c: char) -> bool"),
+            "{seen}"
+        );
         assert!(seen.contains("     3  fn "), "a line number: {seen}");
         assert!(seen.contains("rust"), "{seen}");
     }
@@ -552,7 +555,10 @@ mod tests {
         let seen = r.render();
         assert!(seen.contains(".tf"), "name the extension: {seen}");
         for lang in ["rust", "python", "go", "bash", "json"] {
-            assert!(seen.contains(lang), "list what IS supported ({lang}): {seen}");
+            assert!(
+                seen.contains(lang),
+                "list what IS supported ({lang}): {seen}"
+            );
         }
         assert!(seen.contains("NO claim"), "{seen}");
     }
@@ -600,7 +606,11 @@ mod tests {
     fn the_words_a_model_writes_for_a_kind_are_accepted() {
         let mut h = harness();
         let r = h.call("outline", r#"{"path":"src/lib.rs","kind":"function"}"#);
-        assert!(r.is_grounded(), "`function` must reach `fn`:\n{}", r.render());
+        assert!(
+            r.is_grounded(),
+            "`function` must reach `fn`:\n{}",
+            r.render()
+        );
         assert!(r.payload.contains("parse_args"), "{}", r.payload);
     }
 
@@ -618,7 +628,10 @@ mod tests {
         h.write_file("src/broken.rs", "fn good() {}\nfn bad( {\nstruct After;\n");
         let r = h.call("outline", r#"{"path":"src/broken.rs"}"#);
         let seen = r.render();
-        assert!(seen.contains("PARTIAL") || seen.contains("partial"), "{seen}");
+        assert!(
+            seen.contains("PARTIAL") || seen.contains("partial"),
+            "{seen}"
+        );
         assert!(seen.contains("good"), "what parsed is still real: {seen}");
     }
 }

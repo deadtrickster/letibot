@@ -132,6 +132,13 @@ fn run() -> Result<i32, String> {
             // is `GrantScope::Session` and is what an operator who wants to approve
             // edits once per session is asking for.
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
+            // Bind one path read-only into the confined view. Repeatable.
+            //
+            // The boundary is hermetic: `$HOME` inside is a fresh tmpfs, so `~/.cargo`
+            // and `~/.rustup` are absent and `cargo` cannot run. This is how they come
+            // back, and it is a flag rather than a default because a grant is readable
+            // into the transcript and that is the operator's call to make.
+            "--grant-ro" => cfg.grants_ro.push(PathBuf::from(next()?)),
             "--bash" => cfg.allow_bash = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             "--intent-prose" => cfg.intent_prose = true,

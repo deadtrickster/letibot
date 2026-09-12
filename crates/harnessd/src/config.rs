@@ -128,7 +128,27 @@ impl Seat {
     /// Whether this seat needs a backend that can start processes, and therefore
     /// the boundary that goes around one.
     pub fn needs_exec_backend(self) -> bool {
-        matches!(self, Seat::Runner)
+        // **Coder joined Runner on 2026-09-11**, because a role that writes code and
+        // cannot run it leaves the loop open at the point where it would have paid —
+        // the model wrote a regression test and had no way to execute it.
+        //
+        // This costs nothing in file access: `HostBackend::confined` is `writable +
+        // EXEC`, so a confined coder still edits its tree. What it adds is a boundary
+        // the writable backend does not have — a project-rooted view where a secret
+        // outside it is ABSENT rather than denied.
+        //
+        // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
+        // the capability arrives because somebody typed it.
+        matches!(self, Seat::Runner | Seat::Coder)
+    }
+
+    /// The read-only grants this seat needs to be useful, beyond the project.
+    ///
+    /// Empty by default and filled from `--grant-ro`, never from a table here: a grant
+    /// is the operator's decision and `Grant` carries a `why` so it can be explained
+    /// and therefore revoked.
+    pub fn default_grants(self) -> Vec<std::path::PathBuf> {
+        Vec::new()
     }
 }
 
@@ -175,6 +195,17 @@ pub struct Config {
     /// costs. `--role coder` used to mean both, so an operator who wanted to edit had
     /// to pick a role and thereby also picked an approval policy they were never shown.
     pub mode: letibot_tools::mode::Mode,
+    /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
+    ///
+    /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
+    /// under it is ABSENT rather than denied, which is the same property that keeps a
+    /// secret out. That is correct and it is why `cargo` cannot run inside without one
+    /// of these.
+    ///
+    /// **Read-only means readable into the transcript.** §3's second half is not
+    /// enforced by the confinement module, so each of these is a decision with that
+    /// consequence, printed next to the grant by `Boundary::describe`.
+    pub grants_ro: Vec<std::path::PathBuf>,
     /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -387,6 +418,7 @@ impl Config {
             // before roles were reachable. `the_default_seat_is_what_shipped_before`
             // is the test that keeps it true.
             seat: Seat::default(),
+            grants_ro: Vec::new(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),

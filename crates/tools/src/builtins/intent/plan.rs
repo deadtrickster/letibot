@@ -258,7 +258,26 @@ mod tests {
     use std::sync::Arc;
 
     fn registry() -> Registry {
-        crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap()
+        // The intent tools too, because `m2_coder` seats `todo` as of 2026-09-11 and
+        // `resolve_role` refuses a role naming a tool the registry does not hold —
+        // loudly, which is how this fixture's gap was noticed the moment the seat
+        // landed. `coder_tools` is the built-ins only; the daemon registers these
+        // separately in `Harness::open`, so this now matches what production builds.
+        let mut r = crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
+        crate::builtins::intent::register_into(
+            &mut r,
+            &crate::builtins::intent::Wiring::standalone(),
+        )
+        .unwrap();
+        // And `bash`, for the same reason one turn later: `m2_coder` seats it as of
+        // 2026-09-11 (behind `--bash`), and the daemon registers the exec tools
+        // unconditionally — it is the ROLE that decides who may call them, not the
+        // registry. A fixture without it makes `seating` walk the
+        // name-not-in-the-registry branch, which keeps the name and hands
+        // `resolve_role` a refusal; that is the loud path working, and it would be
+        // measuring the gap instead of plan mode.
+        r.register(Box::new(crate::builtins::bash::Bash)).unwrap();
+        r
     }
 
     #[test]
@@ -275,12 +294,23 @@ mod tests {
         );
         assert!(!seated.tools.contains(&"edit".to_string()));
         assert!(seated.tools.contains(&"read".to_string()));
+        // **And the shell.** `bash` is `Access::Exec`, so the filter drops it on the
+        // same rule that drops `write` — which is the property worth asserting by
+        // name, because a plan mode that removed `write` and `edit` and left a shell
+        // would be a plan mode in name only: `sh -c 'echo x > src/lib.rs'` is a write
+        // to the work by another spelling, and D9 is about the work.
+        assert!(
+            !seated.tools.contains(&"bash".to_string()),
+            "plan mode that leaves a shell has not removed the write path: {:?}",
+            seated.tools
+        );
 
         // And the property that matters: the model is never shown their schemas.
         let kept = reg.resolve_role(&seated).unwrap();
         let json = kept.tools_json().join("\n");
         assert!(!json.contains("\"name\":\"write\""), "{json}");
         assert!(!json.contains("\"name\":\"edit\""), "{json}");
+        assert!(!json.contains("\"name\":\"bash\""), "{json}");
     }
 
     #[test]

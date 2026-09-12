@@ -72,6 +72,13 @@ fn config() -> Config {
         cfg.model = m;
     }
     cfg.dialect = Dialect::Qwen;
+    // What is actually behind the endpoint, asked before anything is tokenised for
+    // it. The three model services on this box are singletons that evict each other
+    // and have shared a port, so `cfg.model` naming one is not evidence that one is
+    // up — and the failure that follows, `400 Prompt contains invalid tokens`, is a
+    // sentence about the tokenizer for what is really the other model's vocabulary.
+    static CHECKED: OnceLock<()> = OnceLock::new();
+    CHECKED.get_or_init(|| letibot_turn::serving::expect(&cfg.endpoint, &cfg.model));
     // Short answers, and a bound low enough that a model which loops is a failing
     // test rather than a slow one.
     cfg.effort = Some("low".into());

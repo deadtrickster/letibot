@@ -96,7 +96,9 @@ pub enum Status {
     /// Settled, with how that was checked. Only [`Verification::ByEffect`] counts
     /// as complete anywhere in this module.
     Settled(Verification),
-    Blocked { why: String },
+    Blocked {
+        why: String,
+    },
 }
 
 impl Status {
@@ -189,11 +191,7 @@ impl std::fmt::Display for Board {
         if self.total == 0 {
             return write!(f, "0 items — nothing has been declared in this session");
         }
-        write!(
-            f,
-            "{} of {} complete",
-            self.done, self.total
-        )?;
+        write!(f, "{} of {} complete", self.done, self.total)?;
         write!(
             f,
             " — {} in progress, {} pending, {} blocked",
@@ -829,8 +827,7 @@ impl<S: ToolEventSink> ToolEventSink for IntentSink<S> {
                     .names
                     .remove(call_id)
                     .unwrap_or_else(|| "<refused>".to_string());
-                self.ledger
-                    .record_effect(turn_id, call_id, &name, outcome);
+                self.ledger.record_effect(turn_id, call_id, &name, outcome);
             }
             ToolEvent::Progress { .. } => {}
         }

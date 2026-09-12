@@ -119,10 +119,7 @@ impl Tool for GoalTool {
                 ),
             },
             "met" => match self.ledger.meet_goal(&turn) {
-                Err(e) => Invocation::failed(
-                    "there is no goal to mark met",
-                    format!("{e}{board}"),
-                ),
+                Err(e) => Invocation::failed("there is no goal to mark met", format!("{e}{board}")),
                 Ok(g) => {
                     let v = g.met.clone().unwrap_or(Verification::NoEffect);
                     let mut inv = Invocation::ok(format!(
@@ -133,11 +130,12 @@ impl Tool for GoalTool {
                     ));
                     if !v.is_complete() {
                         inv = inv.with_note(match v {
-                            Verification::NoEncoder =>
+                            Verification::NoEncoder => {
                                 "the goal is NOT counted as met: this session has no effect \
                                  log attached, so nothing could check it either way. That \
                                  is a harness defect, not yours."
-                                    .to_string(),
+                                    .to_string()
+                            }
                             _ => format!(
                                 "the goal is NOT counted as met: no tool call succeeded \
                                  since it was set, so nothing shows `{}` was reached. Run \
@@ -273,7 +271,10 @@ impl Tool for ExitPlanMode {
                 "there is nothing to leave. `enter_plan_mode` is how you go in.",
             );
         }
-        let Some(plan) = args.get("plan").and_then(|v| v.as_str()).filter(|p| !p.trim().is_empty())
+        let Some(plan) = args
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .filter(|p| !p.trim().is_empty())
         else {
             return Invocation::failed(
                 "exit_plan_mode needs the plan",
@@ -308,8 +309,10 @@ impl Tool for ExitPlanMode {
         }
         self.plan.exit(plan);
 
-        let mut body = String::from("plan mode is off; the write tools are seated again \
-                                     from the next turn.\n");
+        let mut body = String::from(
+            "plan mode is off; the write tools are seated again \
+                                     from the next turn.\n",
+        );
         if ids.is_empty() {
             body.push_str(
                 "no steps were given, so nothing was put on the list and nothing will be \
@@ -413,7 +416,9 @@ mod tests {
     #[test]
     fn entering_says_what_leaving_will_cost_before_you_are_in() {
         let (mut h, plan, _) = plan_harness();
-        let out = h.call("enter_plan_mode", r#"{"why":"work out the shape"}"#).render();
+        let out = h
+            .call("enter_plan_mode", r#"{"why":"work out the shape"}"#)
+            .render();
         assert!(plan.active());
         assert!(out.contains("adjudicate"), "{out}");
         assert!(out.contains("not_run"), "{out}");
@@ -425,7 +430,11 @@ mod tests {
         h.call("enter_plan_mode", "{}");
         let r = h.call("exit_plan_mode", "{}");
         assert!(matches!(r.outcome, ToolOutcome::Failed { .. }), "{r:?}");
-        assert!(r.render().contains("leaving with nothing"), "{}", r.render());
+        assert!(
+            r.render().contains("leaving with nothing"),
+            "{}",
+            r.render()
+        );
     }
 
     #[test]
@@ -473,8 +482,18 @@ mod tests {
             EnterPlanMode::new(plan.clone()).schema(),
             ExitPlanMode::new(plan, ledger).schema(),
         ] {
-            assert_eq!(crate::schema::lint_description(&s.description), vec![], "{}", s.name);
-            assert!(s.description.len() < 800, "{} is {} bytes", s.name, s.description.len());
+            assert_eq!(
+                crate::schema::lint_description(&s.description),
+                vec![],
+                "{}",
+                s.name
+            );
+            assert!(
+                s.description.len() < 800,
+                "{} is {} bytes",
+                s.name,
+                s.description.len()
+            );
         }
     }
 }

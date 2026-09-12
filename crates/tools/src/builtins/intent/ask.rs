@@ -165,10 +165,7 @@ impl QuestionAnswer {
         if let Some(i) = self.option
             && i >= offered
         {
-            return Err(AskError::Nonconforming {
-                chose: i,
-                offered,
-            });
+            return Err(AskError::Nonconforming { chose: i, offered });
         }
         Ok(())
     }
@@ -556,7 +553,10 @@ mod tests {
 
     #[test]
     fn an_answer_choosing_an_option_nobody_offered_is_refused() {
-        let r = ask(Arc::new(ScriptedQuestioner::nonconforming("deadtrickster", 7)), Q);
+        let r = ask(
+            Arc::new(ScriptedQuestioner::nonconforming("deadtrickster", 7)),
+            Q,
+        );
         assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }));
         let out = r.render();
         assert!(out.contains("NOBODY has answered"), "{out}");
@@ -567,7 +567,10 @@ mod tests {
 
     #[test]
     fn d10_one_keystroke_is_an_answer() {
-        let r = ask(Arc::new(ScriptedQuestioner::choosing("deadtrickster", 1)), Q);
+        let r = ask(
+            Arc::new(ScriptedQuestioner::choosing("deadtrickster", 1)),
+            Q,
+        );
         assert_eq!(r.outcome, ToolOutcome::Ok);
         let out = r.render();
         assert!(out.contains("chose option 1: b"), "{out}");
@@ -590,14 +593,20 @@ mod tests {
         assert_eq!(r.outcome, ToolOutcome::Ok);
         let out = r.render();
         assert!(out.contains("chose option 1: b"), "{out}");
-        assert!(out.contains("with the note: only for the CUDA box"), "{out}");
+        assert!(
+            out.contains("with the note: only for the CUDA box"),
+            "{out}"
+        );
         assert!(out.contains("qualifies the option it came with"), "{out}");
     }
 
     #[test]
     fn d10_free_text_is_a_first_class_answer_and_not_a_chat_later() {
         let r = ask(
-            Arc::new(ScriptedQuestioner::free("deadtrickster", "neither — split it in two")),
+            Arc::new(ScriptedQuestioner::free(
+                "deadtrickster",
+                "neither — split it in two",
+            )),
             Q,
         );
         assert_eq!(
@@ -632,7 +641,10 @@ mod tests {
     #[test]
     fn an_open_question_is_answered_by_free_text_alone() {
         let r = ask(
-            Arc::new(ScriptedQuestioner::free("deadtrickster", "use the second one")),
+            Arc::new(ScriptedQuestioner::free(
+                "deadtrickster",
+                "use the second one",
+            )),
             r#"{"question":"which approach?"}"#,
         );
         assert_eq!(r.outcome, ToolOutcome::Ok);
@@ -658,10 +670,18 @@ mod tests {
         // Two options offered.
         assert!(QuestionAnswer::choosing(0).validate(2).is_ok());
         assert!(QuestionAnswer::free("x").validate(2).is_ok());
-        assert!(QuestionAnswer::choosing(1).with_note("y").validate(2).is_ok());
+        assert!(
+            QuestionAnswer::choosing(1)
+                .with_note("y")
+                .validate(2)
+                .is_ok()
+        );
         assert_eq!(
             QuestionAnswer::choosing(2).validate(2),
-            Err(AskError::Nonconforming { chose: 2, offered: 2 })
+            Err(AskError::Nonconforming {
+                chose: 2,
+                offered: 2
+            })
         );
         assert_eq!(QuestionAnswer::default().validate(2), Err(AskError::Empty));
         assert_eq!(
@@ -676,7 +696,10 @@ mod tests {
         for e in [
             AskError::Empty,
             AskError::NoteQualifiesNothing,
-            AskError::Nonconforming { chose: 9, offered: 2 },
+            AskError::Nonconforming {
+                chose: 9,
+                offered: 2,
+            },
             AskError::Anonymous,
         ] {
             assert!(matches!(e.outcome(), ToolOutcome::NotRun { .. }), "{e:?}");

@@ -304,7 +304,9 @@ fn words(command: &str) -> Vec<String> {
 }
 
 /// Flags that take a value, so the value is not mistaken for the pattern.
-const VALUED: &[&str] = &["-u", "-U", "-g", "-G", "-P", "-s", "-t", "-e", "--signal", "-d", "--delay"];
+const VALUED: &[&str] = &[
+    "-u", "-U", "-g", "-G", "-P", "-s", "-t", "-e", "--signal", "-d", "--delay",
+];
 
 fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
@@ -449,7 +451,9 @@ pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
         for w in &h.witnesses {
             s.push_str(&format!(
                 "  - {} {} — {}\n      {}\n",
-                w.pid.map(|p| format!("pid {p}")).unwrap_or("pid n/a".into()),
+                w.pid
+                    .map(|p| format!("pid {p}"))
+                    .unwrap_or("pid n/a".into()),
                 w.what,
                 w.why,
                 w.excerpt
@@ -474,9 +478,7 @@ pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
 /// What to call instead. **The point of the whole module**: the alternative has no
 /// pattern, so there is nothing that can match the caller.
 fn remedy(hazards: &[Hazard]) -> &'static str {
-    let waiting = hazards
-        .iter()
-        .any(|h| h.predicate.intent == Intent::Wait);
+    let waiting = hazards.iter().any(|h| h.predicate.intent == Intent::Wait);
     if waiting {
         "Wait on a HANDLE instead of a pattern. `job_wait` takes `job` (a job id from \
          `bash` or `job_list`) or `scope`, and blocks until that job leaves `running` \
@@ -505,7 +507,9 @@ pub fn annotation(hazards: &[Hazard]) -> String {
         for w in &h.witnesses {
             parts.push(format!(
                 "{} ({})",
-                w.pid.map(|p| format!("pid {p}")).unwrap_or("the evaluating shell".into()),
+                w.pid
+                    .map(|p| format!("pid {p}"))
+                    .unwrap_or("the evaluating shell".into()),
                 w.what
             ));
         }
@@ -532,13 +536,25 @@ mod tests {
     #[test]
     fn t21_1_a_pkill_whose_pattern_matches_the_evaluating_shell_is_refused() {
         let cmd = "pkill -f harnessd";
-        let v = examine(cmd, &[protected(384248, "harnessd", "/usr/bin/harnessd --port 9099", "this is the harness daemon this session runs inside", false)]);
+        let v = examine(
+            cmd,
+            &[protected(
+                384248,
+                "harnessd",
+                "/usr/bin/harnessd --port 9099",
+                "this is the harness daemon this session runs inside",
+                false,
+            )],
+        );
         let Verdict::Refuse(h) = &v else {
             panic!("must refuse: {v:?}")
         };
         let body = refusal(cmd, h);
         // The diagnosis names WHAT IT CURRENTLY MATCHES, both the shell and the pid.
-        assert!(body.contains("the shell that will evaluate this command"), "{body}");
+        assert!(
+            body.contains("the shell that will evaluate this command"),
+            "{body}"
+        );
         assert!(body.contains("pid 384248"), "{body}");
         assert!(body.contains("harness daemon"), "{body}");
         // And it hands over the handle form, which has no pattern.
@@ -567,7 +583,10 @@ mod tests {
         assert!(body.contains("model server serving this session"), "{body}");
         // The remedy is the WAIT VERB, not a better loop.
         assert!(body.contains("job_wait"), "{body}");
-        assert!(!body.contains("job_kill"), "a waiter's remedy is not a kill: {body}");
+        assert!(
+            !body.contains("job_kill"),
+            "a waiter's remedy is not a kill: {body}"
+        );
     }
 
     #[test]
@@ -579,7 +598,13 @@ mod tests {
         let cmd = "until ps aux | grep -E '[h]arnessd'; do sleep 1; done";
         let v = examine(
             cmd,
-            &[protected(384248, "harnessd", "/usr/bin/harnessd", "the harness daemon", false)],
+            &[protected(
+                384248,
+                "harnessd",
+                "/usr/bin/harnessd",
+                "the harness daemon",
+                false,
+            )],
         );
         let Verdict::Refuse(h) = &v else {
             panic!("must refuse: {v:?}")
@@ -621,7 +646,13 @@ mod tests {
         // and saying it was would be a wrong diagnosis in a refusal.
         let v = examine(
             "killall llama-server",
-            &[protected(7, "llama-server", "/opt/llama-server --port 8080", "the model server", false)],
+            &[protected(
+                7,
+                "llama-server",
+                "/opt/llama-server --port 8080",
+                "the model server",
+                false,
+            )],
         );
         let Verdict::Refuse(h) = &v else {
             panic!("{v:?}")

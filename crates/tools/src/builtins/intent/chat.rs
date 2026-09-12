@@ -70,7 +70,10 @@ pub enum ChatError {
     /// Attached and unreachable. Nothing was said.
     Unreachable(String),
     /// The node has no such room, or this token cannot write to it.
-    NoSuchRoom { room: String, known: Vec<String> },
+    NoSuchRoom {
+        room: String,
+        known: Vec<String>,
+    },
     Refused(String),
 }
 
@@ -212,7 +215,11 @@ impl Tool for Say {
         let room = args.get("room").and_then(|v| v.as_str()).unwrap_or("");
         let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
         if room.trim().is_empty() || text.trim().is_empty() {
-            let missing = if room.trim().is_empty() { "room" } else { "text" };
+            let missing = if room.trim().is_empty() {
+                "room"
+            } else {
+                "text"
+            };
             let rooms = self.chat.rooms().unwrap_or_default();
             let mut body = format!(
                 "call `say` again with `{missing}` set. There is deliberately no default \
@@ -220,7 +227,10 @@ impl Tool for Say {
                  project's room by the right name is never delivered."
             );
             if !rooms.is_empty() {
-                body.push_str(&format!("\nthis session can write to: {}", rooms.join(", ")));
+                body.push_str(&format!(
+                    "\nthis session can write to: {}",
+                    rooms.join(", ")
+                ));
             }
             return Invocation::failed(format!("say needs `{missing}`"), body);
         }
@@ -250,7 +260,11 @@ impl Tool for Say {
             Ok(p) => Invocation::ok(format!(
                 "said in {} as {}{}",
                 p.room,
-                if p.by.is_empty() { "an unnamed seat" } else { &p.by },
+                if p.by.is_empty() {
+                    "an unnamed seat"
+                } else {
+                    &p.by
+                },
                 msg.to
                     .as_deref()
                     .map(|t| format!(", addressed to {t}"))
@@ -359,7 +373,10 @@ mod tests {
 
     #[test]
     fn no_fabric_is_not_run_and_nothing_is_queued() {
-        let r = say(Arc::new(NoFabric), r#"{"room":"general","text":"gating X"}"#);
+        let r = say(
+            Arc::new(NoFabric),
+            r#"{"room":"general","text":"gating X"}"#,
+        );
         assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }), "{r:?}");
         let out = r.render();
         assert!(out.contains("NOTHING was said"), "{out}");
@@ -396,7 +413,11 @@ mod tests {
             r#"{"room":"flowy-general","text":"x"}"#,
         );
         assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
-        assert!(r.render().contains("belongs to a project"), "{}", r.render());
+        assert!(
+            r.render().contains("belongs to a project"),
+            "{}",
+            r.render()
+        );
     }
 
     #[test]
@@ -406,7 +427,12 @@ mod tests {
         // properties and none of them names a speaker.
         let s = Say::new(chat.clone()).schema();
         let props = s.param_names();
-        assert!(!props.iter().any(|p| ["as", "from", "agent", "by"].contains(p)), "{props:?}");
+        assert!(
+            !props
+                .iter()
+                .any(|p| ["as", "from", "agent", "by"].contains(p)),
+            "{props:?}"
+        );
         let r = say(chat, r#"{"room":"general","text":"gating X"}"#);
         assert_eq!(r.outcome, ToolOutcome::Ok);
         assert!(r.render().contains("as claude-lab2x1"), "{}", r.render());

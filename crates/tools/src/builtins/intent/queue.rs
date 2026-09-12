@@ -130,8 +130,14 @@ pub enum QueueError {
     /// The compare-and-swap lost: the row moved between the read and the write.
     /// This is the mechanism working, and the name of whoever got there first is
     /// the fix.
-    HeldBy { id: String, who: String },
-    NoSuchRow { id: String, known: Vec<String> },
+    HeldBy {
+        id: String,
+        who: String,
+    },
+    NoSuchRow {
+        id: String,
+        known: Vec<String>,
+    },
     /// The node refused, in its own words.
     Refused(String),
 }
@@ -515,7 +521,10 @@ mod tests {
             QueueError::HeldBy { ref who, .. } => assert_eq!(who, "claude-host"),
             other => panic!("expected a lost CAS, got {other:?}"),
         }
-        assert!(e.to_string().contains("do not start the work anyway"), "{e}");
+        assert!(
+            e.to_string().contains("do not start the work anyway"),
+            "{e}"
+        );
         assert_eq!(q.get("r7").unwrap().holder.as_deref(), Some("claude-host"));
     }
 

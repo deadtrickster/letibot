@@ -151,7 +151,9 @@ impl Tool for Monitor {
                         ttl.as_secs_f32(),
                         m.watch.describe()
                     )),
-                    Err(e) => Invocation::failed(format!("`{name}` was not renewed"), e.to_string()),
+                    Err(e) => {
+                        Invocation::failed(format!("`{name}` was not renewed"), e.to_string())
+                    }
                 };
             }
             "watch" => {}
@@ -183,7 +185,10 @@ impl Tool for Monitor {
                 if asked.is_empty() {
                     "monitor needs something to watch".to_string()
                 } else {
-                    format!("monitor takes one condition, and {} were given", asked.len())
+                    format!(
+                        "monitor takes one condition, and {} were given",
+                        asked.len()
+                    )
                 },
                 "give exactly one of `job` (a job id), `scope` (a cgroup), `path` (a \
                  file or directory) or `port` (a loopback TCP port). There is \

@@ -168,8 +168,16 @@ mod tests {
         // The whole reason this is `NotRun` and not `Abstained`. A refusal that
         // reads as a finding is the §8.2 failure with a different mask on.
         let body = sample().body().to_lowercase();
-        for claim in ["not found", "no results", "does not exist", "nothing matched"] {
-            assert!(!body.contains(claim), "{claim:?} is a claim about the world");
+        for claim in [
+            "not found",
+            "no results",
+            "does not exist",
+            "nothing matched",
+        ] {
+            assert!(
+                !body.contains(claim),
+                "{claim:?} is a claim about the world"
+            );
         }
     }
 }

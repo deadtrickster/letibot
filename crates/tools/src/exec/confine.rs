@@ -147,8 +147,12 @@ impl Namespace {
     pub fn buys(&self) -> &'static str {
         match self {
             Namespace::User => "the rest of this is possible without root",
-            Namespace::Mount => "a project-rooted filesystem view: a secret outside it is ABSENT, not denied",
-            Namespace::Pid => "the command cannot see or signal the daemon, the model server, or a sibling job",
+            Namespace::Mount => {
+                "a project-rooted filesystem view: a secret outside it is ABSENT, not denied"
+            }
+            Namespace::Pid => {
+                "the command cannot see or signal the daemon, the model server, or a sibling job"
+            }
             Namespace::Net => "egress is a decision rather than a default",
             Namespace::Ipc => "no shared-memory channel to another job",
             Namespace::Uts => "the command cannot rename the host",
@@ -296,7 +300,9 @@ impl NsState {
     pub fn line(&self) -> String {
         match self {
             NsState::Entered { inode } => format!("entered ({inode})"),
-            NsState::SharedByDecision { why } => format!("SHARED WITH THE HOST by decision — {why}"),
+            NsState::SharedByDecision { why } => {
+                format!("SHARED WITH THE HOST by decision — {why}")
+            }
             NsState::NotEntered { why } => format!("**NOT ENTERED** — {why}"),
         }
     }
@@ -472,10 +478,22 @@ pub enum Presence {
 /// The paths that exist inside the view but are **not** the host's, with what they
 /// are instead. See [`Presence::Replaced`].
 const REPLACED_ROOTS: &[(&str, &str)] = &[
-    ("/tmp", "a fresh tmpfs, private to this command and empty at its start"),
-    ("/var/tmp", "a fresh tmpfs, private to this command and empty at its start"),
-    ("/run", "a fresh tmpfs, private to this command and empty at its start"),
-    ("/proc", "this command's own procfs, showing only the processes in its PID namespace"),
+    (
+        "/tmp",
+        "a fresh tmpfs, private to this command and empty at its start",
+    ),
+    (
+        "/var/tmp",
+        "a fresh tmpfs, private to this command and empty at its start",
+    ),
+    (
+        "/run",
+        "a fresh tmpfs, private to this command and empty at its start",
+    ),
+    (
+        "/proc",
+        "this command's own procfs, showing only the processes in its PID namespace",
+    ),
     ("/dev", "a minimal device set, not the host's `/dev`"),
 ];
 
@@ -676,7 +694,9 @@ impl Boundary {
     /// `Egress::Host` is deliberately not partial — that is a decision, and
     /// collapsing the two would report an authorised `git push` as a defect.
     pub fn partial(&self) -> bool {
-        self.ns.values().any(|s| matches!(s, NsState::NotEntered { .. }))
+        self.ns
+            .values()
+            .any(|s| matches!(s, NsState::NotEntered { .. }))
             || self
                 .seals
                 .values()
@@ -711,20 +731,20 @@ impl Boundary {
         };
         s.push_str(&format!("{head}; by {}", self.mechanism));
         for k in SealKind::ALL {
-            let seal = self
-                .seals
-                .get(&k)
-                .cloned()
-                .unwrap_or(Seal::Unverified { why: "never tested".into() });
+            let seal = self.seals.get(&k).cloned().unwrap_or(Seal::Unverified {
+                why: "never tested".into(),
+            });
             s.push_str(&format!("\n  seal {k}: {} — {}", seal.line(), k.buys()));
         }
         for n in Namespace::ALL {
-            let state = self
-                .ns
-                .get(&n)
-                .cloned()
-                .unwrap_or(NsState::NotEntered { why: "never measured".into() });
-            let req = if Namespace::REQUIRED.contains(&n) { " [required]" } else { "" };
+            let state = self.ns.get(&n).cloned().unwrap_or(NsState::NotEntered {
+                why: "never measured".into(),
+            });
+            let req = if Namespace::REQUIRED.contains(&n) {
+                " [required]"
+            } else {
+                ""
+            };
             s.push_str(&format!("\n  {n}{req}: {} — {}", state.line(), n.buys()));
         }
         s.push_str(&format!("\n  view: {}", self.view.summary()));
@@ -807,8 +827,16 @@ impl Boundary {
                  written there does not reach it. This `ENOENT` is the boundary too, \
                  in a different way from a path that is simply outside: the \
                  directory exists and can be used, it just starts empty.",
-                if replaced.len() == 1 { "this is" } else { "these are" },
-                if replaced.len() == 1 { "it is" } else { "they are" },
+                if replaced.len() == 1 {
+                    "this is"
+                } else {
+                    "these are"
+                },
+                if replaced.len() == 1 {
+                    "it is"
+                } else {
+                    "they are"
+                },
             ));
         }
         notes
@@ -1029,10 +1057,15 @@ impl Bwrap {
         // just numbers.
         let mine = own_namespaces();
 
-        let argv = build_argv(&helper, &view, &egress, &ConfinePlan {
-            cwd: &view.project,
-            env: &[],
-        });
+        let argv = build_argv(
+            &helper,
+            &view,
+            &egress,
+            &ConfinePlan {
+                cwd: &view.project,
+                env: &[],
+            },
+        );
         let probe = READBACK;
         let out = std::process::Command::new(&argv[0])
             .args(&argv[1..])
@@ -1235,7 +1268,12 @@ impl Confinement for Bwrap {
             "the confinement helper failed to set up the boundary, so this is NOT the \
              command's answer — the command may never have run. Its own words: `{line}`. \
              The boundary asked for was: {}",
-            self.boundary.view.summary().lines().next().unwrap_or("the project")
+            self.boundary
+                .view
+                .summary()
+                .lines()
+                .next()
+                .unwrap_or("the project")
         ))
     }
 }
@@ -1289,7 +1327,12 @@ printf 'seal nnp %s\\n' \"$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/st
 /// The invocation, built once and used both by the probe and by every spawn, so
 /// that what was measured is what runs. A probe that measured a different argv
 /// from the one used would be the banner defect with extra steps.
-fn build_argv(helper: &Path, view: &ViewSpec, egress: &Egress, plan: &ConfinePlan<'_>) -> Vec<String> {
+fn build_argv(
+    helper: &Path,
+    view: &ViewSpec,
+    egress: &Egress,
+    plan: &ConfinePlan<'_>,
+) -> Vec<String> {
     let mut a: Vec<String> = vec![helper.display().to_string()];
     let mut push = |s: &str| a.push(s.to_string());
 
@@ -1543,8 +1586,7 @@ fn parse_seals(text: &str) -> BTreeMap<SealKind, Seal> {
         SealKind::NoNewPrivs,
         match got.get("nnp").map(String::as_str) {
             Some("1") => Seal::Held {
-                how: "`/proc/self/status` reports `NoNewPrivs: 1` inside the boundary"
-                    .into(),
+                how: "`/proc/self/status` reports `NoNewPrivs: 1` inside the boundary".into(),
             },
             Some("0") => Seal::Open {
                 why: "`/proc/self/status` reports `NoNewPrivs: 0` inside the boundary, \
@@ -1614,7 +1656,11 @@ mod tests {
         let full = boundary_with(vec![]);
         assert!(full.complete());
         assert!(!full.partial());
-        assert!(full.describe().starts_with("confined;"), "{}", full.describe());
+        assert!(
+            full.describe().starts_with("confined;"),
+            "{}",
+            full.describe()
+        );
 
         let partial = boundary_with(vec![(
             Namespace::Ipc,
@@ -1704,14 +1750,24 @@ mod tests {
     #[test]
     fn unconfined_says_so_rather_than_saying_nothing() {
         let c = Unconfined::because("HostBackend::executable asks for no boundary");
-        assert!(c.wrap(&ConfinePlan { cwd: Path::new("/"), env: &[] }).unwrap().is_empty());
+        assert!(
+            c.wrap(&ConfinePlan {
+                cwd: Path::new("/"),
+                env: &[]
+            })
+            .unwrap()
+            .is_empty()
+        );
         let d = c.describe();
         assert!(d.contains("NOT CONFINED"), "{d}");
         assert!(d.contains("whole filesystem"), "{d}");
         // And it claims no view, so nothing produces an absence note that would
         // blame a boundary that is not there.
         assert!(!c.outside_view(Path::new("/home/dead/.ssh/id_rsa")));
-        assert!(c.absence_notes("cat: /etc/shadow: No such file or directory").is_empty());
+        assert!(
+            c.absence_notes("cat: /etc/shadow: No such file or directory")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1808,11 +1864,15 @@ mod tests {
         // not need.
         let b = boundary_with(vec![]);
         assert!(
-            b.absence_notes("cat: /proj/src/nope.rs: No such file or directory").is_empty()
+            b.absence_notes("cat: /proj/src/nope.rs: No such file or directory")
+                .is_empty()
         );
         assert!(b.absence_notes("hello, nothing is missing here").is_empty());
         // And a relative path, which is what most tools print.
-        assert!(b.absence_notes("cat: src/nope.rs: No such file or directory").is_empty());
+        assert!(
+            b.absence_notes("cat: src/nope.rs: No such file or directory")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1919,12 +1979,25 @@ mod tests {
     #[test]
     fn declared_egress_drops_the_network_unshare_and_nothing_else() {
         let view = ViewSpec::project_only("/proj");
-        let denied = build_argv(Path::new("/usr/bin/bwrap"), &view, &Egress::Denied, &ConfinePlan { cwd: Path::new("/proj"), env: &[] });
+        let denied = build_argv(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: Path::new("/proj"),
+                env: &[],
+            },
+        );
         let host = build_argv(
             Path::new("/usr/bin/bwrap"),
             &view,
-            &Egress::Host { why: "authorised".into() },
-            &ConfinePlan { cwd: Path::new("/proj"), env: &[] },
+            &Egress::Host {
+                why: "authorised".into(),
+            },
+            &ConfinePlan {
+                cwd: Path::new("/proj"),
+                env: &[],
+            },
         );
         assert!(denied.iter().any(|a| a == "--unshare-net"));
         assert!(!host.iter().any(|a| a == "--unshare-net"));
@@ -1985,7 +2058,10 @@ mod tests {
         assert!(held[&SealKind::NoNewPrivs].held());
 
         let open = parse_seals("seal nested open\nseal nnp 0\n");
-        assert!(matches!(open[&SealKind::NestedNamespaces], Seal::Open { .. }));
+        assert!(matches!(
+            open[&SealKind::NestedNamespaces],
+            Seal::Open { .. }
+        ));
         assert!(matches!(open[&SealKind::NoNewPrivs], Seal::Open { .. }));
 
         // Nothing at all: unknown, both of them.
@@ -2012,7 +2088,10 @@ mod tests {
             Path::new("/usr/bin/bwrap"),
             &ViewSpec::project_only("/proj"),
             &Egress::Denied,
-            &ConfinePlan { cwd: Path::new("/proj"), env: &[] },
+            &ConfinePlan {
+                cwd: Path::new("/proj"),
+                env: &[],
+            },
         );
         assert!(a.iter().any(|x| x == "--disable-userns"), "{a:?}");
         assert!(
@@ -2039,7 +2118,10 @@ mod tests {
         assert!(n.contains("NOT the command's answer"), "{n}");
         assert!(n.contains("may never have run"), "{n}");
         // And ordinary output is not misread as one.
-        assert!(b.launcher_failure("error: could not compile `x`\n").is_none());
+        assert!(
+            b.launcher_failure("error: could not compile `x`\n")
+                .is_none()
+        );
         assert!(b.launcher_failure("").is_none());
     }
 
@@ -2051,7 +2133,11 @@ mod tests {
         let inside = parse_readback("ns user user:[42]\nns mnt mnt:[43]\nnoise\nns pid\n");
         assert_eq!(inside.get("user"), Some(&"user:[42]".to_string()));
         assert_eq!(inside.get("mnt"), Some(&"mnt:[43]".to_string()));
-        assert_eq!(inside.get("pid"), None, "a line with no inode is not a reading");
+        assert_eq!(
+            inside.get("pid"),
+            None,
+            "a line with no inode is not a reading"
+        );
         assert!(parse_readback("total nonsense").is_empty());
     }
 

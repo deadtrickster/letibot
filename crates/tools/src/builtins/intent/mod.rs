@@ -58,9 +58,7 @@ pub mod queue;
 pub mod tools;
 pub mod write_plan;
 
-pub use ask::{
-    AskError, AskUserQuestion, Headless, Question, QuestionAnswer, Questioner,
-};
+pub use ask::{AskError, AskUserQuestion, Headless, Question, QuestionAnswer, Questioner};
 pub use board::Todo;
 pub use chat::{Chat, ChatError, Message, NoFabric, Posted, Say};
 pub use ledger::{
@@ -212,8 +210,7 @@ mod tests {
     use std::sync::Arc;
 
     fn reg(mounted: bool) -> Registry {
-        let mut r =
-            crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
+        let mut r = crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
         let mut w = Wiring::standalone();
         if mounted {
             w.queue = Some(Arc::new(queue::FakeQueue::new("seat")));
@@ -226,7 +223,13 @@ mod tests {
     #[test]
     fn every_intent_tool_declares_its_access_honestly() {
         let r = reg(false);
-        let by = |n: &str| r.schemas().into_iter().find(|s| s.name == n).unwrap().access;
+        let by = |n: &str| {
+            r.schemas()
+                .into_iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .access
+        };
         // Session state, not the operator's tree, and not `Read` — which is the
         // hole `docs/tool-survey.md` §1.4 found in grok-build.
         assert_eq!(by("todo"), Access::Session);
@@ -290,9 +293,17 @@ mod tests {
         };
         assert!(by("board").starts_with("not mounted"), "{}", by("board"));
         assert!(by("fabric").starts_with("not attached"), "{}", by("fabric"));
-        assert!(by("questions").starts_with("none attached"), "{}", by("questions"));
+        assert!(
+            by("questions").starts_with("none attached"),
+            "{}",
+            by("questions")
+        );
         // And the one that is a defect rather than a configuration says so.
-        assert!(by("intent-encoder").contains("NOT attached"), "{}", by("intent-encoder"));
+        assert!(
+            by("intent-encoder").contains("NOT attached"),
+            "{}",
+            by("intent-encoder")
+        );
         let w2 = Wiring::standalone();
         let _s = IntentSink::new(w2.ledger.clone(), crate::events::NullToolSink);
         assert!(
@@ -352,7 +363,12 @@ mod tests {
     fn every_description_lints_clean_and_stays_under_the_budget() {
         let r = reg(false);
         for s in r.schemas() {
-            assert_eq!(crate::schema::lint_description(&s.description), vec![], "{}", s.name);
+            assert_eq!(
+                crate::schema::lint_description(&s.description),
+                vec![],
+                "{}",
+                s.name
+            );
             assert!(
                 !s.description.is_empty() && s.description.len() < 800,
                 "{} is {} bytes",

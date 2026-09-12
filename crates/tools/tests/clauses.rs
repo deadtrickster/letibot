@@ -415,7 +415,10 @@ fn clause1_an_edit_that_misses_reports_the_text_that_is_actually_there() {
 #[test]
 fn clause1_more_than_one_match_reports_every_line_rather_than_asking_for_more_context() {
     let mut h = writable_harness();
-    h.write_file("b.rs", "let n = 0;\nfoo();\nlet n = 0;\nbar();\nlet n = 0;\n");
+    h.write_file(
+        "b.rs",
+        "let n = 0;\nfoo();\nlet n = 0;\nbar();\nlet n = 0;\n",
+    );
     h.call("read", r#"{"path":"b.rs"}"#);
     let seen = h
         .call(
@@ -562,13 +565,20 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
     // and this asserts them by making the tool keep them.
     use std::sync::Arc;
     let reg = letibot_tools::coder_tools(Arc::new(Unavailable)).unwrap();
-    let edit = reg.schemas().into_iter().find(|s| s.name == "edit").unwrap();
+    let edit = reg
+        .schemas()
+        .into_iter()
+        .find(|s| s.name == "edit")
+        .unwrap();
     assert_eq!(
         letibot_tools::schema::lint_description(&edit.description),
         vec![]
     );
     assert!(edit.description.contains("Read the file first"));
-    assert!(edit.description.contains("exactly once unless `replace_all`"));
+    assert!(
+        edit.description
+            .contains("exactly once unless `replace_all`")
+    );
 
     let mut h = writable_harness();
     // …the read-before-write promise.
@@ -583,8 +593,11 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
     h.write_file("d.rs", "x\nx\n");
     h.call("read", r#"{"path":"d.rs"}"#);
     assert!(
-        !h.call("edit", r#"{"path":"d.rs","old_string":"x","new_string":"y"}"#)
-            .is_grounded()
+        !h.call(
+            "edit",
+            r#"{"path":"d.rs","old_string":"x","new_string":"y"}"#
+        )
+        .is_grounded()
     );
 }
 
@@ -630,7 +643,10 @@ fn a_write_is_atomic_and_leaves_no_temporary_behind() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.contains("letibot-") && n.ends_with(".tmp"))
         .collect();
-    assert!(leftovers.is_empty(), "temporaries left behind: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "temporaries left behind: {leftovers:?}"
+    );
 }
 
 #[test]
@@ -654,7 +670,10 @@ fn the_head_is_handed_both_sides_and_the_model_is_not() {
     let seen = r.render();
     assert!(seen.contains("1 replacement(s)"), "{seen}");
     assert!(seen.contains("     2| a local-first harness"), "{seen}");
-    assert!(!seen.contains("\n-"), "no diff markers in the prompt: {seen}");
+    assert!(
+        !seen.contains("\n-"),
+        "no diff markers in the prompt: {seen}"
+    );
 }
 
 #[test]

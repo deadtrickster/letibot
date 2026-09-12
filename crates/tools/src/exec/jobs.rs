@@ -63,11 +63,17 @@ pub enum JobState {
     Running,
     /// The process exited on its own. `code` may be non-zero; that is the
     /// command's answer, not an error in the harness.
-    Exited { code: i32 },
+    Exited {
+        code: i32,
+    },
     /// A signal ended it, and the signal is named.
-    Signalled { signal: i32 },
+    Signalled {
+        signal: i32,
+    },
     /// The scope reaped it, or `job_kill` did. **Never** reported as an exit code.
-    Killed { by: String },
+    Killed {
+        by: String,
+    },
     /// The wrapper could not put the process in its cgroup, so the command was
     /// never run. See [`super::scope::join_script`].
     NotScoped,
@@ -140,8 +146,7 @@ impl Capture {
     /// How long since the last byte, and `None` when there has never been one —
     /// which is a different fact from "a long time ago" and is reported as one.
     pub fn since_last(&self) -> Option<Duration> {
-        self.last_at
-            .map(|t| t.elapsed().unwrap_or(Duration::ZERO))
+        self.last_at.map(|t| t.elapsed().unwrap_or(Duration::ZERO))
     }
 
     /// A slice by **absolute** byte offset — absolute so that an offset stays
@@ -377,7 +382,11 @@ mod tests {
         let second = c.slice(4, 4);
         assert_eq!(second.from, 8);
         assert_eq!(second.dropped, 8);
-        assert!(second.denominator(&JobId("j1".into())).contains("NO LONGER RETAINED"));
+        assert!(
+            second
+                .denominator(&JobId("j1".into()))
+                .contains("NO LONGER RETAINED")
+        );
     }
 
     #[test]
@@ -395,7 +404,10 @@ mod tests {
         // Three different things happened and they are three different sentences.
         assert_ne!(
             JobState::Exited { code: 137 }.word(),
-            JobState::Killed { by: "turn scope".into() }.word()
+            JobState::Killed {
+                by: "turn scope".into()
+            }
+            .word()
         );
         assert!(JobState::NotScoped.word().contains("not run"));
         assert!(JobState::Signalled { signal: 9 }.word().contains("9"));

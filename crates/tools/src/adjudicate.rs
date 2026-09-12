@@ -178,7 +178,11 @@ impl Tier {
                 Tier::Inexpressible { .. } => 3,
             }
         }
-        if rank(&other) > rank(&self) { other } else { self }
+        if rank(&other) > rank(&self) {
+            other
+        } else {
+            self
+        }
     }
 }
 
@@ -642,9 +646,14 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 /// non-conforming answerer becomes `unavailable`, never silently opens the gate.*
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionOutcome {
-    Selected { option_id: String },
+    Selected {
+        option_id: String,
+    },
     /// First class rather than an error path (§11.4).
-    Escalate { to: String, why: String },
+    Escalate {
+        to: String,
+        why: String,
+    },
     Unavailable,
     Cancelled,
     Timeout,
@@ -767,10 +776,7 @@ where
     F: Fn(&AdjudicationRequest) -> Option<AdjudicationDecision> + Send + Sync,
 {
     pub fn new(id: impl Into<String>, ask: F) -> Self {
-        AskAdjudicator {
-            ask,
-            id: id.into(),
-        }
+        AskAdjudicator { ask, id: id.into() }
     }
 }
 
@@ -909,9 +915,7 @@ impl Adjudicator for ConsoleAdjudicator {
                         request_id: req.id.clone(),
                         outcome: DecisionOutcome::Unavailable,
                         by: format!("human:{}", self.who),
-                        basis: format!(
-                            "`{chosen}` is not one of the options this request offered"
-                        ),
+                        basis: format!("`{chosen}` is not one of the options this request offered"),
                         latency_ms: started.elapsed().as_millis() as u64,
                     };
                 }
@@ -945,8 +949,7 @@ impl Adjudicator for ConsoleAdjudicator {
 /// A named alias because the inline type is unreadable and because it is the seam
 /// `docs/boundary-and-adjudication.md` §2 asks for: see
 /// [`AdjudicatedGate::with_trail_source`] for what must call it.
-pub type TrailSource =
-    dyn Fn(&GateCall<'_>) -> crate::authorise::AuthorisationTrail + Send + Sync;
+pub type TrailSource = dyn Fn(&GateCall<'_>) -> crate::authorise::AuthorisationTrail + Send + Sync;
 
 /// One row of the audit. §11.5: *"Every request, fan-out, ack, answer and timeout
 /// is a row. Immutable. The audit is log-only and never enters the model
@@ -1225,7 +1228,11 @@ impl AdjudicatedGate {
         Self::new(Box::new(NoAdjudicator))
     }
 
-    pub fn with_identity(mut self, session_id: impl Into<String>, agent: impl Into<String>) -> Self {
+    pub fn with_identity(
+        mut self,
+        session_id: impl Into<String>,
+        agent: impl Into<String>,
+    ) -> Self {
         self.session_id = session_id.into();
         self.agent = agent.into();
         self
@@ -1265,7 +1272,10 @@ impl AdjudicatedGate {
             .map(|o| {
                 o.iter()
                     .filter(|(k, _)| {
-                        matches!(k.as_str(), "path" | "paths" | "file" | "src" | "dest" | "to" | "from")
+                        matches!(
+                            k.as_str(),
+                            "path" | "paths" | "file" | "src" | "dest" | "to" | "from"
+                        )
                     })
                     .filter_map(|(_, v)| v.as_str())
                     .collect()
@@ -1312,7 +1322,10 @@ impl AdjudicatedGate {
         let digest = crate::events::payload_digest(&call.args.to_string());
         let mut facts = if network {
             vec![
-                format!("workspace: {} — and this call does not touch it", call.workspace),
+                format!(
+                    "workspace: {} — and this call does not touch it",
+                    call.workspace
+                ),
                 "this call LEAVES THE BOX: it reaches a third party, who learns that \
                  somebody here asked"
                     .to_string(),
@@ -1335,7 +1348,9 @@ impl AdjudicatedGate {
             ]
         };
         if creates && !network {
-            facts.push("this creates a file that does not exist, so there is nothing to restore".into());
+            facts.push(
+                "this creates a file that does not exist, so there is nothing to restore".into(),
+            );
         }
         if let Some(op) = call.args.get("op").and_then(|v| v.as_str()) {
             // A tool that dispatches on an op is one tool to the gate and ten
@@ -1373,6 +1388,12 @@ impl AdjudicatedGate {
             // button whose effect the gate would then decline to honour."* Two guards
             // for one decision, and only one of them was kept in step.
             options: if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
+                always_ask_options()
+            } else if call.access == Access::Exec {
+                // The operator's rule (2026-09-11): exec and bash ask every time, so
+                // a standing option is never offered — the gate would decline to
+                // honour it, and an operator is never shown a button whose effect
+                // the gate would then decline to honour.
                 always_ask_options()
             } else if self.mode.grants == crate::mode::GrantScope::Session {
                 permission_options()
@@ -1567,7 +1588,11 @@ impl Gate for AdjudicatedGate {
         //    stops appearing in the audit is one nobody can review, and the corpus
         //    wants it: *"what the operator decided"* includes the mode they put this
         //    project at.
-        if self.mode.admits_unasked(&req.tier, call.access) {
+        //    The operator's rule (2026-09-11) excepts exec: no point admits an
+        //    exec-class call unasked, because `bash` is the tool whose result is an
+        //    arbitrary byte stream and the operator has decided that question is
+        //    settled by them, every time, and by nothing else.
+        if call.access != Access::Exec && self.mode.admits_unasked(&req.tier, call.access) {
             let d = AdjudicationDecision::selected(
                 &req,
                 "allow_once",
@@ -1595,26 +1620,29 @@ impl Gate for AdjudicatedGate {
         //    `Grant::covers` is the only reader, and it refuses an unresolved action,
         //    an always-ask and an inexpressible before it looks at coverage at all.
         let program = grant_program(&baseline);
+        //    The operator's rule excepts exec here too: a standing permission never
+        //    covers an exec-class call, so an `allow_session` taken over `cargo test`
+        //    cannot quietly become a session where every later `cargo test` runs
+        //    unasked. The prompt does not offer the option either (see `request_from`)
+        //    and the recording site refuses one — the same three mechanisms the
+        //    always-ask list uses, and for the same reason.
         if let Some(g) = self.grants.iter().find(|g| {
-            g.covers(
-                &req.tier,
-                req.resolved,
-                &program,
-                req.class,
-                &baseline.intents,
-            )
-            .is_ok()
+            call.access != Access::Exec
+                && g.covers(
+                    &req.tier,
+                    req.resolved,
+                    &program,
+                    req.class,
+                    &baseline.intents,
+                )
+                .is_ok()
         }) {
             let basis = format!(
                 "a standing permission granted this session covers this call: {}",
                 g.why
             );
-            let d = AdjudicationDecision::selected(
-                &req,
-                "allow_session",
-                "gate:session-grant",
-                &basis,
-            );
+            let d =
+                AdjudicationDecision::selected(&req, "allow_session", "gate:session-grant", &basis);
             self.breaker.admitted(&direction);
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
@@ -1645,6 +1673,11 @@ impl Gate for AdjudicatedGate {
                         // another.
                         if matches!(k, OptionKind::AllowSession | OptionKind::AllowAlways)
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
+                            // The operator's exec rule, guarded here as well even
+                            // though the option list never offers it to an exec
+                            // call: a safety property with one mechanism ships
+                            // broken the first time somebody refactors the mechanism.
+                            && call.access!= Access::Exec
                             && self.mode.grants == crate::mode::GrantScope::Session
                         {
                             self.grants.push(crate::grant::Grant {
@@ -1677,7 +1710,8 @@ impl Gate for AdjudicatedGate {
                         // the model. `DenyAndTell` now decides how much of the
                         // adjudicator's own basis travels; the fact of a refusal, and
                         // that it is a refusal rather than a failure, always does.
-                        let mut tell = self.surface(&req, &decision, "denied", breaker_state.clone());
+                        let mut tell =
+                            self.surface(&req, &decision, "denied", breaker_state.clone());
                         if !matches!(k, OptionKind::DenyAndTell) {
                             tell.push_str(
                                 "\n\nThe adjudicator's own reasoning stayed in the audit \
@@ -1719,7 +1753,9 @@ impl Gate for AdjudicatedGate {
                 self.record(req, decision, "refuse", direction.key());
                 GateDecision::refuse_and_tell(ToolOutcome::NotRun { why: msg }, tell)
             }
-            DecisionOutcome::Unavailable | DecisionOutcome::Timeout | DecisionOutcome::Cancelled => {
+            DecisionOutcome::Unavailable
+            | DecisionOutcome::Timeout
+            | DecisionOutcome::Cancelled => {
                 // §11.7: *"never a silent allow"*. Route to `on_timeout`, and note
                 // that `OnTimeout::Allow` is not reachable from
                 // [`AdjudicatedGate::request_for`], which always sets `Deny` — the
@@ -1969,8 +2005,8 @@ mod tests {
     }
 
     use super::*;
-    use std::collections::BTreeSet;
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     fn call<'a>(name: &'a str, args: &'a Value) -> GateCall<'a> {
         GateCall {
@@ -1989,7 +2025,10 @@ mod tests {
         let mut g = AdjudicatedGate::closed();
         let args = json!({"path": "src/lib.rs"});
         match g.admit(&call("edit", &args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, .. } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => {
                 assert!(why.contains("fails closed"), "{why}");
                 assert!(why.contains("nobody decided"), "{why}");
             }
@@ -2057,8 +2096,15 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
-            s.lock().unwrap().extend(req.options.iter().map(|o| o.id.clone()));
-            Some(AdjudicationDecision::selected(req, "allow_once", "human:test", "ok"))
+            s.lock()
+                .unwrap()
+                .extend(req.options.iter().map(|o| o.id.clone()));
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_once",
+                "human:test",
+                "ok",
+            ))
         });
         let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
         let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
@@ -2139,7 +2185,12 @@ mod tests {
         let a = asked.clone();
         let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
             a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Some(AdjudicationDecision::selected(req, "deny", "human:test", "no"))
+            Some(AdjudicationDecision::selected(
+                req,
+                "deny",
+                "human:test",
+                "no",
+            ))
         });
         let mut g =
             AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::WRITES_ALLOWED);
@@ -2152,7 +2203,11 @@ mod tests {
         );
         assert_eq!(g.log.len(), 1, "and it is still in the audit");
         assert_eq!(g.log[0].effect, "admit");
-        assert!(g.log[0].decision.by.contains("mode"), "{:?}", g.log[0].decision);
+        assert!(
+            g.log[0].decision.by.contains("mode"),
+            "{:?}",
+            g.log[0].decision
+        );
     }
 
     #[test]
@@ -2168,7 +2223,10 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(adj));
         let args = json!({"path": "src/lib.rs"});
         match g.admit(&call("edit", &args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::Denied { req_id }, .. } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::Denied { req_id },
+                ..
+            } => {
                 assert!(req_id.starts_with("adj-"), "{req_id}");
             }
             other => panic!("a deny is a decision, got {other:?}"),
@@ -2188,8 +2246,14 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(adj));
         let args = json!({"path": "src/lib.rs"});
         match g.admit(&call("edit", &args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, .. } => {
-                assert!(why.contains("non-conforming") || why.contains("did not offer"), "{why}");
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => {
+                assert!(
+                    why.contains("non-conforming") || why.contains("did not offer"),
+                    "{why}"
+                );
             }
             other => panic!("a non-conforming answer must not admit: {other:?}"),
         }
@@ -2209,7 +2273,11 @@ mod tests {
             ))
         });
         let mut g = AdjudicatedGate::new(Box::new(adj));
-        for path in [".ssh/authorized_keys", "home/x/.aws/credentials", ".git/HEAD"] {
+        for path in [
+            ".ssh/authorized_keys",
+            "home/x/.aws/credentials",
+            ".git/HEAD",
+        ] {
             let args = json!({"path": path});
             assert!(
                 matches!(g.admit(&call("write", &args)), GateDecision::Refuse { .. }),
@@ -2229,7 +2297,10 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(adj));
         let args = json!({"path": "src/lib.rs"});
         match g.admit(&call("edit", &args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, .. } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => {
                 assert!(why.contains("timeout"), "{why}")
             }
             other => panic!("{other:?}"),
@@ -2251,7 +2322,9 @@ mod tests {
         }
         let adj = ConsoleAdjudicator::new(
             "deadtrickster",
-            Box::new(std::io::Cursor::new(b"allow_once because I said so\n".to_vec())),
+            Box::new(std::io::Cursor::new(
+                b"allow_once because I said so\n".to_vec(),
+            )),
             Box::new(Shared(out.clone())),
         );
         let mut g = AdjudicatedGate::new(Box::new(adj));
@@ -2259,7 +2332,10 @@ mod tests {
         assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
 
         let shown = String::from_utf8(out.lock().unwrap().clone()).unwrap();
-        assert!(shown.contains("write,host_project,reversible,free"), "{shown}");
+        assert!(
+            shown.contains("write,host_project,reversible,free"),
+            "{shown}"
+        );
         assert!(shown.contains("allow_once"), "{shown}");
         assert!(shown.contains("old_string"), "{shown}");
         assert_eq!(g.log[0].decision.basis, "because I said so");
@@ -2284,7 +2360,10 @@ mod tests {
         let (state, detail, active) = startup_disclosure("none attached", true, true);
         assert_eq!(state, "NONE");
         assert!(!active);
-        assert!(detail.contains("WRITE TOOLS and no adjudicator"), "{detail}");
+        assert!(
+            detail.contains("WRITE TOOLS and no adjudicator"),
+            "{detail}"
+        );
 
         let (state, detail, active) = startup_disclosure("console ask", false, true);
         assert_eq!(state, "GATE ONLY");
@@ -2345,7 +2424,6 @@ mod tests {
         );
     }
 
-
     // -----------------------------------------------------------------------
     // The four outcome classes, at the gate.
     // -----------------------------------------------------------------------
@@ -2390,7 +2468,10 @@ mod tests {
         .with_surroundings(pinned())
         .with_trail_source(|_| {
             crate::authorise::AuthorisationTrail::from_messages(
-                vec![crate::authorise::Utterance::operator("do whatever you like", 0)],
+                vec![crate::authorise::Utterance::operator(
+                    "do whatever you like",
+                    0,
+                )],
                 1,
             )
         })
@@ -2401,7 +2482,10 @@ mod tests {
         let mut g = permissive_gate();
         let args = json!({"command": "/bin/cat /home/dead/.ssh/id_rsa"});
         match g.admit(&bash(&args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::Denied { .. }, tell } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::Denied { .. },
+                tell,
+            } => {
                 assert!(tell.contains("REFUSED"), "{tell}");
                 assert!(tell.contains("Do not retry a variant"), "{tell}");
             }
@@ -2437,19 +2521,22 @@ mod tests {
                 } else {
                     "allow_once"
                 };
-                Some(AdjudicationDecision::selected(req, widest, "human:test", "fine"))
+                Some(AdjudicationDecision::selected(
+                    req,
+                    widest,
+                    "human:test",
+                    "fine",
+                ))
             },
         )))
         // At a point whose grants last a session, so the second half of this test —
-        // that an ORDINARY may-approve action still takes a standing grant — is
-        // actually exercising the grant path rather than the mode's scope. `bash` is
+        // that an ORDINARY may-approve exec call is asked about twice, grant or no — is
+        // actually exercising the ask path, the grant table being closed to exec. `bash` is
         // `Access::Exec`, which still asks at this point, so the always-ask half is
         // unchanged by naming it.
         .with_mode(crate::mode::Mode::WRITES_ALLOWED)
         .with_surroundings(pinned())
-        .with_trail_source(|_| {
-            crate::authorise::AuthorisationTrail::from_messages(vec![], 1)
-        });
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
         let args = json!({"command": "/bin/rm -rf /home/dead/elsewhere"});
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
@@ -2462,12 +2549,74 @@ mod tests {
         assert!(g.log[0].request.option("allow_session").is_none());
         assert!(g.log[0].request.option("allow_always").is_none());
 
-        // While an ordinary may-approve class grant still works, so this is a
-        // restriction on the fixed list and not on grants in general.
+        // While an ordinary may-approve exec call is asked about twice now, which is
+        // the operator's rule of 2026-09-11: exec asks every time, and nothing settles it.
         let ordinary = json!({"command": "/bin/rm -rf /w/target"});
         assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
         assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
-        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            4,
+            "an exec-class call is asked every time; no session grant settles it"
+        );
+        assert!(
+            g.grants().is_empty(),
+            "no standing permission is recorded for an exec-class call"
+        );
+    }
+
+    #[test]
+    /// **The operator's rule: exec and bash ask every time, and nothing settles it.**
+    ///
+    /// 2026-09-11, the operator: *"i want something very simple for now - exec and
+    /// bash always ask me for permission."* Three mechanisms hold it, the same three
+    /// the always-ask list uses: the gate skips the mode's admission and the grant
+    /// table for `Access::Exec`, the prompt never offers a standing option, and the
+    /// recording site refuses one. The command below is a read inside the workspace —
+    /// layer A's weakest verdict — because it is exactly the call clause 4 would wave
+    /// through if the access class let it.
+    fn exec_class_calls_ask_every_time_and_never_take_a_standing_grant() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let widest = if req.option("allow_session").is_some() {
+                    "allow_session"
+                } else {
+                    "allow_once"
+                };
+                Some(AdjudicationDecision::selected(
+                    req,
+                    widest,
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+        let args = json!({"command": "/bin/cat /w/src/lib.rs"});
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the second identical call asks again: no mode and no grant settles exec"
+        );
+        assert!(
+            g.grants().is_empty(),
+            "no standing permission is recorded for an exec-class call"
+        );
+        assert!(
+            g.log.iter().all(|r| {
+                r.request.option("allow_session").is_none()
+                    && r.request.option("allow_always").is_none()
+            }),
+            "exec is never offered a standing option"
+        );
     }
 
     #[test]
@@ -2475,7 +2624,10 @@ mod tests {
         let mut g = permissive_gate();
         let args = json!({"command": "/bin/cat $FILE"});
         match g.admit(&bash(&args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, tell } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                tell,
+            } => {
                 assert!(why.contains("$FILE"), "{why}");
                 assert!(tell.contains("nobody decided"), "{tell}");
             }
@@ -2492,7 +2644,10 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(NoAdjudicator));
         let args = json!({"command": "ls -la"});
         match g.admit(&bash(&args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, .. } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => {
                 assert!(why.contains("alias"), "{why}")
             }
             other => panic!("{other:?}"),
@@ -2537,7 +2692,12 @@ mod tests {
             "no",
             move |req: &AdjudicationRequest| {
                 c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(AdjudicationDecision::selected(req, "deny", "human:test", "no"))
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny",
+                    "human:test",
+                    "no",
+                ))
             },
         )))
         .with_surroundings(pinned())
@@ -2551,14 +2711,20 @@ mod tests {
             "/usr/bin/tail /w/third.txt",
         ] {
             let args = json!({"command": cmd});
-            assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }), "{cmd}");
+            assert!(
+                matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }),
+                "{cmd}"
+            );
         }
         assert_eq!(consulted.load(std::sync::atomic::Ordering::Relaxed), 3);
 
         // The fourth is not adjudicated at all.
         let args = json!({"command": "/usr/bin/less /w/fourth.txt"});
         match g.admit(&bash(&args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, tell } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                tell,
+            } => {
                 assert!(why.contains("circuit breaker is open"), "{why}");
                 assert!(tell.contains("breaker is OPEN"), "{tell}");
                 assert!(tell.contains("only the operator can lift it"), "{tell}");
@@ -2623,7 +2789,9 @@ mod tests {
             .with_surroundings(pinned())
             .with_trail_source(|_| {
                 crate::authorise::AuthorisationTrail::from_messages(
-                    vec![crate::authorise::Utterance::operator("yeah restart it", 1).at_seconds(30)],
+                    vec![
+                        crate::authorise::Utterance::operator("yeah restart it", 1).at_seconds(30),
+                    ],
                     18,
                 )
             });
@@ -2650,7 +2818,10 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(adj));
         let args = json!({"path": "src/lib.rs"});
         match g.admit(&call("edit", &args)) {
-            GateDecision::Refuse { outcome: ToolOutcome::NotRun { why }, .. } => {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => {
                 assert!(why.contains("escalated"), "{why}")
             }
             other => panic!("{other:?}"),

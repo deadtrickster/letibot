@@ -308,7 +308,10 @@ impl Tool for Github {
                 op_list()
             );
             if let Some(near) = ForgeOp::nearest(raw_op) {
-                payload.push_str(&format!("\nthe nearest to `{raw_op}` is `{}`", near.as_str()));
+                payload.push_str(&format!(
+                    "\nthe nearest to `{raw_op}` is `{}`",
+                    near.as_str()
+                ));
             }
             return Invocation::failed(format!("github has no op called `{raw_op}`"), payload);
         };
@@ -337,7 +340,11 @@ impl Tool for Github {
                     "`{}` needs {} and {} not given",
                     op.as_str(),
                     missing.join(", "),
-                    if missing.len() == 1 { "it was" } else { "they were" }
+                    if missing.len() == 1 {
+                        "it was"
+                    } else {
+                        "they were"
+                    }
                 ),
                 format!(
                     "nothing was sent. Call `github` again with op `{}` and {}.",
@@ -367,7 +374,11 @@ impl Tool for Github {
                     .map(|a| format!("`{a}`"))
                     .collect::<Vec<_>>()
                     .join(", "),
-                if ignored.len() == 1 { "it was" } else { "they were" }
+                if ignored.len() == 1 {
+                    "it was"
+                } else {
+                    "they were"
+                }
             ));
         }
 
@@ -394,8 +405,7 @@ impl Tool for Github {
             }
             Err(ForgeError::Refused(why)) => Invocation::failed(
                 format!("the forge refused `{}`: {why}", op.as_str()),
-                "the request reached the forge and it declined. Nothing changed there."
-                    .to_string(),
+                "the request reached the forge and it declined. Nothing changed there.".to_string(),
             ),
             Err(ForgeError::Transport(e)) => Invocation::failed(
                 format!("the forge could not be reached: {e}"),
@@ -439,7 +449,8 @@ fn render(call_id: &str, op: ForgeOp, r: ForgeResponse) -> Invocation {
         head.push_str(&format!("\n{u}"));
     }
 
-    let (quarantined, note) = super::quarantine(call_id, &format!("{} on the forge", r.repo), &r.text);
+    let (quarantined, note) =
+        super::quarantine(call_id, &format!("{} on the forge", r.repo), &r.text);
     let mut inv = Invocation::ok(format!("{head}\n{quarantined}"));
     if let Some(n) = note {
         inv.notes.push(n);

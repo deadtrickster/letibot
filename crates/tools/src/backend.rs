@@ -280,8 +280,30 @@ impl HostBackend {
     /// would read the operator's disk while a disclosure said otherwise). Neither
     /// falls back to [`HostBackend::executable`].
     pub fn confined(root: impl AsRef<Path>) -> Result<Self, BackendError> {
+        Self::confined_granting(root, Vec::new())
+    }
+
+    /// A confined backend whose view also holds `grants`.
+    ///
+    /// **A grant is a decision with a consequence**, and the consequence is the reason
+    /// this takes them rather than hardcoding any: a `ReadOnly` path is readable inside
+    /// the view and therefore readable *into the transcript*, since §3's second half is
+    /// not enforced by the confinement module. `Boundary::describe` prints that next to
+    /// each grant, and every `Grant` carries a `why`, because *"a grant nobody can
+    /// explain is a grant nobody can revoke"*.
+    ///
+    /// Nothing here decides what to grant. The caller does, from a flag the operator
+    /// typed — which is what keeps a capability from arriving as a side effect.
+    pub fn confined_granting(
+        root: impl AsRef<Path>,
+        grants: Vec<crate::exec::confine::Grant>,
+    ) -> Result<Self, BackendError> {
         let base = Self::writable(root)?;
-        let confine = crate::exec::Bwrap::project(base.root.clone())
+        let mut view = crate::exec::confine::ViewSpec::project_only(base.root.clone());
+        for g in grants {
+            view = view.granting(g);
+        }
+        let confine = crate::exec::Bwrap::probe(view, crate::exec::confine::Egress::Denied)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let host = crate::exec::HostProcesses::confined(base.root.clone(), Box::new(confine))
             .map_err(|e| BackendError::Io(e.to_string()))?;
@@ -631,7 +653,9 @@ impl ExecBackend for HostBackend {
     }
 
     fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
-        self.processes.as_ref().map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
+        self.processes
+            .as_ref()
+            .map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
     }
 }
 
@@ -921,9 +945,12 @@ mod tests {
         std::fs::create_dir_all(root.join("real")).expect("real");
         std::os::unix::fs::symlink(root.join("real"), root.join("link")).expect("symlink");
         let b = HostBackend::writable(&root).expect("writable");
-        let p = b.resolve("link/new.txt").expect("an internal link resolves");
+        let p = b
+            .resolve("link/new.txt")
+            .expect("an internal link resolves");
         assert!(p.starts_with(&root), "{}", p.display());
-        b.write("link/new.txt", b"inside").expect("write through an internal link");
+        b.write("link/new.txt", b"inside")
+            .expect("write through an internal link");
         assert_eq!(
             std::fs::read_to_string(root.join("real/new.txt")).unwrap_or_default(),
             "inside"
@@ -932,7 +959,11 @@ mod tests {
         std::os::unix::fs::symlink("real", root.join("rel")).expect("relative symlink");
         std::os::unix::fs::symlink("link", root.join("link2")).expect("link to a link");
         assert!(b.resolve("rel/x.txt").expect("relative").starts_with(&root));
-        assert!(b.resolve("link2/x.txt").expect("chained").starts_with(&root));
+        assert!(
+            b.resolve("link2/x.txt")
+                .expect("chained")
+                .starts_with(&root)
+        );
     }
 
     #[test]

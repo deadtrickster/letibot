@@ -369,6 +369,17 @@ pub struct App {
     hist_class: Option<RowClass>,
     turn: Option<TurnPane>,
     open: Vec<OpenDecision>,
+    /// Which option of `open[0]` is highlighted.
+    ///
+    /// A permission prompt used to be answered by TYPING an option id or its first
+    /// letter into the composer. That is a keymap the operator has to remember and a
+    /// word they can mistype, on a prompt that appears mid-thought — reported twice as
+    /// *"it wasn't a choice but something I have to type (and mistype) myself"*.
+    ///
+    /// Up/Down move this; Enter on an empty composer answers it. Typing still works,
+    /// because a head driven by a script and the tests both use it, and because the
+    /// first letter is faster than two arrow presses once you know the ladder.
+    sel: usize,
     /// Things that happened *between* transcript rows and belong in the
     /// conversation: a guard that fired, a decision that settled.
     ///
@@ -573,6 +584,7 @@ impl App {
             hist_class: None,
             turn: None,
             open: Vec::new(),
+            sel: 0,
             notes: Vec::new(),
             heads: 0,
             hist_renders: 0,
@@ -851,6 +863,8 @@ impl App {
         self.items = s.items;
         self.invalidate_history();
         self.open = s.open_decisions;
+        // A snapshot can replace the open set wholesale; keep the highlight in range.
+        self.sel = 0;
         // Everything in a snapshot is history and none of it is anchored, so it
         // goes at the top rather than being invented a position among the rows.
         self.notes = s
@@ -1119,6 +1133,10 @@ impl App {
                 on_timeout,
             } => {
                 self.open.retain(|d| d.req_id != req_id);
+                // A fresh question starts at the top of its ladder rather than
+                // wherever the last one was left: the highlight must never be
+                // somewhere the operator did not put it when Enter is one key away.
+                self.sel = 0;
                 self.open.push(OpenDecision {
                     req_id,
                     kind,
@@ -1502,6 +1520,41 @@ impl App {
         if matches!(k, Key::Esc) && self.scroll > 0 {
             self.scroll = 0;
             return None;
+        }
+
+        // **An open decision owns Up/Down and a bare Enter.**
+        //
+        // Before the composer, because while a prompt is on the screen those keys mean
+        // the ladder and cannot sensibly mean anything else -- the same argument the
+        // picker arm above already makes for a bare row number.
+        //
+        // Only with an EMPTY composer, so nothing is taken away: a half-typed line
+        // still scrolls, still edits, and Enter still sends it. That keeps `/command`,
+        // a typed option id and the tests working unchanged.
+        if !self.open.is_empty() && self.editor.text().is_empty() {
+            let n = self.open[0].options.len();
+            match k {
+                Key::Up if n > 0 => {
+                    self.sel = if self.sel == 0 { n - 1 } else { self.sel - 1 };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down if n > 0 => {
+                    self.sel = (self.sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if n > 0 => {
+                    let d = &self.open[0];
+                    let opt = d.options[self.sel.min(n - 1)].option_id.clone();
+                    let req_id = d.req_id.clone();
+                    return Some(Action::Answer {
+                        req_id,
+                        option_id: opt,
+                    });
+                }
+                _ => {}
+            }
         }
 
         let now = self.now_ms;
@@ -2544,6 +2597,14 @@ impl App {
                     let (stable, tail) = text_cache.split(text, &cfg, cfg.budget.body_lines);
                     segs.push(Seg::Borrowed(stable));
                     segs.push(Seg::Owned(tail));
+                    // The same air the reasoning block and the call cards already
+                    // carry. Without it the last line of a running decode touches
+                    // the top border of the composer, and the blank appears only
+                    // when the turn ends and the pane stands down, so the screen
+                    // grows by a line at the moment the reader finally has time to
+                    // look. Padding while running is also the shape the transcript
+                    // row takes over, so nothing reflows at the handoff.
+                    segs.push(Seg::Owned(vec![String::new()]));
                 }
                 // The call the model is writing right now. The markup itself is
                 // never here: what is on the screen is that a call is being
@@ -2812,16 +2873,38 @@ impl App {
             sgr::YELLOW,
             &format!("? {} [{}]", d.summary, d.kind),
         )];
-        let opts: Vec<String> = d
-            .options
-            .iter()
-            .map(|o| format!("{} ({})", o.label, o.option_id))
-            .collect();
-        out.extend(
-            wrap(&format!("  {}", opts.join("  ·  ")), w)
-                .into_iter()
-                .map(|l| colour(&self.cfg, sgr::YELLOW, &l)),
-        );
+        // **One option per line, with the highlighted one marked.**
+        //
+        // They used to be joined with `·` onto one wrapped line, which is readable but
+        // is not a control: there was nothing to move and nothing to press, so the only
+        // way in was to type the id. A ladder the eye can walk is also a ladder Up/Down
+        // can walk, and the two have to agree -- the marker IS the thing Enter takes.
+        for (i, o) in d.options.iter().enumerate() {
+            let picked = i == self.sel.min(d.options.len().saturating_sub(1));
+            // The id stays on the line. Typing it still works, a script still uses it,
+            // and a reader learning the ladder sees both spellings of the same choice.
+            let body = format!(
+                "{} {}  ({})",
+                if picked { "▸" } else { " " },
+                o.label,
+                o.option_id
+            );
+            for l in wrap(&format!("  {body}"), w) {
+                out.push(if picked {
+                    // Inverse video rather than another colour: the prompt is already
+                    // yellow, and a highlight that is a second hue reads as a second
+                    // kind of thing rather than as "this one".
+                    format!("{}{}{}", sgr::REVERSE, l, sgr::RESET)
+                } else {
+                    colour(&self.cfg, sgr::YELLOW, &l)
+                });
+            }
+        }
+        out.push(colour(
+            &self.cfg,
+            sgr::YELLOW,
+            "  ↑↓ to choose · Enter to answer · or type the id",
+        ));
         out
     }
 
@@ -4450,6 +4533,75 @@ mod tests {
         assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
     }
 
+    /// **The prompt is a control, not a spelling test.**
+    ///
+    /// Up and Down walk the ladder and Enter takes the highlighted one — the operator
+    /// never types a word they can get wrong. Reported twice as *"it wasn't a choice
+    /// but something I have to type (and mistype) myself"* before it was built.
+    #[test]
+    fn a_decision_is_answered_with_the_arrows_and_enter() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
+        let opts: Vec<String> = a.open_decisions()[0]
+            .options
+            .iter()
+            .map(|o| o.option_id.clone())
+            .collect();
+        assert!(opts.len() >= 2, "need a ladder to walk: {opts:?}");
+
+        // Enter with nothing typed takes the FIRST option, because a fresh question
+        // starts at the top of its own ladder.
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Answer {
+                req_id: "r1".into(),
+                option_id: opts[0].clone()
+            })
+        );
+
+        // Down moves one, and the answer follows the marker rather than the order the
+        // options happen to arrive in.
+        let mut b = app();
+        b.apply(ServerFrame::Event(env(1, testing::requested("r2", "rm"))));
+        assert_eq!(b.key(Key::Down), None, "moving is not answering");
+        assert_eq!(
+            b.key(Key::Enter),
+            Some(Action::Answer {
+                req_id: "r2".into(),
+                option_id: opts[1].clone()
+            })
+        );
+
+        // Up from the top wraps to the bottom rather than sticking, so the last option
+        // — which is usually the one that denies — is one keypress away.
+        let mut c = app();
+        c.apply(ServerFrame::Event(env(1, testing::requested("r3", "rm"))));
+        assert_eq!(c.key(Key::Up), None);
+        assert_eq!(
+            c.key(Key::Enter),
+            Some(Action::Answer {
+                req_id: "r3".into(),
+                option_id: opts[opts.len() - 1].clone()
+            })
+        );
+    }
+
+    /// The arrows belong to the decision only while the composer is empty.
+    ///
+    /// A half-typed line still edits and still sends, so nothing was taken away from
+    /// the person who prefers typing — including `/command`, which shares Enter.
+    #[test]
+    fn a_half_typed_line_keeps_the_arrows_and_enter() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
+        typed(&mut a, "some prose");
+        // Enter sends the line as a prompt, not as an answer to the decision.
+        assert!(
+            matches!(a.key(Key::Enter), Some(Action::Prompt(t)) if t == "some prose"),
+            "a typed line must still submit while a decision is open"
+        );
+    }
+
     #[test]
     fn an_open_decision_is_answered_by_typing_the_option() {
         let mut a = app();
@@ -4867,6 +5019,50 @@ mod tests {
         )));
         let screen = a.screen(120, 16).join("\n");
         assert!(screen.contains("CUT SHORT"), "{screen}");
+    }
+
+    /// Found by watching a decode run: the last line of the streaming answer sat
+    /// directly against whatever was drawn under it, and the blank appeared only
+    /// when the turn ended and the pane stood down. The reasoning block and the
+    /// call cards already carry their own trailing air, so the text block does
+    /// too now, and this pins it.
+    #[test]
+    fn a_running_decode_keeps_a_blank_line_above_what_follows_it() {
+        let mut a = app();
+        // The window has to be full for this to mean anything: a short transcript
+        // is padded to the room the body has, and that padding would pass the
+        // assertion with or without the fix. Forty settled rows push the running
+        // answer to the bottom of the window, which is where the defect lived.
+        let mut seq = 1;
+        for i in 0..40 {
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            seq += 1;
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::content(&format!("s.{i}"), "a line of earlier transcript"),
+            )));
+            seq += 1;
+        }
+        a.apply(ServerFrame::Event(env(seq, testing::turn_started("t1"))));
+        seq += 1;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::delta("t1", "half an answer"),
+        )));
+        let rows = a.screen(80, 24);
+        let last_text = rows
+            .iter()
+            .rposition(|l| l.contains("half an answer"))
+            .expect("the streaming answer is on the screen");
+        let under = &rows[last_text + 1];
+        assert!(
+            under.trim().is_empty(),
+            "a running decode is padded by a blank line, but this row follows it \
+             directly: {under:?}"
+        );
     }
 
     /// A fixture with the two things the operator's screen had in it: a heading

@@ -53,6 +53,10 @@ pub mod sgr {
     pub const RED: &str = "\x1b[31m";
     pub const MAGENTA: &str = "\x1b[35m";
     pub const GREY: &str = "\x1b[90m";
+    /// Inverse video. Used for the highlighted row of a choice, where the point is
+    /// "this is the one Enter takes" rather than a category — a second hue would read
+    /// as a second kind of thing.
+    pub const REVERSE: &str = "\x1b[7m";
 }
 
 /// What this module draws its own frames with: a code fence, a horizontal rule,

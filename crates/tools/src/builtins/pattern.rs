@@ -289,7 +289,10 @@ impl Pattern {
 }
 
 fn memchr_nl(bytes: &[u8], from: usize) -> Option<usize> {
-    bytes[from..].iter().position(|b| *b == b'\n').map(|i| i + from)
+    bytes[from..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map(|i| i + from)
 }
 
 /// Separate "this is not a regex" from "this regex is too big", because the two
@@ -606,16 +609,10 @@ mod tests {
     fn scanning_a_buffer_agrees_with_scanning_its_lines() {
         let text = "fn a() {\n    let x = 1;\n}\nfn b() {\n}\nlast line no newline";
         for src in [
-            r"fn \w+",
-            r"^fn ",
-            r"^\s*let",
-            r"\}$",
-            r"line",
-            r"^$",
+            r"fn \w+", r"^fn ", r"^\s*let", r"\}$", r"line", r"^$",
             // The one that separates the two modes: `\s*` will happily eat a
             // newline over a buffer, and never does over a line.
-            r"\{\s*\}",
-            r"1;\s*\}",
+            r"\{\s*\}", r"1;\s*\}",
         ] {
             let pat = p(src, false);
             let want: Vec<usize> = text

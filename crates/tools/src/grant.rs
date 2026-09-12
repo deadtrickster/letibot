@@ -279,10 +279,7 @@ impl Grant {
             }
         }
         s.push_str(&format!("  because: {}\n", self.why));
-        s.push_str(&format!(
-            "  it covers {} class(es):\n",
-            self.coverage.len()
-        ));
+        s.push_str(&format!("  it covers {} class(es):\n", self.coverage.len()));
         for c in &self.coverage {
             s.push_str(&format!("    {}\n", c.describe()));
         }
@@ -537,7 +534,10 @@ mod tests {
         let s = g.disclose(&notes);
         assert!(s.contains("glob `git *`"), "{s}");
         assert!(s.contains("run arbitrary code"), "{s}");
-        assert!(s.contains("-c core.pager="), "the warning names the flags: {s}");
+        assert!(
+            s.contains("-c core.pager="),
+            "the warning names the flags: {s}"
+        );
         assert!(s.contains("--upload-pack"), "{s}");
         assert!(s.contains("still ask"), "{s}");
         assert!(s.contains("inexpressible"), "{s}");

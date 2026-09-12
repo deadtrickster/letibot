@@ -793,7 +793,17 @@ impl<'a> Harness<'a> {
         // build a boundary gets an error naming which half failed — no delegated
         // cgroup subtree, or no usable confinement — and not a quiet downgrade.
         let backend = if cfg.seat.needs_exec_backend() {
-            HostBackend::confined(&cfg.workspace).map_err(|e| {
+            HostBackend::confined_granting(
+                &cfg.workspace,
+                cfg.grants_ro
+                    .iter()
+                    .map(|p| letibot_tools::exec::confine::Grant::ReadOnly {
+                        path: p.clone(),
+                        why: "granted on the command line with --grant-ro".into(),
+                    })
+                    .collect(),
+            )
+            .map_err(|e| {
                 HarnessError::Setup(format!(
                     "the `{}` role needs a confined execution backend and one could not be \
                      built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
@@ -802,8 +812,12 @@ impl<'a> Harness<'a> {
                      — the operator's whole filesystem, with a banner that would have to \
                      say so. Two things it needs and the error above says which is \
                      missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                     namespace boundary (bwrap). Seat `--role coder` for file edits with \
-                     no exec path.",
+                     namespace boundary (bwrap). A third thing the message above may \
+                     name instead: the project root itself. Both `runner` and `coder` \
+                     root their view at the workspace, so a workspace that is a file, \
+                     a dangling symlink or absent fails here and no boundary is the \
+                     wrong thing to blame. Seat `--role orchestrator` for a session \
+                     with no exec path at all.",
                     cfg.seat.as_str(),
                     cfg.workspace
                 ))
@@ -2074,7 +2088,14 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
         Seat::Orchestrator => roles::m1_orchestrator(),
         Seat::Planner => roles::planner(),
         Seat::Researcher => roles::m3_researcher(),
-        Seat::Coder => roles::m2_coder(),
+        Seat::Coder => {
+            let mut r = roles::m2_coder();
+            // Same rule as the runner below: the role lists `bash`, the flag seats it.
+            if !cfg.allow_bash {
+                r.tools.retain(|t| t != "bash");
+            }
+            r
+        }
         Seat::Runner => {
             let mut r = roles::m2_runner();
             if !cfg.allow_bash {

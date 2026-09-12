@@ -198,15 +198,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// `POST` a JSON body and hand back the undecoded response body.
 pub fn post_json(endpoint: &Endpoint, path: &str, body: &str) -> Result<Body, HttpError> {
-    let addr = endpoint
-        .authority()
-        .parse()
-        .map(|a| TcpStream::connect_timeout(&a, endpoint.connect_timeout))
-        .unwrap_or_else(|_| TcpStream::connect(endpoint.authority()))?;
-    addr.set_nodelay(true)?;
-    addr.set_read_timeout(Some(endpoint.read_timeout))?;
-    let mut stream = addr;
-
+    let mut stream = connect(endpoint)?;
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
          Accept: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -216,8 +208,37 @@ pub fn post_json(endpoint: &Endpoint, path: &str, body: &str) -> Result<Body, Ht
     stream.write_all(request.as_bytes())?;
     stream.write_all(body.as_bytes())?;
     stream.flush()?;
+    read_response(BufReader::new(stream))
+}
 
-    let mut reader = BufReader::new(stream);
+/// A plain GET, for the endpoints that describe the server rather than drive it —
+/// `/props` above all. Same connection discipline as [`post_json`], same response
+/// reader, because a second hand-rolled HTTP client is a second place for a framing
+/// bug to live.
+pub fn get(endpoint: &Endpoint, path: &str) -> Result<Body, HttpError> {
+    let mut stream = connect(endpoint)?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\
+         Connection: close\r\n\r\n",
+        endpoint.authority()
+    );
+    stream.write_all(request.as_bytes())?;
+    stream.flush()?;
+    read_response(BufReader::new(stream))
+}
+
+fn connect(endpoint: &Endpoint) -> Result<TcpStream, HttpError> {
+    let addr = endpoint
+        .authority()
+        .parse()
+        .map(|a| TcpStream::connect_timeout(&a, endpoint.connect_timeout))
+        .unwrap_or_else(|_| TcpStream::connect(endpoint.authority()))?;
+    addr.set_nodelay(true)?;
+    addr.set_read_timeout(Some(endpoint.read_timeout))?;
+    Ok(addr)
+}
+
+fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
     let mut status_line = String::new();
     if reader.read_line(&mut status_line)? == 0 {
         return Err(HttpError::Malformed("empty response".into()));

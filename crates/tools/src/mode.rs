@@ -651,13 +651,20 @@ mod tests {
         };
         let e = Mode::AUTO
             .check(
-                &[Prereq::WritableBackend, Prereq::ReachableAdjudicator, Prereq::Confinement],
+                &[
+                    Prereq::WritableBackend,
+                    Prereq::ReachableAdjudicator,
+                    Prereq::Confinement,
+                ],
                 seats,
             )
             .unwrap_err();
         assert!(e.contains("automode"), "{e}");
         assert!(e.contains("authorisation oracle"), "{e}");
-        assert!(e.contains("refuses by name") || e.contains("weaker mode"), "{e}");
+        assert!(
+            e.contains("refuses by name") || e.contains("weaker mode"),
+            "{e}"
+        );
         // And it says how, not only what.
         assert!(e.contains("ModelAdjudicator"), "{e}");
 
@@ -689,9 +696,7 @@ mod tests {
     #[test]
     fn a_read_only_seat_needs_no_writable_backend_whatever_the_point_says() {
         assert!(
-            Mode::ALWAYS_ASK
-                .check(&[], Seats::READS_ONLY)
-                .is_ok(),
+            Mode::ALWAYS_ASK.check(&[], Seats::READS_ONLY).is_ok(),
             "a session with nothing to write with needs nowhere to write"
         );
         // And it still needs one the moment write is seated.
@@ -730,8 +735,14 @@ mod tests {
             assert!(e.contains(name), "{e}");
         }
         // The spellings a person actually types.
-        assert_eq!(Mode::parse("writes-allowed").unwrap().name, "writes allowed");
-        assert_eq!(Mode::parse("writes allowed").unwrap().name, "writes allowed");
+        assert_eq!(
+            Mode::parse("writes-allowed").unwrap().name,
+            "writes allowed"
+        );
+        assert_eq!(
+            Mode::parse("writes allowed").unwrap().name,
+            "writes allowed"
+        );
         assert_eq!(Mode::parse("READ_ONLY").unwrap().name, "read-only");
     }
 

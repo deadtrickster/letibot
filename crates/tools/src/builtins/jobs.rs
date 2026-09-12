@@ -148,9 +148,7 @@ impl Tool for JobList {
         let all = host.jobs();
         let jobs: Vec<_> = all
             .iter()
-            .filter(|j| {
-                want.is_none_or(|w| j.owner.kind.as_str() == w || j.owner.name == w)
-            })
+            .filter(|j| want.is_none_or(|w| j.owner.kind.as_str() == w || j.owner.name == w))
             .collect();
 
         let mut body = String::new();
@@ -171,8 +169,7 @@ impl Tool for JobList {
                 "\nno job is in `{}`. The scopes with jobs are: {}.\n",
                 want.unwrap_or(""),
                 {
-                    let mut ks: Vec<String> =
-                        all.iter().map(|j| j.owner.to_string()).collect();
+                    let mut ks: Vec<String> = all.iter().map(|j| j.owner.to_string()).collect();
                     ks.sort();
                     ks.dedup();
                     ks.join(", ")
@@ -379,10 +376,7 @@ impl Tool for JobOutput {
                     secs(view.elapsed)
                 )
             } else {
-                format!(
-                    "`{id}` {} and wrote nothing at all.",
-                    view.state.word()
-                )
+                format!("`{id}` {} and wrote nothing at all.", view.state.word())
             };
             return Invocation::abstained(
                 format!("`{id}` has produced no output"),
@@ -562,7 +556,10 @@ fn wait_on_scope(
     let Some(sid) = resolve_scope(host, name) else {
         return unknown_scope(host, name);
     };
-    ctx.progress(format!("waiting on scope `{sid}`, deadline {}", secs(timeout)));
+    ctx.progress(format!(
+        "waiting on scope `{sid}`, deadline {}",
+        secs(timeout)
+    ));
     match host.wait_scope(&sid, timeout) {
         Ok(Waited::Happened { took, .. }) => Invocation::ok(format!(
             "scope `{sid}` is empty after {}. It held at least one process while this \
@@ -683,7 +680,12 @@ impl Tool for JobKill {
             r.observed.len()
         ));
         for p in &r.observed {
-            body.push_str(&format!("  pid {} {} — {}\n", p.pid, p.comm, clip(&p.label(), 140)));
+            body.push_str(&format!(
+                "  pid {} {} — {}\n",
+                p.pid,
+                p.comm,
+                clip(&p.label(), 140)
+            ));
         }
         body.push_str(&format!(
             "mechanism: {}\nwaited {} for the cgroup to empty\nsurvivors after: {}\n\
@@ -767,10 +769,26 @@ mod tests {
     #[test]
     fn every_job_tool_declares_its_access_honestly_and_lints_clean() {
         let tools: Vec<(&str, Access, String)> = vec![
-            ("job_list", JobList.schema().access, JobList.schema().description),
-            ("job_output", JobOutput.schema().access, JobOutput.schema().description),
-            ("job_wait", JobWait.schema().access, JobWait.schema().description),
-            ("job_kill", JobKill.schema().access, JobKill.schema().description),
+            (
+                "job_list",
+                JobList.schema().access,
+                JobList.schema().description,
+            ),
+            (
+                "job_output",
+                JobOutput.schema().access,
+                JobOutput.schema().description,
+            ),
+            (
+                "job_wait",
+                JobWait.schema().access,
+                JobWait.schema().description,
+            ),
+            (
+                "job_kill",
+                JobKill.schema().access,
+                JobKill.schema().description,
+            ),
         ];
         for (name, access, desc) in tools {
             assert_eq!(crate::schema::lint_description(&desc), vec![], "{name}");

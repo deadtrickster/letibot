@@ -60,7 +60,11 @@ fn t21_1_a_pkill_matching_the_harness_is_refused_with_what_it_matches_and_the_ha
     let token = my_cmdline
         .split('\0')
         .flat_map(|s| s.rsplit('/'))
-        .find(|s| s.len() > 4 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .find(|s| {
+            s.len() > 4
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
         .map(|s| s.to_string())
         .unwrap_or_else(|| "letibot".to_string());
 
@@ -98,7 +102,10 @@ fn t21_1_the_managed_pid_is_named_with_its_reason_not_a_category() {
     let found = host.protect_listener(port, "this is the model server serving this session", true);
     if found.is_none() {
         eprintln!("t21_1_managed: /proc/<pid>/fd unreadable here; asserting on a declared pid");
-        host.protect_outliving(std::process::id(), "this is the model server serving this session");
+        host.protect_outliving(
+            std::process::id(),
+            "this is the model server serving this session",
+        );
     }
 
     let r = h.call(
@@ -136,10 +143,7 @@ fn t21_2_a_waiter_on_the_model_server_is_refused_as_a_deadlock_the_harness_can_s
         .to_string();
 
     let cmd = format!("until pgrep -f {comm}; do sleep 2; done; echo up");
-    let r = h.call(
-        "bash",
-        &serde_json::json!({ "command": cmd }).to_string(),
-    );
+    let r = h.call("bash", &serde_json::json!({ "command": cmd }).to_string());
     let body = r.render();
     assert!(
         matches!(r.outcome, ToolOutcome::Failed { .. }),
@@ -167,7 +171,10 @@ fn t21_2_a_waiter_whose_predicate_matches_its_own_shell_is_refused() {
     );
     let body = r.render();
     assert!(matches!(r.outcome, ToolOutcome::Failed { .. }), "{body}");
-    assert!(body.contains("the shell that will evaluate this command"), "{body}");
+    assert!(
+        body.contains("the shell that will evaluate this command"),
+        "{body}"
+    );
     assert!(body.contains("job_wait"), "{body}");
 }
 
@@ -199,7 +206,11 @@ fn the_wait_verb_takes_a_handle_and_the_three_endings_are_three_outcomes() {
     );
     assert_eq!(late.outcome, ToolOutcome::Timeout, "{}", late.render());
     assert!(late.payload.contains("STILL RUNNING"), "{}", late.payload);
-    assert!(late.payload.contains("not a completion"), "{}", late.payload);
+    assert!(
+        late.payload.contains("not a completion"),
+        "{}",
+        late.payload
+    );
 
     // 3. Nothing was ever there: absence without presence is a boot window.
     let never = h.call(
@@ -242,11 +253,7 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
     // Start three processes that will outlive the test unless something reaps
     // them. One of them forks a child, so the record also proves the cgroup
     // caught a descendant the harness never had a handle on.
-    for cmd in [
-        "sleep 300",
-        "sleep 300",
-        "sh -c 'sleep 300 & sleep 300'",
-    ] {
+    for cmd in ["sleep 300", "sleep 300", "sh -c 'sleep 300 & sleep 300'"] {
         host.spawn(&letibot_tools::exec::SpawnRequest {
             command: cmd.into(),
             cwd: ".".into(),
@@ -293,7 +300,11 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
     );
     assert_eq!(r.mechanism, "cgroup.kill", "{}", r.summary());
     assert!(r.survivors.is_empty(), "survivors: {:?}", r.survivors);
-    assert!(r.removed, "the cgroup directory must be gone: {}", r.summary());
+    assert!(
+        r.removed,
+        "the cgroup directory must be gone: {}",
+        r.summary()
+    );
     assert!(r.clean());
 
     // ABSENCE, measured on the world and not on the record: the pids are gone
@@ -313,7 +324,11 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
     // And the log holds it, so `job_list` can show it later.
     let log = host.reap_log();
     assert_eq!(log.len(), 1);
-    assert!(log[0].summary().contains("observed"), "{}", log[0].summary());
+    assert!(
+        log[0].summary().contains("observed"),
+        "{}",
+        log[0].summary()
+    );
 }
 
 #[test]
@@ -351,8 +366,16 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     let killed = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
     assert_eq!(killed.outcome, ToolOutcome::Ok, "{}", killed.render());
     assert!(killed.payload.contains("sleep 60"), "{}", killed.payload);
-    assert!(killed.payload.contains("mechanism: cgroup.kill"), "{}", killed.payload);
-    assert!(killed.payload.contains("survivors after: none"), "{}", killed.payload);
+    assert!(
+        killed.payload.contains("mechanism: cgroup.kill"),
+        "{}",
+        killed.payload
+    );
+    assert!(
+        killed.payload.contains("survivors after: none"),
+        "{}",
+        killed.payload
+    );
 
     let after = h.call("job_list", "{}");
     assert!(
@@ -371,7 +394,10 @@ fn the_reap_log_reaches_the_model_through_job_list() {
 #[test]
 fn with_no_adjudicator_bash_is_not_run_and_it_is_not_denied() {
     let mut h = runner!("gate", None);
-    let r = h.call("bash", &serde_json::json!({"command": "echo hi"}).to_string());
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "echo hi"}).to_string(),
+    );
     match &r.outcome {
         // `NotRun` — nobody decided. `Denied` would claim a decision was made.
         ToolOutcome::NotRun { why } => {
@@ -390,7 +416,10 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
     let mut h = letibot_tools::testing::writable_harness();
     // `bash` is not even registered there, which is the third mechanism — the
     // role. That refusal is clause 1's unknown-tool path and must list what is.
-    let r = h.call("bash", &serde_json::json!({"command": "echo hi"}).to_string());
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "echo hi"}).to_string(),
+    );
     assert!(
         r.payload.contains("this session has these tools"),
         "{}",
@@ -400,7 +429,7 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
 }
 
 #[test]
-fn the_read_only_and_coder_roles_did_not_gain_an_exec_path() {
+fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
     use letibot_tools::runtime::roles;
     let reg = letibot_tools::runner_tools(std::sync::Arc::new(
         letibot_tools::builtins::retrieval::Unavailable,
@@ -416,7 +445,11 @@ fn the_read_only_and_coder_roles_did_not_gain_an_exec_path() {
         8,
         "the ceiling itself must not have been raised for every role"
     );
-    for other in [roles::m1_orchestrator(), roles::m2_coder(), roles::planner()] {
+    for other in [
+        roles::m1_orchestrator(),
+        roles::m2_coder(),
+        roles::planner(),
+    ] {
         assert_eq!(
             other.max_tools,
             letibot_tools::runtime::DEFAULT_MAX_TOOLS,
@@ -429,18 +462,54 @@ fn the_read_only_and_coder_roles_did_not_gain_an_exec_path() {
     assert!(seated.names().contains(&"bash".to_string()));
     assert!(seated.names().contains(&"monitor".to_string()));
 
-    // And the two roles that shipped before this work name no exec tool at all.
-    for role in [roles::m1_orchestrator(), roles::m2_coder()] {
-        for name in ["bash", "job_kill", "job_wait", "job_list", "job_output", "monitor"] {
-            assert!(
-                !role.tools.contains(&name.to_string()),
-                "`{}` gained `{name}` — an exec path must arrive by decision, not by \
-                 a sibling workstream",
-                role.name
-            );
-        }
+    // The orchestrator names no exec tool at all, and that has not moved.
+    for name in EXEC_TOOLS {
+        assert!(
+            !roles::m1_orchestrator().tools.contains(&name.to_string()),
+            "`m1_orchestrator` gained `{name}` — an exec path must arrive by decision, \
+             not by a sibling workstream"
+        );
     }
+
+    // **`coder` names `bash`, and that arrived by decision on 2026-09-11.** The
+    // operator asked for a seat that can run the project's own tests, and a shaped
+    // `test` verb was the alternative that was put to them and not taken.
+    //
+    // This assertion is written as an exact set rather than a "does not contain"
+    // list, because the guard it replaces was the thing that caught the seat moving
+    // at all: `bash` is one decision and the job/monitor tools are a different one
+    // that nobody has made. A role that quietly grew `job_kill` alongside it would
+    // pass a contains-check and is precisely what this file exists to refuse.
+    let coder = roles::m2_coder();
+    let coder_exec: Vec<&str> = EXEC_TOOLS
+        .iter()
+        .copied()
+        .filter(|n| coder.tools.contains(&n.to_string()))
+        .collect();
+    assert_eq!(
+        coder_exec,
+        vec!["bash"],
+        "`m2_coder`'s exec surface is one decision wide. Anything else here arrived \
+         without one"
+    );
+
+    // And the seat is still only the NAME of a permission. Whether a session gets
+    // the tool is `--bash` on the daemon, which strips it back off when absent —
+    // `crates/harnessd` owns that half and tests it there. The two are deliberately
+    // separate: a role that names a tool no session is given is a role that can be
+    // read, and a daemon flag that adds a tool to a role that never named it would
+    // be an exec path with no declaration anywhere.
 }
+
+/// Named once, because a list that is retyped per assertion is a list that drifts.
+const EXEC_TOOLS: &[&str] = &[
+    "bash",
+    "job_kill",
+    "job_wait",
+    "job_list",
+    "job_output",
+    "monitor",
+];
 
 // ----------------------------------------------------- output and denominators
 
@@ -468,7 +537,10 @@ fn a_capped_result_says_it_capped_and_job_output_has_the_rest() {
     assert!(rendered.contains("of"), "{rendered}");
     assert!(rendered.contains("job_output"), "{rendered}");
     // The tail survived, not the head.
-    assert!(r.payload.contains("line 2999"), "shell output keeps the tail");
+    assert!(
+        r.payload.contains("line 2999"),
+        "shell output keeps the tail"
+    );
 
     // And the rest really is reachable.
     let id = job_id_from_note(&rendered).expect("the cap note names the job");
@@ -478,16 +550,19 @@ fn a_capped_result_says_it_capped_and_job_output_has_the_rest() {
     );
     assert_eq!(head.outcome, ToolOutcome::Ok, "{}", head.render());
     assert!(head.payload.contains("line 0 "), "{}", head.payload);
-    assert!(head.payload.contains("of"), "the denominator travels: {}", head.payload);
+    assert!(
+        head.payload.contains("of"),
+        "the denominator travels: {}",
+        head.payload
+    );
 }
 
 #[test]
 fn a_job_that_wrote_nothing_abstains_rather_than_returning_an_empty_answer() {
     let mut h = runner!("empty_output");
     let r = h.call("bash", &serde_json::json!({"command": "true"}).to_string());
-    let id = job_id_anywhere(&r.render()).unwrap_or_else(|| {
-        h.processes.as_ref().unwrap().jobs()[0].id.0.clone()
-    });
+    let id = job_id_anywhere(&r.render())
+        .unwrap_or_else(|| h.processes.as_ref().unwrap().jobs()[0].id.0.clone());
     let out = h.call("job_output", &serde_json::json!({"job": id}).to_string());
     // Not `ok` with an empty body: `0 bytes` is a claim, and this one is about a
     // process that finished having written nothing.
@@ -496,7 +571,11 @@ fn a_job_that_wrote_nothing_abstains_rather_than_returning_an_empty_answer() {
         "{}",
         out.render()
     );
-    assert!(out.render().contains("wrote nothing at all"), "{}", out.render());
+    assert!(
+        out.render().contains("wrote nothing at all"),
+        "{}",
+        out.render()
+    );
 }
 
 #[test]
@@ -508,7 +587,11 @@ fn a_non_zero_exit_is_the_commands_answer_and_not_a_harness_failure() {
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     assert!(r.payload.contains("[exit 3]"), "{}", r.payload);
-    assert!(r.payload.contains("nope"), "stderr is captured: {}", r.payload);
+    assert!(
+        r.payload.contains("nope"),
+        "stderr is captured: {}",
+        r.payload
+    );
 }
 
 #[test]
@@ -516,21 +599,24 @@ fn an_unknown_job_comes_back_with_the_jobs_there_are() {
     let mut h = runner!("unknown_job");
     // Zero jobs: the miss must say the table is empty, not merely that the id is
     // absent. A denominator of zero is a failed scope, never an answer.
-    let cold = h.call("job_output", &serde_json::json!({"job": "j999"}).to_string());
+    let cold = h.call(
+        "job_output",
+        &serde_json::json!({"job": "j999"}).to_string(),
+    );
     assert!(cold.payload.contains("started 0 jobs"), "{}", cold.render());
 
     h.call("bash", &serde_json::json!({"command": "true"}).to_string());
-    let warm = h.call("job_output", &serde_json::json!({"job": "j999"}).to_string());
+    let warm = h.call(
+        "job_output",
+        &serde_json::json!({"job": "j999"}).to_string(),
+    );
     assert!(warm.payload.contains("job(s):"), "{}", warm.render());
 }
 
 #[test]
 fn a_foreground_command_dies_with_its_turn_and_a_background_one_does_not() {
     let mut h = runner!("scopes");
-    let fg = h.call(
-        "bash",
-        &serde_json::json!({"command": "true"}).to_string(),
-    );
+    let fg = h.call("bash", &serde_json::json!({"command": "true"}).to_string());
     assert_eq!(fg.outcome, ToolOutcome::Ok, "{}", fg.render());
     let bg = h.call(
         "bash",
@@ -572,7 +658,11 @@ fn an_explicit_scope_must_be_named_and_says_that_it_outlives_the_session() {
         "{}",
         unnamed.render()
     );
-    assert!(unnamed.payload.contains("scope_name"), "{}", unnamed.payload);
+    assert!(
+        unnamed.payload.contains("scope_name"),
+        "{}",
+        unnamed.payload
+    );
 
     let named = h.call(
         "bash",
@@ -657,7 +747,10 @@ fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
 
 // ------------------------------------------------------------------ helpers
 
-fn tree_members(host: &letibot_tools::exec::HostProcesses, scope: &letibot_tools::exec::ScopeId) -> usize {
+fn tree_members(
+    host: &letibot_tools::exec::HostProcesses,
+    scope: &letibot_tools::exec::ScopeId,
+) -> usize {
     // Read through the same file the reaper reads, so the presence check and the
     // kill are looking at one fact and not two.
     let mut n = 0;

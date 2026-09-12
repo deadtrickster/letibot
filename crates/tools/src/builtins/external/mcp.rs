@@ -172,8 +172,7 @@ impl Tool for McpTool {
             ),
             Err(McpError::Protocol(e)) => Invocation::failed(
                 format!("`{}` answered with an error: {e}", self.server),
-                "the call reached the server and it did not produce a result."
-                    .to_string(),
+                "the call reached the server and it did not produce a result.".to_string(),
             ),
             Ok(r) if r.is_error => {
                 // F5, in the one place it is easiest to get wrong: the transport

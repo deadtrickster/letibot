@@ -29,7 +29,9 @@ fn ms(t: Instant) -> f64 {
 
 fn main() {
     let root = std::env::args().nth(1).unwrap_or_else(|| "crates".into());
-    let src = std::env::args().nth(2).unwrap_or_else(|| "TokenLedger".into());
+    let src = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "TokenLedger".into());
     let reps: usize = std::env::args()
         .nth(3)
         .and_then(|s| s.parse().ok())
@@ -104,7 +106,11 @@ fn main() {
         Err(e) => {
             // The point of phase 1's clause 3, visible from the bench: a pattern
             // that does not compile produces the engine's message, not a search.
-            println!("\n  regex refused the pattern:\n{}\n\n{}", e.message, e.remedy());
+            println!(
+                "\n  regex refused the pattern:\n{}\n\n{}",
+                e.message,
+                e.remedy()
+            );
             return;
         }
     };
@@ -137,16 +143,16 @@ fn main() {
         buf_hits = hits;
     }
 
-    println!("\n  {:<12}{:>9}  {:>8}  hits", "matcher", "match ms", "total ms");
+    println!(
+        "\n  {:<12}{:>9}  {:>8}  hits",
+        "matcher", "match ms", "total ms"
+    );
     for (name, m, h) in [
         ("legacy", legacy_ms, legacy_hits),
         ("regex/line", byline_ms, byline_hits),
         ("regex/buf", buf_ms, buf_hits),
     ] {
-        println!(
-            "  {name:<12}{m:>9.2}  {:>8.2}  {h}",
-            walk_ms + read_ms + m
-        );
+        println!("  {name:<12}{m:>9.2}  {:>8.2}  {h}", walk_ms + read_ms + m);
     }
 
     // A speedup claimed over a different answer is not a speedup. The three

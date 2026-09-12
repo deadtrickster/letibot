@@ -295,8 +295,8 @@ fn answer(kind: RetrievalKind, query: &RetrievalQuery, a: RetrievalAnswer) -> In
 mod tests {
     use super::*;
     use crate::result::{Envelope, Propagation, propagate};
-    use letibot_transcript::ToolOutcome;
     use crate::testing::{Scripted, harness_with_retrieval};
+    use letibot_transcript::ToolOutcome;
 
     #[test]
     fn no_coverage_is_an_abstention_in_the_no_result_envelope() {

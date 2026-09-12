@@ -315,6 +315,77 @@ fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
     );
 }
 
+/// **The same for `coder`, which is the seat an operator actually sits in.**
+///
+/// `m2_coder` names `bash` as of 2026-09-11 and the daemon strips it back off
+/// unless `--bash` is passed, exactly as it does for the runner. Two seats, one
+/// rule, and it is asserted twice because the strip is written per-seat: a
+/// `Seat::Coder` arm that forgot the `retain` would still pass the runner's test.
+///
+/// The grants are checked here too. They are the half that makes a seated shell
+/// able to build — `$HOME` inside the view is a fresh tmpfs, so `~/.cargo` is
+/// ABSENT without one — and a grant that does not reach the boundary is a session
+/// that looks equipped and cannot compile.
+#[test]
+fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_view() {
+    let mut cfg = config(Seat::Coder);
+    assert!(!cfg.allow_bash, "the default must not be a shell");
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let opened = Harness::open_with(&p, cfg.clone(), hub, Some(Box::new(Attached)), None);
+
+    let h = match opened {
+        Ok(h) => h,
+        Err(e) => {
+            let e = e.to_string();
+            assert!(
+                e.contains("cgroup") || e.contains("boundary") || e.contains("confin"),
+                "a confined backend failed for a reason it did not name: {e}"
+            );
+            eprintln!("SKIPPING THE SEATING HALF: this box cannot build a boundary. {e}");
+            return;
+        }
+    };
+    assert!(
+        !h.wiring().seated.iter().any(|s| s == "bash"),
+        "`bash` was seated on `coder` without --bash: {:?}",
+        h.wiring().seated
+    );
+
+    // With the flag and the toolchain granted.
+    cfg.allow_bash = true;
+    cfg.grants_ro = vec![
+        std::path::PathBuf::from(std::env::var("HOME").expect("a home")).join(".cargo"),
+    ];
+    cfg.session_id = "s-coder-bash".into();
+    let hub2 = Hub::new(&cfg.session_id);
+    let h2 = Harness::open_with(&p, cfg, hub2, Some(Box::new(Attached)), None)
+        .expect("the coder seat opened a moment ago");
+    let w = h2.wiring();
+    assert!(
+        w.seated.iter().any(|s| s == "bash"),
+        "--bash did not seat it on `coder`: {:?}",
+        w.seated
+    );
+    assert!(w.has_exec_tools, "`bash` is `Access::Exec`");
+
+    // And the grant is in the boundary the session will actually run under, named
+    // with its consequence — read-only in the view still means readable into the
+    // transcript, and a disclosure that omits that is the decision without its cost.
+    let all = h2
+        .config()
+        .disclosures(w)
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(all.contains(".cargo"), "the grant is not in the disclosure: {all}");
+    assert!(
+        all.contains("READABLE INTO CONTEXT"),
+        "a grant must be disclosed with what it costs: {all}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4. The seats that were built and had no constructor
 // ---------------------------------------------------------------------------

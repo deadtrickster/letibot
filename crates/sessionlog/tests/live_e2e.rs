@@ -60,7 +60,21 @@ fn endpoint() -> Endpoint {
     let url =
         std::env::var("LETIBOT_COMPLETION_URL").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let (host, port) = url.rsplit_once(':').expect("HOST:PORT");
-    Endpoint::new(host, port.parse().expect("port"))
+    let ep = Endpoint::new(host, port.parse().expect("port"));
+    // Ask what is actually behind the port before tokenising for it. These three
+    // model services are singletons that evict each other and have shared `:8080`,
+    // so the wrong one being up is the ordinary case rather than the strange one —
+    // and the failure it produces (`400 Prompt contains invalid tokens`) names the
+    // tokenizer for what is really a different model. Once per binary.
+    static CHECKED: OnceLock<()> = OnceLock::new();
+    CHECKED.get_or_init(|| {
+        letibot_turn::serving::expect(
+            &ep,
+            &std::env::var("LETIBOT_MODEL_ALIAS")
+                .unwrap_or_else(|_| "qwen-3.8-flash-next".to_string()),
+        )
+    });
+    ep
 }
 
 /// What one head saw, accumulated from increments only.
@@ -85,6 +99,12 @@ impl Seen {
 
 #[test]
 fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
+    // Before a socket, a head or a thread exists. The turn runs on a spawned thread,
+    // so a preflight that fires in there panics one thread while this one sits out
+    // its 120 s recv timeout and then reports "head A must receive the stream" — a
+    // timeout standing in for a model that was never going to answer. Asking here
+    // costs one GET and makes the refusal the first thing that happens.
+    let _ = endpoint();
     let hub = Hub::new("live");
     let sock = std::env::temp_dir().join(format!(
         "letibot-live-{}-{}.sock",

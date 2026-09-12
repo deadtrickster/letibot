@@ -139,7 +139,10 @@ impl Reaped {
             return self.cmdline.clone();
         }
         if !self.comm.is_empty() {
-            return format!("[{}] (no command line: caught between fork and exec)", self.comm);
+            return format!(
+                "[{}] (no command line: caught between fork and exec)",
+                self.comm
+            );
         }
         "(gone before it could be identified: /proc had neither a command line nor a name)"
             .to_string()
@@ -516,9 +519,8 @@ pub(crate) fn populated_at(dir: &Path) -> bool {
 
 /// The harness's own cgroup path, from `/proc/self/cgroup`.
 fn own_cgroup() -> Result<PathBuf, ExecError> {
-    let text = std::fs::read_to_string("/proc/self/cgroup").map_err(|e| {
-        ExecError::NoScopes(format!("`/proc/self/cgroup` could not be read: {e}"))
-    })?;
+    let text = std::fs::read_to_string("/proc/self/cgroup")
+        .map_err(|e| ExecError::NoScopes(format!("`/proc/self/cgroup` could not be read: {e}")))?;
     // cgroup v2 gives exactly one line, `0::<path>`. A v1-only host gives several
     // and none of them start `0::`, which is a fact worth reporting as itself.
     let rel = text
@@ -651,7 +653,9 @@ impl ScopeTree for Cgroup2 {
                 Err(e) => {
                     // A fallback that is not visible is a fallback nobody knows
                     // they are running.
-                    note = Some(format!("`cgroup.kill` was unusable ({e}); fell back to SIGKILL"));
+                    note = Some(format!(
+                        "`cgroup.kill` was unusable ({e}); fell back to SIGKILL"
+                    ));
                     for p in &pids {
                         let _ = std::process::Command::new("kill")
                             .arg("-KILL")
@@ -678,8 +682,7 @@ impl ScopeTree for Cgroup2 {
         let removed = remove_tree(&scope.path);
         if !removed && survivors.is_empty() && note.is_none() {
             note = Some(
-                "every process is gone but the cgroup directory would not be removed"
-                    .to_string(),
+                "every process is gone but the cgroup directory would not be removed".to_string(),
             );
         }
         self.open.lock().expect("scope list").retain(|s| s != scope);
@@ -918,7 +921,11 @@ mod tests {
         };
         let r = n.end(&scope);
         assert!(!r.clean());
-        assert!(r.summary().contains("no scope mechanism"), "{}", r.summary());
+        assert!(
+            r.summary().contains("no scope mechanism"),
+            "{}",
+            r.summary()
+        );
     }
 
     #[test]

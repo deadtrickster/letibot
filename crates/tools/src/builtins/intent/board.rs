@@ -440,11 +440,7 @@ impl Tool for Todo {
                 if items.is_empty() {
                     body.push_str("the list is empty\n");
                 }
-                Invocation::ok(format!(
-                    "{body}{}{}",
-                    self.board_summary(),
-                    self.backing()
-                ))
+                Invocation::ok(format!("{body}{}{}", self.board_summary(), self.backing()))
             }
             "claim" => {
                 if !self.mounted {

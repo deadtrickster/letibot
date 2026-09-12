@@ -264,9 +264,7 @@ impl Tool for Grep {
         );
         let suggestion = outline_suggestion(source, &scope, &parseable);
         let mut inv = Invocation::abstained(
-            format!(
-                "`{source}` does not occur in the {files_scanned} file(s) searched"
-            ),
+            format!("`{source}` does not occur in the {files_scanned} file(s) searched"),
             body,
         );
         if let Some(n) = suggestion {
@@ -282,8 +280,19 @@ impl Tool for Grep {
 /// is what `outline` indexes. `pub`, `return` and `let` are deliberately absent:
 /// a search for `pub` is a search for text.
 const DEFINITION_KEYWORDS: &[&str] = &[
-    "fn", "func", "def", "struct", "enum", "impl", "trait", "mod", "class", "interface",
-    "type", "macro_rules", "package",
+    "fn",
+    "func",
+    "def",
+    "struct",
+    "enum",
+    "impl",
+    "trait",
+    "mod",
+    "class",
+    "interface",
+    "type",
+    "macro_rules",
+    "package",
 ];
 
 /// Does this pattern ask a STRUCTURAL question in a lexical language?
@@ -345,13 +354,7 @@ fn outline_suggestion(source: &str, scope: &str, parseable: &[&'static str]) -> 
 /// compiled, so this is close to unreachable — but a rung that silently searched
 /// for something else would be the exact failure the compile error exists to
 /// prevent, one level down.
-fn push_rung(
-    ladder: &mut Vec<Attempt>,
-    source: &str,
-    ci: bool,
-    scope: &str,
-    relaxation: String,
-) {
+fn push_rung(ladder: &mut Vec<Attempt>, source: &str, ci: bool, scope: &str, relaxation: String) {
     if let Ok(pattern) = Pattern::compile(source, ci) {
         ladder.push(Attempt {
             pattern,
@@ -582,7 +585,10 @@ mod tests {
             rendered.contains("never searched") || rendered.contains("0 files"),
             "{rendered}"
         );
-        assert!(rendered.contains("**/"), "must say how to fix the glob:\n{rendered}");
+        assert!(
+            rendered.contains("**/"),
+            "must say how to fix the glob:\n{rendered}"
+        );
     }
 
     /// Same session: `path: "src/main.rs"` searched nothing three times, because
@@ -592,7 +598,11 @@ mod tests {
     fn a_path_naming_one_file_searches_that_file() {
         let mut h = harness();
         let r = h.call("grep", r#"{"pattern":"TokenLedger","path":"src/lib.rs"}"#);
-        assert!(r.is_grounded(), "a file path must be searched:\n{}", r.render());
+        assert!(
+            r.is_grounded(),
+            "a file path must be searched:\n{}",
+            r.render()
+        );
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
         // The assertion that actually distinguishes the fix. Without it the scope
         // yielded nothing and the LADDER rescued the call by re-searching the whole
@@ -675,10 +685,16 @@ mod tests {
         assert!(!r.is_grounded(), "{:?}", r.outcome);
         let seen = r.render();
         // The engine's own words, with the position.
-        assert!(seen.contains("look-around") || seen.contains("lookaround"), "{seen}");
+        assert!(
+            seen.contains("look-around") || seen.contains("lookaround"),
+            "{seen}"
+        );
         // And the fact that separates this from an abstention: no file was opened,
         // so the call makes NO claim about whether the pattern occurs.
-        assert!(seen.contains("says nothing about whether it occurs"), "{seen}");
+        assert!(
+            seen.contains("says nothing about whether it occurs"),
+            "{seen}"
+        );
         assert_ne!(
             crate::result::Envelope::classify(&seen),
             Some("NO_RESULT"),
@@ -695,7 +711,10 @@ mod tests {
         assert!(r.is_grounded(), "{}", r.render());
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
         let notes = r.notes.join(" ");
-        assert!(!notes.contains("literally"), "no approximation note: {notes}");
+        assert!(
+            !notes.contains("literally"),
+            "no approximation note: {notes}"
+        );
     }
 
     /// A pattern big enough to be a denial of service is refused, in the same
@@ -703,10 +722,7 @@ mod tests {
     #[test]
     fn a_pattern_over_the_size_limit_is_refused_with_a_remedy() {
         let mut h = harness();
-        let r = h.call(
-            "grep",
-            r#"{"pattern":"((((a{100}){100}){100}){100})"}"#,
-        );
+        let r = h.call("grep", r#"{"pattern":"((((a{100}){100}){100}){100})"}"#);
         assert!(!r.is_grounded());
         let seen = r.render();
         assert!(seen.contains("KiB"), "{seen}");
