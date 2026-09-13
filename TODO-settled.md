@@ -748,3 +748,47 @@ test starts nothing and evicts nothing.
 Not shipped, deliberately: auto-at-the-wall triggering (needs `docs/compaction.md` §1's
 policy, not a constant) and §4's structural map (the instruction already asks for the
 shape a map would keep). The simple version the operator asked for is what shipped.
+
+---
+
+## C2 — todos pane: session todos from a model-callable tool, plus the repo's TODO.md
+
+**Operator, 2026-09-13:** *"Both sources."*
+
+Shipped in three commits. **5ecd72e**: the storage and wire half — a mutable `todo`
+table in the tokencore store (schema v3, the `set_title` class: one row per session,
+FK cascade, the whole list as JSON), `SessionEvent::TodosUpdated` (durable in the
+replay scrub: "the list is what it is as of this seq, and a head replaying the
+backlog keeps the last one it saw"), protocol version 9 with the `ListTodos`/`Todos`
+frame pair. **c8052ec**: the model-callable half — `todo_write`, `Access::Session`
+(the exact class `docs/tool-survey.md` §1.4 flagged as the under-declared case),
+whole-list replace behind a `TodoBoard` seam; the harness compares the board's
+version at every round boundary and flushes the store row and the announcement as
+one act, because a pane that could see one without the other would disagree with
+itself after a resume. Seated in `m1_orchestrator` (the default seat) and
+`m3_researcher` — the two roles with spare seats against §8.4's ceiling; the other
+roles keep the intent board's `todo`, a different instrument (op-based,
+completion-checked against effects), and unifying them would have meant synthetic
+turn ids in the intent trail, so the two schemas say what each is for. **3d874bd**:
+ctrl-p opens the pane — section one the session's list, restored from the store on
+attach and live via TodosUpdated while open (events arrive Filtered when closed, so
+a closed pane never backlogs state it is not showing); section two the workspace's
+`TODO.md` parsed into its `##` sections with open/done checkbox counts, re-read
+fresh on every open, read-only by design: the file is the operator's to edit, the
+pane only mirrors it, and an agent's todo list and the operator's queue are
+different things the pane labels as such.
+
+Proven live (`todos_live.rs`, the serving GLM endpoint, temp 0): the model called
+`todo_write` on a blunt instruction (2 rounds, 1 tool call, reply "done"), the store
+held the list, and a head attaching after the turn found the announcement in its
+38-envelope resume backlog — the bootstrap read exists because the attach snapshot
+carries items, not events. Verified: tools `--lib` 402, sessionlog `--lib` 72,
+harnessd `--lib` 46 + `compact` 3 + `compact_live` 1 + `resume` 2 + `todos` 2 +
+`todos_live` 1, tui `--lib` 97, turn `--lib` 66 + `restore` 3 + `engine_decisions`
+13 + `compaction` 3, tokencore 42, fidelity gate GATE PASS. The GLM endpoint is a
+singleton and this session runs on it; the live test starts nothing and evicts
+nothing.
+
+Not shipped, deliberately: a `todo_write` seat in coder/planner/runner — those roles
+have no spare seats and already keep the intent board's `todo` as their working
+list; giving the pane a writer there is a seat decision, not a default.
