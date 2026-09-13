@@ -102,8 +102,8 @@ const UTTERANCE_CHARS: usize = 600;
 /// which is a two-line inconvenience against a `Box::leak` that lies about
 /// lifetimes.
 pub struct Parts {
-    pub vocab: Vocab,
-    pub wiring: Wiring,
+    pub vocab: std::sync::Arc<Vocab>,
+    pub wiring: std::sync::Arc<Wiring>,
     /// Per-project mode store, loaded once at daemon start. The mode is a session
     /// property: a session's point is its project's row (longest ancestor wins), not
     /// the daemon's `--mode` flag, so moving a project does not mean restarting the
@@ -123,8 +123,8 @@ impl Parts {
         let vocab = Vocab::load(&cfg.vocab_gguf)
             .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?;
         Ok(Parts {
-            vocab,
-            wiring: cfg.dialect.wiring(cfg.effort.as_deref()),
+            vocab: std::sync::Arc::new(vocab),
+            wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
             mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open())),
         })
     }
@@ -969,7 +969,20 @@ impl<'a> Harness<'a> {
                 .map(|s| s.todos(&cfg.session_id).unwrap_or_default())
                 .unwrap_or_default(),
         ));
-        registry = letibot_tools::with_session_tools(registry, todo_board.clone())
+        let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
+            Arc::new(HarnessTaskRunner {
+                vocab: parts.vocab.clone(),
+                wiring: parts.wiring.clone(),
+                endpoint: cfg.endpoint.clone(),
+                model: cfg.model.clone(),
+                sampling: cfg.sampling.clone(),
+                workspace: cfg.workspace.clone(),
+                system: cfg.system.clone(),
+                permission: cfg.permission.clone(),
+                mode: cfg.mode,
+                hub: hub.clone(),
+            });
+        registry = letibot_tools::with_session_tools(registry, todo_board.clone(), task_runner)
             .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
             .register(Box::new(letibot_tools::builtins::write::Write))
@@ -1170,6 +1183,10 @@ impl<'a> Harness<'a> {
                     // `UNSEEN_PROJECT` — always-ask — which is the fail-closed default
                     // and not what the operator recorded for this tree.
                     .with_mode(cfg.mode)
+                    // opencode's `permission` config (LETIBOT_PERMISSION), so the
+                    // allow/deny/ask rules govern before the mode — and a subagent
+                    // inherits them.
+                    .with_permission(cfg.permission.clone())
                     // Layer A needs to know where it is standing. Undeclared means
                     // `ShellTrust::Unknown`, under which a **bare** command name is
                     // unresolved and the call is `not_run` — the fail-closed
@@ -2340,6 +2357,107 @@ fn visible_text(items: &[TranscriptItem]) -> String {
         }
     }
     out
+}
+
+/// The real `task` runner: runs a nested turn with a fresh engine/session/runtime,
+/// inheriting the parent's permission scheme (`permission` ruleset + `mode`) so the
+/// subagent's calls are governed by the same allow/deny/ask rules.
+///
+/// The subagent seats the coder tools (read, write, edit, grep, glob, todo_write,
+/// skill, lsp) with no shell; its "ask" calls fail closed on `NoAdjudicator` rather
+/// than prompting, because a subagent has no head of its own.
+struct HarnessTaskRunner {
+    vocab: Arc<Vocab>,
+    wiring: Arc<Wiring>,
+    endpoint: Endpoint,
+    model: String,
+    sampling: serde_json::Value,
+    workspace: PathBuf,
+    system: String,
+    permission: letibot_tools::permission::Ruleset,
+    mode: letibot_tools::mode::Mode,
+    hub: Arc<Hub>,
+}
+
+impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
+    fn run(&self, prompt: &str, role: &str) -> Result<String, String> {
+        use letibot_tools::builtins::retrieval::Unavailable;
+
+        let mut reg = letibot_tools::read_only_tools(Arc::new(Unavailable))
+            .map_err(|e| e.to_string())?;
+        reg = letibot_tools::with_session_tools(
+            reg,
+            Arc::new(TodoBoard::new(Vec::new())),
+            Arc::new(letibot_tools::builtins::task::NoTaskRunner),
+        )
+        .map_err(|e| e.to_string())?;
+        reg.register(Box::new(letibot_tools::builtins::write::Write))
+            .map_err(|e| e.to_string())?;
+        reg.register(Box::new(letibot_tools::builtins::edit::Edit))
+            .map_err(|e| e.to_string())?;
+
+        let role = match role {
+            "orchestrator" => roles::orchestrator(),
+            "leticode" => roles::leticode(),
+            _ => roles::coder(),
+        };
+        let sub = reg.resolve_role(&role).map_err(|e| e.to_string())?;
+        let schemas = sub.schemas();
+
+        let backend = HostBackend::writable(&self.workspace).map_err(|e| e.to_string())?;
+        let gate = AdjudicatedGate::new(Box::new(letibot_tools::NoAdjudicator))
+            .with_mode(self.mode)
+            .with_permission(self.permission.clone());
+        let mut runtime = ToolRuntime::new(sub, Box::new(backend)).with_gate(Box::new(gate));
+
+        let mut engine = TurnEngine::new(
+            &self.vocab,
+            self.wiring.renderer.as_ref(),
+            self.wiring.parser.as_ref(),
+            self.endpoint.clone(),
+            letibot_backend::BackendCaps::OWN_SERVER,
+            self.model.clone(),
+            self.sampling.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let prefix = StablePrefix {
+            system: self.system.clone(),
+            tools_json: self.wiring.tools_json(&schemas),
+        };
+        let mut session = engine.open("subagent", &prefix).map_err(|e| e.to_string())?;
+
+        let mut sink = CapturingSink::new(self.hub.clone());
+        let item = TranscriptItem::User {
+            parts: vec![UserPart::Text { text: prompt.to_string() }],
+        };
+        session.append_items(&engine, &[item], &mut sink).map_err(|e| e.to_string())?;
+
+        let mut steering = letibot_turn::NoSteering;
+        for _ in 0..32 {
+            let ok = engine
+                .run_turn_steered(&mut session, &mut sink, &mut steering)
+                .map_err(|e| e.to_string())?;
+            let mut calls = Vec::new();
+            for i in &ok.items {
+                if let TranscriptItem::Assistant { tool_calls, .. } = i {
+                    calls.extend(tool_calls.clone());
+                }
+            }
+            if calls.is_empty() {
+                return Ok(visible_text(&ok.items));
+            }
+            let mut results = Vec::with_capacity(calls.len());
+            for call in &calls {
+                let r = runtime.invoke(&ok.turn_id, call, &mut letibot_tools::NullToolSink);
+                results.push(ToolRuntime::transcript_item(&r));
+            }
+            session
+                .append_items(&engine, &results, &mut sink)
+                .map_err(|e| e.to_string())?;
+        }
+        Err("the subagent did not finish within 32 rounds".into())
+    }
 }
 
 /// **The intent diff at a turn boundary**, or `None` when there is nothing to say

@@ -384,7 +384,7 @@ pub struct DialectSpec {
 /// Parsing is not data because it is not a template: the shipped jinja says how a turn
 /// is written, never how to read one back, and every model's `<tool_call>` grammar has
 /// to be walked by something that knows its shape.
-pub trait Parser {
+pub trait Parser: Send + Sync {
     /// Takes `u32` rather than a `llama_token` alias so this crate stays free of the
     /// FFI, and takes the `decoder` because it must: see [`TokenDecoder`].
     ///

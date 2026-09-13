@@ -1203,6 +1203,13 @@ impl AdjudicatedGate {
         self.mode
     }
 
+    /// opencode's permission ruleset in force — the config plus any `always`
+    /// approvals. A subagent inherits this, so the same allow/deny/ask rules govern
+    /// its calls rather than starting from scratch.
+    pub fn permission(&self) -> &crate::permission::Ruleset {
+        &self.permission
+    }
+
     /// The standing permissions in force, for a listing. A grant nobody can see is a
     /// permanent widening nobody remembers making.
     pub fn grants(&self) -> &[crate::grant::Grant] {

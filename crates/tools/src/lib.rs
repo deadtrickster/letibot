@@ -180,6 +180,7 @@ pub fn read_only_tools(
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
+    task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
 ) -> Result<Registry, RegisterError> {
     reg.register(Box::new(builtins::todo::TodoWriteTool::new(board)))?;
     reg.register(Box::new(builtins::skill::SkillTool::new(
@@ -188,9 +189,7 @@ pub fn with_session_tools(
     reg.register(Box::new(builtins::lsp::LspTool::new(
         std::sync::Arc::new(builtins::lsp::LspConfig::default()),
     )))?;
-    reg.register(Box::new(builtins::task::TaskTool::new(
-        std::sync::Arc::new(builtins::task::NoTaskRunner),
-    )))?;
+    reg.register(Box::new(builtins::task::TaskTool::new(task_runner)))?;
     Ok(reg)
 }
 
@@ -297,6 +296,7 @@ mod tests {
         let reg = with_session_tools(
             reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
+            std::sync::Arc::new(builtins::task::NoTaskRunner),
         )
         .expect("todo_write registers");
         assert!(reg.len() <= DEFAULT_MAX_TOOLS, "{} tools", reg.len());

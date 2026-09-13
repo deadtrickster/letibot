@@ -28,7 +28,7 @@
 use letibot_dialect::{DialectSpec, RenderSpan, StablePrefix};
 use letibot_transcript::TranscriptItem;
 
-pub trait PromptRenderer {
+pub trait PromptRenderer: Send + Sync {
     /// The model this renderer speaks for. The engine reads guards, stop tokens
     /// and `template_sha` from it; it never reads the template itself.
     fn spec(&self) -> &DialectSpec;

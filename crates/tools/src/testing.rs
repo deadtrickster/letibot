@@ -347,6 +347,7 @@ fn build_ext(
     let registry = crate::with_session_tools(
         registry,
         Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
+        Arc::new(crate::builtins::task::NoTaskRunner),
     )
     .expect("todo_write registers");
     // Registered, not seated: a role is what a session's prompt carries, and these

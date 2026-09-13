@@ -195,6 +195,11 @@ pub struct Config {
     /// costs. `--role coder` used to mean both, so an operator who wanted to edit had
     /// to pick a role and thereby also picked an approval policy they were never shown.
     pub mode: letibot_tools::mode::Mode,
+    /// opencode's `permission` config, as a resolved ruleset (allow/deny/ask per
+    /// tool and pattern). Loaded from `LETIBOT_PERMISSION` (a JSON object); empty
+    /// means the mode decides and nothing else is configured. A subagent inherits
+    /// this, so its calls are governed by the same rules as the session it came from.
+    pub permission: letibot_tools::permission::Ruleset,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -388,6 +393,22 @@ answer those directly. When a tool reports that it found nothing, say so — do 
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
+/// opencode's `permission` config, read from `LETIBOT_PERMISSION` (a JSON object of
+/// per-tool allow/deny/ask). Missing or malformed is an empty ruleset — the mode
+/// decides and nothing else is configured.
+fn parse_permission() -> letibot_tools::permission::Ruleset {
+    let Some(raw) = std::env::var("LETIBOT_PERMISSION").ok() else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    letibot_tools::permission::config_to_ruleset(obj).unwrap_or_default()
+}
+
 impl Config {
     /// A session against the box this repository is developed on.
     ///
@@ -420,6 +441,7 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
+            permission: parse_permission(),
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,

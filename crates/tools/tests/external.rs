@@ -85,6 +85,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
         ))
         .unwrap(),
         std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+        std::sync::Arc::new(letibot_tools::builtins::task::NoTaskRunner),
     )
     .unwrap()
     .resolve_role(&roles::m1_orchestrator())
@@ -98,6 +99,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
             ))
             .unwrap(),
             std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+            std::sync::Arc::new(letibot_tools::builtins::task::NoTaskRunner),
         )
         .unwrap(),
         &ExternalBackends::unattached(),
