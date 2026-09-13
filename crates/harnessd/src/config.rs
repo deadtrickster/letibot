@@ -88,8 +88,13 @@ pub enum Seat {
     /// leticode's seat: opencode's tool union by opencode's names — `read`, `write`,
     /// `edit`, `grep`, `glob`, `todo_write`, `skill`, `lsp`, `task`, plus `bash`
     /// behind [`Config::allow_bash`]. This is the seat that can spawn a subagent
-    /// (`task`). Writable backend; `bash` and `lsp` need a process host, so it
-    /// shares the confined backend with `coder` and `runner`.
+    /// (`task`).
+    ///
+    /// **Unconfined, on purpose.** opencode has no workspace boundary: its `read`
+    /// reaches the whole host and its permission model — not a jail — decides what a
+    /// write or a command may do. leticode is the port of that model, so it roots its
+    /// backend at `/` and leaves gating to the permission ruleset and the mode,
+    /// rather than confining to the project like `coder` and `runner`.
     Leticode,
 }
 
@@ -147,7 +152,7 @@ impl Seat {
         //
         // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
         // the capability arrives because somebody typed it.
-        matches!(self, Seat::Runner | Seat::Coder | Seat::Leticode)
+        matches!(self, Seat::Runner | Seat::Coder)
     }
 
     /// The read-only grants this seat needs to be useful, beyond the project.

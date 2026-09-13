@@ -886,42 +886,66 @@ impl<'a> Harness<'a> {
         // choice a daemon should make on an operator's behalf. A box that cannot
         // build a boundary gets an error naming which half failed — no delegated
         // cgroup subtree, or no usable confinement — and not a quiet downgrade.
-        let backend = if cfg.seat.needs_exec_backend() {
-            HostBackend::confined_granting(
-                &cfg.workspace,
-                cfg.grants_ro
-                    .iter()
-                    .map(|p| letibot_tools::exec::confine::Grant::ReadOnly {
-                        path: p.clone(),
-                        why: "granted on the command line with --grant-ro".into(),
-                    })
-                    .collect(),
+        //
+        // leticode is the exception and the point of it: it is opencode's model, which
+        // has no workspace boundary — `read` reaches the whole host and the permission
+        // ruleset, not a jail, decides what a write or a command may do. So leticode
+        // roots its backend at `/` (unconfined, no namespaces) and leaves the gating to
+        // the permission ruleset and the mode. `backend_confined` records which case it
+        // was, so the mode's `Confinement` prerequisite is a fact rather than a guess.
+        let (backend, backend_confined): (HostBackend, bool) = if cfg.seat == Seat::Leticode {
+            let b = if cfg.allow_bash {
+                HostBackend::executable("/")
+            } else {
+                HostBackend::writable("/")
+            }
+            .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?;
+            (b, false)
+        } else if cfg.seat.needs_exec_backend() {
+            (
+                HostBackend::confined_granting(
+                    &cfg.workspace,
+                    cfg.grants_ro
+                        .iter()
+                        .map(|p| letibot_tools::exec::confine::Grant::ReadOnly {
+                            path: p.clone(),
+                            why: "granted on the command line with --grant-ro".into(),
+                        })
+                        .collect(),
+                )
+                .map_err(|e| {
+                    HarnessError::Setup(format!(
+                        "the `{}` role needs a confined execution backend and one could not be \
+                         built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
+                         alternative is `HostBackend::executable`, which gives a process the \
+                         cgroup that bounds its lifetime and NO boundary on what it can read \
+                         — the operator's whole filesystem, with a banner that would have to \
+                         say so. Two things it needs and the error above says which is \
+                         missing: a delegated cgroup v2 subtree, and a usable unprivileged \
+                         namespace boundary (bwrap). A third thing the message above may \
+                         name instead: the project root itself. Both `runner` and `coder` \
+                         root their view at the workspace, so a workspace that is a file, \
+                         a dangling symlink or absent fails here and no boundary is the \
+                         wrong thing to blame. Seat `--role orchestrator` for a session \
+                         with no exec path at all.",
+                        cfg.seat.as_str(),
+                        cfg.workspace
+                    ))
+                })?,
+                true,
             )
-            .map_err(|e| {
-                HarnessError::Setup(format!(
-                    "the `{}` role needs a confined execution backend and one could not be \
-                     built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
-                     alternative is `HostBackend::executable`, which gives a process the \
-                     cgroup that bounds its lifetime and NO boundary on what it can read \
-                     — the operator's whole filesystem, with a banner that would have to \
-                     say so. Two things it needs and the error above says which is \
-                     missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                     namespace boundary (bwrap). A third thing the message above may \
-                     name instead: the project root itself. Both `runner` and `coder` \
-                     root their view at the workspace, so a workspace that is a file, \
-                     a dangling symlink or absent fails here and no boundary is the \
-                     wrong thing to blame. Seat `--role orchestrator` for a session \
-                     with no exec path at all.",
-                    cfg.seat.as_str(),
-                    cfg.workspace
-                ))
-            })?
         } else if cfg.seat.needs_writable_backend() {
-            HostBackend::writable(&cfg.workspace)
-                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
+            (
+                HostBackend::writable(&cfg.workspace)
+                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                false,
+            )
         } else {
-            HostBackend::new(&cfg.workspace)
-                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
+            (
+                HostBackend::new(&cfg.workspace)
+                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                false,
+            )
         };
         let backend_described = backend.describe();
         let backend_writable = backend.is_writable();
@@ -1144,7 +1168,7 @@ impl<'a> Harness<'a> {
             if reachable {
                 have.push(Prereq::ReachableAdjudicator);
             }
-            if has_exec_tools {
+            if has_exec_tools && backend_confined {
                 have.push(Prereq::Confinement);
             }
             // What the role actually seated, read off the resolved schemas rather than
