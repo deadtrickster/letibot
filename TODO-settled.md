@@ -705,3 +705,46 @@ stay intact internally; a shell baseline still reports `over [system_config]`; t
 harness-level refusal test. A `deny_all` fixture (with a workspace in its
 surroundings) was added to testing.rs. Verified by tools `--lib` 399 green, the full
 workspace `--lib` battery green, harnessd `resume` green, fidelity gate GATE PASS.
+
+---
+
+## C1 — compaction, the cache-friendly summary call — **SETTLED 2026-09-13 — dbf4bdc, f0d9c9a, 72e9d52, b1f5240**
+
+Shipped as three commits and measured live on the box. **dbf4bdc** (turn side):
+`run_compaction` appends `SUMMARY_INSTRUCTION` as a `SystemOrigin::Update` item and
+runs an ordinary turn — which *is* the cached strategy by construction, because the
+engine's prompt is the ledger's whole token region and the prefix invariant proves
+each turn extends the last. **f0d9c9a** (daemon): `Harness::compact` refuses a
+summary that proposed tool calls, flushes the old transcript whole, then
+`fork_to_summary` writes a new transcript row linked to the parent (`put_fork`, fork
+point = the session log's seq) whose body is one system-update item carrying the
+summary verbatim; the session swaps to it; the prefix stays the session's own, the
+same rule a resume follows. Nothing is deleted — compaction stops carrying history,
+it does not destroy it. Protocol grew `ClientFrame::CompactSession` and bumped to
+version 8; `HubSteering` now pops through `try_steering_command`, which leaves
+non-steering kinds queued (a compact queued behind a running turn was being swallowed
+by the mid-turn pickup and lost). **72e9d52**: `/compact` in the TUI, scoped to the
+session the head sits in. **b1f5240**: `CompactReport` carries the summary turn's
+numbers, and `compact_live.rs` measures them against the serving GLM endpoint.
+
+**Measured live, temp 0, GLM-5.3-Flash, this box** (opencode's flatten measured cache
+0 and ~13 min at 182 t/s on 144,436 tokens): two turns to a 1352-token base, then
+compact — the summary turn reported **cached 1352 of 1352 carryable** (full reuse,
+395-token summary), the first turn on the fork answered **41, 427, 9001** from the
+summary alone, and its prompt was the cold base §3 predicted (cached 0 on a fresh
+transcript's first turn — disclosed, not denied). On a two-turn toy the base *grew*
+(1352 → 1435): prefix + summary exceeded the short history, which is the honest shape
+of the trade — compaction pays when the history is longer than its summary.
+
+Two defects found and fixed on the way: `list_sessions` broke `created_at` ties by
+rowid (a fork lands in the same millisecond as its parent; the tie used to be
+arbitrary, so a resume could come back on the parent) and now counts only the current
+transcript's rows (a cross-transcript count double-counts the dropped history).
+Verified by harnessd `--lib` 46 + `compact` 3 + `compact_live` 1 green, sessionlog
+`--lib` 71, tokencore 40, tui `--lib` 95, fidelity gate GATE PASS. Live-gated by the
+serving preflight; the GLM endpoint is a singleton and this session runs on it — the
+test starts nothing and evicts nothing.
+
+Not shipped, deliberately: auto-at-the-wall triggering (needs `docs/compaction.md` §1's
+policy, not a constant) and §4's structural map (the instruction already asks for the
+shape a map would keep). The simple version the operator asked for is what shipped.
