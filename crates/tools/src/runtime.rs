@@ -373,8 +373,10 @@ pub struct Role {
 }
 
 /// §8.4's default ceiling. *"Past ~5–7 MCP servers small models get worse at
-/// choosing tools."*
-pub const DEFAULT_MAX_TOOLS: usize = 8;
+/// choosing tools."* Raised 8 -> 16 (2026-09-13) for leticode, which seats the
+/// opencode tool union — a dozen tools — rather than the original eight; the
+/// ceiling is still a hard stop, it is just a larger one.
+pub const DEFAULT_MAX_TOOLS: usize = 16;
 
 impl Role {
     pub fn new(name: &str, tools: &[&str]) -> Self {

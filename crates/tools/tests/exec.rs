@@ -435,15 +435,14 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         letibot_tools::builtins::retrieval::Unavailable,
     ))
     .unwrap();
-    // The runner role seats nine, one over the default ceiling, and it says so
-    // in its own `max_tools` rather than raising the ceiling for everybody. If
-    // this number moves, the trade in `m2_runner`'s doc has to move with it.
+    // The runner role seats nine; with the ceiling raised to 16 for leticode it
+    // is under the ceiling rather than over it, but its own number still stands.
     let role = roles::m2_runner();
-    assert_eq!(role.max_tools, 9, "the overrun is declared, not absorbed");
+    assert_eq!(role.max_tools, 9, "the runner's own number is 9");
     assert_eq!(
         letibot_tools::runtime::DEFAULT_MAX_TOOLS,
-        8,
-        "the ceiling itself must not have been raised for every role"
+        16,
+        "the ceiling was raised for leticode's tool union"
     );
     for other in [
         roles::m1_orchestrator(),
