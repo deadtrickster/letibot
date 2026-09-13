@@ -163,10 +163,16 @@ pub enum Key {
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
-    /// transcript back; clicks and drags are decoded and dropped, because the
+    /// transcript back; drags and motion are decoded and dropped, because the
     /// terminal's own Shift+drag is what selects.
     WheelUp,
     WheelDown,
+    /// Tab: complete the `/command` being typed.
+    Tab,
+    /// A left-button press, 0-based screen coordinates. An open picker takes
+    /// it: the row under the pointer becomes the selected row, and Enter still
+    /// does the switching — select and confirm stay two acts.
+    Click { x: u16, y: u16 },
 }
 
 impl Key {
@@ -206,7 +212,9 @@ impl Key {
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
-            | Key::WheelDown => {
+            | Key::WheelDown
+            | Key::Tab
+            | Key::Click { .. } => {
                 return None;
             }
         })
@@ -359,6 +367,20 @@ pub struct App {
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
     picker_sel: usize,
+    /// How many rows the picker block actually drew on the last screen: the
+    /// two title lines plus the sessions that survived `truncate(room)`. A
+    /// click is only trusted for a row this count proves was on screen — a
+    /// click into the blank space below a truncated list must not select a
+    /// session nobody can see.
+    picker_rows_drawn: usize,
+    /// The terminal height the last screen was composed for, so a click can
+    /// redo the header-row arithmetic the screen did without a repaint.
+    screen_rows: usize,
+    /// A Tab-driven completion in progress: the prefix as typed, the candidate
+    /// names it matched, and which one is current. Re-derived whenever the
+    /// text no longer starts with the cached prefix; any other key leaves it
+    /// alone, and the render only trusts a prefix that is still being typed.
+    completion: Option<(String, Vec<&'static str>, usize)>,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -594,6 +616,25 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
     out
 }
 
+/// The commands the composer completes, in the order Tab offers them. Aliases
+/// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
+/// and what the live line shows, and offering both spellings doubles the list
+/// to teach the same actions. `command()` still takes the short forms.
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("new", "TITLE — start a fresh session"),
+    ("sessions", "the session picker"),
+    ("switch", "ID — go to another session"),
+    ("rename", "NAME — name the session you are in"),
+    ("help", "the key and command reference"),
+    ("status", "the bottom border's telemetry, full screen"),
+    ("think", "fold or unfold the model's reasoning"),
+    ("tools", "fold or unfold tool output"),
+    ("verbosity", "cycle the event-stream detail"),
+    ("compact", "summarise this session and fork it"),
+    ("interrupt", "stop the running turn"),
+    ("quit", "leave the head"),
+];
+
 impl App {
     pub fn new(cfg: RenderConfig) -> Self {
         App {
@@ -605,6 +646,9 @@ impl App {
             wiring: SessionWiring::default(),
             sessions: Vec::new(),
             picker_sel: 0,
+            picker_rows_drawn: 0,
+            screen_rows: 0,
+            completion: None,
             queued: Vec::new(),
             want_new_session: false,
             usage: None,
@@ -1684,8 +1728,36 @@ impl App {
                     let id = self.sessions[self.picker_sel.min(n - 1)].session_id.clone();
                     return self.switch_to(id);
                 }
+                Key::Click { y, .. } => {
+                    // The same arithmetic the screen did: the optional session
+                    // header takes a row, then the picker's title and a blank,
+                    // then the sessions. Only a row the last render actually
+                    // drew is trusted — `picker_rows_drawn` knows where
+                    // `truncate(room)` cut the list off, so a click into the
+                    // blank space under a truncated list moves nothing.
+                    let header_rows =
+                        usize::from(self.screen_rows >= 6 && !self.session_id.is_empty());
+                    let first = header_rows + 2;
+                    let row = usize::from(y).saturating_sub(first);
+                    if row < self.picker_rows_drawn.saturating_sub(2) {
+                        self.picker_sel = row.min(n - 1);
+                        self.redraw = true;
+                    }
+                    return None;
+                }
                 _ => {}
             }
+        }
+
+        // Tab: slash-command completion. The composer's own keys run after it
+        // because Tab means nothing to the editor — its byte used to be eaten
+        // by the decoder — and every other key leaves a running completion
+        // cycle alone: it re-validates its prefix the next time Tab is
+        // pressed, so there is nothing to reset in each arm here.
+        if let Key::Tab = k {
+            self.complete_slash();
+            self.redraw = true;
+            return None;
         }
 
         let now = self.now_ms;
@@ -1828,6 +1900,83 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Take Tab on a `/`-prefixed line.
+    ///
+    /// A fresh prefix starts a cycle at its first match; a further Tab walks
+    /// the cycle, but only while the line is exactly what the cycle last
+    /// wrote — a character typed on, or an edit away, starts a fresh match
+    /// next time, so the cycle can never clobber what someone typed after it.
+    /// A prefix nothing matches says so in the notice line and leaves the
+    /// line alone, because deleting what someone typed to explain why nothing
+    /// happened would be the completion acting like a decision.
+    fn complete_slash(&mut self) {
+        let text = self.editor.text().to_string();
+        if !text.starts_with('/') || text.contains(char::is_whitespace) {
+            return;
+        }
+        if let Some((_, names, idx)) = &mut self.completion {
+            let live = names
+                .get(*idx)
+                .is_some_and(|current| text == format!("/{current}"));
+            if live && !names.is_empty() {
+                *idx = (*idx + 1) % names.len();
+                let word = names[*idx];
+                self.set_composer(&format!("/{word}"));
+                return;
+            }
+        }
+        let needle = &text[1..];
+        let names: Vec<&'static str> = SLASH_COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(needle))
+            .map(|(name, _)| *name)
+            .collect();
+        match names.first() {
+            Some(&first) => {
+                self.completion = Some((text.clone(), names, 0));
+                self.set_composer(&format!("/{first}"));
+            }
+            None => {
+                self.completion = None;
+                self.say(&format!("no /command starts with {text:?}"));
+            }
+        }
+    }
+
+    /// Replace the whole composer line. Completion words are single tokens, so
+    /// Home + kill-to-end + insert is the honest way there: the editor has no
+    /// text setter, and the three public ops keep its undo and history exactly
+    /// as true as any typed edit.
+    fn set_composer(&mut self, text: &str) {
+        self.editor.key(letibot_ui::editor::Key::Home, self.now_ms);
+        self.editor
+            .key(letibot_ui::editor::Key::KillToEnd, self.now_ms);
+        self.editor.insert(text);
+    }
+
+    /// The live completion row shown above the composer while a `/command` is
+    /// being typed: every match, name plus its hint, joined with `·`. A bare
+    /// `/` lists everything; a prefix nothing matches shows nothing, because
+    /// an empty line that appears and disappears is noise, and Tab will say
+    /// what went wrong when it is asked.
+    fn completions_line(&self, w: usize) -> Option<String> {
+        let text = self.editor.text();
+        if !text.starts_with('/') || text.contains(char::is_whitespace) {
+            return None;
+        }
+        let needle = &text[1..];
+        let parts: Vec<String> = SLASH_COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(needle))
+            .map(|(name, hint)| format!("/{name} {hint}"))
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let cfg = &self.cfg;
+        Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
     }
 
     fn switch_to(&mut self, id: String) -> Option<Action> {
@@ -2209,6 +2358,9 @@ impl App {
         let w = term_w - 2 * gutter;
         self.cfg.width = w;
         let h = h.max(1);
+        // Click mapping has to redo this frame's arithmetic without a repaint;
+        // the height the frame was composed for is the fact it needed.
+        self.screen_rows = h;
         if self.notice_ttl > 0 {
             self.notice_ttl -= 1;
             if self.notice_ttl == 0 {
@@ -2225,6 +2377,10 @@ impl App {
             .notice
             .clone()
             .map(|n| colour(&self.cfg, sgr::MAGENTA, &trim_to(&format!("· {n}"), w)));
+        // Live slash-command matches, one dim row above the composer. It is a
+        // typing aid, not a message — which is why it is the first thing the
+        // ladder gives up.
+        let completions = self.completions_line(w);
 
         // How many rows the composer wants, and then what actually fits. The
         // ladder deletes the most expendable row first and stops as soon as the
@@ -2236,12 +2392,14 @@ impl App {
         let mut hint = true;
         let mut show_notice = notice.is_some();
         let mut show_inflight = inflight.is_some();
+        let mut show_completions = completions.is_some();
         let mut boxed = true;
         let mut dec_rows = dec.len();
         loop {
             let n = dec_rows
                 + usize::from(show_inflight)
                 + usize::from(show_notice)
+                + usize::from(show_completions)
                 // Unboxed costs one row **only when there is an alarm to show**:
                 // the counters move off the border and back onto a line of their
                 // own, and a counter that has moved is not what a narrow screen
@@ -2252,7 +2410,9 @@ impl App {
             if n < h {
                 break;
             }
-            if hint {
+            if show_completions {
+                show_completions = false;
+            } else if hint {
                 hint = false;
             } else if show_notice {
                 show_notice = false;
@@ -2276,6 +2436,9 @@ impl App {
             chrome.push(l);
         }
         if show_notice && let Some(l) = notice {
+            chrome.push(l);
+        }
+        if show_completions && let Some(l) = completions {
             chrome.push(l);
         }
         if boxed {
@@ -2322,6 +2485,7 @@ impl App {
         } else if self.picker {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
+            self.picker_rows_drawn = rows.len();
             rows
         } else if self.todos_pane {
             let mut rows = self.todos_lines(w);
@@ -2495,7 +2659,7 @@ impl App {
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-s sessions · ctrl-p todos · ctrl-r thinking · ctrl-t tool output · /help"
+            "ctrl-s sessions · ctrl-p todos · ctrl-r thinking · ctrl-t tool output · tab completes /commands · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -3727,6 +3891,8 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-z", "undo — a word at a time, and a kill is always its own step"),
         ("paste", "five lines or more collapses to a marker and is sent in full"),
         ("ctrl-s", "the session list: type a number or part of a name to switch"),
+        ("tab", "complete the /command being typed; more tabs walk the matches"),
+        ("click", "in the session list, picks the row under the pointer; enter still switches"),
         ("ctrl-p", "the todos pane: the model's plan, and the repo's TODO.md read-only"),
         ("/new [title]", "start a session in this daemon and go there"),
         ("/switch WHAT", "go to a session by number, id or part of its name"),
@@ -6648,6 +6814,87 @@ mod tests {
         a.key(Key::Up);
         assert_eq!(a.picker_sel, 2);
         assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
+    }
+
+    #[test]
+    fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![
+                brief("s", "one", true),
+                brief("s2", "two", false),
+                brief("s3", "three", false),
+            ],
+            Hub::new("s").snapshot(),
+        ));
+        assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
+        a.screen(110, 24);
+        // The session header takes row 0, the picker's title and blank take
+        // two more, so the first session row is y=3 — 0-based, the decoder
+        // having taken the wire's one off.
+        a.key(Key::Click { x: 10, y: 5 });
+        assert_eq!(a.picker_sel, 2);
+        let row = a
+            .screen(110, 24)
+            .into_iter()
+            .find(|l| l.contains("three") && l.contains('▸'))
+            .unwrap();
+        assert!(row.contains('▸'), "the mark moved to the clicked row: {row}");
+        a.key(Key::Click { x: 0, y: 3 });
+        assert_eq!(a.picker_sel, 0);
+        // A click into the blank space under the list moves nothing: the row
+        // was truncated away, so selecting it would switch to a session
+        // nobody saw.
+        a.key(Key::Click { x: 4, y: 12 });
+        assert_eq!(a.picker_sel, 0);
+        // Select and confirm stay two acts: the click only moves the mark.
+        a.key(Key::Click { x: 4, y: 5 });
+        assert_eq!(a.picker_sel, 2);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
+    }
+
+    #[test]
+    fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
+        let mut a = app();
+        a.editor.insert("/se");
+        assert_eq!(a.key(Key::Tab), None);
+        assert_eq!(a.input(), "/sessions");
+        // "/s" matches three commands; the second Tab walks the cycle in table
+        // order, and the cycle wraps.
+        a.set_composer("/s");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/sessions");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/switch");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/status");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/sessions", "the cycle wraps");
+        // A character typed on after a completion kills the cycle: the next
+        // Tab matches fresh, and must not clobber what was typed.
+        a.set_composer("/switch");
+        a.completion = Some(("/sw".into(), vec!["switch"], 0));
+        a.editor.insert("i");
+        assert_eq!(a.input(), "/switchi");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/switchi", "no match, so nothing changed");
+        // A prefix nothing matches is refused where it stands.
+        a.set_composer("/zz");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/zz");
+        assert!(a.notice.is_some(), "the refusal is said, not silent");
+        // The live row above the composer lists the matches while typing.
+        a.set_composer("/s");
+        a.completion = None;
+        let screen = a.screen(110, 24);
+        assert!(
+            screen.iter().any(|l| l.contains("/sessions") && l.contains("/switch")),
+            "the live completions row shows the matches:\n{}",
+            screen.join("\n")
+        );
     }
 
     #[test]

@@ -628,6 +628,13 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlP);
                 i += 1;
             }
+            // Tab: the composer's slash-command completion. A plain 0x09 used to
+            // fall through the `c >= 0x20` arm and vanish — a byte the head eats
+            // silently is a key nobody can learn.
+            0x09 => {
+                out.push(Key::Tab);
+                i += 1;
+            }
             b'\r' | b'\n' => {
                 out.push(Key::Enter);
                 i += 1;
@@ -763,20 +770,37 @@ fn csi(b: &[u8], force: bool) -> Step {
         },
         b'M' | b'm' => {
             // SGR mouse (`?1006`): `ESC [ < b ; x ; y M` on press, `m` on release.
-            // The wheel is button 64 (up) and 65 (down); every other report —
-            // clicks, drags, motion — is decoded and dropped, because a report
-            // the head does not act on must never become typed punctuation, and
-            // selecting text stays the terminal's own Shift+drag, which mouse
-            // tracking does not take away.
-            let btn = params
+            // The wheel is button 64 (up) and 65 (down). A **left-button press**
+            // (button 0) is a click, and an open picker takes it: the row under
+            // the pointer becomes the selected row, and Enter still does the
+            // switching — select and confirm stay two acts, because a gesture
+            // that commits on press is how a misclick switches somebody's
+            // conversation. Every other report — releases, drags, motion, other
+            // buttons — is decoded and dropped, because a report the head does
+            // not act on must never become typed punctuation, and selecting
+            // text stays the terminal's own Shift+drag, which mouse tracking
+            // does not take away. Coordinates are 1-based on the wire and
+            // 0-based here.
+            let mut fields = params
                 .strip_prefix(b"<".as_slice())
-                .and_then(|p| p.split(|c| *c == b';').next())
+                .unwrap_or(params)
+                .split(|c| *c == b';');
+            let btn = fields
+                .next()
                 .and_then(|f| std::str::from_utf8(f).ok())
                 .and_then(|f| f.parse::<u8>().ok())
                 .unwrap_or(0);
+            let coord = |f: Option<&[u8]>| -> u16 {
+                f.and_then(|f| std::str::from_utf8(f).ok())
+                    .and_then(|f| f.parse::<u16>().ok())
+                    .unwrap_or(1)
+                    .saturating_sub(1)
+            };
+            let (x, y) = (coord(fields.next()), coord(fields.next()));
             match (fin, btn) {
                 (b'M', 64) => Some(Key::WheelUp),
                 (b'M', 65) => Some(Key::WheelDown),
+                (b'M', 0) => Some(Key::Click { x, y }),
                 _ => None,
             }
         }
@@ -942,9 +966,10 @@ mod tests {
     fn the_wheel_arrives_as_sgr_mouse_and_every_other_report_is_dropped() {
         assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Key::WheelUp]);
         assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Key::WheelDown]);
-        // Clicks, drags and releases are decoded and dropped: a report the head
-        // does not act on must never become typed punctuation.
-        assert_eq!(decode(b"\x1b[<0;3;4M"), Vec::<Key>::new());
+        // A left-button press is a click, on 0-based coordinates; drags,
+        // motion and releases are decoded and dropped: a report the head does
+        // not act on must never become typed punctuation.
+        assert_eq!(decode(b"\x1b[<0;3;4M"), vec![Key::Click { x: 2, y: 3 }]);
         assert_eq!(decode(b"\x1b[<32;3;4M"), Vec::<Key>::new());
         assert_eq!(decode(b"\x1b[<0;3;4m"), Vec::<Key>::new());
         // A report cut mid-sequence is carried, not eaten.
@@ -987,6 +1012,7 @@ mod tests {
             (b"\x1b\r", Key::SoftEnter),
             (b"\x1bb", Key::WordLeft),
             (b"\x01", Key::Home),
+            (b"\x09", Key::Tab),
             (b"\x05", Key::End),
             (b"\x0b", Key::KillToEnd),
             (b"\x15", Key::KillToStart),
