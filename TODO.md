@@ -318,6 +318,16 @@ the oracle — there is already a test for that last one and it caught a leak on
 
 **Operator, 2026-09-13:** *"Both sources."*
 
+**IN PROGRESS 2026-09-13.** Three commits planned: (1) storage + wire — a mutable
+`todo` table in the tokencore store (the `set_title` class: session metadata, no
+chain), `SessionEvent::TodosUpdated`, protocol bump to 9; (2) the `todo_write` tool —
+`Access::Session`, which exists for exactly this (`docs/tool-survey.md` §1.4 named
+`todo_write` as the under-declared case) — seated by the harness, which persists and
+publishes on the board's version change and restores from the store at open; heads
+read the current list through a `ListTodos`/`Todos` frame pair on fresh attach (the
+snapshot carries items, not events; a resuming head gets the events from the
+backlog); (3) the TUI pane, both sources, `TODO.md` read-only.
+
 **Where.** A todo tool in `tools` whose list is session-scoped and persisted through
 sessionlog so a resume restores it; a TUI pane binding; and a read-only rendering of
 the repo's `TODO.md` (sections, checkboxes) as the second source.

@@ -10,7 +10,7 @@ use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 use crate::event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, FinishReason, OnTimeout, OptionKind,
-    PromptProgress, SessionEvent, Timings, Usage,
+    PromptProgress, SessionEvent, TodoEntry, TodoStatus, Timings, Usage,
 };
 
 pub fn warn(detail: &str) -> SessionEvent {
@@ -228,6 +228,21 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             command: "prompt".into(),
             client_request_id: "c1".into(),
             note: "queued".into(),
+        },
+        SessionEvent::SessionRenamed {
+            title: "the name".into(),
+        },
+        SessionEvent::TodosUpdated {
+            todos: vec![
+                TodoEntry {
+                    content: "read the harness".into(),
+                    status: TodoStatus::Completed,
+                },
+                TodoEntry {
+                    content: "render the pane".into(),
+                    status: TodoStatus::Pending,
+                },
+            ],
         },
         SessionEvent::DenialRaised {
             request_id: "adj-s1-0001".into(),

@@ -99,7 +99,7 @@ use crate::vocab::TokenId;
 /// the migration test's fixture, which builds a v1 store by dropping this column.
 pub const ROLE_COLUMN: () = ();
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -156,6 +156,16 @@ CREATE TABLE IF NOT EXISTS transcript_item (
     tokens        BLOB NOT NULL,      -- little-endian u32 ids, tok_len of them
     created_at    INTEGER NOT NULL,
     PRIMARY KEY (transcript_id, seq)
+);
+
+-- The session's todo list, as the model last wrote it. Mutable metadata about a
+-- conversation, in the same class as the title: it rides no chain and carries no
+-- append-only trigger, because a todo list the model revised three times is one
+-- list with a history nobody asked to keep. One row per session, replaced whole.
+CREATE TABLE IF NOT EXISTS todo (
+    session_id  TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
+    todos_json  TEXT NOT NULL,   -- JSON array of {content, status}
+    updated_ms  INTEGER NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS transcript_item_by_item_id
@@ -365,6 +375,28 @@ pub struct StoredSession {
     pub last_activity_ms: i64,
 }
 
+/// One line of a session's todo list, as the model wrote it.
+///
+/// Stored as mutable session metadata — the `set_title` class, not the
+/// append-only class: a todo list the model revised three times is one list with
+/// a history nobody asked to keep. The whole list is replaced on every write,
+/// because a delta the model got wrong is a delta nobody can audit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+/// A todo's state. Serde as the lower-case words, so a stored list reads the
+/// same in `sqlite3` as it does here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
 /// What a stable prefix was rendered from and by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StablePrefixMeta {
@@ -481,6 +513,18 @@ impl Store {
             // "unrecorded, use the daemon default" case the column documents.
             self.conn
                 .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
+        }
+        if from < 3 {
+            // v3: the session todo list. A migrated store never runs `SCHEMA_SQL`
+            // — `migrate` returns early — so the table is created here, and
+            // `IF NOT EXISTS` keeps a store that somehow already has one honest.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS todo (
+                     session_id  TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
+                     todos_json  TEXT NOT NULL,
+                     updated_ms  INTEGER NOT NULL
+                 );",
+            )?;
         }
         Ok(())
     }
@@ -836,6 +880,38 @@ impl Store {
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
         }
+        Ok(())
+    }
+
+    /// The session's todo list, in the order the model last wrote it.
+    ///
+    /// Empty when the session has none — "never wrote one" and "cleared it" are
+    /// the same state from the outside, and pretending they differ is a pane
+    /// showing a distinction nothing stands behind.
+    pub fn todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json
+            .map(|j| serde_json::from_str(&j))
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    /// Replace the session's todo list wholesale. The whole list every time —
+    /// there is no append, no reorder-by-id, no delta: the model writes what the
+    /// list now is, and that is what the store holds.
+    pub fn put_todos(&self, session_id: &str, todos: &[TodoItem]) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2, updated_ms = ?3",
+            params![session_id, serde_json::to_string(todos)?, now_ms()],
+        )?;
         Ok(())
     }
 
@@ -1221,5 +1297,104 @@ mod tests {
             s.session("s-new").unwrap().unwrap().role.as_deref(),
             Some("planner")
         );
+    }
+
+    #[test]
+    fn a_v2_store_is_migrated_and_gains_a_todo_table() {
+        // Same fixture rule as the v1 test: a real store, one step reversed, and
+        // the migration has to put back exactly what `SCHEMA_SQL` would have.
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v2-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-todo".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: Some("coder".into()),
+                approvers: vec![],
+            })
+            .unwrap();
+        }
+        {
+            // Reverse the v3 step: the table goes away, the version says 2.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("DROP TABLE todo", []).unwrap();
+            c.execute("UPDATE schema_version SET version = 2", []).unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        // The migrated table works, and the session's rows survived the trip.
+        assert!(s.todos("s-todo").unwrap().is_empty());
+        s.put_todos(
+            "s-todo",
+            &[TodoItem {
+                content: "ship the pane".into(),
+                status: TodoStatus::InProgress,
+            }],
+        )
+        .unwrap();
+        assert_eq!(s.todos("s-todo").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn todos_are_replaced_whole_and_read_back_in_order() {
+        let s = store();
+        let _seeded = seeded(&s);
+
+        // No list yet: empty, not an error, not a distinction from "cleared".
+        assert!(s.todos("sess-1").unwrap().is_empty());
+
+        let first = vec![
+            TodoItem {
+                content: "read the harness".into(),
+                status: TodoStatus::Completed,
+            },
+            TodoItem {
+                content: "seat the tool".into(),
+                status: TodoStatus::InProgress,
+            },
+            TodoItem {
+                content: "render the pane".into(),
+                status: TodoStatus::Pending,
+            },
+        ];
+        s.put_todos("sess-1", &first).unwrap();
+        assert_eq!(s.todos("sess-1").unwrap(), first, "order survives the store");
+
+        // The second write is the list, not a patch on it: the revision the model
+        // made is the only one the store holds.
+        let second = vec![TodoItem {
+            content: "render the pane".into(),
+            status: TodoStatus::InProgress,
+        }];
+        s.put_todos("sess-1", &second).unwrap();
+        assert_eq!(s.todos("sess-1").unwrap(), second);
+
+        // An empty write clears; the row remains and answers empty.
+        s.put_todos("sess-1", &[]).unwrap();
+        assert!(s.todos("sess-1").unwrap().is_empty());
     }
 }

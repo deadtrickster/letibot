@@ -88,6 +88,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: the session still has that name. A head replaying it re-reads a
         // fact that is still true, which is exactly the test above.
         | SessionEvent::SessionRenamed { .. }
+        // Durable: the list is what it is as of this seq, and a head replaying
+        // the backlog keeps the last one it saw.
+        | SessionEvent::TodosUpdated { .. }
         // **Durable, and deliberately so.** A denial is a decision taken on the
         // operator's behalf which they alone can lift, and the grant path it
         // carries is still live for a late head. Scrubbing it would put back

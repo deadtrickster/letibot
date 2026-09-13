@@ -64,6 +64,22 @@ pub struct PromptProgress {
     pub time_ms: u64,
 }
 
+/// A todo's state, on the wire. The same three words the store spells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One line of a session's todo list, on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoEntry {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
 /// Why generation stopped.
 ///
 /// Shaped to match `letibot_turn::FinishReason` exactly, `Other` and its string
@@ -575,6 +591,24 @@ pub enum SessionEvent {
         title: String,
     },
 
+    /// **The session's todo list, as the model last wrote it.** `PROTOCOL_VERSION` 9.
+    ///
+    /// The whole list every time, not a delta — a delta the model got wrong is a
+    /// delta nobody can audit, and a head that missed one event would render a
+    /// list that never happened. A head keeps the latest one; the todos pane
+    /// renders it next to the repo's own `TODO.md`, and the two are different
+    /// lists — an agent's plan and the operator's queue — which is why this is an
+    /// event rather than the head polling the store.
+    ///
+    /// Defined here rather than borrowed from the store crate: a head parses this
+    /// without a database, and the protocol does not grow a storage dependency to
+    /// save one `struct`.
+    TodosUpdated {
+        /// The list, in the order the model wrote it. Empty clears the pane's
+        /// first section; that is a real state, not a missing one.
+        todos: Vec<TodoEntry>,
+    },
+
     /// **A refusal, delivered the moment it is decided.** `PROTOCOL_VERSION` 6.
     ///
     /// `docs/boundary-and-adjudication.md` §4b is the requirement, and it names the
@@ -659,6 +693,7 @@ impl SessionEvent {
             SessionEvent::HeadAttached { .. } => "HeadAttached",
             SessionEvent::HeadDetached { .. } => "HeadDetached",
             SessionEvent::SessionRenamed { .. } => "SessionRenamed",
+            SessionEvent::TodosUpdated { .. } => "TodosUpdated",
             SessionEvent::Warning { .. } => "Warning",
             SessionEvent::Explain { .. } => "Explain",
             SessionEvent::CommandIssued { .. } => "CommandIssued",

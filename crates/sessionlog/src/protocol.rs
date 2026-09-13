@@ -131,7 +131,16 @@ use crate::view::Snapshot;
 /// the frame is the ordinary `Accepted`/`Rejected` pair; the compaction itself is
 /// disclosed on the session's log as the turn and the summary item it produces,
 /// so no new event kind was needed.
-pub const PROTOCOL_VERSION: u32 = 8;
+///
+/// # 9: a session has a todo list
+///
+/// [`crate::SessionEvent::TodosUpdated`] is a new event, and a version-8 head
+/// receiving one mid-session would fail to parse it — the version-4 argument
+/// again, and the same ATTACH-time refusal. The event carries the whole list, in
+/// the order the model wrote it; the pane that renders it also shows the repo's
+/// own `TODO.md`, read-only, because an agent's plan and the operator's queue are
+/// different lists and a head that conflated them would let one edit the other.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.

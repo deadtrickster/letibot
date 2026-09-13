@@ -584,6 +584,10 @@ impl SessionView {
             // places with two update paths, and the picker and the header would then
             // be able to disagree about what the session is called.
             SessionEvent::SessionRenamed { .. } => {}
+            // The todo list is not turn state and decides nothing: it reaches the
+            // head as the event itself, and the pane keeps the latest one it saw.
+            // Nothing for the view to fold.
+            SessionEvent::TodosUpdated { .. } => {}
             // **Not folded into the snapshot, and the reason is bounded rather than
             // absent.** A denial is durable on the log ([`crate::scrub`] keeps it),
             // so a head that attaches later replays it in the place it happened,
