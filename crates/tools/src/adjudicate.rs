@@ -506,6 +506,30 @@ pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
     ]
 }
 
+/// One aggregated line of R11's history: what the gate did before, on actions of
+/// this same task direction.
+///
+/// Aggregated **by the gate's own effect** — `admit` or `refuse` — because that is
+/// the split the discipline cares about: *"a denial is history too"*, and a brief
+/// that showed only the approvals would be telling the oracle a one-sided story
+/// about its own record. The counts and the ages travel with them (*"once, three
+/// weeks ago"* and *"nine times this week"* are different facts, and a bare
+/// *"previously allowed"* hides which); the ages are turn distances, which is the
+/// honest unit for an in-session log. There is no field here for the arguments or
+/// the decision prose — history is evidence about the shape, not a transcript of
+/// the calls, and the raw text must never reach the oracle through the back door.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorAnswer {
+    /// The gate's effect on the prior call: `admit` or `refuse`, as the row spells it.
+    pub effect: &'static str,
+    pub count: usize,
+    /// Turn distance to the most recent and to the first answer of this effect,
+    /// when both turn ids carry a `#N` sequence. `None` on either side means the
+    /// renderer says so rather than inventing a number.
+    pub latest_turns_ago: Option<u64>,
+    pub first_turns_ago: Option<u64>,
+}
+
 /// §11.2's request, minus the fields no adjudicator on this box can use yet.
 ///
 /// Dropped from §11.2 and why: `session_id`/`agent` are carried (the gate is
@@ -550,6 +574,13 @@ pub struct AdjudicationRequest {
     /// correct, because the same command is authorised or not depending on what the
     /// operator just said."*
     pub trail: crate::authorise::AuthorisationTrail,
+    /// **R11: prior answers on actions of this shape**, read back from the audit
+    /// rows at decision time and carried to the brief. Set only by the gate, in
+    /// [`AdjudicatedGate::request_from`], keyed the way
+    /// [`crate::authorise::TaskDirection`] is — never by a caller, and never read
+    /// for a tier or an admission: the four inputs history feeds is the *brief*,
+    /// and the tier is layer A's alone.
+    pub prior: Vec<PriorAnswer>,
 }
 
 impl AdjudicationRequest {
@@ -1008,6 +1039,16 @@ impl AdjudicationRow {
     }
 }
 
+/// The `#N` sequence at the end of a turn id, if it has one.
+///
+/// Turn ids are `{transcript}#{n}` where the harness names them and arbitrary
+/// where tests do; a tail that will not parse is an honest `None`, and the
+/// renderer says the age is unknown rather than inventing a number. `rsplit`
+/// because a transcript id may itself contain `#`.
+fn turn_seq(turn_id: &str) -> Option<u64> {
+    turn_id.rsplit('#').next()?.parse().ok()
+}
+
 /// **What a grant is keyed on**: the program the shell will actually run.
 ///
 /// For a shell command it is the *last* stage's program name, which is a choice worth
@@ -1359,6 +1400,14 @@ impl AdjudicatedGate {
             // human reading `github` alone cannot tell a listing from a merge.
             facts.push(format!("operation: `{op}`"));
         }
+        // R11, before the request exists: the same key the row will be recorded
+        // under, computed from the parts this function already has, so the history
+        // in the brief and the history the next call reads back can never be keyed
+        // differently. Reading the rows happens **here** — at decision time, per
+        // §4h — not at startup and not in a batch job nobody consults.
+        let direction =
+            crate::authorise::TaskDirection::of_parts(call.name, baseline, class.scope);
+        let prior = Self::prior_answers(&self.log, &direction.key(), turn_seq(call.turn_id));
         AdjudicationRequest {
             id: self.next_id(),
             session_id: self.session_id.clone(),
@@ -1367,6 +1416,7 @@ impl AdjudicatedGate {
             agent: self.agent.clone(),
             tool: call.name.to_string(),
             class,
+            prior,
             summary: format!(
                 "`{}` wants {} access to `{target}`",
                 call.name,
@@ -1433,6 +1483,48 @@ impl AdjudicatedGate {
             shown,
             direction,
         });
+    }
+
+    /// **R11: the audit rows, read back.** §4h: *"the audit rows are written and
+    /// never read — closing that loop is the cheapest large improvement
+    /// available."*
+    ///
+    /// Every prior row in the same [`crate::authorise::TaskDirection`], aggregated
+    /// by the gate's effect, oldest first. The discipline lives in the two rules
+    /// this function cannot break and the renderer repeats: the rows are **shown
+    /// to the decision, not substituted for it** (this returns data for a brief;
+    /// nothing here touches `tier`, `options` or the admit path), and **denials
+    /// are history too** (the filter is the direction, never the outcome).
+    fn prior_answers(
+        log: &[AdjudicationRow],
+        key: &str,
+        now_turn: Option<u64>,
+    ) -> Vec<PriorAnswer> {
+        let mut out: Vec<PriorAnswer> = Vec::new();
+        for row in log.iter().filter(|r| r.direction == key) {
+            let ago = match (now_turn, turn_seq(&row.request.turn_id)) {
+                (Some(n), Some(t)) => Some(n.saturating_sub(t)),
+                _ => None,
+            };
+            match out
+                .iter_mut()
+                .find(|p| p.effect == row.effect)
+            {
+                Some(p) => {
+                    p.count += 1;
+                    // Rows are appended in decision order, so the last one seen in
+                    // this effect is the most recent.
+                    p.latest_turns_ago = ago;
+                }
+                None => out.push(PriorAnswer {
+                    effect: row.effect,
+                    count: 1,
+                    latest_turns_ago: ago,
+                    first_turns_ago: ago,
+                }),
+            }
+        }
+        out
     }
 
     /// **Record what the operator did with a decision that had already been made.**
@@ -2825,6 +2917,162 @@ mod tests {
                 assert!(why.contains("escalated"), "{why}")
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // R11 — the audit rows, read back at decision time
+    // -------------------------------------------------------------------------
+
+    /// The same call with a turn id that carries a sequence, so ages are
+    /// computable. `bash` names its turn "t1", which parses to nothing and is the
+    /// honest `None` everywhere else.
+    fn bash_at<'a>(args: &'a Value, turn_id: &'a str) -> GateCall<'a> {
+        GateCall {
+            turn_id,
+            ..bash(args)
+        }
+    }
+
+    /// §4h's loop, closed: a second call of the same shape is shown the first
+    /// answer, with its count and its age. The prior rows are keyed on the task
+    /// direction — `(tool, intents, scope, regions)` — so a re-spelled command in
+    /// the same direction matches and a different direction does not.
+    #[test]
+    fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age() {
+        let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
+        let args = json!({"command": "/bin/ls /w"});
+
+        // The first call: no history. (It refuses — closed gate — which is itself
+        // a row, and the denial is what the second call must see.)
+        let req1 = g.request_for(&bash_at(&args, "s#3"));
+        assert!(
+            req1.prior.is_empty(),
+            "nothing has been decided yet: {:?}",
+            req1.prior
+        );
+        let _ = g.admit(&bash_at(&args, "s#3"));
+
+        // A re-spelling of the same direction, three turns later.
+        let req2 = g.request_for(&bash_at(&json!({"command": "/bin/ls -a /w"}), "s#6"));
+        assert_eq!(req2.prior.len(), 1, "{:?}", req2.prior);
+        let p = &req2.prior[0];
+        assert_eq!(p.effect, "refuse");
+        assert_eq!(p.count, 1);
+        assert_eq!(p.latest_turns_ago, Some(3));
+        assert_eq!(p.first_turns_ago, Some(3));
+
+        // A different direction does not inherit the answer: regions differ, and
+        // a history for one shape is not a history for the next.
+        let other = g.request_for(&bash_at(&json!({"command": "/bin/ls /elsewhere"}), "s#6"));
+        assert!(
+            other.prior.is_empty(),
+            "a different region set is a different direction: {:?}",
+            other.prior
+        );
+    }
+
+    /// *"A denial is history too."* Both effects appear, denials beside approvals,
+    /// each with its own count and age — and the ages differ, because *"once,
+    /// three weeks ago"* and *"nine times this week"* are different facts.
+    #[test]
+    fn a_denial_is_history_too_and_sits_beside_the_approvals() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = AtomicUsize::new(0);
+        let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
+            let i = n.fetch_add(1, Ordering::Relaxed);
+            if i == 0 {
+                // First: refused.
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny_and_tell",
+                    "human:test",
+                    "not today",
+                ))
+            } else {
+                // Then: allowed.
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            }
+        });
+        let mut g = AdjudicatedGate::new(Box::new(adj)).with_surroundings(pinned());
+        let args = json!({"command": "/bin/ls /w"});
+        let _ = g.admit(&bash_at(&args, "s#2"));
+        let _ = g.admit(&bash_at(&args, "s#4"));
+
+        let req3 = g.request_for(&bash_at(&args, "s#9"));
+        let refuse = req3
+            .prior
+            .iter()
+            .find(|p| p.effect == "refuse")
+            .expect("the denial is history too");
+        assert_eq!(refuse.count, 1);
+        assert_eq!(refuse.latest_turns_ago, Some(7));
+        let admit = req3
+            .prior
+            .iter()
+            .find(|p| p.effect == "admit")
+            .expect("so is the approval");
+        assert_eq!(admit.count, 1);
+        assert_eq!(admit.latest_turns_ago, Some(5));
+    }
+
+    /// *"History is evidence, never precedent"* — and it never lifts a tier. Two
+    /// approvals of the same shape do not turn an always-ask action into one the
+    /// gate admits unasked: the tier is layer A's, the option list still offers
+    /// only what the gate would honour, and a third ask still has to be answered
+    /// by somebody.
+    #[test]
+    fn a_history_of_approvals_cannot_move_an_always_ask_action() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        let n = AtomicUsize::new(0);
+        let seen: std::sync::Arc<Mutex<Vec<(String, Vec<String>)>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
+            let i = n.fetch_add(1, Ordering::Relaxed);
+            s.lock()
+                .unwrap()
+                .push((req.tier.as_str().to_string(), 
+                    req.options.iter().map(|o| o.id.to_string()).collect()));
+            if i < 2 {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "allowed once, by a human",
+                ))
+            } else {
+                None
+            }
+        });
+        let mut g = AdjudicatedGate::new(Box::new(adj)).with_surroundings(pinned());
+        let args = json!({"command": "sudo systemctl restart foo"});
+        // Two approvals in the direction — `sudo`, the privilege-escalation ask.
+        assert_eq!(g.admit(&bash_at(&args, "s#1")), GateDecision::Admit);
+        assert_eq!(g.admit(&bash_at(&args, "s#2")), GateDecision::Admit);
+
+        // The third call: the history says admitted twice, and the gate asks
+        // anyway — and with nobody to answer, nothing ran.
+        match g.admit(&bash_at(&args, "s#3")) {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { .. },
+                ..
+            } => {}
+            other => panic!("history must not admit an always-ask action: {other:?}"),
+        }
+        let tiers = seen.lock().unwrap();
+        for (tier, options) in tiers.iter() {
+            assert_eq!(tier, "always_ask", "the tier never moved: {tier}");
+            assert!(
+                !options.iter().any(|o| o == "allow_session"),
+                "an always-ask action is never offered a standing grant: {options:?}"
+            );
         }
     }
 }

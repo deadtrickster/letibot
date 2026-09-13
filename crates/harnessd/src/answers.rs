@@ -454,6 +454,7 @@ mod tests {
             resolved: true,
             baseline: "writes one file inside the project".into(),
             trail: Default::default(),
+            prior: Vec::new(),
         }
     }
 

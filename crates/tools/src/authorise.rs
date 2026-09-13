@@ -350,6 +350,12 @@ pub struct ModelBrief {
     pub regions: Vec<String>,
     pub effect_scope: EffectScope,
     pub trail: AuthorisationTrail,
+    /// R11: the gate's own record on actions of this shape, with counts and ages.
+    /// Evidence for the decision, never a substitute for it — the render says so
+    /// in the same breath, and nothing in the admit path reads this field: the
+    /// tier is layer A's, and history cannot promote out of `AlwaysAsk` or
+    /// `Inexpressible` for the same reason a glob cannot (§4f).
+    pub prior: Vec<crate::adjudicate::PriorAnswer>,
     /// Present only when layer A found the action adjudicable AND resolved. The
     /// oracle takes it by value to build a [`Widening`]; there is no other source.
     witness: Option<Adjudicable>,
@@ -419,6 +425,7 @@ impl ModelBrief {
                 .collect(),
             effect_scope: req.class.scope,
             trail: req.trail.clone(),
+            prior: req.prior.clone(),
             witness: req.adjudicable(),
         }
     }
@@ -460,6 +467,30 @@ impl ModelBrief {
             for st in &self.stages {
                 s.push_str(&format!("  {st}\n"));
             }
+        }
+        // R11: the gate's own record on this shape, shown to the decision — not
+        // substituted for it. Denials sit beside approvals on purpose: a brief
+        // that showed only the approvals would be telling the oracle a one-sided
+        // story about its own record. The discipline line is part of the render,
+        // not of some prompt assembled elsewhere, so it travels with the data it
+        // constrains and cannot be dropped by a caller in a hurry.
+        s.push_str(
+            "prior answers on this shape (this session's audit; evidence, never \
+             precedent — history cannot move the tier or admit anything):\n",
+        );
+        if self.prior.is_empty() {
+            s.push_str("  none recorded\n");
+        }
+        for p in &self.prior {
+            let age = match (p.latest_turns_ago, p.first_turns_ago) {
+                (Some(l), Some(f)) if l == f => format!("{l} turn(s) ago"),
+                (Some(l), Some(f)) => {
+                    format!("most recent {l} turn(s) ago, first {f} turn(s) ago")
+                }
+                (Some(l), None) => format!("most recent {l} turn(s) ago, first unknown"),
+                (None, _) => "age unknown".to_string(),
+            };
+            s.push_str(&format!("  {} — {} time(s), {}\n", p.effect, p.count, age));
         }
         s.push('\n');
         s.push_str(&self.trail.render());
@@ -766,6 +797,14 @@ pub struct TaskDirection {
 
 impl TaskDirection {
     pub fn of(req: &AdjudicationRequest, baseline: &Baseline) -> Self {
+        Self::of_parts(&req.tool, baseline, req.class.scope)
+    }
+
+    /// The same direction, from the parts — for the gate's `request_from`, which
+    /// computes the key **before** the request exists so the history it puts in
+    /// the brief is keyed exactly as the row it will later record (R11: one key,
+    /// or the brief's history and the next call's lookup disagree).
+    pub fn of_parts(tool: &str, baseline: &Baseline, scope: EffectScope) -> Self {
         let mut regions: Vec<String> = baseline
             .regions
             .iter()
@@ -780,9 +819,9 @@ impl TaskDirection {
         regions.sort();
         regions.dedup();
         TaskDirection {
-            tool: req.tool.clone(),
+            tool: tool.to_string(),
             intents: baseline.intents.iter().map(Intent::as_str).collect(),
-            scope: req.class.scope,
+            scope,
             regions,
         }
     }
@@ -1443,6 +1482,7 @@ mod tests {
             tier: b.tier.clone(),
             baseline: b.summary(),
             trail,
+            prior: Vec::new(),
         }
     }
 
@@ -2116,5 +2156,43 @@ mod tests {
             note: String::new(),
         });
         assert!(!agreed.is_disagreement());
+    }
+
+    /// R11, in the bytes the oracle reads: prior answers carry their counts and
+    /// their ages, denials sit beside approvals, and the discipline line travels
+    /// with the data it constrains — evidence, never precedent.
+    #[test]
+    fn the_brief_shows_prior_answers_with_counts_ages_and_the_discipline() {
+        let mut req = request("ls /w", trail_saying("list the files", 1));
+        req.prior = vec![
+            crate::adjudicate::PriorAnswer {
+                effect: "admit",
+                count: 2,
+                latest_turns_ago: Some(1),
+                first_turns_ago: Some(9),
+            },
+            crate::adjudicate::PriorAnswer {
+                effect: "refuse",
+                count: 1,
+                latest_turns_ago: Some(4),
+                first_turns_ago: Some(4),
+            },
+        ];
+        let b = Baseline::of_command("ls /w", &env());
+        let s = ModelBrief::new(&req, &b).render();
+        assert!(s.contains("evidence, never precedent"), "{s}");
+        assert!(
+            s.contains("admit — 2 time(s), most recent 1 turn(s) ago, first 9 turn(s) ago"),
+            "{s}"
+        );
+        assert!(s.contains("refuse — 1 time(s), 4 turn(s) ago"), "{s}");
+
+        // And absence is stated, not left for the oracle to guess at: a silent
+        // section would read as either "no history" or "not shown", and only one
+        // of those is true.
+        let mut bare = request("ls /w", trail_saying("list the files", 1));
+        bare.prior = Vec::new();
+        let s = ModelBrief::new(&bare, &b).render();
+        assert!(s.contains("none recorded"), "{s}");
     }
 }
