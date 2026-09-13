@@ -259,6 +259,12 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             breaker_open: false,
             grant: "grant `adj-s1-0001` (bash) for this session".into(),
         },
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "summarize ~/bin/letibot".into(),
+            role: "coder".into(),
+        },
     ]
 }
 

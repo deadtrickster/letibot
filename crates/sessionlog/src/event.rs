@@ -678,7 +678,10 @@ pub enum SessionEvent {
     /// line (the same derivation the subagent's title uses), so a head shows what
     /// the subagent was for without parsing the `task` call's arguments.
     Subagent {
-        session_id: String,
+        /// The subagent's own session id. Named `subagent_id` rather than
+        /// `session_id` because [`Envelope`] already carries the *parent*'s
+        /// `session_id`, and a flattened duplicate field would fail to parse.
+        subagent_id: String,
         state: String,
         prompt: String,
         role: String,
@@ -765,6 +768,27 @@ mod tests {
             let s = serde_json::to_string(&e).unwrap();
             let back: SessionEvent = serde_json::from_str(&s).unwrap();
             assert_eq!(e, back, "{s}");
+        }
+    }
+
+    /// The flatten that puts an event inside an [`Envelope`] is where a field-name
+    /// collision shows up, not in the event alone: an event that names a field the
+    /// envelope already has (`session_id`) serialises to a duplicate key and a head
+    /// fails to parse it. `Subagent` was exactly that, and this is the test that
+    /// would have caught it — every variant, wrapped, must survive the wire.
+    #[test]
+    fn every_variant_round_trips_inside_an_envelope() {
+        for (i, e) in crate::testing::one_of_each().into_iter().enumerate() {
+            let env = Envelope {
+                session_id: "s-parent".into(),
+                seq: i as u64,
+                ts: 1000,
+                event: e.clone(),
+            };
+            let s = serde_json::to_string(&env).unwrap();
+            let back: Envelope = serde_json::from_str(&s)
+                .unwrap_or_else(|err| panic!("envelope round-trip failed: {err}; json: {s}"));
+            assert_eq!(env, back, "{s}");
         }
     }
 

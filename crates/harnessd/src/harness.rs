@@ -2511,7 +2511,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let publish = |state: &str, prompt: &str| {
             if let Some(hub) = self.registry.get(&parent) {
                 hub.publish(SessionEvent::Subagent {
-                    session_id: sub_id.clone(),
+                    subagent_id: sub_id.clone(),
                     state: state.to_string(),
                     prompt: prompt.to_string(),
                     role: seat.as_str().to_string(),

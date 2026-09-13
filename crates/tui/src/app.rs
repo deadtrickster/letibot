@@ -1091,7 +1091,7 @@ impl App {
             // A subagent spawn/finish. Fold into the tree, replacing the row with the
             // same session id, so `running` becomes `done` rather than a second line.
             SessionEvent::Subagent {
-                session_id,
+                subagent_id,
                 state,
                 prompt,
                 role,
@@ -1099,14 +1099,14 @@ impl App {
                 if let Some(row) = self
                     .subagents
                     .iter_mut()
-                    .find(|s| s.session_id == session_id)
+                    .find(|s| s.session_id == subagent_id)
                 {
                     row.state = state;
                     row.prompt = prompt;
                     row.role = role;
                 } else {
                     self.subagents.push(SubagentState {
-                        session_id,
+                        session_id: subagent_id,
                         state,
                         prompt,
                         role,
@@ -5151,6 +5151,62 @@ mod tests {
         // Toggling twice does not ask twice without opening in between.
         assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
         assert_eq!(a.key(Key::CtrlP), None);
+    }
+
+    #[test]
+    fn ctrl_g_opens_the_subagent_tree_and_esc_closes_it() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        // A spawn that the head saw, and the running count reaches the header.
+        assert_eq!(a.subagents.len(), 1);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("1 subagent running"), "{screen}");
+
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("subagents"), "{screen}");
+        assert!(screen.contains("summarize ~/bin/letibot"), "{screen}");
+        assert!(screen.contains("running"), "{screen}");
+
+        a.key(Key::Esc);
+        assert!(!a.subagents_pane);
+    }
+
+    #[test]
+    fn a_running_subagent_row_becomes_done_rather_than_a_second_line() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "done".into(),
+                prompt: "Here is the summary.".into(),
+                role: "coder".into(),
+            },
+        )));
+        assert_eq!(a.subagents.len(), 1, "done replaces running, not appends");
+        assert_eq!(a.subagents[0].state, "done");
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("done"), "{screen}");
+        assert!(screen.contains("Here is the summary."), "{screen}");
     }
 
     #[test]
