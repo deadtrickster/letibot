@@ -328,8 +328,14 @@ fn run() -> Result<i32, String> {
             cmd.identity, r.rounds, r.tool_calls
         ),
         Outcome::Compacted(r) => eprintln!(
-            "  {session} · {} -> compacted, base {} -> {} tokens (transcript {})",
-            cmd.identity, r.was_tokens, r.base_tokens, r.transcript_id
+            "  {session} · {} -> compacted, base {} -> {} tokens (transcript {}); \
+             summary turn reused {} of {} carryable tokens",
+            cmd.identity,
+            r.fork.was_tokens,
+            r.fork.base_tokens,
+            r.fork.transcript_id,
+            r.summary_turn.cached_tokens,
+            r.summary_turn.reusable
         ),
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}

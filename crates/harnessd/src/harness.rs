@@ -702,6 +702,19 @@ pub struct ForkReport {
     pub base_tokens: usize,
 }
 
+/// What a compaction left behind: the fork's numbers and the summary turn's.
+///
+/// Two reports because two different things happened and a caller discloses both:
+/// [`ForkReport`] is what the session's base now is, and `summary_turn` is how the
+/// summary was paid for — `cached_tokens` against `reusable` is the measured cache
+/// hit the whole cached strategy exists for, and the gap between them is the
+/// server's, never ours (the prompts are proven identical over the span).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactReport {
+    pub fork: ForkReport,
+    pub summary_turn: CompactionOutcome,
+}
+
 /// Whether the store already holds this transcript row.
 ///
 /// A `SELECT` through the escape hatch, for the same reason `stored_sessions` in the
@@ -1623,7 +1636,7 @@ impl<'a> Harness<'a> {
     /// transcript either way — nothing is reduced until the fork lands, so a
     /// refusal here leaves the session exactly as it was, and the next attempt
     /// appends a fresh instruction over this one.
-    pub fn compact(&mut self) -> Result<ForkReport, HarnessError> {
+    pub fn compact(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
             .map_err(HarnessError::Turn)?;
@@ -1635,7 +1648,11 @@ impl<'a> Harness<'a> {
                 outcome.tool_calls
             )));
         }
-        self.fork_to_summary(&outcome)
+        let fork = self.fork_to_summary(&outcome)?;
+        Ok(CompactReport {
+            fork,
+            summary_turn: outcome,
+        })
     }
 
     /// **The fork.** Replace the resident history with one summary item, in a new

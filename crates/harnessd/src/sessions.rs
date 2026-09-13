@@ -44,7 +44,7 @@ use letibot_tokencore::store::Store;
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
-use crate::harness::{ForkReport, Harness, HarnessError, Parts, Reply};
+use crate::harness::{CompactReport, Harness, HarnessError, Parts, Reply};
 
 /// How long a monitor waiter blocks before re-checking whether the daemon is
 /// shutting down.
@@ -63,7 +63,7 @@ pub enum Outcome {
     Replied(Box<Reply>),
     /// The session was compacted: one summary turn, then a transcript fork.
     /// The report is the evidence, not the word.
-    Compacted(Box<ForkReport>),
+    Compacted(Box<CompactReport>),
     Failed(String),
     Ignored,
 }
@@ -265,7 +265,7 @@ impl<'a> Sessions<'a> {
     /// with a fork behind it, not a different kind of thing. No title derivation
     /// and no wake-arming: a summary proposes nothing and monitors do not fire on
     /// it.
-    pub fn compact(&mut self, session_id: &str) -> Result<ForkReport, HarnessError> {
+    pub fn compact(&mut self, session_id: &str) -> Result<CompactReport, HarnessError> {
         let hub = self.registry.get(session_id);
         let harness = self.harness(session_id)?;
         let out = harness.compact();
