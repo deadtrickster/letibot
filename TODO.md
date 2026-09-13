@@ -314,6 +314,53 @@ the oracle — there is already a test for that last one and it caught a leak on
 
 ---
 
+## C1 — compaction: the cache-friendly summary call, the simple version
+
+**Operator, 2026-09-13:** *"compaction is a normal message that says give summary so
+kv cache is reused … for now we dont have anything so simple cache is ok."*
+
+**The measured stakes** (opencode `1ee74df` + `4efae6c`, this box, GLM-5.3-Flash):
+flatten compaction of a 144,436-token conversation ran with `n_prompt_tokens_cache = 0`
+and spent ~13 minutes at 182 t/s before the first summary token. The cached strategy
+re-sends the request that just ran — **same system, same tools, same messages; all
+three have to match, `tools: []` alone diverges the stream** — and appends the
+instruction as a final user message, so the prefix is byte-identical to what the
+previous turn already prefilled and only the suffix is new.
+
+**Relation to `docs/compaction.md`.** §4's structural map is the *content* of the
+instruction and the later refinement — the simple version ships first because nothing
+ships today. §5's negative result does not block this: it is ordinary prefix reuse,
+not KV stitching. §3's "a re-prefill either way" remains true of the *post-compaction
+base* — that cold prefill is disclosed, not denied.
+
+**Where.** The turn engine's prompt builder is deterministic and hash-chained
+(§18.1), so the rebuilt prefix is verifiable against the previous turn's hash;
+`serving.rs`'s preflight already reads `n_prompt_tokens_cache`. Trigger: `/compact`
+from the head first; auto-at-the-wall after. The summary lands in the registry as the
+session's new base; evicted detail stays in the store.
+
+**Done when.** A compacted session produces its summary with a measured cache hit on
+the carried prefix (disclosed, not assumed); the first turn after compaction reports
+its cold prefill as the remaining cost; a fresh resume with no previous request to
+carry falls back to the cold call and says so. Live-gated — runs only under the
+serving preflight.
+
+---
+
+## C2 — todos pane: session todos from a model-callable tool, plus the repo's TODO.md
+
+**Operator, 2026-09-13:** *"Both sources."*
+
+**Where.** A todo tool in `tools` whose list is session-scoped and persisted through
+sessionlog so a resume restores it; a TUI pane binding; and a read-only rendering of
+the repo's `TODO.md` (sections, checkboxes) as the second source.
+
+**Done when.** The model can write todos and they survive a resume; the pane shows
+both sources; the repo view is explicitly read-only — an agent's todo list and the
+operator's queue are different things and the pane says which is which.
+
+---
+
 # 2. NEEDS A NOD — small question first, then unblocked
 
 ## N5 — the agent should know the view is hermetic, and propose the grant it needs
