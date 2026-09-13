@@ -140,7 +140,14 @@ use crate::view::Snapshot;
 /// the order the model wrote it; the pane that renders it also shows the repo's
 /// own `TODO.md`, read-only, because an agent's plan and the operator's queue are
 /// different lists and a head that conflated them would let one edit the other.
-pub const PROTOCOL_VERSION: u32 = 9;
+///
+/// # 10: a head can move the running command to the background
+///
+/// [`ClientFrame::Promote`] is a new client frame (Ctrl+B), so a version-9 daemon
+/// would fail to parse it — the same mid-session deserialization failure, and the
+/// same ATTACH-time refusal. No new event: the promotion is the `bash` tool's own
+/// `Backgrounded` result, attributed to the operator.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -220,6 +227,13 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         reason: String,
+    },
+    /// A head asked to move the running command to the background (Ctrl+B). The
+    /// daemon's exec backend honours it mid-turn; between turns it is announced as
+    /// idle.
+    Promote {
+        client_request_id: String,
+        expected_seq: u64,
     },
     /// Compact this session: one summary turn over the history as it stands,
     /// then the history is replaced by that summary through a transcript fork.

@@ -634,6 +634,13 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlG);
                 i += 1;
             }
+            // Background the running command. Ctrl+B is the terminal's usual
+            // back-one-character, but the composer owns that; as a chord it moves the
+            // running command to the background, like Claude Code.
+            0x02 => {
+                out.push(Key::CtrlB);
+                i += 1;
+            }
             // Tab: the composer's slash-command completion. A plain 0x09 used to
             // fall through the `c >= 0x20` arm and vanish — a byte the head eats
             // silently is a key nobody can learn.

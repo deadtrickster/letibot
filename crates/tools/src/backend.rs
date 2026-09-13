@@ -29,6 +29,7 @@
 //! nothing above this line changing.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 /// Distinguishes the temp files two concurrent writes create in one directory.
@@ -157,6 +158,18 @@ pub trait ExecBackend: Send + Sync {
 
     /// For `EXPLAIN` and for the head: which substrate the tools are talking to.
     fn describe(&self) -> String;
+
+    /// A head asked to move the running command to the background, and this is the
+    /// identity of whoever asked. `None` when no such request is pending. **Taking
+    /// it clears it**, so the `bash` tool acts once.
+    ///
+    /// `None` by default: a backend with no exec path has nothing to move. The host
+    /// backend carries the shared channel the daemon wires from the hub, so the
+    /// `bash` tool's wait loop can honour the request without the worker — which is
+    /// blocked inside that wait — having to deliver it.
+    fn promote_requested(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The host filesystem, confined to a root.
@@ -184,6 +197,10 @@ pub struct HostBackend {
     /// into the environment on every call and so the value is a property of the
     /// backend rather than of the process that happens to be calling it.
     home: PathBuf,
+    /// A head asked to move the running command to the background, and this is who.
+    /// `None` when no request is pending. Wired by the daemon from the session's
+    /// hub; the `bash` tool's wait loop reads it.
+    promote: Arc<std::sync::Mutex<Option<String>>>,
     /// `Some` only via [`HostBackend::executable`]. Shared, because the job table
     /// and the scope tree are session state and a `HostBackend` is cloned freely.
     processes: Option<std::sync::Arc<crate::exec::HostProcesses>>,
@@ -201,8 +218,20 @@ impl HostBackend {
             root,
             writable: false,
             home,
+            promote: Arc::new(std::sync::Mutex::new(None)),
             processes: None,
         })
+    }
+
+    /// Wire the shared "move the running command to the background" channel from the
+    /// session's hub. The daemon calls this after construction; a backend a test
+    /// built without it simply never sees a request.
+    pub fn with_promote_channel(
+        mut self,
+        channel: Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        self.promote = channel;
+        self
     }
 
     /// A backend that can change the operator's tree.
@@ -678,6 +707,12 @@ impl ExecBackend for HostBackend {
             .as_ref()
             .map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
     }
+
+    fn promote_requested(&self) -> Option<String> {
+        // Take, not read: whoever acts on the request (the `bash` wait loop) clears
+        // it, so a second pass does not promote the same command twice.
+        self.promote.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// The most symlinks one path may traverse. Linux's own limit is 40 (`ELOOP`
@@ -919,6 +954,20 @@ mod tests {
         assert_eq!(b.read("~/sub/f.txt").unwrap(), b"tilta\n");
         // `~` alone is the home itself.
         assert_eq!(b.resolve("~").unwrap(), d.path().to_path_buf());
+    }
+
+    /// The promote channel the daemon wires from the hub is read **and cleared** by
+    /// the `bash` wait loop, so a head's Ctrl+B is honoured once.
+    #[test]
+    fn a_promote_request_is_taken_not_merely_read() {
+        let (_d, b) = fixture();
+        let channel = Arc::new(std::sync::Mutex::new(None));
+        let b = b.with_promote_channel(channel.clone());
+        assert_eq!(b.promote_requested(), None);
+        *channel.lock().unwrap() = Some("dead".to_string());
+        assert_eq!(b.promote_requested().as_deref(), Some("dead"));
+        // Taken: the second read sees nothing, so the command is not promoted twice.
+        assert_eq!(b.promote_requested(), None);
     }
 
     #[test]

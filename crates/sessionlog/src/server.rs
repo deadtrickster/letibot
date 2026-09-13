@@ -463,6 +463,23 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::Promote {
+                client_request_id,
+                expected_seq,
+            }) => {
+                // Two halves: the flag the `bash` wait loop honours mid-turn, and the
+                // queued command that announces the between-turns case. The flag has
+                // to be set here — the worker is blocked inside the wait it would
+                // otherwise be asked to deliver this to.
+                seat.hub.request_promote_from(&seat.head_id);
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::Promote,
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::CompactSession {
                 client_request_id,
                 expected_seq,

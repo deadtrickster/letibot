@@ -473,6 +473,22 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            // The request is honoured mid-turn by the `bash` wait loop, which reads
+            // the hub's promote channel. Reaching here means nothing was running, so
+            // the request is stale — clear it and say so, rather than leaving it for
+            // the next command to promote itself unprompted.
+            CommandKind::Promote => {
+                if let Some(hub) = &hub {
+                    hub.take_promote_request();
+                    hub.publish(SessionEvent::Warning {
+                        code: "promote_idle".into(),
+                        detail: "a background request arrived between turns; nothing \
+                                 was running to move"
+                            .into(),
+                    });
+                }
+                Outcome::Ignored
+            }
             // **An answer that got this far had nowhere better to go.** A session
             // with an adjudicator installs an `AnswerSink`, and `Hub::submit` then
             // delivers straight to the thread waiting for it rather than queueing —

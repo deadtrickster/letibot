@@ -141,6 +141,16 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Ask the daemon to move the running command to the background (Ctrl+B).
+    pub fn promote(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::Promote {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Ask for this session's todo list — the todos pane's bootstrap read.
     /// Answered off the queue, like a list.
     pub fn list_todos(&mut self) -> Result<String, ClientError> {

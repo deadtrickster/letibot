@@ -965,6 +965,9 @@ impl<'a> Harness<'a> {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default(),
         );
+        // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
+        // channel, so the request is honoured while the worker is blocked inside it.
+        let backend = backend.with_promote_channel(hub.promote_channel());
         let backend_described = backend.describe();
         let backend_writable = backend.is_writable();
         let monitors = backend

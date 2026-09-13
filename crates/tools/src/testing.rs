@@ -73,6 +73,9 @@ pub struct Harness {
     /// an empty report is a real answer: nothing was offered and nothing was
     /// refused.
     pub mount: crate::builtins::external::mcp::MountReport,
+    /// The promote channel the backend reads, for a test to simulate a head's Ctrl+B
+    /// by setting it before a `bash` call runs.
+    pub promote: Option<Arc<std::sync::Mutex<Option<String>>>>,
     /// Held so the tree outlives the backend.
     _dir: TempDir,
 }
@@ -229,8 +232,10 @@ pub fn runner_harness_with_gate(
     let dir = TempDir::new();
     fixture_tree(dir.path());
     let host = Arc::new(crate::exec::HostProcesses::new(dir.path())?);
+    let promote: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let backend = crate::backend::HostBackend::executable_with(dir.path(), Arc::clone(&host))
-        .expect("fixture root");
+        .expect("fixture root")
+        .with_promote_channel(promote.clone());
     let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
     let mut rt = ToolRuntime::new(registry, Box::new(backend));
     if let Some(g) = gate {
@@ -241,6 +246,7 @@ pub fn runner_harness_with_gate(
         sink: RecordingToolSink::new(),
         processes: Some(host),
         mount: Default::default(),
+        promote: Some(promote),
         _dir: dir,
     })
 }
@@ -285,6 +291,7 @@ pub fn confined_harness_with(
         sink: RecordingToolSink::new(),
         processes: Some(host),
         mount: Default::default(),
+        promote: None,
         _dir: dir,
     })
 }
@@ -376,6 +383,7 @@ fn build_ext(
         sink: RecordingToolSink::new(),
         processes: None,
         mount,
+        promote: None,
         _dir: dir,
     }
 }

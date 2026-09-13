@@ -214,6 +214,42 @@ fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_lis
     let _ = host.kill_job(&jid);
 }
 
+/// The head's Ctrl+B: the promote channel the daemon wires from the hub, read by
+/// the `bash` wait loop. Setting the channel is the head's half; the `bash` result
+/// carrying `Operator` is the daemon's.
+#[test]
+fn a_promote_request_from_the_head_moves_the_running_command() {
+    let mut h = runner!("promote_from_head");
+    // The head asks, before the command would finish on its own.
+    h.promote
+        .as_ref()
+        .expect("a promote channel")
+        .lock()
+        .unwrap()
+        .replace("deadtrickster".to_string());
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 30"}).to_string(),
+    );
+    match &r.outcome {
+        ToolOutcome::Backgrounded { handle, how, .. } => {
+            assert_eq!(
+                *how,
+                Backgrounding::Operator {
+                    identity: "deadtrickster".into()
+                }
+            );
+            let _ = h
+                .processes
+                .clone()
+                .unwrap()
+                .kill_job(&JobId(handle.clone()));
+        }
+        other => panic!("a Ctrl+B must background the command, got {other:?}: {}", r.render()),
+    }
+    assert!(r.render().contains("moved to the background"), "{}", r.render());
+}
+
 // ------------------------------------------------------- monitors, T24
 
 /// T24 requirements 1, 2, 3 and 4, through the tool the model actually calls.

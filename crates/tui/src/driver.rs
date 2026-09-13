@@ -110,6 +110,9 @@ pub fn tick(
             Action::Interrupt(reason) => {
                 client.interrupt(app.seq, &reason)?;
             }
+            Action::Promote => {
+                client.promote(app.seq)?;
+            }
             Action::Answer { req_id, option_id } => {
                 client.answer(&req_id, &option_id)?;
             }

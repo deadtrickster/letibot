@@ -91,6 +91,11 @@ pub enum CommandKind {
     /// meant it.
     Compact,
     Interrupt { reason: String },
+    /// A head asked to move the running command to the background. **Not queued
+    /// like a prompt** — it is acted on by the exec backend's wait loop, which is
+    /// already blocked where the worker cannot reach — but the frame still rides the
+    /// queue so the between-turns case is announced rather than dropped.
+    Promote,
     /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
     /// an opencode name…), persisted in the mode store. Serialized on the queue like
     /// everything else; unlike a prompt it does not start a turn. See `D13`.
@@ -177,6 +182,7 @@ impl CommandKind {
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
+            CommandKind::Promote => "promote",
         }
     }
 }
@@ -250,6 +256,11 @@ pub struct Hub {
     /// head, and the wake storm is bounded by the head count, which is small by
     /// construction (§13.2's "tmux for an agent", not a broadcast service).
     cv: Condvar,
+    /// A head asked to move the running command to the background, and this is the
+    /// identity of whoever asked. `None` when no request is pending. Shared with the
+    /// exec backend so the `bash` tool's wait loop can honour it without the worker
+    /// — which is blocked inside that wait — having to deliver it.
+    promote: Arc<Mutex<Option<String>>>,
 }
 
 impl Hub {
@@ -275,7 +286,39 @@ impl Hub {
                 answers: None,
             }),
             cv: Condvar::new(),
+            promote: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// A head asked to move the running command to the background. Record who, so
+    /// the outcome can attribute it. Consumed by the backend's `bash` wait loop.
+    pub fn request_promote(&self, identity: impl Into<String>) {
+        *self.promote.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity.into());
+    }
+
+    /// Take the pending promote request, clearing it. `Some(identity)` when a head
+    /// asked.
+    pub fn take_promote_request(&self) -> Option<String> {
+        self.promote.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// A head asked to move the running command to the background. Resolve that
+    /// head's identity and record it, so the outcome can attribute who asked.
+    /// `None` when the head is not attached.
+    pub fn request_promote_from(&self, head_id: &str) -> Option<String> {
+        let identity = self
+            .lock()
+            .heads
+            .iter()
+            .find(|h| h.id == head_id)
+            .map(|h| h.identity.clone())?;
+        self.request_promote(identity.clone());
+        Some(identity)
+    }
+
+    /// The shared channel, for the daemon to hand to the exec backend.
+    pub fn promote_channel(&self) -> Arc<Mutex<Option<String>>> {
+        self.promote.clone()
     }
 
     /// Register this hub with a cross-session wake, so a worker serving several
@@ -693,6 +736,7 @@ impl Hub {
                 }
                 (CommandKind::Compact, false) => crate::protocol::NOTE_COMPACT_QUEUED.into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
+                (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
                 }
@@ -894,6 +938,26 @@ mod tests {
             },
             0,
         )
+    }
+
+    #[test]
+    fn a_promote_request_is_recorded_with_who_and_taken_once() {
+        let hub = Hub::new("s");
+        let a = attach(&hub, 4);
+        // A head asks, and the channel resolves its identity.
+        assert_eq!(
+            hub.request_promote_from(&a.head_id).as_deref(),
+            Some("dead@lab2x1")
+        );
+        assert_eq!(
+            hub.take_promote_request().as_deref(),
+            Some("dead@lab2x1")
+        );
+        // Taken, not read: a second take sees nothing, so the bash wait loop cannot
+        // promote the same command twice.
+        assert_eq!(hub.take_promote_request(), None);
+        // An unattached head resolves to no request.
+        assert_eq!(hub.request_promote_from("nobody"), None);
     }
 
     #[test]

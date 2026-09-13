@@ -55,7 +55,7 @@ use letibot_transcript::Backgrounding;
 use serde_json::Value;
 
 use crate::exec::predicate::{Verdict, annotation, refusal};
-use crate::exec::{JobState, ProcessHost, ScopeKind, SpawnRequest, Waited};
+use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -293,7 +293,7 @@ impl Tool for Bash {
 
         // Foreground. Progress reports WORK DONE — bytes produced — and never
         // "still alive": §8.5, and `liveness-indicators-measure-the-wrong-thing`.
-        let state = wait_with_progress(ctx, host, &id, timeout);
+        let foreground = wait_with_progress(ctx, host, &id, timeout);
 
         let Ok(out) = host.output(&id, 0, usize::MAX) else {
             return Invocation::failed(
@@ -330,6 +330,52 @@ impl Tool for Bash {
             launcher_failed = c.launcher_failure(&full);
         }
 
+        // **A person moved it mid-flight** (Ctrl+B). The outcome is `Backgrounded`
+        // with the operator named, not a deadline kill — the command is still
+        // running, and the handle is the way back.
+        if let Foreground::Promoted(p) = foreground {
+            let next = format!(
+                "call `job_wait` with job=\"{id}\" and a `timeout_ms` to block until \
+                 it finishes, or `job_output` with job=\"{id}\" to read what it has \
+                 written so far"
+            );
+            let mut inv = Invocation::backgrounded(
+                id.0.clone(),
+                p.ran_for,
+                p.how.clone(),
+                &next,
+                format!(
+                    "{body}\n\n[`{id}` was moved to the background — you did not ask \
+                     for it]\n  command: {command}\n  owned by: {} — {}\n",
+                    p.to,
+                    p.to.kind.reaped_when()
+                ),
+            );
+            if !p.complete() {
+                inv = inv.with_note(format!(
+                    "the promotion is PARTIAL. {} Those processes are still reaped \
+                     when this turn ends; the rest outlive it.",
+                    p.summary()
+                ));
+            }
+            if capped || !out.complete() {
+                inv = inv.with_note(format!(
+                    "output was capped inline at {MAX_INLINE_BYTES} bytes / \
+                     {MAX_INLINE_LINES} lines, keeping the TAIL. {} Call `job_output` \
+                     with job=\"{id}\" for the rest.",
+                    out.denominator(&id)
+                ));
+            }
+            for n in notes {
+                inv = inv.with_note(n);
+            }
+            return inv;
+        }
+
+        let state = match foreground {
+            Foreground::State(s) => s,
+            Foreground::Promoted(_) => unreachable!("handled above"),
+        };
         let mut inv = match &state {
             // **The deadline, opencode's.** The command outlived `timeout_ms`, so it
             // is **killed**, not promoted. Killing is the point: a command the model
@@ -403,23 +449,50 @@ impl Tool for Bash {
     }
 }
 
-/// Wait, emitting progress that is a measurement of work rather than a heartbeat.
+/// How a foreground wait ended: the command's own state, or a head's Ctrl+B moving
+/// it to the background mid-flight.
+enum Foreground {
+    State(JobState),
+    /// A person moved the command to the background from a head. The promotion is
+    /// the record; the job is still running and recoverable.
+    Promoted(Promotion),
+}
+
+/// Wait, emitting progress that is a measurement of work rather than a heartbeat,
+/// and honour a head's Ctrl+B by promoting the command mid-flight.
 fn wait_with_progress(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
     id: &crate::exec::JobId,
     timeout: Duration,
-) -> JobState {
+) -> Foreground {
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
     let mut last_reported = 0u64;
     loop {
+        // A head asked to move this to the background. Honour it here, on the
+        // worker's own poll, because the worker is the thing that is blocked and
+        // the signal arrived on the hub's promote channel rather than its queue.
+        if let Some(identity) = ctx.backend.promote_requested() {
+            let promoted = host.promote(
+                id,
+                ScopeKind::Session,
+                None,
+                Backgrounding::Operator { identity },
+            );
+            // Whether the move succeeded or not, it is the answer to the request:
+            // the failure path is reported, not retried into a second promotion.
+            return match promoted {
+                Ok(p) => Foreground::Promoted(p),
+                Err(_) => Foreground::State(JobState::Running),
+            };
+        }
         let left = timeout.saturating_sub(started.elapsed());
         if left.is_zero() {
             break;
         }
         match host.wait_job(id, step.min(left)) {
-            Ok(Waited::Happened { state: Some(s), .. }) => return s,
+            Ok(Waited::Happened { state: Some(s), .. }) => return Foreground::State(s),
             Ok(_) => {}
             Err(_) => break,
         }
@@ -436,7 +509,7 @@ fn wait_with_progress(
             }
         }
     }
-    host.job(id).map(|v| v.state).unwrap_or(JobState::Running)
+    Foreground::State(host.job(id).map(|v| v.state).unwrap_or(JobState::Running))
 }
 
 /// Keep the tail, by bytes and by lines, and say whether anything was dropped.

@@ -88,6 +88,8 @@ pub enum Disposition {
 pub enum Action {
     Prompt(String),
     Interrupt(String),
+    /// Move the running command to the background (Ctrl+B), like Claude Code.
+    Promote,
     Answer { req_id: String, option_id: String },
     Resync,
     /// Ask the daemon what sessions it holds.
@@ -165,6 +167,8 @@ pub enum Key {
     CtrlP,
     /// Open or close the subagent tree: the subagents this session spawned.
     CtrlG,
+    /// Move the running command to the background (Claude Code's Ctrl+B).
+    CtrlB,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -215,6 +219,7 @@ impl Key {
             | Key::CtrlS
             | Key::CtrlP
             | Key::CtrlG
+            | Key::CtrlB
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -1694,6 +1699,16 @@ impl App {
             Key::CtrlG => {
                 self.subagents_pane = !self.subagents_pane;
                 self.redraw = true;
+                return None;
+            }
+            // Ctrl+B: move the running command to the background. Meaningless when
+            // nothing is running, so a bare press says so rather than asking.
+            Key::CtrlB => {
+                if self.turn_running() {
+                    self.say("moving the running command to the background");
+                    return Some(Action::Promote);
+                }
+                self.say("nothing is running to move to the background");
                 return None;
             }
             Key::PageUp => {
