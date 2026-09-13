@@ -792,3 +792,68 @@ nothing.
 Not shipped, deliberately: a `todo_write` seat in coder/planner/runner — those roles
 have no spare seats and already keep the intent board's `todo` as their working
 list; giving the pane a writer there is a seat decision, not a default.
+
+---
+
+## R7 — a turn that ends inside its own reasoning is reported as success — **SETTLED 2026-09-13, commit a6b970e**
+
+The live finding replayed as a canned-frame test (`engine_decisions.rs`): a stream
+that stops with `eos` — a *normal* stop, which is the whole point — while the
+reasoning block is still open, with nothing but reasoning produced. The length
+classifier has no opinion on a `stop`, so this turn used to commit as an ordinary
+empty one.
+
+The fix is where the facts already live. `items::produce` parses the same tokens the
+spans came from, so it now folds `ThinkOpen`/`ThinkClose` over the generated body
+with the lead's answer as the seed — `Produced::ended_in_reasoning`, the same
+`decoder.control_role` primitive `lead_opens_reasoning` and the stream loop use, so
+the item view and the stream view cannot disagree about where the block ended. At the
+turn boundary: ended in-reasoning, no visible text, no tool call, and **no abort in
+progress** — §5.8's kept partial and the steering interrupt name their own outcomes,
+and folding an interrupted mid-reasoning stream into the new failure would misname a
+turn we deliberately kept (this gate is what the first test run caught: the urgent-
+steering test broke until `outcome.aborted.is_none()` was added). The turn fails as
+`TurnFailure::UnfinishedReasoning`, emits a warning that names the check
+(`ended_in_reasoning`), still emits `TurnFinished` with the true finish reason,
+skips the prefix check (nothing committed, no new prefix), and is bounded by the
+salvage budget exactly like §5.7's failures.
+
+The harness answers with steering, not a hard stop — *"your previous turn ended
+inside a reasoning block and said nothing; continue or say why not"* — through the
+same append-and-continue shape as the length failures, and the startup disclosure
+names the check as always-armed: a list of only the optional checks implies the
+unconditional ones are absent. One design note: the condition is "no assistant
+*content*", not "no Assistant item" — §5.4's coverage fallback emits an empty
+`Assistant` item whose tokens must tile, and counting it as content would make the
+check miss the empty-think case.
+
+Refuted on the way, and recorded in the TODO entry so nobody retries it:
+`--logit-bias` banning GLM's two role-opening EOG tokens measurably breaks the
+model's ordinary stop.
+
+## R11 — the audit rows are written and never read — **SETTLED 2026-09-13, commit 74abade**
+
+§4h's input 4, closed. The gate reads its own rows back when it builds the request,
+keyed the way the circuit breaker is — `(tool, intent set, effect scope, region set)`
+— never on arguments, which change on every re-spelling. `TaskDirection::of_parts`
+exists so `request_from` computes the key **before** the request exists: the history
+shown in the brief and the row the next call reads back are keyed by construction,
+not by two implementations agreeing to stay in step.
+
+The history rides on the request (`AdjudicationRequest::prior` → `ModelBrief::prior`)
+and is rendered with the discipline enforced where the brief is built, not trusted to
+a prompt: counts and ages together ("admit — 2 time(s), most recent 1 turn(s) ago,
+first 9 turn(s) ago"; ages are turn distances, the honest unit for an in-session log,
+and an unparseable turn id renders as unknown rather than inventing a number);
+denials beside approvals, because aggregation is by the gate's effect (`admit` /
+`refuse`) and a brief of only approvals is unbuildable; absence stated ("none
+recorded") rather than left for the oracle to guess; and the *"evidence, never
+precedent"* line is part of the render itself, so it travels with the data it
+constrains. Nothing in the admit path reads the field — the tier is layer A's, and
+the test drives two approvals into a `sudo` (privilege-escalation, always-ask)
+direction and the third call still asks: tier unmoved, no standing grant offered,
+and with nobody to answer, nothing ran.
+
+The raw command text still never reaches the oracle: a `PriorAnswer` carries the
+effect, a count and two ages, and nothing else — the existing leak test caught a
+brief smuggling once and it stays green.
