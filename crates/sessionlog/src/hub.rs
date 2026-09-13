@@ -91,6 +91,10 @@ pub enum CommandKind {
     /// meant it.
     Compact,
     Interrupt { reason: String },
+    /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
+    /// an opencode name…), persisted in the mode store. Serialized on the queue like
+    /// everything else; unlike a prompt it does not start a turn. See `D13`.
+    Mode { name: String },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
@@ -172,6 +176,7 @@ impl CommandKind {
             CommandKind::Compact => "compact",
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
+            CommandKind::Mode { .. } => "mode",
         }
     }
 }
@@ -691,6 +696,7 @@ impl Hub {
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
                 }
+                (CommandKind::Mode { name }, _) => format!("mode `{name}` requested"),
             };
 
             let verb = kind.verb();

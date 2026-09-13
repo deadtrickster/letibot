@@ -148,6 +148,9 @@ pub fn tick(
             Action::Compact => {
                 client.compact(app.seq)?;
             }
+            Action::Mode { name } => {
+                client.set_mode(app.seq, &name)?;
+            }
             Action::Quit => {
                 let _ = client.detach();
             }

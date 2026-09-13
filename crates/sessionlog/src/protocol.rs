@@ -233,6 +233,14 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
     },
+    /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
+    /// an opencode name…). The daemon persists it in the mode store, so it applies
+    /// to this session's project from here on without a daemon restart (D13).
+    Mode {
+        client_request_id: String,
+        expected_seq: u64,
+        name: String,
+    },
     /// Answer an open **permission**: grant or deny, by option id.
     ///
     /// This is the adjudication half. A question's answer is

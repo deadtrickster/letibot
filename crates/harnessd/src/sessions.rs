@@ -502,6 +502,54 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            CommandKind::Mode { name } => {
+                let mode = match letibot_tools::mode::Mode::parse(name) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        if let Some(hub) = &hub {
+                            hub.publish(SessionEvent::Warning {
+                                code: "mode_unknown".into(),
+                                detail: e,
+                            });
+                        }
+                        return Outcome::Failed("unknown mode".into());
+                    }
+                };
+                // The project root this session is confined to, read off the harness
+                // (the session's own, not the daemon's start directory), then cloned so
+                // the harness borrow ends before the store write below.
+                let workspace = {
+                    let Some(harness) = self.harness_of(session_id) else {
+                        return Outcome::Failed(format!("session {session_id} is not open"));
+                    };
+                    harness.workspace().to_path_buf()
+                };
+                if let Err(e) = self.parts.mode_store.write().unwrap().set(&workspace, mode) {
+                    if let Some(hub) = &hub {
+                        hub.publish(SessionEvent::Warning {
+                            code: "mode_unpersisted".into(),
+                            detail: format!(
+                                "could not record `{}` for {}: {e}",
+                                mode.name,
+                                workspace.display()
+                            ),
+                        });
+                    }
+                    return Outcome::Failed(format!("persisting mode: {e}"));
+                }
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "mode_set".into(),
+                        detail: format!(
+                            "{} is now `{}` — {}",
+                            workspace.display(),
+                            mode.name,
+                            mode.summary
+                        ),
+                    });
+                }
+                Outcome::Ignored
+            }
         }
     }
 }

@@ -107,6 +107,9 @@ pub enum Action {
     /// Compact the session this head is in: one summary turn, then the history
     /// is replaced by that summary through a transcript fork.
     Compact,
+    /// Move this session's project to a named point, persisted by the daemon.
+    /// See `D13`.
+    Mode { name: String },
     Quit,
 }
 
@@ -2039,6 +2042,22 @@ impl App {
                 title,
             });
         }
+        if let Some(name) = cmd.strip_prefix("mode") {
+            let name = name.trim().to_string();
+            if self.session_id.is_empty() {
+                self.say("not attached to a session yet");
+                return None;
+            }
+            if name.is_empty() {
+                self.say(
+                    "/mode NAME — read-only, always-ask, writes-allowed, automode, \
+                     allow-all (or the opencode names plan/default/acceptEdits/\
+                     bypassPermissions)",
+                );
+                return None;
+            }
+            return Some(Action::Mode { name });
+        }
         match cmd {
             "quit" | "q" => {
                 self.quit = true;
@@ -3904,6 +3923,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
+        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, allow-all"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];

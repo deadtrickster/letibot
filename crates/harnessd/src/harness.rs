@@ -104,6 +104,12 @@ const UTTERANCE_CHARS: usize = 600;
 pub struct Parts {
     pub vocab: Vocab,
     pub wiring: Wiring,
+    /// Per-project mode store, loaded once at daemon start. The mode is a session
+    /// property: a session's point is its project's row (longest ancestor wins), not
+    /// the daemon's `--mode` flag, so moving a project does not mean restarting the
+    /// daemon. Wrapped in a lock because the `/mode` command writes it at run time
+    /// while session opens read it. See `D13`.
+    pub mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
 }
 
 impl Parts {
@@ -119,6 +125,7 @@ impl Parts {
         Ok(Parts {
             vocab,
             wiring: cfg.dialect.wiring(cfg.effort.as_deref()),
+            mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open())),
         })
     }
 }
@@ -829,6 +836,27 @@ impl<'a> Harness<'a> {
             }
         }
 
+        // **The mode is a session property, resolved after the workspace is final.**
+        //
+        // D13. The workspace was just settled (either the daemon's start directory or
+        // this session's own root from the store), so the per-project point can be
+        // looked up now — longest ancestor wins inside the store. A project with no
+        // row keeps the daemon's `--mode` default; one with a row takes its own, so
+        // moving a project never means restarting the daemon.
+        {
+            let store = parts.mode_store.read().unwrap();
+            if store.is_set(&cfg.workspace) {
+                let before = cfg.mode.name;
+                cfg.mode = store.for_project(&cfg.workspace);
+                if cfg.mode.name != before {
+                    notes.push(format!(
+                        "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
+                        cfg.mode.name, cfg.workspace.display()
+                    ));
+                }
+            }
+        }
+
         // **The backend the seat needs, and the constructor is the disclosure.**
         //
         // Four constructors and each is spelled out so `grep -rn
@@ -941,10 +969,7 @@ impl<'a> Harness<'a> {
                 .map(|s| s.todos(&cfg.session_id).unwrap_or_default())
                 .unwrap_or_default(),
         ));
-        registry
-            .register(Box::new(letibot_tools::builtins::todo::TodoWriteTool::new(
-                todo_board.clone(),
-            )))
+        registry = letibot_tools::with_session_tools(registry, todo_board.clone())
             .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
             .register(Box::new(letibot_tools::builtins::write::Write))
@@ -1487,6 +1512,13 @@ impl<'a> Harness<'a> {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// The project root this session's tools are confined to — the session's own,
+    /// resolved from the store at open, not necessarily the directory the daemon
+    /// started in. The `/mode` command keys the per-project store on it.
+    pub fn workspace(&self) -> &std::path::Path {
+        &self.cfg.workspace
     }
 
     /// What this session actually wired. The adjudication disclosure is computed

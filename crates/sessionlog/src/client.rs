@@ -161,6 +161,18 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Move this session's project to a named point. The daemon persists it in the
+    /// mode store, so it applies without a daemon restart (D13).
+    pub fn set_mode(&mut self, expected_seq: u64, name: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::Mode {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            name: name.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
