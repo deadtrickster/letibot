@@ -238,6 +238,130 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     );
 }
 
+/// R7, the live finding replayed: the stream stops with `eos` — a *normal* stop,
+/// which is the point — while the reasoning block is still open, and nothing but
+/// reasoning was produced. The length classifier has no opinion on a `stop`, so
+/// before the R7 check this turn committed as an ordinary empty one; the canned
+/// bytes are msg_08d19c747001d1xPcOJgtgH10c's shape, seven tokens of the same
+/// conflation at full size.
+#[test]
+fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let mut frames = vec![Frame::Progress {
+        total: 10,
+        processed: 10,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    let thought = ids_of("mid-parenthetical, the think block never closed, so no");
+    frames.extend(token_frames(&thought));
+    // No `</think>` — and the stop is `eos`, not `limit`. That is the whole
+    // difference from the test above, and it is what made the live finding
+    // invisible to §5.7: the classifier only speaks on `length`.
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: 1 + thought.len() as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "unfinished-reasoning");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+    let before = session.ledger.tokens().to_vec();
+
+    let err = engine
+        .run_turn(&mut session, &mut sink)
+        .expect_err("a turn that ends inside its own reasoning is a failure, not an empty success");
+
+    match err {
+        TurnFailure::UnfinishedReasoning { turn_id, .. } => {
+            assert!(turn_id.contains("unfinished-reasoning"), "{turn_id}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        session.ledger.tokens(),
+        &before[..],
+        "nothing was committed: the region is where it was"
+    );
+    assert!(session.items.iter().all(|i| !matches!(
+        i,
+        TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
+    )));
+
+    // The check names itself: the warning is the disclosure a log reader gets,
+    // and `TurnFinished` still fires — the terminal value is a `stop`, rendered
+    // as what it was, with the failure carried by the outcome, not the reason.
+    assert!(
+        sink.warnings().iter().any(|(c, _)| *c == "ended_in_reasoning"),
+        "{:?}",
+        sink.warnings()
+    );
+    let finished = sink
+        .events
+        .iter()
+        .find_map(|e| match e {
+            TurnEvent::TurnFinished { finish_reason, .. } => Some(*finish_reason),
+            _ => None,
+        })
+        .expect("TurnFinished must be emitted for a failed turn too");
+    assert_eq!(finished, letibot_turn::FinishReason::Eos);
+}
+
+/// The mirror case, so the check is not a tripwire on every thoughtful turn: the
+/// block **closes**, content follows, and the same stop is an ordinary success.
+#[test]
+fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let mut frames = vec![Frame::Progress {
+        total: 10,
+        processed: 10,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    let thought = ids_of("brief thought");
+    frames.extend(token_frames(&thought));
+    frames.extend(token_frames(&[THINK_CLOSE]));
+    let answer = ids_of("Here is the answer.");
+    frames.extend(token_frames(&answer));
+    frames.extend(token_frames(&[IM_END]));
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (1 + thought.len() + 1 + answer.len() + 1) as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "closed-reasoning");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+    let before = session.ledger.tokens().to_vec();
+
+    engine
+        .run_turn(&mut session, &mut sink)
+        .expect("a closed reasoning block with content is an ordinary turn");
+    assert_ne!(
+        session.ledger.tokens(),
+        &before[..],
+        "the turn committed"
+    );
+}
+
 /// One truncated argument fails the whole batch, and the model is told why in a
 /// message meant for it rather than for a log.
 #[test]

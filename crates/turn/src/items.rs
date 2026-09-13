@@ -61,6 +61,15 @@ pub struct Produced {
     pub visible_text: String,
     /// Concatenated reasoning text, for the length policy.
     pub reasoning_text: String,
+    /// Whether the generation ended with the reasoning block still open: the
+    /// stream stopped before any `ThinkClose`. Computed over the same tokens the
+    /// spans were parsed from, with the same `opens_in_reasoning` seed the parse
+    /// used, by the same fold [`lead_opens_reasoning`] runs over the lead — one
+    /// primitive (`decoder.control_role`), so the item view and the stream view
+    /// cannot disagree about where the block ended. R7's turn-boundary check
+    /// reads this: a turn that stops inside its own reasoning and says nothing
+    /// else is a failure, not an empty success.
+    pub ended_in_reasoning: bool,
 }
 
 impl Produced {
@@ -257,12 +266,25 @@ pub fn produce(
         });
     }
 
+    // The same fold `lead_opens_reasoning` runs over the lead, run over the
+    // generated body with the lead's answer as the seed. The trailing stop tokens
+    // are already stripped; they are turn-end control, never think control, so
+    // their removal cannot flip the answer.
+    let ended_in_reasoning = tokens[lead.len()..]
+        .iter()
+        .fold(opens_in_reasoning, |open, id| match decoder.control_role(*id) {
+            Some(ControlRole::ThinkOpen) => true,
+            Some(ControlRole::ThinkClose) => false,
+            _ => open,
+        });
+
     Produced {
         items,
         tokens,
         stripped_stops,
         visible_text,
         reasoning_text,
+        ended_in_reasoning,
     }
 }
 

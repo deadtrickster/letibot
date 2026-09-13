@@ -95,6 +95,18 @@ pub enum TurnFailure {
         notices: Vec<String>,
         metrics: Box<TurnMetrics>,
     },
+    /// R7, found live 2026-09-10: the turn stopped with the reasoning block still
+    /// open and committed no assistant content — no visible text, no tool call.
+    /// GLM's end-of-turn token is the *name* of a thing an agent may be asked to
+    /// write, so the model can end its own turn mid-thought with a normal
+    /// `stop`, and the conflation is in the vocabulary, not fixable at the
+    /// sampler (`--logit-bias` measurably breaks the model's ordinary stop).
+    /// What is fixable is the reporting: this is never an empty success. The
+    /// loop's answer is steering, not a hard stop — see the harness arm.
+    UnfinishedReasoning {
+        turn_id: String,
+        metrics: Box<TurnMetrics>,
+    },
     /// The salvage cap is spent (§5.7's bounded retry).
     SalvageExhausted {
         turn_id: String,
@@ -124,6 +136,11 @@ impl std::fmt::Display for TurnFailure {
                 "the turn hit the output limit with {} truncated tool argument(s); the \
                  whole batch was refused",
                 truncated.len()
+            ),
+            TurnFailure::UnfinishedReasoning { .. } => write!(
+                f,
+                "the turn stopped inside its own reasoning block and said nothing; \
+                 this is a failed turn, not an empty one"
             ),
             TurnFailure::SalvageExhausted { streak, .. } => {
                 write!(f, "{streak} consecutive length salvages; the cap is spent")
@@ -642,6 +659,60 @@ impl TurnEngine<'_> {
                     }
                 }
                 other => unreachable!("{other:?} may be recorded as a success"),
+            });
+        }
+
+        // R7's turn-boundary check. The length gate above only speaks when
+        // `finish_reason == length`; on a normal `stop` the classifier has no
+        // opinion, and this is exactly the hole the live finding fell through:
+        // GLM ends its own turn mid-thought with a normal stop, the parse holds
+        // an unterminated reasoning block and nothing else, and the turn used to
+        // commit as an ordinary empty one. The §5.4 fallback item (an empty
+        // `Assistant` emitted so tokens tile) does not count as content — it
+        // exists for coverage, not for saying something. An aborted outcome is
+        // not this failure: §5.8's kept partial and the steering interrupt have
+        // their own reporting, and folding an interrupted mid-reasoning stream
+        // into `UnfinishedReasoning` would misname a turn we deliberately kept.
+        let has_content = !produced.visible_text.trim().is_empty()
+            || !produced.tool_calls().is_empty();
+        if outcome.aborted.is_none() && produced.ended_in_reasoning && !has_content {
+            let metrics = self.metrics_for(
+                &turn_id,
+                session,
+                &outcome,
+                prompt_tokens,
+                wall_ms,
+                outcome.final_chunk.finish_reason,
+                PrefixCheck::Skipped {
+                    reason: "SKIPPED I1: the turn ended inside a reasoning block with no \
+                             assistant content and committed no items, so there is no new \
+                             prefix to check. This did not run and it is not a pass."
+                        .into(),
+                },
+            );
+            sink.emit(TurnEvent::Warning {
+                code: "ended_in_reasoning",
+                detail: format!(
+                    "the turn stopped with the reasoning block still open and {} chars \
+                     of unterminated reasoning but no visible text and no tool call; \
+                     failed as UnfinishedReasoning, not recorded as success",
+                    produced.reasoning_text.len()
+                ),
+            });
+            sink.emit(TurnEvent::TurnFinished {
+                turn_id: turn_id.clone(),
+                finish_reason: outcome.final_chunk.finish_reason,
+                metrics: Box::new(metrics.clone()),
+            });
+            if !self.salvage.salvaged() {
+                return Err(TurnFailure::SalvageExhausted {
+                    turn_id,
+                    streak: self.salvage.streak(),
+                });
+            }
+            return Err(TurnFailure::UnfinishedReasoning {
+                turn_id,
+                metrics: Box::new(metrics),
             });
         }
         self.salvage.cleared();

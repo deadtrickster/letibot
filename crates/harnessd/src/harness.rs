@@ -1936,6 +1936,20 @@ impl<'a> Harness<'a> {
                         ))?;
                         continue;
                     }
+                    // R7: the turn stopped inside its own reasoning block and said
+                    // nothing. GLM's end-of-turn token doubles as a nameable string,
+                    // so this is self-inflicted turn-ending, and the answer is the
+                    // same shape as the two arms above — tell the model, let the loop
+                    // run. Bounded by the engine's salvage budget exactly as they are:
+                    // once the cap is spent the engine returns `SalvageExhausted` and
+                    // this arm never sees another unfinished turn.
+                    Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                        self.append_notice(
+                            "Your previous turn ended inside a reasoning block and said \
+                             nothing; continue or say why not.",
+                        )?;
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
 

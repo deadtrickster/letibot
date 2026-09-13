@@ -497,6 +497,18 @@ impl Config {
                  Pass --store PATH.",
             ));
         }
+        // R7, found live 2026-09-10: GLM's end-of-turn token is also the *name* of
+        // a thing an agent may be asked to write, so a turn can stop mid-thought
+        // with a normal `stop` and no content. The engine owns the parse and the
+        // commitment, so the check is unconditional — which is why it is disclosed
+        // as on rather than left out: a list of only the optional checks implies
+        // the unconditional ones are absent.
+        out.push(Disclosure::on(
+            "mid-reasoning check",
+            "a turn that stops inside an unterminated reasoning block with no \
+             assistant content fails as UnfinishedReasoning and the loop asks the \
+             model to continue",
+        ));
         // Retrieval, the web tools, the forge and MCP: computed from what the
         // session attached and what it seated, never asserted. This line used to be
         // a constant sentence about `ask_code`, which was true and unchecked — the
