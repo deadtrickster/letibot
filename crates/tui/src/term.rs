@@ -622,6 +622,12 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlS);
                 i += 1;
             }
+            // The todos pane. Ctrl+P is the print byte and nothing in a raw
+            // terminal listens for it.
+            0x10 => {
+                out.push(Key::CtrlP);
+                i += 1;
+            }
             b'\r' | b'\n' => {
                 out.push(Key::Enter);
                 i += 1;

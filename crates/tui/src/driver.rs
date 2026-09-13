@@ -115,6 +115,9 @@ pub fn tick(
             }
             Action::Resync => client.request_resync()?,
             Action::ListSessions => client.list_sessions()?,
+            Action::ListTodos => {
+                client.list_todos()?;
+            }
             Action::NewSession(title) => {
                 // The head's own working directory, read here rather than carried
                 // through `App`: the app is the same object under `--replay`, where

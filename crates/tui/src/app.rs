@@ -92,6 +92,8 @@ pub enum Action {
     Resync,
     /// Ask the daemon what sessions it holds.
     ListSessions,
+    /// Ask for this session's todo list — the pane's bootstrap read.
+    ListTodos,
     /// Make one. The head switches to it when the daemon says which id it minted;
     /// see [`App::apply`]'s `Sessions` arm.
     NewSession(String),
@@ -156,6 +158,8 @@ pub enum Key {
     CtrlL,
     /// Open or close the session picker.
     CtrlS,
+    /// Open or close the todos pane: the session's plan and the repo's queue.
+    CtrlP,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -198,6 +202,7 @@ impl Key {
             | Key::CtrlX
             | Key::CtrlL
             | Key::CtrlS
+            | Key::CtrlP
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -454,6 +459,18 @@ pub struct App {
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
     picker: bool,
+    /// The todos pane, a screen like the picker: the session's plan (what the
+    /// model last wrote through `todo_write`) and the repo's own queue
+    /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
+    /// different lists, and the pane says which is which).
+    todos_pane: bool,
+    /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
+    /// the `Todos` reply when the pane first opens; carried forward by the events.
+    todos: Vec<letibot_sessionlog::event::TodoEntry>,
+    /// The repo's `TODO.md` as a section map, read once per pane-open. The file
+    /// can be longer than the pane and is the operator's to edit; the map is what
+    /// a pane can honestly show.
+    repo_todos: Option<Vec<String>>,
     /// The head's own instrumentation, as a screen: `/status`.
     ///
     /// Every counter it shows was added because something was measured going
@@ -622,6 +639,9 @@ impl App {
             notice_ttl: 0,
             help: false,
             picker: false,
+            todos_pane: false,
+            todos: Vec::new(),
+            repo_todos: None,
             stats: false,
             quit: false,
             redraw: false,
@@ -796,6 +816,16 @@ impl App {
                 self.redraw = true;
                 Disposition::Control
             }
+            // The bootstrap read for the todos pane. The session named is the one
+            // the daemon answered for; a head that has since switched keeps what
+            // it has until the pane is opened again, which re-asks.
+            ServerFrame::Todos { session_id, todos } => {
+                if session_id == self.session_id {
+                    self.todos = todos;
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             ServerFrame::Resync {
                 reason,
                 dropped,
@@ -964,6 +994,20 @@ impl App {
                 // is worse than no label.
                 self.say(&format!("this session is now called {title:?}"));
                 Disposition::Control
+            }
+            // The model revised its plan. The whole list, not a delta — keep the
+            // latest and let the pane show it. Said only when the pane is open:
+            // a line in the scrollback for every todo write would bury the work
+            // the todos exist to organize, and the pane is where this state
+            // lives.
+            SessionEvent::TodosUpdated { todos } => {
+                self.todos = todos;
+                self.redraw = true;
+                if self.todos_pane {
+                    Disposition::Rendered
+                } else {
+                    Disposition::Filtered
+                }
             }
             SessionEvent::TurnStarted {
                 turn_id,
@@ -1519,6 +1563,21 @@ impl App {
                 }
                 return self.picker.then_some(Action::ListSessions);
             }
+            Key::CtrlP => {
+                self.todos_pane = !self.todos_pane;
+                self.redraw = true;
+                if self.todos_pane {
+                    // The repo's queue, read at open: the file is the operator's
+                    // to edit between opens, and a pane showing yesterday's read
+                    // of it is a pane that lies quietly.
+                    self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
+                }
+                // Opening asks for the session's list rather than drawing the one
+                // from the last event: the bootstrap read, for a head that
+                // attached after the model last wrote. Later changes arrive as
+                // `TodosUpdated` and need no asking.
+                return self.todos_pane.then_some(Action::ListTodos);
+            }
             Key::PageUp => {
                 self.scroll = (self.scroll + 10).min(self.body_len);
                 return None;
@@ -1543,10 +1602,13 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
-        if (self.help || self.picker || self.stats) && matches!(k, Key::Esc | Key::CtrlC) {
+        if (self.help || self.picker || self.stats || self.todos_pane)
+            && matches!(k, Key::Esc | Key::CtrlC)
+        {
             self.help = false;
             self.picker = false;
             self.stats = false;
+            self.todos_pane = false;
             self.redraw = true;
             return None;
         }
@@ -2261,6 +2323,10 @@ impl App {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
             rows
+        } else if self.todos_pane {
+            let mut rows = self.todos_lines(w);
+            rows.truncate(room);
+            rows
         } else {
             self.body_window(room)
         };
@@ -2424,10 +2490,12 @@ impl App {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
+        } else if self.todos_pane {
+            "the model's plan above, the repo's queue below · esc closes"
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-s sessions · ctrl-r thinking · ctrl-t tool output · ctrl-x raw · /help"
+            "ctrl-s sessions · ctrl-p todos · ctrl-r thinking · ctrl-t tool output · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -2853,6 +2921,58 @@ impl App {
     /// surface is one line — the same argument the folds settled. The affordance is
     /// the number in the left column, which you type into the composer that is
     /// still there under the list.
+    /// The todos pane: two lists that are deliberately not one.
+    ///
+    /// The first is this session's plan — what the model last wrote through
+    /// `todo_write`, and the only list here that anything in this session can
+    /// change. The second is the repo's `TODO.md`, the **operator's** queue,
+    /// shown as a section map and read-only on purpose: a pane that let a model
+    /// tick the operator's boxes would let a plan edit its own backlog.
+    fn todos_lines(&self, w: usize) -> Vec<String> {
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  this session — the model's plan, live:",
+        ));
+        if self.todos.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "    none written yet. The model writes them with todo_write.",
+            ));
+        }
+        for t in &self.todos {
+            let mark = match t.status {
+                letibot_sessionlog::event::TodoStatus::Pending => "[ ]",
+                letibot_sessionlog::event::TodoStatus::InProgress => "[~]",
+                letibot_sessionlog::event::TodoStatus::Completed => "[x]",
+            };
+            out.push(format!("    {mark} {}", t.content));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  the repo's TODO.md — the operator's queue, read-only here:",
+        ));
+        match &self.repo_todos {
+            None => out.push(dim(&self.cfg, "    not read yet — close and reopen the pane.")),
+            Some(lines) => {
+                if lines.is_empty() {
+                    out.push(dim(&self.cfg, "    no sections found."));
+                }
+                out.extend(lines.iter().cloned());
+            }
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  the file itself is in the workspace; this pane never writes it.",
+        ));
+        out.into_iter()
+            .map(|l| trim_to(&l, w))
+            .collect()
+    }
+
     fn picker_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![
@@ -3549,6 +3669,51 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
     }
 }
 
+/// The repo's `TODO.md` as a section map: one line per `##` section with its
+/// open and done checkbox counts. Read fresh on every pane-open — the file is
+/// the operator's to edit, and a cached map is a cache of somebody else's
+/// intention. Errors name themselves; a missing file is a fact about the
+/// workspace, not a panic in a pane.
+fn repo_todos_map(workspace: &str) -> Vec<String> {
+    let path = std::path::Path::new(workspace).join("TODO.md");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            return vec![format!(
+                "    (no TODO.md in {workspace}: {e})"
+            )];
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut open = 0usize;
+    let mut done = 0usize;
+    let mut section: Option<String> = None;
+    let flush = |out: &mut Vec<String>, section: &Option<String>, open: usize, done: usize| {
+        if let Some(name) = section {
+            out.push(format!(
+                "    {name} — {open} open, {done} done"
+            ));
+        }
+    };
+    for line in body.lines() {
+        if let Some(name) = line.strip_prefix("## ") {
+            flush(&mut out, &section, open, done);
+            section = Some(name.trim().to_string());
+            open = 0;
+            done = 0;
+        } else {
+            let t = line.trim_start();
+            if t.starts_with("- [ ]") {
+                open += 1;
+            } else if t.starts_with("- [x]") || t.starts_with("- [X]") {
+                done += 1;
+            }
+        }
+    }
+    flush(&mut out, &section, open, done);
+    out
+}
+
 fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
     let rows = [
         ("enter", "send what you typed; while a turn runs it is queued as a follow-up"),
@@ -3562,6 +3727,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-z", "undo — a word at a time, and a kill is always its own step"),
         ("paste", "five lines or more collapses to a marker and is sent in full"),
         ("ctrl-s", "the session list: type a number or part of a name to switch"),
+        ("ctrl-p", "the todos pane: the model's plan, and the repo's TODO.md read-only"),
         ("/new [title]", "start a session in this daemon and go there"),
         ("/switch WHAT", "go to a session by number, id or part of its name"),
         ("ctrl-r", "fold or unfold the model's thinking"),
@@ -4653,6 +4819,70 @@ mod tests {
         });
         typed(&mut a, "/compact");
         assert_eq!(a.key(Key::Enter), Some(Action::Compact));
+    }
+
+    #[test]
+    fn ctrl_p_opens_the_todos_pane_and_esc_closes_it() {
+        let mut a = app();
+        // Opening asks for the list — the bootstrap read — and the pane draws
+        // both of its sections, labelled as the two different things they are.
+        assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
+        let screen = a.screen(100, 30).join("\n");
+        assert!(screen.contains("todos"), "{screen}");
+        assert!(screen.contains("the model's plan"), "{screen}");
+        assert!(screen.contains("read-only"), "{screen}");
+        // And Esc is "go back", before the composer sees it.
+        a.key(Key::Esc);
+        assert!(!a.todos_pane);
+        // Toggling twice does not ask twice without opening in between.
+        assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
+        assert_eq!(a.key(Key::CtrlP), None);
+    }
+
+    #[test]
+    fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
+        let mut a = app();
+        // The session's list, as the event carried it.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TodosUpdated {
+                todos: vec![
+                    letibot_sessionlog::event::TodoEntry {
+                        content: "seat the tool".into(),
+                        status: letibot_sessionlog::event::TodoStatus::Completed,
+                    },
+                    letibot_sessionlog::event::TodoEntry {
+                        content: "render the pane".into(),
+                        status: letibot_sessionlog::event::TodoStatus::InProgress,
+                    },
+                ],
+            },
+        )));
+        // The repo's queue, as the pane-open read found it. Pointed at this
+        // workspace, which has a real TODO.md with sections and checkboxes.
+        a.wiring.workspace = std::env::var("CARGO_MANIFEST_DIR")
+            .map(|d| {
+                std::path::Path::new(&d)
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .display()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        a.key(Key::CtrlP);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(screen.contains("[x] seat the tool"), "{screen}");
+        assert!(screen.contains("[~] render the pane"), "{screen}");
+        assert!(
+            screen.contains("TODO.md"),
+            "the second source is named: {screen}"
+        );
+        assert!(
+            screen.contains("open,") && screen.contains("done"),
+            "sections carry their checkbox counts: {screen}"
+        );
     }
 
     /// **The prompt is a control, not a spelling test.**
