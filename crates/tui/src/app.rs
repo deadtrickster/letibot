@@ -155,6 +155,11 @@ pub enum Key {
     CtrlS,
     PageUp,
     PageDown,
+    /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
+    /// transcript back; clicks and drags are decoded and dropped, because the
+    /// terminal's own Shift+drag is what selects.
+    WheelUp,
+    WheelDown,
 }
 
 impl Key {
@@ -191,7 +196,9 @@ impl Key {
             | Key::CtrlL
             | Key::CtrlS
             | Key::PageUp
-            | Key::PageDown => {
+            | Key::PageDown
+            | Key::WheelUp
+            | Key::WheelDown => {
                 return None;
             }
         })
@@ -200,12 +207,13 @@ impl Key {
 
 /// How much of a foldable thing is on the screen.
 ///
-/// Two states and a key that flips them, rather than a per-item toggle: there is
-/// no pointer here and no selection, so a per-item affordance would need a cursor
-/// mode, and a cursor mode is a second keymap for a head whose whole input surface
-/// is one line. The **discoverability** is bought instead by the fold's own header
-/// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
-/// the moment the operator wants it.
+    /// Two states and a key that flips them, rather than a per-item toggle: the
+    /// pointer here is a wheel, not a cursor — it scrolls and selects nothing — so a
+    /// per-item affordance would still need a cursor mode, and a cursor mode is a
+    /// second keymap for a head whose whole input surface is one line. The
+    /// **discoverability** is bought instead by the fold's own header
+    /// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
+    /// the moment the operator wants it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fold {
     /// A title and a count. The default for reasoning, because the reasoning is
@@ -1516,6 +1524,17 @@ impl App {
                 self.scroll = self.scroll.saturating_sub(10);
                 return None;
             }
+            // Three lines a notch: a wheel notch is a row at a time in a pager,
+            // but a transcript row can be two screen rows after wrapping, and a
+            // notch that moves one wrapped row reads as nothing happened.
+            Key::WheelUp => {
+                self.scroll = (self.scroll + 3).min(self.body_len);
+                return None;
+            }
+            Key::WheelDown => {
+                self.scroll = self.scroll.saturating_sub(3);
+                return None;
+            }
             _ => {}
         }
 
@@ -2713,7 +2732,10 @@ impl App {
             out[last] = colour(
                 &self.cfg,
                 sgr::YELLOW,
-                &format!("── scrolled back · {behind} lines below · ↓ or esc to follow"),
+                &format!(
+                    "── scrolled back · {behind} lines below · ↓ or esc to follow · \
+                     wheel scrolls · shift+drag selects"
+                ),
             );
         }
         out
@@ -3521,6 +3543,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-c", "clear what you typed; twice on an empty prompt, within a second, quits"),
         ("↑ ↓", "move inside the prompt, then walk the prompts you have sent"),
         ("pgup pgdn", "scroll the transcript; esc returns to following the stream"),
+        ("wheel", "scroll the transcript; shift+drag selects text"),
         ("ctrl-a ctrl-e", "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks"),
         ("ctrl-z", "undo — a word at a time, and a kill is always its own step"),
         ("paste", "five lines or more collapses to a marker and is sent in full"),
@@ -6406,6 +6429,31 @@ mod tests {
         assert!(!h.contains("4470"), "the old session's token count came along: {h}");
         assert!(h.contains("2/2"), "{h}");
         assert!(a.turn.is_none(), "the old session's turn came along");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_and_wheeling_back_follows_the_stream() {
+        let mut a = app();
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("line {i}")),
+            )));
+        }
+        a.screen(80, 24);
+        assert_eq!(a.key(Key::WheelUp), None);
+        assert_eq!(a.key(Key::WheelUp), None);
+        // A notch is three body lines, because one line of body can be two screen
+        // rows after wrapping and a notch that moves one wrapped row reads as
+        // nothing happened.
+        assert_eq!(a.scroll, 6);
+        assert_eq!(a.key(Key::WheelDown), None);
+        assert_eq!(a.key(Key::WheelDown), None);
+        assert_eq!(a.scroll, 0, "wheeling back to the bottom follows the stream");
     }
 
     #[test]

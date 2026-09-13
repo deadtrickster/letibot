@@ -181,8 +181,11 @@ impl Terminal {
         // Alternate screen; hide the cursor until a frame says where it goes;
         // bracketed paste, so a paste is one key and a pasted newline does not
         // submit the prompt; a steady block cursor, because the composer's whole
-        // affordance is that caret and a one-pixel bar is not one.
-        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2 q");
+        // affordance is that caret and a one-pixel bar is not one; button-event
+        // mouse tracking with SGR encoding, so the wheel scrolls the transcript.
+        // The app acts on the wheel only — clicks and drags are decoded and
+        // dropped, and selecting text stays the terminal's own Shift+drag.
+        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
         let _ = out.flush();
 
         // Restore before anything is printed, or the panic message is a staircase.
@@ -452,9 +455,10 @@ fn restore(fd: i32, original: &libc::termios) {
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, original) };
     let mut out = std::io::stdout();
     // Every mode `enter` turned on, off again, in the reverse order: end any open
-    // synchronised update, bracketed paste off, the cursor shape back to whatever
-    // the operator's terminal had, then show it and leave the alternate screen.
-    let _ = out.write_all(b"\x1b[?2026l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
+    // synchronised update, mouse tracking off, bracketed paste off, the cursor
+    // shape back to whatever the operator's terminal had, then show it and leave
+    // the alternate screen.
+    let _ = out.write_all(b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
     let _ = out.flush();
 }
 
@@ -751,6 +755,25 @@ fn csi(b: &[u8], force: bool) -> Step {
             b"6" => Some(Key::PageDown),
             _ => None,
         },
+        b'M' | b'm' => {
+            // SGR mouse (`?1006`): `ESC [ < b ; x ; y M` on press, `m` on release.
+            // The wheel is button 64 (up) and 65 (down); every other report —
+            // clicks, drags, motion — is decoded and dropped, because a report
+            // the head does not act on must never become typed punctuation, and
+            // selecting text stays the terminal's own Shift+drag, which mouse
+            // tracking does not take away.
+            let btn = params
+                .strip_prefix(b"<".as_slice())
+                .and_then(|p| p.split(|c| *c == b';').next())
+                .and_then(|f| std::str::from_utf8(f).ok())
+                .and_then(|f| f.parse::<u8>().ok())
+                .unwrap_or(0);
+            match (fin, btn) {
+                (b'M', 64) => Some(Key::WheelUp),
+                (b'M', 65) => Some(Key::WheelDown),
+                _ => None,
+            }
+        }
         _ => None,
     };
     Step::Emit(k, n)
@@ -907,6 +930,25 @@ mod tests {
             assert_eq!(used, 0, "the partial sequence must be carried, not eaten");
         }
         assert_eq!(decode(whole), vec![Key::WordRight]);
+    }
+
+    #[test]
+    fn the_wheel_arrives_as_sgr_mouse_and_every_other_report_is_dropped() {
+        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Key::WheelUp]);
+        assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Key::WheelDown]);
+        // Clicks, drags and releases are decoded and dropped: a report the head
+        // does not act on must never become typed punctuation.
+        assert_eq!(decode(b"\x1b[<0;3;4M"), Vec::<Key>::new());
+        assert_eq!(decode(b"\x1b[<32;3;4M"), Vec::<Key>::new());
+        assert_eq!(decode(b"\x1b[<0;3;4m"), Vec::<Key>::new());
+        // A report cut mid-sequence is carried, not eaten.
+        let whole = b"\x1b[<65;1;1M";
+        for cut in 2..whole.len() {
+            let (keys, used) = decode_prefix(&whole[..cut], false);
+            assert!(keys.is_empty(), "cut {cut}: {keys:?}");
+            assert_eq!(used, 0, "the partial report must be carried, not eaten");
+        }
+        assert_eq!(decode(whole), vec![Key::WheelDown]);
     }
 
     #[test]
