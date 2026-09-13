@@ -342,6 +342,29 @@ impl Mode {
                   still reaches you and nothing promotes an inexpressible action.",
     };
 
+    /// **Everything is admitted, nothing asks.** The firecode-native point.
+    ///
+    /// `write`, `exec` and `network` are all [`Disposition::Admit`] and the decider is
+    /// [`Decider::None`] because there is nothing to decide: the point is only sane
+    /// *inside a boundary that makes the action structural* — a firecode microVM whose
+    /// guest sees one project and nothing of the host. On a bare host this is
+    /// opencode's `bypassPermissions` posture, and the boundary is the only thing that
+    /// makes it safe. The `Confinement` prerequisite is the load-bearing part: this
+    /// point refuses to open where no confinement can be built.
+    pub const ALLOW_ALL: Mode = Mode {
+        name: "allow-all",
+        role: "coder",
+        write: Disposition::Admit,
+        exec: Disposition::Admit,
+        network: Disposition::Admit,
+        grants: GrantScope::Session,
+        decider: Decider::None,
+        requires: &[Prereq::WritableBackend, Prereq::Confinement],
+        summary: "write, exec and network all go through without asking. Only sane \
+                  inside a boundary (a firecode VM); the confinement prerequisite is \
+                  what refuses this point on a bare host.",
+    };
+
     /// The named points, in widening order. The order is the one a banner lists them
     /// in and the one an operator reads as a ladder.
     pub const NAMED: &'static [Mode] = &[
@@ -349,9 +372,24 @@ impl Mode {
         Mode::ALWAYS_ASK,
         Mode::WRITES_ALLOWED,
         Mode::AUTO,
+        Mode::ALLOW_ALL,
     ];
 
-    /// Look one up by the name an operator types or a store holds.
+    /// The name opencode uses for this point, when the point has one. Used so a
+    /// session driven by an opencode agent can select modes by opencode's vocabulary
+    /// rather than learning letibot's.
+    pub fn opencode_name(&self) -> Option<&'static str> {
+        match self.name {
+            "read-only" => Some("plan"),
+            "always-ask" => Some("default"),
+            "writes allowed" => Some("acceptEdits"),
+            "allow-all" => Some("bypassPermissions"),
+            _ => None,
+        }
+    }
+
+    /// Look one up by the name an operator types or a store holds — either letibot's
+    /// own name, or the opencode permission-mode name it maps to.
     ///
     /// Every unknown value names the four rather than falling back to a default. A
     /// typo that silently seated the read-only point would be an operator who thinks
@@ -361,7 +399,10 @@ impl Mode {
         let want = s.trim().to_ascii_lowercase().replace(['_', ' '], "-");
         Mode::NAMED
             .iter()
-            .find(|m| m.name.replace(' ', "-") == want)
+            .find(|m| {
+                m.name.replace(' ', "-") == want
+                    || m.opencode_name().map(|n| n.to_ascii_lowercase()) == Some(want.clone())
+            })
             .copied()
             .ok_or_else(|| {
                 format!(
