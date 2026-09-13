@@ -1134,6 +1134,15 @@ pub struct AdjudicatedGate {
     /// `deny` refuses, `ask` falls through to the mode and the adjudicator. See
     /// [`crate::permission`].
     permission: crate::permission::Ruleset,
+    /// **opencode parity: exec follows the mode.**
+    ///
+    /// Off by default, which is the operator's rule (2026-09-11): no point admits an
+    /// exec-class call unasked, because `bash`'s result is an arbitrary byte stream.
+    /// leticode turns this on — opencode has no such carve-out; its `bash` is a
+    /// permission like any other, so `bypassPermissions` admits it and `acceptEdits`
+    /// still asks. This flag makes `allow-all` admit exec and leaves every other point
+    /// exactly as it was.
+    exec_follows_mode: bool,
     /// §11.5's rows. In memory: the durable journal is `letibot-sessionlog`'s, and
     /// wiring this into it is W11's, not W10's.
     pub log: Vec<AdjudicationRow>,
@@ -1168,6 +1177,7 @@ impl AdjudicatedGate {
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
             permission: crate::permission::Ruleset::new(),
+            exec_follows_mode: false,
             log: Vec::new(),
             seq: 0,
             surroundings: crate::intent::Surroundings::default(),
@@ -1176,6 +1186,13 @@ impl AdjudicatedGate {
             breaker: crate::authorise::Breaker::default(),
             shown: None,
         }
+    }
+
+    /// **opencode parity**: make exec follow the mode instead of always asking. See
+    /// [`AdjudicatedGate::exec_follows_mode`]. Off by default; leticode turns it on.
+    pub fn with_exec_follows_mode(mut self, v: bool) -> Self {
+        self.exec_follows_mode = v;
+        self
     }
 
     /// **Put this session at a named point.** See [`crate::mode`].
@@ -1755,7 +1772,9 @@ impl Gate for AdjudicatedGate {
         //    exec-class call unasked, because `bash` is the tool whose result is an
         //    arbitrary byte stream and the operator has decided that question is
         //    settled by them, every time, and by nothing else.
-        if call.access != Access::Exec && self.mode.admits_unasked(&req.tier, call.access) {
+        if (call.access != Access::Exec || self.exec_follows_mode)
+            && self.mode.admits_unasked(&req.tier, call.access)
+        {
             let d = AdjudicationDecision::selected(
                 &req,
                 "allow_once",
