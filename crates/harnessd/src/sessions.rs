@@ -566,6 +566,15 @@ impl SessionSource for StoreSessions {
         g.set_title(session_id, title).map_err(|e| e.to_string())
     }
 
+    fn todos(&self, session_id: &str) -> Vec<letibot_sessionlog::event::TodoEntry> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.todos(session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(crate::harness::Harness::todo_entry)
+            .collect()
+    }
+
     fn list(&self) -> Vec<StoredBrief> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.list_sessions()

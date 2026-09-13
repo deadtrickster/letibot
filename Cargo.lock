@@ -267,6 +267,7 @@ name = "letibot-tools"
 version = "0.1.0"
 dependencies = [
  "letibot-code",
+ "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
  "regex",

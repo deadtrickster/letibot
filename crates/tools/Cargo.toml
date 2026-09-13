@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 letibot-transcript.workspace = true
+# The todo list's storage shape (`TodoItem`/`TodoStatus`): the tool writes the
+# type the store holds, so the harness persists what the tool wrote without a
+# conversion on the way. tokencore is below this crate in the layering — it
+# depends on nothing here.
+letibot-tokencore.workspace = true
 serde.workspace = true
 # preserve_order for the same reason the engine needs it: a tool call's argument
 # key order becomes prompt bytes on the next turn, and reordering re-prefills.

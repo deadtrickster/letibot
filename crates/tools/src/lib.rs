@@ -263,10 +263,19 @@ mod tests {
     fn the_m1_tool_set_fits_under_the_ceiling() {
         // §8.4 is a hard stop, not a guideline, and the set that ships must be
         // seatable by the role that ships it.
-        let reg = read_only_tools(std::sync::Arc::new(builtins::retrieval::Unavailable)).unwrap();
+        let mut reg = read_only_tools(std::sync::Arc::new(builtins::retrieval::Unavailable))
+            .expect("the read-only registry");
+        // `todo_write` is a session tool, not a read-only one, so it is not in
+        // `read_only_tools` — but the role names it, so the registry the role is
+        // resolved against has to know it. That is exactly the failure shape the
+        // ceiling test exists to catch: a role that names a tool nobody registers.
+        reg.register(Box::new(builtins::todo::TodoWriteTool::new(
+            std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
+        )))
+        .expect("todo_write registers");
         assert!(reg.len() <= DEFAULT_MAX_TOOLS, "{} tools", reg.len());
         let seated = reg.resolve_role(&roles::m1_orchestrator()).unwrap();
-        assert_eq!(seated.len(), 6);
+        assert_eq!(seated.len(), 7);
     }
 
     #[test]

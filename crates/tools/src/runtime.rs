@@ -416,6 +416,16 @@ pub mod roles {
 
     /// What M1 can actually seat: §8.4's `orchestrator` without `task`, which is
     /// W16's, plus `read_spill`, which is clause 5's own tool.
+    ///
+    /// `todo_write` is seated here and in [`m3_researcher`] because those are the
+    /// two roles with spare seats against §8.4's ceiling, and the todos pane needs
+    /// a writer wherever a session runs by default — which is this one. It is the
+    /// operator-facing list (whole-replace, persisted to the session store,
+    /// announced to heads), not the intent board's `todo`: that one stays the
+    /// checked working list for the roles that already seat it, and the two
+    /// schemas say so. A role without a spare seat does not get this tool by
+    /// taking one from something else; the pane simply stays empty there until a
+    /// seat decision says otherwise.
     pub fn m1_orchestrator() -> Role {
         Role::new(
             "orchestrator",
@@ -426,6 +436,7 @@ pub mod roles {
                 "ask_code",
                 "ask_corpus",
                 "read_spill",
+                "todo_write",
             ],
         )
     }
@@ -439,6 +450,10 @@ pub mod roles {
     /// the two network seats have no provider — and the role exists so that *"which
     /// tools would this agent have"* is a question with a written answer rather
     /// than one settled per session.
+    ///
+    /// `todo_write` takes the eighth seat for the same reason it is in
+    /// [`m1_orchestrator`]: it is the pane's writer, the role had the room, and
+    /// nothing was displaced to make it fit.
     pub fn m3_researcher() -> Role {
         Role::new(
             "researcher",
@@ -450,6 +465,7 @@ pub mod roles {
                 "read",
                 "grep",
                 "read_spill",
+                "todo_write",
             ],
         )
     }

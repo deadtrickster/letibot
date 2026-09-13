@@ -323,6 +323,16 @@ pub trait SessionSource: Send + Sync {
     fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
         Err("this daemon has no store, so a name would not survive it".into())
     }
+    /// One session's todo list, for a head's bootstrap read.
+    ///
+    /// The default is empty rather than an error, and that is the honest answer
+    /// twice over: a source with no store has no list, and a session that never
+    /// wrote one has none — from the outside these are the same state, which is
+    /// exactly what the pane should show. Live changes do not come through here;
+    /// they arrive as [`crate::SessionEvent::TodosUpdated`].
+    fn todos(&self, _session_id: &str) -> Vec<crate::event::TodoEntry> {
+        Vec::new()
+    }
 }
 
 struct Entry {
@@ -593,6 +603,14 @@ impl Registry {
     /// session cannot be blocked by a publish into a different one — and so the
     /// registry lock is never held while a hub lock is taken, which is the whole of
     /// this file's lock ordering.
+    /// One session's todo list, from the source. Empty when there is no source
+    /// or no list — see [`SessionSource::todos`].
+    pub fn todos(&self, session_id: &str) -> Vec<crate::event::TodoEntry> {
+        self.source()
+            .map(|s| s.todos(session_id))
+            .unwrap_or_default()
+    }
+
     pub fn list(&self) -> Vec<SessionBrief> {
         let rows: Vec<(String, String, u64, Arc<Hub>, SessionWiring)> = {
             let g = self.lock();

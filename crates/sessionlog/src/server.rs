@@ -270,6 +270,16 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::ListTodos) => {
+                // The bootstrap read: the snapshot carries items, not events, so
+                // a head attaching fresh has nothing to replay. From here the
+                // `TodosUpdated` events carry every change.
+                let f = ServerFrame::Todos {
+                    session_id: seat.hub.session_id().to_string(),
+                    todos: registry.todos(&seat.hub.session_id()),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::NewSession {
                 client_request_id,
                 title,

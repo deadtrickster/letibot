@@ -44,6 +44,7 @@ use std::time::Instant;
 
 use letibot_dialect::StablePrefix;
 use letibot_sessionlog::hub::{CommandKind, Hub};
+use letibot_sessionlog::event::{TodoEntry, TodoStatus as WireTodoStatus};
 use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
 use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
@@ -51,6 +52,8 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
+use letibot_tools::builtins::todo::TodoBoard;
+use letibot_tokencore::store::TodoItem;
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role,
@@ -646,6 +649,13 @@ pub struct Harness<'a> {
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
     trail: Arc<TrailMirror>,
+    /// The session's todo list, shared with the tool that writes it. The harness
+    /// is the persister: [`Harness::flush_todos`] compares the board's version
+    /// with the last one it handled and does the store write and the
+    /// announcement when they differ.
+    todos: Arc<TodoBoard>,
+    /// The board version this harness last persisted and announced.
+    todos_version: u64,
     /// T21.3's encoder and error signal. Always constructed and always attached —
     /// measuring costs nothing and `Verification::NoEncoder` is a state whose
     /// reason is ours rather than the model's.
@@ -920,6 +930,22 @@ impl<'a> Harness<'a> {
 
         let mut registry: Registry = letibot_tools::read_only_tools(retrieval.clone())
             .map_err(|e| HarnessError::Setup(format!("registering the M1 tool set: {e}")))?;
+        // The session's todo list, restored before the tool that writes it is
+        // seated: a resume comes back with the plan the model was working from,
+        // not with an empty pane it must fill from memory. Storeless runs still
+        // get the tool — the list lives for the session either way — they just
+        // have nowhere to persist it.
+        let todo_board = Arc::new(TodoBoard::new(
+            store
+                .as_ref()
+                .map(|s| s.todos(&cfg.session_id).unwrap_or_default())
+                .unwrap_or_default(),
+        ));
+        registry
+            .register(Box::new(letibot_tools::builtins::todo::TodoWriteTool::new(
+                todo_board.clone(),
+            )))
+            .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
             .register(Box::new(letibot_tools::builtins::write::Write))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::edit::Edit)))
@@ -1407,6 +1433,8 @@ impl<'a> Harness<'a> {
             resumed: resume,
             new_title: None,
             trail,
+            todos: todo_board,
+            todos_version: 0,
             intent,
             injected,
             monitors,
@@ -1477,6 +1505,13 @@ impl<'a> Harness<'a> {
 
     pub fn items(&self) -> &[TranscriptItem] {
         &self.session.items
+    }
+
+    /// The session's todo list as the model last wrote it — the board's
+    /// snapshot, which is what a resume restored and what `flush_todos` keeps
+    /// durable.
+    pub fn todo_list(&self) -> Vec<TodoItem> {
+        self.todos.snapshot()
     }
 
     pub fn ledger_head(&self) -> String {
@@ -1996,6 +2031,10 @@ impl<'a> Harness<'a> {
                 .append_items(&self.engine, &results, &mut sink)?;
             self.reconcile(&mut sink, &results);
             self.persist()?;
+            // The calls of this round have run; if the model revised its plan,
+            // the store and the heads hear about it now, at the round boundary —
+            // not when the turn ends, which is after the work the plan describes.
+            self.flush_todos()?;
             // A turn that ran tools also gets the diff — a completion marked done
             // while nothing succeeded is `CompletedWithoutEffect` and is just as
             // much the error signal. This one goes through the steering queue,
@@ -2143,6 +2182,48 @@ impl<'a> Harness<'a> {
 
     /// Write every ledger row that has not reached the store yet.
     ///
+    /// Persist and announce the todo list, if the model wrote one since last time.
+    ///
+    /// The tool mutates the board; this is the harness noticing. Called at every
+    /// round boundary so the pane moves with the work rather than after it — a
+    /// plan that reaches the head only when the turn ends is a plan the operator
+    /// watches being executed blind. A storeless session announces but does not
+    /// persist: the list is still real for the life of the session, and saying so
+    /// once in the open notes would be the honest form; silently pretending it
+    /// persisted would not be.
+    fn flush_todos(&mut self) -> Result<(), HarnessError> {
+        let v = self.todos.version();
+        if v == self.todos_version {
+            return Ok(());
+        }
+        self.todos_version = v;
+        let items = self.todos.snapshot();
+        if let Some(store) = &self.store {
+            store
+                .put_todos(&self.cfg.session_id, &items)
+                .map_err(|e| HarnessError::Store(format!("todos: {e}")))?;
+        }
+        self.hub.publish(SessionEvent::TodosUpdated {
+            todos: items.into_iter().map(Self::todo_entry).collect(),
+        });
+        Ok(())
+    }
+
+    /// The store's todo shape, as the wire spells it. Two types because the two
+    /// crates cannot share one — the protocol does not grow a storage dependency
+    /// to save a `struct` — and one conversion because the fields are the same
+    /// three words.
+    pub(crate) fn todo_entry(t: TodoItem) -> TodoEntry {
+        TodoEntry {
+            content: t.content,
+            status: match t.status {
+                letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,
+                letibot_tokencore::store::TodoStatus::InProgress => WireTodoStatus::InProgress,
+                letibot_tokencore::store::TodoStatus::Completed => WireTodoStatus::Completed,
+            },
+        }
+    }
+
     /// The database enforces the append-only property itself — a trigger refuses a
     /// `seq` that is not the next one and a `tok_offset` that does not continue the
     /// previous row — so a divergence between the ledger and the store is a failed

@@ -264,6 +264,14 @@ pub enum ClientFrame {
     /// session, and making it wait behind a running turn would mean a head could
     /// not open the picker while the model was talking.
     ListSessions,
+    /// What is this session's todo list? Answered with
+    /// [`ServerFrame::Todos`], for the session this connection is in.
+    ///
+    /// Read-only and unserialised like [`ClientFrame::ListSessions`]: a list is
+    /// a question, not an act. This is the **bootstrap** read — the snapshot
+    /// carries transcript items, not events, so a head attaching fresh has no
+    /// `TodosUpdated` to replay; from then on the events carry every change.
+    ListTodos,
     /// Make a new session in this daemon.
     ///
     /// It does **not** switch to it — the head does that with [`ClientFrame::Switch`]
@@ -416,6 +424,13 @@ pub enum ServerFrame {
         /// `None` for a plain list — present and null, not omitted.
         created: Option<String>,
     },
+    /// The answer to [`ClientFrame::ListTodos`], for the session the connection
+    /// is in. The whole list as of now — later changes arrive as
+    /// [`crate::SessionEvent::TodosUpdated`].
+    Todos {
+        session_id: String,
+        todos: Vec<crate::event::TodoEntry>,
+    },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),
     /// The head's queue overflowed, or its resume gap was too large. **Not an
@@ -561,6 +576,7 @@ mod tests {
                 option_id: "allow_once".into(),
             },
             ClientFrame::ListSessions,
+            ClientFrame::ListTodos,
             ClientFrame::NewSession {
                 client_request_id: "r4".into(),
                 title: "the cache question".into(),
@@ -598,6 +614,29 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""current":"s-1""#), "{json}");
         assert!(json.contains(r#""created":null"#), "{json}");
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+    }
+
+    #[test]
+    fn a_todos_frame_round_trips_with_its_statuses() {
+        let f = ServerFrame::Todos {
+            session_id: "s-1".into(),
+            todos: vec![
+                crate::event::TodoEntry {
+                    content: "read the harness".into(),
+                    status: crate::event::TodoStatus::Completed,
+                },
+                crate::event::TodoEntry {
+                    content: "render the pane".into(),
+                    status: crate::event::TodoStatus::InProgress,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        // The statuses spell the way the store spells them, so a `sqlite3`
+        // reader and a head reader agree.
+        assert!(json.contains(r#""status":"completed""#), "{json}");
+        assert!(json.contains(r#""status":"in_progress""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 }

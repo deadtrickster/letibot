@@ -141,6 +141,14 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Ask for this session's todo list — the todos pane's bootstrap read.
+    /// Answered off the queue, like a list.
+    pub fn list_todos(&mut self) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ListTodos)?;
+        Ok(client_request_id)
+    }
+
     /// Ask the daemon to compact this session: one summary turn over the history
     /// as it stands, then the history is replaced by that summary through a
     /// transcript fork. Queued behind a running turn, like a prompt.
