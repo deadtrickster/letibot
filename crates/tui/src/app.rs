@@ -339,6 +339,10 @@ pub struct App {
     wiring: SessionWiring,
     /// Every session the daemon holds, as of the last `Hello` or `Sessions` frame.
     sessions: Vec<SessionBrief>,
+    /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
+    /// on the session this head is already in, so an untouched list answers Enter
+    /// with a no-op rather than a surprise.
+    picker_sel: usize,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -572,6 +576,7 @@ impl App {
             seated: None,
             wiring: SessionWiring::default(),
             sessions: Vec::new(),
+            picker_sel: 0,
             queued: Vec::new(),
             want_new_session: false,
             usage: None,
@@ -1492,6 +1497,15 @@ impl App {
                 // the attach: sessions are a shared thing, and a picker showing what
                 // was true when this head connected is a picker that hides the
                 // session somebody else just started.
+                if self.picker {
+                    // The cursor starts where you are, so Enter on an untouched list
+                    // is a no-op and the arrows move from a row that means something.
+                    self.picker_sel = self
+                        .sessions
+                        .iter()
+                        .position(|s| s.session_id == self.session_id)
+                        .unwrap_or(0);
+                }
                 return self.picker.then_some(Action::ListSessions);
             }
             Key::PageUp => {
@@ -1552,6 +1566,39 @@ impl App {
                         req_id,
                         option_id: opt,
                     });
+                }
+                _ => {}
+            }
+        }
+
+        // **An open session picker owns Up and Down, and Enter on an empty line.**
+        //
+        // After the decision ladder, which keeps precedence while a prompt is up. The
+        // number path is untouched — digits still land in the composer and Enter
+        // still answers them — but the list is on the screen, so the arrows move the
+        // cursor on it rather than the caret in a composer the picker is covering.
+        // The empty-composer rule is the decision ladder's own: a half-typed id's
+        // Enter still means the id.
+        if self.picker && !self.sessions.is_empty() {
+            let n = self.sessions.len();
+            match k {
+                Key::Up => {
+                    self.picker_sel = if self.picker_sel == 0 {
+                        n - 1
+                    } else {
+                        self.picker_sel - 1
+                    };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    self.picker_sel = (self.picker_sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    let id = self.sessions[self.picker_sel.min(n - 1)].session_id.clone();
+                    return self.switch_to(id);
                 }
                 _ => {}
             }
@@ -2785,7 +2832,12 @@ impl App {
         }
         for (i, s) in self.sessions.iter().enumerate() {
             let here = s.session_id == self.session_id;
-            let mark = if here { "▸" } else { " " };
+            // The same ladder the decision prompt draws: the mark IS the thing Enter
+            // takes, and the row it sits on is inverse. The session this head is in
+            // keeps its bold name, so "where am I" and "what Enter takes" stay two
+            // readable facts even when they are different rows.
+            let picked = i == self.picker_sel.min(self.sessions.len().saturating_sub(1));
+            let mark = if picked { "▸" } else { " " };
             let name = if s.title.is_empty() {
                 short_id(&s.session_id)
             } else {
@@ -2796,6 +2848,11 @@ impl App {
                 i + 1,
                 p.paint(if here { Role::Strong } else { Role::Plain }, &name),
             );
+            let left = if picked {
+                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+            } else {
+                left
+            };
             // Busy is the fact a picker exists to show: switching away from a
             // running turn is fine — the daemon keeps generating — and switching
             // *into* one is how you go back and watch it.
@@ -2856,8 +2913,8 @@ impl App {
         out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "  type a number or part of a name and press enter · /new [title] makes one \
-             · /rename NAME names this one · esc closes",
+            "  ↑↓ moves · enter switches · or type a number or part of a name and press \
+             enter · /new [title] makes one · /rename NAME names this one · esc closes",
         ));
         out.push(dim(
             &self.cfg,
@@ -6256,6 +6313,46 @@ mod tests {
         assert!(screen.contains("generating"), "the busy one says so:\n{screen}");
         typed(&mut a, "2");
         assert_eq!(a.key(Key::Enter), Some(Action::Switch("s2".into())));
+    }
+
+    #[test]
+    fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![
+                brief("s", "one", true),
+                brief("s2", "two", false),
+                brief("s3", "three", false),
+            ],
+            Hub::new("s").snapshot(),
+        ));
+        assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
+        // The cursor starts on the session this head is in, so the mark and the
+        // bold name are on the same row until an arrow moves it.
+        assert_eq!(a.picker_sel, 0);
+        let row = a
+            .screen(110, 24)
+            .into_iter()
+            .find(|l| l.contains("one") && l.contains('▸'))
+            .unwrap();
+        assert!(row.contains('▸'), "the mark is what enter takes: {row}");
+        a.key(Key::Down);
+        a.key(Key::Down);
+        assert_eq!(a.picker_sel, 2);
+        let row = a
+            .screen(110, 24)
+            .into_iter()
+            .find(|l| l.contains("three") && l.contains('▸'))
+            .unwrap();
+        assert!(row.contains('▸'), "the mark moved with the arrows: {row}");
+        // Up wraps past the top; Up again wraps in from the bottom.
+        a.key(Key::Up);
+        a.key(Key::Up);
+        assert_eq!(a.picker_sel, 0);
+        a.key(Key::Up);
+        assert_eq!(a.picker_sel, 2);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
     }
 
     #[test]
