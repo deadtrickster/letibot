@@ -45,6 +45,7 @@ pub mod pattern;
 pub mod read;
 pub mod read_spill;
 pub mod retrieval;
+pub mod skill;
 pub mod todo;
 pub mod write;
 
