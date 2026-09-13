@@ -2505,6 +2505,20 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         let parent = self.base.session_id.clone();
 
+        // Publish the subagent's state on the **parent's** hub, so a head attached to
+        // the parent sees the spawn and finish without subscribing to the subagent's
+        // own hub. Same three states the journal records, same prompt.
+        let publish = |state: &str, prompt: &str| {
+            if let Some(hub) = self.registry.get(&parent) {
+                hub.publish(SessionEvent::Subagent {
+                    session_id: sub_id.clone(),
+                    state: state.to_string(),
+                    prompt: prompt.to_string(),
+                    role: seat.as_str().to_string(),
+                });
+            }
+        };
+
         // The dashboard's tasks panel: record the spawn up front so it shows
         // "running" through the open and the child turn, then its finish.
         self.tasks.record(crate::tasks::TaskEntry {
@@ -2516,6 +2530,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             prompt: title.clone(),
             parent: parent.clone(),
         });
+        publish("running", &title);
         // Every early return from here on records the failure rather than leaving a
         // "running" row forever.
         let fail = |why: String| {
@@ -2528,6 +2543,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 prompt: why.clone(),
                 parent: parent.clone(),
             });
+            publish("failed", &why);
             why
         };
 
@@ -2539,7 +2555,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         let sub_hub = self
             .registry
-            .create(sub_id.clone(), title.clone(), wiring)
+            .create_under(sub_id.clone(), title.clone(), wiring, Some(parent.clone()))
             .map_err(|e| fail(e.to_string()))?;
 
         let sub_cfg = Config {
@@ -2573,15 +2589,17 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
 
         let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
+        let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
-            name: sub_id,
+            name: sub_id.clone(),
             role: seat.as_str().to_string(),
             state: "done".into(),
             tokens,
             elapsed: spawned.elapsed().as_secs_f64(),
-            prompt: reply.text.lines().next().unwrap_or("").to_string(),
-            parent,
+            prompt: first_line.clone(),
+            parent: parent.clone(),
         });
+        publish("done", &first_line);
         Ok(reply.text)
     }
 }

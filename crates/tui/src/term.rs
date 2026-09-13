@@ -628,6 +628,12 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlP);
                 i += 1;
             }
+            // The subagent tree. Ctrl+G is BEL; in raw mode nothing rings on it and
+            // the byte reaches this decoder like any other.
+            0x07 => {
+                out.push(Key::CtrlG);
+                i += 1;
+            }
             // Tab: the composer's slash-command completion. A plain 0x09 used to
             // fall through the `c >= 0x20` arm and vanish — a byte the head eats
             // silently is a key nobody can learn.

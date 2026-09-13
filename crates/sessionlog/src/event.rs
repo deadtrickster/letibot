@@ -670,6 +670,19 @@ pub enum SessionEvent {
         /// routed around, with an extra step.
         grant: String,
     },
+    /// A subagent this session spawned changed state. Carried on the **parent**'s
+    /// hub, so a head attached to the parent sees the subagent spawn and finish
+    /// without subscribing to the subagent's own hub.
+    ///
+    /// `state` is `running`, `done` or `failed`; `prompt` is the subtask's first
+    /// line (the same derivation the subagent's title uses), so a head shows what
+    /// the subagent was for without parsing the `task` call's arguments.
+    Subagent {
+        session_id: String,
+        state: String,
+        prompt: String,
+        role: String,
+    },
 }
 
 impl SessionEvent {
@@ -698,6 +711,7 @@ impl SessionEvent {
             SessionEvent::Explain { .. } => "Explain",
             SessionEvent::CommandIssued { .. } => "CommandIssued",
             SessionEvent::DenialRaised { .. } => "DenialRaised",
+            SessionEvent::Subagent { .. } => "Subagent",
         }
     }
 }

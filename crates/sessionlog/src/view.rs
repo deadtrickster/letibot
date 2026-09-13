@@ -598,6 +598,10 @@ impl SessionView {
             // covered by a second copy in a second update path, which is how the
             // picker and the header learned to disagree about a session's name.
             SessionEvent::DenialRaised { .. } => {}
+            // A subagent's state is carried by the durable event itself; a late head
+            // rebuilds the tree from the replayed events and the session list, so
+            // there is nothing to fold into the turn view here.
+            SessionEvent::Subagent { .. } => {}
         }
     }
 

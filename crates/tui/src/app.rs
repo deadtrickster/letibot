@@ -163,6 +163,8 @@ pub enum Key {
     CtrlS,
     /// Open or close the todos pane: the session's plan and the repo's queue.
     CtrlP,
+    /// Open or close the subagent tree: the subagents this session spawned.
+    CtrlG,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -212,6 +214,7 @@ impl Key {
             | Key::CtrlL
             | Key::CtrlS
             | Key::CtrlP
+            | Key::CtrlG
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -262,6 +265,18 @@ impl Fold {
 /// last said**, and **how much came out**. All three were derivable —
 /// `Envelope::ts` is on every event and `ToolProgress { note }` was being read and
 /// dropped — and none of them had anywhere to go while a call rendered as one
+/// A subagent this session spawned, as the latest `Subagent` event reported it.
+/// The event is durable and replayed, so a late head rebuilds the same tree.
+#[derive(Debug, Clone)]
+struct SubagentState {
+    session_id: String,
+    /// `running` | `done` | `failed`.
+    state: String,
+    /// The subtask's first line, the same derivation the subagent's title uses.
+    prompt: String,
+    role: String,
+}
+
 /// line. See `crates/ui/DESIGN.md` §2.3.
 #[derive(Debug, Clone)]
 struct CallRow {
@@ -366,6 +381,9 @@ pub struct App {
     wiring: SessionWiring,
     /// Every session the daemon holds, as of the last `Hello` or `Sessions` frame.
     sessions: Vec<SessionBrief>,
+    /// Subagents this session has spawned, folded from the durable `Subagent`
+    /// events. Keyed by session id: a `running` row becomes its `done` row.
+    subagents: Vec<SubagentState>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -489,6 +507,9 @@ pub struct App {
     /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
     /// different lists, and the pane says which is which).
     todos_pane: bool,
+    /// The subagent tree pane, a screen like `todos`: the subagents this session
+    /// spawned, their state and their prompt. `ctrl-g`.
+    subagents_pane: bool,
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
     todos: Vec<letibot_sessionlog::event::TodoEntry>,
@@ -648,6 +669,7 @@ impl App {
             seated: None,
             wiring: SessionWiring::default(),
             sessions: Vec::new(),
+            subagents: Vec::new(),
             picker_sel: 0,
             picker_rows_drawn: 0,
             screen_rows: 0,
@@ -687,6 +709,7 @@ impl App {
             help: false,
             picker: false,
             todos_pane: false,
+            subagents_pane: false,
             todos: Vec::new(),
             repo_todos: None,
             stats: false,
@@ -810,7 +833,13 @@ impl App {
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
-                self.sessions = sessions;
+                // Subagents are not sessions a picker lists: they are children of this
+                // session, shown in the subagent tree (`ctrl-g`), and reached by
+                // `/switch id` rather than by cluttering the flat list.
+                self.sessions = sessions
+                    .into_iter()
+                    .filter(|s| s.parent_session_id.is_none())
+                    .collect();
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
                 // `session_id` is assigned by `load` and **not before it**: `load`
@@ -840,7 +869,10 @@ impl App {
                 current,
                 created,
             } => {
-                self.sessions = sessions;
+                self.sessions = sessions
+                    .into_iter()
+                    .filter(|s| s.parent_session_id.is_none())
+                    .collect();
                 self.session_id = current;
                 match created {
                     // A session was made *because this head asked*. Going there is
@@ -1055,6 +1087,33 @@ impl App {
                 } else {
                     Disposition::Filtered
                 }
+            }
+            // A subagent spawn/finish. Fold into the tree, replacing the row with the
+            // same session id, so `running` becomes `done` rather than a second line.
+            SessionEvent::Subagent {
+                session_id,
+                state,
+                prompt,
+                role,
+            } => {
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|s| s.session_id == session_id)
+                {
+                    row.state = state;
+                    row.prompt = prompt;
+                    row.role = role;
+                } else {
+                    self.subagents.push(SubagentState {
+                        session_id,
+                        state,
+                        prompt,
+                        role,
+                    });
+                }
+                self.redraw = true;
+                Disposition::Filtered
             }
             SessionEvent::TurnStarted {
                 turn_id,
@@ -1625,6 +1684,14 @@ impl App {
                 // `TodosUpdated` and need no asking.
                 return self.todos_pane.then_some(Action::ListTodos);
             }
+            // Ctrl+G for the subagent tree: R/T/X/L/S/P are taken, A/E/W/U/Y/K/B/F
+            // are the composer's readline keys, and the subagent tree is a *view*,
+            // not a thing the composer needs a letter for.
+            Key::CtrlG => {
+                self.subagents_pane = !self.subagents_pane;
+                self.redraw = true;
+                return None;
+            }
             Key::PageUp => {
                 self.scroll = (self.scroll + 10).min(self.body_len);
                 return None;
@@ -1649,13 +1716,14 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
-        if (self.help || self.picker || self.stats || self.todos_pane)
+        if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
             self.picker = false;
             self.stats = false;
             self.todos_pane = false;
+            self.subagents_pane = false;
             self.redraw = true;
             return None;
         }
@@ -2510,6 +2578,10 @@ impl App {
             let mut rows = self.todos_lines(w);
             rows.truncate(room);
             rows
+        } else if self.subagents_pane {
+            let mut rows = self.subagents_lines(w);
+            rows.truncate(room);
+            rows
         } else {
             self.body_window(room)
         };
@@ -2658,6 +2730,17 @@ impl App {
         if !self.open.is_empty() {
             parts.push("waiting on your answer".into());
         }
+        let running = self
+            .subagents
+            .iter()
+            .filter(|s| s.state == "running")
+            .count();
+        if running > 0 {
+            parts.push(format!(
+                "{running} subagent{} running",
+                if running == 1 { "" } else { "s" }
+            ));
+        }
         parts.join(" · ")
     }
 
@@ -2675,10 +2758,12 @@ impl App {
             "type a number to switch · /new [title] · esc closes"
         } else if self.todos_pane {
             "the model's plan above, the repo's queue below · esc closes"
+        } else if self.subagents_pane {
+            "subagents this session spawned · esc closes"
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-s sessions · ctrl-p todos · ctrl-r thinking · ctrl-t tool output · tab completes /commands · /help"
+            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · tab completes /commands · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -3150,6 +3235,49 @@ impl App {
         out.push(dim(
             &self.cfg,
             "  the file itself is in the workspace; this pane never writes it.",
+        ));
+        out.into_iter()
+            .map(|l| trim_to(&l, w))
+            .collect()
+    }
+
+    /// The subagent tree: the subagents this session spawned, their state and their
+    /// prompt. A subagent is also a session, so the last line points at `ctrl-s`.
+    fn subagents_lines(&self, w: usize) -> Vec<String> {
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "subagents")];
+        out.push(String::new());
+        if self.subagents.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "    none spawned yet. The model spawns them with the task tool.",
+            ));
+        }
+        for s in &self.subagents {
+            let (mark, state_colour) = match s.state.as_str() {
+                "running" => ("[~]", sgr::YELLOW),
+                "done" => ("[x]", sgr::GREEN),
+                "failed" => ("[!]", sgr::RED),
+                _ => ("[ ]", ""),
+            };
+            out.push(format!(
+                "    {} {}",
+                colour(&self.cfg, state_colour, mark),
+                s.prompt
+            ));
+            out.push(dim(
+                &self.cfg,
+                &format!(
+                    "       {} · role {} · {}",
+                    short_id(&s.session_id),
+                    s.role,
+                    s.state
+                ),
+            ));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "    switch into one with /switch <id> — subagents are hidden from ctrl-s.",
         ));
         out.into_iter()
             .map(|l| trim_to(&l, w))
@@ -5945,6 +6073,7 @@ mod tests {
                 last_ms: 0,
             },
             wiring: wiring(),
+            parent_session_id: None,
         }
     }
 

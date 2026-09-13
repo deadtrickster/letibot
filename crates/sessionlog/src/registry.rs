@@ -232,6 +232,9 @@ pub struct SessionBrief {
     /// Transcript rows the **store** holds. Zero for a live session in a daemon with
     /// no store, which is a real state and not a missing measurement.
     pub stored_items: u32,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session. A head draws a subagent tree from this without reaching the store.
+    pub parent_session_id: Option<String>,
 }
 
 /// What a session is attached to. The daemon's own command line, which is the only
@@ -343,6 +346,10 @@ struct Entry {
     title: String,
     created_ms: u64,
     wiring: SessionWiring,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session. Live, alongside the stored copy, so a head's tree is drawn from the
+    /// registry rather than from the store.
+    parent_session_id: Option<String>,
 }
 
 struct Inner {
@@ -442,6 +449,7 @@ impl Registry {
                     title: String::new(),
                     created_ms: now_ms(),
                     wiring: SessionWiring::default(),
+                    parent_session_id: None,
                 },
             ));
         }
@@ -467,6 +475,19 @@ impl Registry {
         title: impl Into<String>,
         wiring: SessionWiring,
     ) -> Result<Arc<Hub>, CreateError> {
+        self.create_under(session_id, title, wiring, None)
+    }
+
+    /// As [`Registry::create`], recording the session that spawned this one. `parent`
+    /// is `None` for a top-level session and `Some(id)` for a subagent, so the tree
+    /// is a fact of the registry and not an id convention.
+    pub fn create_under(
+        &self,
+        session_id: impl Into<String>,
+        title: impl Into<String>,
+        wiring: SessionWiring,
+        parent: Option<String>,
+    ) -> Result<Arc<Hub>, CreateError> {
         let id = session_id.into();
         let mut g = self.lock();
         if self.bell.is_closed() {
@@ -487,6 +508,7 @@ impl Registry {
                 title: title.into(),
                 created_ms: now_ms(),
                 wiring,
+                parent_session_id: parent,
             },
         ));
         drop(g);
@@ -615,7 +637,7 @@ impl Registry {
     }
 
     pub fn list(&self) -> Vec<SessionBrief> {
-        let rows: Vec<(String, String, u64, Arc<Hub>, SessionWiring)> = {
+        let rows: Vec<(String, String, u64, Arc<Hub>, SessionWiring, Option<String>)> = {
             let g = self.lock();
             g.entries
                 .iter()
@@ -626,6 +648,7 @@ impl Registry {
                         e.created_ms,
                         e.hub.clone(),
                         e.wiring.clone(),
+                        e.parent_session_id.clone(),
                     )
                 })
                 .collect()
@@ -633,7 +656,7 @@ impl Registry {
         let stored: Vec<StoredBrief> = self.source().map(|s| s.list()).unwrap_or_default();
         let mut out: Vec<SessionBrief> = rows
             .into_iter()
-            .map(|(session_id, title, created_ms, hub, wiring)| {
+            .map(|(session_id, title, created_ms, hub, wiring, parent)| {
                 let on_disk = stored.iter().find(|d| d.session_id == session_id);
                 SessionBrief {
                     // A daemon started with `--title` and a store that already names
@@ -650,6 +673,10 @@ impl Registry {
                     status: hub.status(),
                     wiring,
                     live: true,
+                    // The registry's own record wins over the store's for a live
+                    // session; the store's is what remains after a restart.
+                    parent_session_id: parent
+                        .or_else(|| on_disk.and_then(|d| d.parent_session_id.clone())),
                 }
             })
             .collect();
@@ -670,6 +697,7 @@ impl Registry {
                 wiring: d.wiring,
                 live: false,
                 stored_items: d.items,
+                parent_session_id: d.parent_session_id,
             });
         }
         out

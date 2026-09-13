@@ -99,6 +99,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // that stopped. It is not a `DecisionRequested`: nothing is waiting on an
         // answer, so there is no settled-question hazard to scrub for.
         | SessionEvent::DenialRaised { .. } => false,
+        // Durable: "this session spawned a subagent and it is running/done/failed"
+        // stays true, and a head replaying the backlog keeps the latest state for
+        // each subagent, which is exactly what a tree is drawn from.
+        | SessionEvent::Subagent { .. } => false,
     }
 }
 

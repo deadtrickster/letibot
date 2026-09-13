@@ -493,7 +493,12 @@ fn run_query(
             }
         }
         Query::List => {
-            let rows = scoped(&store, scope)?;
+            // Subagents are children of a session, not sessions a picker lists —
+            // they live in the subagent tree, not the flat list.
+            let rows: Vec<_> = scoped(&store, scope)?
+                .into_iter()
+                .filter(|s| s.parent_session_id.is_none())
+                .collect();
             if tsv {
                 // id, title, workspace, rows, last-activity-ms. Tab-separated and
                 // unpadded: this is what `~/bin/letibot` reads, and a column layout
