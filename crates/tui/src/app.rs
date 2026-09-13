@@ -102,6 +102,9 @@ pub enum Action {
     ResumeSession(String),
     /// Name a session, or clear its name with an empty title.
     Rename { session_id: String, title: String },
+    /// Compact the session this head is in: one summary turn, then the history
+    /// is replaced by that summary through a transcript fork.
+    Compact,
     Quit,
 }
 
@@ -1862,6 +1865,17 @@ impl App {
                 None
             }
             "interrupt" | "i" => Some(Action::Interrupt("operator typed /interrupt".into())),
+            "compact" => {
+                // The session this head is **in**, for the same reason /rename
+                // refuses an arbitrary id: a compaction that could reach a row you
+                // were only looking at is one typo away from summarising the wrong
+                // conversation.
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
+                }
+                Some(Action::Compact)
+            }
             other => {
                 self.say(&format!("unknown command /{other} — try /help"));
                 None
@@ -3557,6 +3571,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/status", "this head's counters — dropped, scrubbed, resync — and what each means"),
         ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
+        ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];
@@ -4611,6 +4626,33 @@ mod tests {
         // And typing an option id no longer answers it: it becomes a prompt.
         typed(&mut a, "allow");
         assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+    }
+
+    #[test]
+    fn a_compact_is_asked_of_the_session_this_head_is_in() {
+        // Not attached: refused with a line, not an action the daemon would have
+        // to guess about.
+        let mut a = app();
+        typed(&mut a, "/compact");
+        assert!(a.key(Key::Enter).is_none());
+        // Attached: the action, naming nobody — the daemon compacts the session
+        // the head is sitting in, which is the one /compact can reach.
+        let hub = letibot_sessionlog::hub::Hub::new("s");
+        let att = hub.attach("tui", "test", letibot_sessionlog::protocol::Caps::default(), 0);
+        let mut a = app();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: att.head_id.clone(),
+            dropped: att.dropped,
+            snapshot: att.snapshot.map(Box::new),
+            resumed_from: att.resumed_from,
+            scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
+        });
+        typed(&mut a, "/compact");
+        assert_eq!(a.key(Key::Enter), Some(Action::Compact));
     }
 
     /// **The prompt is a control, not a spelling test.**

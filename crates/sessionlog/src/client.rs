@@ -141,6 +141,18 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Ask the daemon to compact this session: one summary turn over the history
+    /// as it stands, then the history is replaced by that summary through a
+    /// transcript fork. Queued behind a running turn, like a prompt.
+    pub fn compact(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::CompactSession {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();

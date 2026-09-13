@@ -139,6 +139,12 @@ pub fn tick(
             Action::Rename { session_id, title } => {
                 client.rename_session(&session_id, &title)?;
             }
+            // The compaction itself is disclosed on the session's own log: the
+            // summary turn streams like any turn, and the forked transcript's
+            // first item says what replaced the history. Nothing to apply here.
+            Action::Compact => {
+                client.compact(app.seq)?;
+            }
             Action::Quit => {
                 let _ = client.detach();
             }
