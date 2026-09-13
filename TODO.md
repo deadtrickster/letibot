@@ -507,6 +507,15 @@ had to type the whole word, and mistype it. Operator, 2026-09-10: *"ok so got th
 write prompt, but it wasnt as a choice but as sometihng i have to type (and
 mistype) myself"*.
 
+**2026-09-13 (D13):** two of the six are now wired — *mode does not persist per
+project* and the mode side of *`/mode` and `--mode` are unwired*. The per-project
+`ModeStore` is threaded into `Parts` and consulted in `open_with` after the
+workspace is resolved, so a session's point is its project's row (longest ancestor
+wins), not the daemon's `--mode` default. A new named point `allow-all` (opencode's
+`bypassPermissions`) ships, and `Mode::parse` accepts opencode's four permission-mode
+names. Still open: the `/mode` head command to *move* a project at runtime, the
+`todo_write` rename completion, and the remaining four D27 items.
+
 **D28 — Text selection in the TUI, still undiagnosed and needing one answer from
 the operator.** The repaint hypothesis is REFUTED by measurement: before/after
 frames byte-identical over 1,256,038 bytes, and 30 s idle wrote **zero bytes**.

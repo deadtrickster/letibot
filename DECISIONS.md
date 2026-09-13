@@ -257,3 +257,48 @@ is still no single choke point through which every tool result passes, which is
 
 Unblocks: seating `bash` behind a boundary at all, and the adjudicator's authorisation
 trail having something to authorise that is not a path list.
+
+## D13 — allow-all, opencode compatibility, and mode as a session property — **SETTLED 2026-09-13**
+
+The operator's two firecode asks, restated against the harness:
+
+1. **`--mode allow-all`** — a fifth named point (beside read-only / always-ask /
+   writes-allowed / automode) where `write`, `exec` and `network` are all `Admit`
+   and the decider is `None`, because there is nothing to decide. It is the
+   firecode-native point: the microVM is the boundary, and the action is structural.
+   On a bare host this is opencode's `bypassPermissions` posture, so the point's
+   `requires: [WritableBackend, Confinement]` is what refuses it where no boundary
+   can be built.
+
+2. **opencode-compatible permission modes** — opencode's four names map onto the
+   named points, so a session driven by an opencode agent can select modes by
+   opencode's vocabulary:
+
+   | opencode | letibot point |
+   |---|---|
+   | `plan` | read-only |
+   | `default` | always-ask |
+   | `acceptEdits` | writes-allowed |
+   | `bypassPermissions` | allow-all |
+
+   `Mode::parse` accepts either spelling; `Mode::opencode_name` maps back, so the
+   banner can name both.
+
+   **Tool names align, but the letibot-specific tools are not dropped.** An opencode
+   agent sees the opencode vocabulary (`todo_write`, `bash`, `read`, `write`,
+   `edit`, `grep`, `glob`) *plus* the letibot extras (`read_spill`, `monitor`,
+   `outline`, `retrieval`, `jobs`, `intent`) as a superset. Compatibility is the
+   names and the permission modes; it is not a reduced toolset — the operator's
+   call, 2026-09-13: *"i dont think we should drop letibot specific tools in
+   opencode mode"*.
+
+3. **The mode is a session property, not a daemon-start flag.** `--mode` today is a
+   daemon flag, so changing a project's posture means restarting `harnessd` — which
+   the operator explicitly does not want ("i dont want to restart harnessd for each
+   letibot executed"). The mode is resolved per session, longest-ancestor-wins, from
+   the per-project `ModeStore` (`~/.config/letibot/modes.tsv`), with a `/mode`
+   command to move the *current* project. This closes the D27 items `--mode`/`/mode`
+   unwired and *mode does not persist per project*.
+
+Unblocks: firecode as the execution substrate (allow-all inside the VM), and running
+opencode agents against the harness without teaching them a second mode vocabulary.
