@@ -50,7 +50,12 @@ impl Tool for TaskTool {
                 },
                 "required": ["prompt"]
             }),
-            Access::Exec,
+            // `Session`, not `Exec`: `task` runs no host command itself — it delegates
+            // to a child turn whose own gate governs its write/exec/network calls. As
+            // `Exec` it would hit the operator's rule that exec always asks (a subagent
+            // spawn is not a shell, and opencode does not gate it), and a subagent that
+            // could not even be spawned without a head would never run.
+            Access::Session,
         )
     }
 
