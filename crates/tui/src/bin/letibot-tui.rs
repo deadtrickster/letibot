@@ -14,13 +14,13 @@
 //! demonstrable against a recorded log.
 
 use std::io::BufRead;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{ClientError, HeadClient, pump};
 use letibot_sessionlog::event::Envelope;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::default_socket_path;
-use letibot_sessionlog::testing;
+use letibot_sessionlog::{SessionBrief, testing};
 
 use letibot_tui::app::App;
 use letibot_tui::driver::tick;
@@ -41,6 +41,12 @@ struct Args {
     no_tty: bool,
     budget: Budget,
     identity: String,
+    /// Headless shutdown helper: interrupt every session whose turn is running,
+    /// wait for the turns to end, exit. `letibot --stop --force` runs this
+    /// before it pkills.
+    interrupt_all: bool,
+    /// How long `--interrupt-all` waits for the turns to end.
+    wait: u64,
 }
 
 fn parse() -> Result<Args, String> {
@@ -55,6 +61,8 @@ fn parse() -> Result<Args, String> {
         no_tty: false,
         budget: Budget::default(),
         identity: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
+        interrupt_all: false,
+        wait: 30,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -78,6 +86,8 @@ fn parse() -> Result<Args, String> {
             }
             "--demo" => a.demo = true,
             "--no-tty" => a.no_tty = true,
+            "--interrupt-all" => a.interrupt_all = true,
+            "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
@@ -89,7 +99,8 @@ fn usage() -> String {
     "letibot-tui [--socket PATH] [--session ID] [--resume ID] [--new-session TITLE]\n\
      \x20           [--since SEQ] [--identity NAME]\n\
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
-     \x20           [--body-lines N] [--reasoning-lines N]"
+     \x20           [--body-lines N] [--reasoning-lines N]\n\
+     \x20           [--interrupt-all [--wait SECS]]"
         .into()
 }
 
@@ -108,6 +119,14 @@ fn main() {
 
     if args.demo || args.replay.is_some() {
         replay(&args, cfg);
+        return;
+    }
+
+    if args.interrupt_all {
+        if let Err(e) = interrupt_all(&args) {
+            eprintln!("letibot-tui: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -220,6 +239,115 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Interrupt every session whose turn is running, through the same frame an
+/// Esc-Esc sends, and wait for the turns to end.
+///
+/// This is `letibot --stop --force`'s first half. The daemon's own signal
+/// handler deliberately has no force path — its comment calls a kill "a way to
+/// lose the last turn's rows" — and this is the shape that loses none: each
+/// running turn is asked to stop over the protocol, the abort is recorded like
+/// any other, and the daemon is left to a plain SIGTERM, which it can now take
+/// promptly because nothing is mid-turn.
+fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(args.wait.max(1));
+    let held = discover(&args.socket)?;
+    if held.is_empty() {
+        println!("the daemon holds no sessions");
+        return Ok(());
+    }
+    // One seat, moved across the sessions that need the interrupt: `Switch`
+    // exists so a connection can change sessions, and an interrupt is scoped to
+    // the seat's session, so the moving is how one client covers many.
+    let (mut client, _hello, reader) = HeadClient::attach(
+        &args.socket,
+        &held[0],
+        0,
+        "remote",
+        "stop-force",
+        Caps::default(),
+    )?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || pump(reader, tx));
+
+    let sessions = ask_sessions(&mut client, &rx, deadline)?;
+    let running: Vec<SessionBrief> = sessions
+        .into_iter()
+        .filter(|s| s.status.running)
+        .collect();
+    if running.is_empty() {
+        println!("no turns in flight");
+        return Ok(());
+    }
+    for s in &running {
+        client.switch(&s.session_id, 0)?;
+        // `expected_seq = 0` is "no expectation" at the hub — never stale —
+        // which is what a client that is not following the stream gets to say.
+        client.interrupt(0, "letibot --stop --force")?;
+        println!("  {} · interrupted", s.session_id);
+    }
+    loop {
+        if Instant::now() >= deadline {
+            let left = ask_sessions(&mut client, &rx, deadline)?
+                .into_iter()
+                .filter(|s| s.status.running)
+                .count();
+            return Err(format!("{left} turn(s) still running after {}s", args.wait).into());
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        if !ask_sessions(&mut client, &rx, deadline)?
+            .into_iter()
+            .any(|s| s.status.running)
+        {
+            println!("all turns stopped");
+            return Ok(());
+        }
+    }
+}
+
+/// Which sessions does the daemon hold?
+///
+/// No frame lists sessions without a seat — `ListSessions` reads the seat's
+/// registry — but the ATTACH refusal for an unknown id is a **Bye that lists
+/// what is held**, so the refusal is the directory. A probe attach costs one
+/// round trip and names no session anybody wanted.
+fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    match HeadClient::attach(path, "\0probe", 0, "remote", "stop-force", Caps::default()) {
+        // A daemon that accepted the probe id would be one that mints sessions
+        // on attach, which none does; treat it as "held nothing useful".
+        Ok(_) => Ok(Vec::new()),
+        Err(ClientError::Refused(reason)) => match reason.split_once("it holds ") {
+            Some((_, list)) => Ok(list.split(", ").map(str::to_string).collect()),
+            // "this daemon holds none yet" — nothing held, nothing to interrupt.
+            None => Ok(Vec::new()),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// One `ListSessions` round trip: send it, then read frames until the reply
+/// arrives, discarding everything else — the seat's event stream keeps
+/// arriving on the same channel, and an interrupt in progress makes it loud.
+fn ask_sessions(
+    client: &mut HeadClient,
+    rx: &std::sync::mpsc::Receiver<ServerFrame>,
+    deadline: Instant,
+) -> Result<Vec<SessionBrief>, Box<dyn std::error::Error>> {
+    client.list_sessions()?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for the session list".into());
+        }
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(ServerFrame::Sessions { sessions, .. }) => return Ok(sessions),
+            Ok(_) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the daemon closed the connection".into());
+            }
+        }
+    }
 }
 
 fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>> {
