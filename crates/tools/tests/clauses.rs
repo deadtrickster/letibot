@@ -230,7 +230,13 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
         Box::new(FixedBudget(1_000)),
         Box::new(MemoryStore::new()),
     ));
-    let r = h.call("read", r#"{"path":"big.txt"}"#);
+    // An explicit limit, so what reaches the spill layer is the whole file:
+    // this test is about the spill policy's bound, and read's own default
+    // line cap would otherwise answer the question first.
+    // `limit` 1800 keeps read's own byte cap (32 KiB) out of the way while the
+    // payload stays over 30 KB: this test is about the spill layer's bound,
+    // and the window between the two is deliberate.
+    let r = h.call("read", r#"{"path":"big.txt","limit":1300}"#);
     let spill = r
         .spill
         .clone()
@@ -249,15 +255,17 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
     assert!(
         String::from_utf8(whole)
             .unwrap()
-            .contains("filler line 1999")
+            .contains("filler line 1299")
     );
 }
 
 #[test]
 fn clause5_unset_is_a_no_op_rather_than_a_default_nobody_chose() {
-    // D6: `max_inline_bytes` keeps no default.
+    // D6: `max_inline_bytes` keeps no default. The explicit limit keeps read's
+    // own caps out of the way — this asserts on the spill layer, and 1300
+    // lines lands the payload between its 30 KB claim and read's 32 KiB cap.
     let mut h = harness();
-    let r = h.call("read", r#"{"path":"big.txt"}"#);
+    let r = h.call("read", r#"{"path":"big.txt","limit":1300}"#);
     assert!(r.spill.is_none());
     assert!(r.payload.len() > 30_000, "{} bytes", r.payload.len());
 }

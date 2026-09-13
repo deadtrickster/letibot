@@ -138,6 +138,20 @@ pub struct Limits {
     pub max_matches: usize,
     /// The most bytes a single file read returns before the spill policy sees it.
     pub max_file_bytes: usize,
+    /// The most lines `read` returns when the call named no `limit`. A full
+    /// thousand-line file at twenty thousand tokens is one call occupying a
+    /// session, which is this struct's job to prevent; the tool's own note
+    /// hands back the offset that continues it.
+    pub max_read_lines: usize,
+    /// The most bytes of numbered text `read` returns in one call, whatever the
+    /// line count. The line cap cannot bound a file with six enormous lines —
+    /// minified javascript is one line — so the byte budget is the guarantee
+    /// and the line cap is the default shape.
+    pub max_read_bytes: usize,
+    /// The most characters of one line `read` will show before it clips the
+    /// rest. A clipped line is named in the notes, because a model that cannot
+    /// see a boundary will assume there is none.
+    pub max_read_line_chars: usize,
 }
 
 impl Default for Limits {
@@ -146,6 +160,9 @@ impl Default for Limits {
             max_walk_entries: 20_000,
             max_matches: 200,
             max_file_bytes: 4 * 1024 * 1024,
+            max_read_lines: 200,
+            max_read_bytes: 32 * 1024,
+            max_read_line_chars: 2000,
         }
     }
 }
