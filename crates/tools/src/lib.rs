@@ -182,6 +182,15 @@ pub fn with_session_tools(
     board: std::sync::Arc<builtins::todo::TodoBoard>,
 ) -> Result<Registry, RegisterError> {
     reg.register(Box::new(builtins::todo::TodoWriteTool::new(board)))?;
+    reg.register(Box::new(builtins::skill::SkillTool::new(
+        std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
+    )))?;
+    reg.register(Box::new(builtins::lsp::LspTool::new(
+        std::sync::Arc::new(builtins::lsp::LspConfig::default()),
+    )))?;
+    reg.register(Box::new(builtins::task::TaskTool::new(
+        std::sync::Arc::new(builtins::task::NoTaskRunner),
+    )))?;
     Ok(reg)
 }
 

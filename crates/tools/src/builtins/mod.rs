@@ -39,6 +39,7 @@ pub mod glob;
 pub mod grep;
 pub mod intent;
 pub mod jobs;
+pub mod lsp;
 pub mod monitor;
 pub mod outline;
 pub mod pattern;
@@ -46,6 +47,7 @@ pub mod read;
 pub mod read_spill;
 pub mod retrieval;
 pub mod skill;
+pub mod task;
 pub mod todo;
 pub mod write;
 

@@ -415,6 +415,30 @@ pub mod roles {
         )
     }
 
+    /// leticode's seat: opencode's toolset, by opencode's names, plus `skill`.
+    ///
+    /// Deliberately the opencode union and not the letibot extras — this is the
+    /// seat an opencode-shaped agent runs under. `bash` is stripped unless the
+    /// daemon was started with `--bash`, exactly as it is for `coder`; `task` and
+    /// `lsp` join this list as they land.
+    pub fn leticode() -> Role {
+        Role::new(
+            "leticode",
+            &[
+                "read",
+                "write",
+                "edit",
+                "grep",
+                "glob",
+                "bash",
+                "todo_write",
+                "skill",
+                "lsp",
+                "task",
+            ],
+        )
+    }
+
     pub fn researcher() -> Role {
         Role::new(
             "researcher",

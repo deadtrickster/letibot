@@ -425,7 +425,14 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
         "{}",
         r.render()
     );
-    assert!(!r.payload.contains("bash"), "{}", r.payload);
+    // The nearest-tool hint names `bash` (it is the name the model asked for), so
+    // "bash is absent" is asserted on the refusal reason, not the whole payload.
+    match &r.outcome {
+        ToolOutcome::Failed { reason } => {
+            assert!(reason.contains("no tool called `bash`"), "{reason}");
+        }
+        other => panic!("bash must be an unknown tool: {other:?}"),
+    }
 }
 
 #[test]
