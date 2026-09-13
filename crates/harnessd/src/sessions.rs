@@ -96,7 +96,7 @@ impl<'a> Sessions<'a> {
         let hub = registry
             .get(&id)
             .ok_or_else(|| HarnessError::Setup(format!("session {id} is not in the registry")))?;
-        let harness = Harness::open(parts, cfg.clone(), hub)?;
+        let harness = Harness::open_with_registry(parts, cfg.clone(), hub, None, None, registry.clone())?;
         let mut open = HashMap::new();
         open.insert(id, harness);
         Ok(Sessions {
@@ -214,7 +214,7 @@ impl<'a> Sessions<'a> {
                 },
                 ..self.base.clone()
             };
-            let h = Harness::open(self.parts, cfg, hub)?;
+            let h = Harness::open_with_registry(self.parts, cfg, hub, None, None, self.registry.clone())?;
             self.open.insert(session_id.to_string(), h);
         }
         Ok(self.open.get_mut(session_id).expect("just inserted"))

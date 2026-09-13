@@ -760,42 +760,37 @@ impl<'a> Harness<'a> {
 
     /// As [`Harness::open`], with an adjudicator and an extra tool.
     ///
-    /// # Why this takes an adjudicator and not a gate
-    ///
-    /// It used to take a `Box<dyn Gate>`, and that was the wrong seam by exactly one
-    /// layer. The three things a gate needs in order to be honest — the
-    /// authorisation trail, the denial sink, and where layer A is standing — are all
-    /// facts about *this session*, and a caller handing in a finished gate has
-    /// already decided them, silently, for a session it cannot see. The measured
-    /// consequence was that `AdjudicatedGate::with_trail_source` and
-    /// `with_denial_sink` had no caller in the tree: the seams existed, were tested,
-    /// and nothing could reach them.
-    ///
-    /// So the harness builds the gate and the caller chooses who decides. `None`
-    /// takes the default for the seat, which is:
-    ///
-    /// * a seat whose tools are all unattended (`Read`, `Session`) → [`NoBoundary`],
-    ///   which is what every session that exists today has. Nothing can reach it:
-    ///   clause 4 means a read-only tool has no code path to a question.
-    /// * anything else → [`letibot_tools::ConsoleAdjudicator`], per
-    ///   [`AdjudicatorChoice`].
-    ///
-    /// # And why it can refuse to open
-    ///
-    /// A seat with `Write`, `Exec` or `Network` tools and nobody to ask **does not
-    /// start**. `NoAdjudicator` is not a safe default here; it is a session that
-    /// opens cleanly, prints a banner, and then refuses every call — which costs a
-    /// turn to discover and reads to the model as the harness being broken. The
-    /// fail-closed *behaviour* is right and it is not a substitute for saying so
-    /// before anything runs. `--adjudicator none` is how somebody asks for that
-    /// state on purpose, and the difference between a decision and an omission is
-    /// the whole of it.
+    /// Uses a fresh, empty session registry: a caller reaching this without one —
+    /// every test — gets a harness whose `task` tool cannot spawn a subagent, which
+    /// is the honest state for a session nobody registered.
     pub fn open_with(
+        parts: &'a Parts,
+        cfg: Config,
+        hub: Arc<Hub>,
+        adjudicator: Option<Box<dyn Adjudicator>>,
+        extra_tool: Option<Box<dyn Tool>>,
+    ) -> Result<Self, HarnessError> {
+        Self::open_with_registry(
+            parts,
+            cfg,
+            hub,
+            adjudicator,
+            extra_tool,
+            letibot_sessionlog::registry::Registry::new(),
+        )
+    }
+
+    /// [`Harness::open_with`] plus the daemon's session registry, so the `task` tool
+    /// can spawn a subagent as a real session (a hub an operator can attach, and a
+    /// store row it can resume). The daemon passes its registry; tests and the
+    /// single-session binaries pass a fresh one through [`Harness::open`].
+    pub fn open_with_registry(
         parts: &'a Parts,
         mut cfg: Config,
         hub: Arc<Hub>,
         adjudicator: Option<Box<dyn Adjudicator>>,
         extra_tool: Option<Box<dyn Tool>>,
+        session_registry: Arc<letibot_sessionlog::registry::Registry>,
     ) -> Result<Self, HarnessError> {
         // **The store is opened before anything else, because it may change the
         // configuration.** A session that is already in the store carries its own
@@ -973,14 +968,9 @@ impl<'a> Harness<'a> {
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
                 wiring: parts.wiring.clone(),
-                endpoint: cfg.endpoint.clone(),
-                model: cfg.model.clone(),
-                sampling: cfg.sampling.clone(),
-                workspace: cfg.workspace.clone(),
-                system: cfg.system.clone(),
-                permission: cfg.permission.clone(),
-                mode: cfg.mode,
-                hub: hub.clone(),
+                mode_store: parts.mode_store.clone(),
+                registry: session_registry.clone(),
+                base: cfg.clone(),
             });
         registry = letibot_tools::with_session_tools(registry, todo_board.clone(), task_runner)
             .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
@@ -2359,104 +2349,119 @@ fn visible_text(items: &[TranscriptItem]) -> String {
     out
 }
 
-/// The real `task` runner: runs a nested turn with a fresh engine/session/runtime,
-/// inheriting the parent's permission scheme (`permission` ruleset + `mode`) so the
-/// subagent's calls are governed by the same allow/deny/ask rules.
+/// A subagent's adjudicator: it can never ask the operator, so every `ask` fails
+/// closed. `describe` deliberately does not begin with `none` — that prefix is the
+/// harness's own signal for "nobody reachable, refuse to open a gated session" —
+/// because a subagent *does* have a decider: the permission ruleset it inherited.
+/// The ruleset's `allow`/`deny` are honoured by the gate before this is reached;
+/// what reaches it is only what the ruleset left as `ask`, and that is denied.
+struct SubagentAdjudicator;
+
+impl letibot_tools::Adjudicator for SubagentAdjudicator {
+    fn decide(
+        &self,
+        req: &letibot_tools::AdjudicationRequest,
+    ) -> letibot_tools::AdjudicationDecision {
+        letibot_tools::AdjudicationDecision::unavailable(
+            req,
+            "subagent",
+            "a subagent has no operator to ask; the inherited permission rules decide, \
+             and an ask is denied (fail closed)",
+        )
+    }
+
+    fn describe(&self) -> String {
+        "subagent — inherited permission rules decide; asks are denied".into()
+    }
+}
+
+/// The real `task` runner: spawns a **persistent subagent session** and runs it to
+/// completion, returning the subagent's final answer to the parent.
 ///
-/// The subagent seats the coder tools (read, write, edit, grep, glob, todo_write,
-/// skill, lsp) with no shell; its "ask" calls fail closed on `NoAdjudicator` rather
-/// than prompting, because a subagent has no head of its own.
+/// A subagent is a full session — its own hub (an operator can attach and message
+/// it), its own store row (it survives the daemon and can be resumed), and its own
+/// harness — not an ephemeral nested turn. It inherits the parent's permission
+/// ruleset and mode, so its calls are governed by the same allow/deny/ask rules,
+/// but it can never ask the operator: an `ask` fails closed on
+/// [`SubagentAdjudicator`].
+///
+/// The subagent seats [`Seat::Coder`] (read, write, edit, grep, glob) — nothing
+/// that spawns further subagents — so delegation is one level by construction, not
+/// by convention.
 struct HarnessTaskRunner {
+    /// The shared pieces, held as `Arc` so the runner is `'static` while the parent
+    /// harness still borrows them. Reassembled into a temporary [`Parts`] inside
+    /// [`HarnessTaskRunner::run`] for the sub harness to borrow.
     vocab: Arc<Vocab>,
     wiring: Arc<Wiring>,
-    endpoint: Endpoint,
-    model: String,
-    sampling: serde_json::Value,
-    workspace: PathBuf,
-    system: String,
-    permission: letibot_tools::permission::Ruleset,
-    mode: letibot_tools::mode::Mode,
-    hub: Arc<Hub>,
+    mode_store: Arc<std::sync::RwLock<crate::modes::ModeStore>>,
+    /// The daemon's session registry, so a subagent is a real session an operator
+    /// can see and attach rather than a turn hidden inside the parent's.
+    registry: Arc<letibot_sessionlog::registry::Registry>,
+    /// The parent's configuration, already resolved (workspace, mode, title) by
+    /// [`Harness::open_with_registry`] before this was built. Cloned as the base for
+    /// each sub session; only the id, title and seat are overridden.
+    base: Config,
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     fn run(&self, prompt: &str, role: &str) -> Result<String, String> {
-        use letibot_tools::builtins::retrieval::Unavailable;
-
-        let mut reg = letibot_tools::read_only_tools(Arc::new(Unavailable))
+        // A subagent is a real session: mint its id and create its hub. The id is a
+        // nanosecond timestamp suffix rather than a counter, so a subagent minted
+        // after a daemon restart cannot collide with a persisted one (a counter
+        // resets, and a collision would resume the old subagent instead of spawning a
+        // new one). The title is the subtask's first line, so a picker row says what
+        // the subagent was for.
+        let sub_id = format!(
+            "{}-sub-{}",
+            self.base.session_id,
+            letibot_sessionlog::registry::now_ms()
+        );
+        let title = derive_title(prompt);
+        let wiring = letibot_sessionlog::registry::SessionWiring {
+            model: self.base.model.clone(),
+            dialect: self.base.dialect.name().to_string(),
+            endpoint: self.base.endpoint.authority(),
+            workspace: self.base.workspace.display().to_string(),
+        };
+        let sub_hub = self
+            .registry
+            .create(sub_id.clone(), title.clone(), wiring)
             .map_err(|e| e.to_string())?;
-        reg = letibot_tools::with_session_tools(
-            reg,
-            Arc::new(TodoBoard::new(Vec::new())),
-            Arc::new(letibot_tools::builtins::task::NoTaskRunner),
+
+        // The subagent seats the coder tools. `role` is honoured where it names a
+        // real seat; anything else is coder, which is the `task` tool's own default.
+        let seat = match role {
+            "orchestrator" => Seat::Orchestrator,
+            _ => Seat::Coder,
+        };
+        let sub_cfg = Config {
+            session_id: sub_id,
+            title,
+            seat,
+            ..self.base.clone()
+        };
+
+        // Reassemble the shared parts so the sub harness can borrow them for the
+        // duration of this call. Cheap: the vocabs and the wiring are already `Arc`.
+        let parts = Parts {
+            vocab: self.vocab.clone(),
+            wiring: self.wiring.clone(),
+            mode_store: self.mode_store.clone(),
+        };
+
+        let mut sub = Harness::open_with_registry(
+            &parts,
+            sub_cfg,
+            sub_hub,
+            Some(Box::new(SubagentAdjudicator)),
+            None,
+            self.registry.clone(),
         )
         .map_err(|e| e.to_string())?;
-        reg.register(Box::new(letibot_tools::builtins::write::Write))
-            .map_err(|e| e.to_string())?;
-        reg.register(Box::new(letibot_tools::builtins::edit::Edit))
-            .map_err(|e| e.to_string())?;
 
-        let role = match role {
-            "orchestrator" => roles::orchestrator(),
-            "leticode" => roles::leticode(),
-            _ => roles::coder(),
-        };
-        let sub = reg.resolve_role(&role).map_err(|e| e.to_string())?;
-        let schemas = sub.schemas();
-
-        let backend = HostBackend::writable(&self.workspace).map_err(|e| e.to_string())?;
-        let gate = AdjudicatedGate::new(Box::new(letibot_tools::NoAdjudicator))
-            .with_mode(self.mode)
-            .with_permission(self.permission.clone());
-        let mut runtime = ToolRuntime::new(sub, Box::new(backend)).with_gate(Box::new(gate));
-
-        let mut engine = TurnEngine::new(
-            &self.vocab,
-            self.wiring.renderer.as_ref(),
-            self.wiring.parser.as_ref(),
-            self.endpoint.clone(),
-            letibot_backend::BackendCaps::OWN_SERVER,
-            self.model.clone(),
-            self.sampling.clone(),
-        )
-        .map_err(|e| e.to_string())?;
-
-        let prefix = StablePrefix {
-            system: self.system.clone(),
-            tools_json: self.wiring.tools_json(&schemas),
-        };
-        let mut session = engine.open("subagent", &prefix).map_err(|e| e.to_string())?;
-
-        let mut sink = CapturingSink::new(self.hub.clone());
-        let item = TranscriptItem::User {
-            parts: vec![UserPart::Text { text: prompt.to_string() }],
-        };
-        session.append_items(&engine, &[item], &mut sink).map_err(|e| e.to_string())?;
-
-        let mut steering = letibot_turn::NoSteering;
-        for _ in 0..32 {
-            let ok = engine
-                .run_turn_steered(&mut session, &mut sink, &mut steering)
-                .map_err(|e| e.to_string())?;
-            let mut calls = Vec::new();
-            for i in &ok.items {
-                if let TranscriptItem::Assistant { tool_calls, .. } = i {
-                    calls.extend(tool_calls.clone());
-                }
-            }
-            if calls.is_empty() {
-                return Ok(visible_text(&ok.items));
-            }
-            let mut results = Vec::with_capacity(calls.len());
-            for call in &calls {
-                let r = runtime.invoke(&ok.turn_id, call, &mut letibot_tools::NullToolSink);
-                results.push(ToolRuntime::transcript_item(&r));
-            }
-            session
-                .append_items(&engine, &results, &mut sink)
-                .map_err(|e| e.to_string())?;
-        }
-        Err("the subagent did not finish within 32 rounds".into())
+        let reply = sub.submit(prompt).map_err(|e| e.to_string())?;
+        Ok(reply.text)
     }
 }
 
