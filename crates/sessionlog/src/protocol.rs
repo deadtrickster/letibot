@@ -120,7 +120,18 @@ use crate::view::Snapshot;
 /// Both sides refuse a mismatch by name. A head built against 6 that was handed a 7
 /// question would render an empty option list and ask a person to choose between
 /// nothing.
-pub const PROTOCOL_VERSION: u32 = 7;
+///
+/// # 8: a head can compact
+///
+/// [`ClientFrame::CompactSession`] is a new client frame, so a version-7 head
+/// talking to a version-8 daemon is fine (it never sends the frame) but a
+/// version-8 head talking to a version-7 daemon would send a frame the daemon
+/// fails to parse — the same mid-session deserialization failure that forced
+/// version 4, and the same ATTACH-time refusal applies. The daemon's answer to
+/// the frame is the ordinary `Accepted`/`Rejected` pair; the compaction itself is
+/// disclosed on the session's log as the turn and the summary item it produces,
+/// so no new event kind was needed.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -200,6 +211,18 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         reason: String,
+    },
+    /// Compact this session: one summary turn over the history as it stands,
+    /// then the history is replaced by that summary through a transcript fork.
+    ///
+    /// The frame only *asks*; what happens next is the daemon's, and it is
+    /// disclosed on the session's own log — the summary turn streams like any
+    /// turn, and the forked transcript's first item says what replaced the
+    /// history. Queued like a prompt (it runs a turn) and accepted on a stale
+    /// `expected_seq` for the same reason.
+    CompactSession {
+        client_request_id: String,
+        expected_seq: u64,
     },
     /// Answer an open **permission**: grant or deny, by option id.
     ///
@@ -423,6 +446,14 @@ pub const REJECT_STALE_SEQ: &str = "stale expected_seq";
 /// queued is not news, while telling them that *another head's* prompt was queued
 /// is the whole point of §13.2's announcement.
 pub const NOTE_PROMPT_QUEUED: &str = "queued as a user item";
+/// The `note` on a `/compact` that was accepted with nothing unusual about it.
+///
+/// Distinct from [`NOTE_PROMPT_QUEUED`] on purpose: a compaction that lands
+/// behind an already-running turn happens **after** that turn, and the operator
+/// who asked for it should be able to tell "queued behind the running turn" from
+/// "queued as something the model will read" — the two notes are both a queue,
+/// but they are not the same queue.
+pub const NOTE_COMPACT_QUEUED: &str = "queued after the running turn";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
 /// A `Switch` or an `Attach` named a session this daemon does not hold.

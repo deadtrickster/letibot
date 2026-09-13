@@ -355,7 +355,9 @@ pub struct StoredSession {
     pub created_ms: i64,
     /// The newest transcript for this session, or `None` if it has none at all.
     pub transcript_id: Option<String>,
-    /// Rows across every transcript of this session.
+    /// Rows in the session's current (newest) transcript. Not every transcript's
+    /// rows summed: with forks, that would count the history a compaction just
+    /// stopped carrying.
     pub items: u32,
     /// When the last row was written, falling back to `created_ms` for a session
     /// nothing ran in. Never `Option`: "never used" is a time, not an absence, and
@@ -517,6 +519,50 @@ impl Store {
             .optional()?
             .ok_or_else(|| StoreError::NotFound(format!("stable_prefix {id}")))?;
         Ok((blob_to_tokens(&blob)?, blob_to_hash(&hash)?))
+    }
+
+    /// The whole stable-prefix row, for a caller rebuilding the prefix a session
+    /// was actually created with.
+    ///
+    /// A compaction fork keeps the session's own prefix rather than the one the
+    /// running daemon would render now — the same rule a resume follows — and
+    /// building that fork needs the record's `system` and `tools_json`, which the
+    /// token-and-hash getter above does not carry.
+    pub fn stable_prefix_record(&self, id: &str) -> Result<StablePrefixRecord> {
+        let (dialect_sha, system, tools_json, tokens, h_init, vocab_source): (
+            String,
+            String,
+            String,
+            Vec<u8>,
+            Vec<u8>,
+            String,
+        ) = self
+            .conn
+            .query_row(
+                "SELECT dialect_sha, system, tools_json, tokens, h_init, vocab_source
+                   FROM stable_prefix WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("stable_prefix {id}")))?;
+        Ok(StablePrefixRecord {
+            dialect_sha,
+            system,
+            tools_json: serde_json::from_str(&tools_json)?,
+            tokens: blob_to_tokens(&tokens)?,
+            h_init: blob_to_hash(&h_init)?,
+            vocab_source,
+        })
     }
 
     pub fn put_session(&self, rec: &SessionRecord) -> Result<()> {
@@ -704,14 +750,27 @@ impl Store {
     /// time. Those are exactly the sessions somebody wants to delete, and a list that
     /// hides them is a list that cannot be acted on.
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
+        // The "current transcript" subquery orders by `created_at DESC, rowid
+        // DESC`, and the rowid is not decoration: a compaction fork is written in
+        // the same millisecond as the transcript it forked from, and a
+        // created-at-only order breaks that tie arbitrarily — a resume could come
+        // back on the parent, putting the full history behind the next prompt.
+        // Insertion order is what "newest" means here.
+        //
+        // The item count is the **current transcript's** rows, not every
+        // transcript's: since forks exist, a cross-transcript count double-counts
+        // the history a compaction just stopped carrying, and a picker row that
+        // grew because the conversation got shorter is a lie.
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
                     s.created_at,
                     (SELECT t.id FROM transcript t
-                      WHERE t.session_id = s.id ORDER BY t.created_at DESC LIMIT 1),
+                      WHERE t.session_id = s.id
+                      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1),
                     (SELECT COUNT(*) FROM transcript_item i
-                       JOIN transcript t ON t.id = i.transcript_id
-                      WHERE t.session_id = s.id),
+                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
+                          WHERE t.session_id = s.id
+                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)),
                     (SELECT MAX(i.created_at) FROM transcript_item i
                        JOIN transcript t ON t.id = i.transcript_id
                       WHERE t.session_id = s.id),

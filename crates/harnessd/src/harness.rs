@@ -56,10 +56,10 @@ use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role,
     ToolRuntime, Tool, roles,
 };
-use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
+use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
-    Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine, TurnEvent,
-    TurnFailure, TurnMetrics, TurnOk,
+    CompactionOutcome, Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine,
+    TurnEvent, TurnFailure, TurnMetrics, TurnOk, run_compaction,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -556,8 +556,10 @@ fn monitor_notice(fired: &[Arc<letibot_tools::exec::monitor::Monitor>]) -> Strin
 
 impl SteeringSource for HubSteering {
     fn try_next(&mut self) -> Option<SteeringMessage> {
-        // The head first: somebody is waiting on it.
-        if let Some(cmd) = self.hub.try_command() {
+        // The head first: somebody is waiting on it. Steering-scoped, so a
+        // compaction queued behind this turn stays queued for the worker — see
+        // [`Hub::try_steering_command`].
+        if let Some(cmd) = self.hub.try_steering_command() {
             return match cmd.kind {
                 CommandKind::Prompt { text } => {
                     // The operator, typing into a running turn. This is the case
@@ -569,9 +571,9 @@ impl SteeringSource for HubSteering {
                     Some(SteeringMessage::normal(text))
                 }
                 CommandKind::Interrupt { reason } => Some(SteeringMessage::urgent(reason)),
-                // An answer with no open decision. The hub has already refused it
-                // at submit time in every case that matters.
-                CommandKind::Answer { .. } => None,
+                // Nothing else here: the filter above only hands over prompts and
+                // interrupts, and anything else stays queued for the worker.
+                _ => None,
             };
         }
         // Then anything this harness queued for the boundary.
@@ -617,6 +619,15 @@ pub struct Harness<'a> {
     hub: Arc<Hub>,
     store: Option<Store>,
     transcript_id: String,
+    /// The stable prefix **this transcript was built with** — which on a resume is
+    /// the session's own, not the one this daemon would render now. Compaction
+    /// forks with it, for the same reason a resume keeps it: rewriting message 0
+    /// is what forces a full cold re-prefill.
+    prefix: StablePrefix,
+    /// The store's content address for [`Harness::prefix`]. Empty when there is no
+    /// store, and never read in that case — compaction is refused before the id
+    /// would be used.
+    prefix_id: String,
     /// How many ledger rows have reached the store.
     persisted: usize,
     system_updates: u64,
@@ -671,6 +682,24 @@ pub struct ResumeReport {
     /// Anything about this resume the operator would otherwise find out later: a
     /// workspace that moved, a stable prefix that no longer matches the daemon's.
     pub notes: Vec<String>,
+}
+
+/// What a compaction fork actually did — numbers, not the word "compacted".
+///
+/// The same rule as [`ResumeReport`]: the claim is cheap and the evidence is what
+/// makes it checkable. `was_tokens` against `base_tokens` is the reduction an
+/// operator can see, and `parent_id` with `forked_at` is where the old
+/// conversation went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkReport {
+    pub transcript_id: String,
+    pub parent_id: String,
+    /// The session log's seq at the fork.
+    pub forked_at: u64,
+    /// The old transcript's token count, measured before anything was dropped.
+    pub was_tokens: usize,
+    /// The new base: the prefix plus the one summary item.
+    pub base_tokens: usize,
 }
 
 /// Whether the store already holds this transcript row.
@@ -1185,7 +1214,7 @@ impl<'a> Harness<'a> {
             _ => None,
         };
 
-        let (transcript_id, session, persisted, resume) = match resumed {
+        let (transcript_id, session, persisted, resume, prefix, prefix_id) = match resumed {
             Some((s, transcript_id)) => {
                 let loaded = s
                     .load_transcript(&transcript_id)
@@ -1241,6 +1270,17 @@ impl<'a> Harness<'a> {
                     ));
                 }
 
+                // The prefix the session's own tokens came from — the store's
+                // record, not the daemon's current render. A compaction fork keeps
+                // it, exactly as the resume itself does.
+                let own = s
+                    .stable_prefix_record(&loaded.stable_prefix_id)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+                let own_prefix = StablePrefix {
+                    system: own.system,
+                    tools_json: own.tools_json,
+                };
+
                 let rows = session.ledger.rows().len();
                 let report = ResumeReport {
                     transcript_id: transcript_id.clone(),
@@ -1250,13 +1290,21 @@ impl<'a> Harness<'a> {
                     workspace: cfg.workspace.display().to_string(),
                     notes: std::mem::take(&mut notes),
                 };
-                (transcript_id, session, rows, Some(report))
+                (
+                    transcript_id,
+                    session,
+                    rows,
+                    Some(report),
+                    own_prefix,
+                    loaded.stable_prefix_id,
+                )
             }
             None => {
                 let transcript_id = format!("{}#t0", cfg.session_id);
                 let session = engine
                     .open(&transcript_id, &prefix)
                     .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
+                let mut prefix_id = String::new();
                 if let Some(s) = &store {
                     let rec = StablePrefixRecord {
                         dialect_sha: dialect_sha.clone(),
@@ -1266,7 +1314,7 @@ impl<'a> Harness<'a> {
                         h_init: session.ledger.h_init(),
                         vocab_source: cfg.vocab_gguf.display().to_string(),
                     };
-                    let prefix_id = s
+                    prefix_id = s
                         .put_stable_prefix(&rec)
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
                     // `INSERT OR IGNORE`-shaped by hand: a session row may already be
@@ -1294,7 +1342,7 @@ impl<'a> Harness<'a> {
                             .map_err(|e| HarnessError::Store(e.to_string()))?;
                     }
                 }
-                (transcript_id, session, 0, None)
+                (transcript_id, session, 0, None, prefix, prefix_id)
             }
         };
 
@@ -1338,6 +1386,8 @@ impl<'a> Harness<'a> {
             hub,
             store,
             transcript_id,
+            prefix,
+            prefix_id,
             persisted,
             system_updates: 0,
             last_turn_id: String::new(),
@@ -1418,6 +1468,12 @@ impl<'a> Harness<'a> {
 
     pub fn ledger_head(&self) -> String {
         self.session.ledger_head()
+    }
+
+    /// The ledger's whole token count — prefix and body together — which is the
+    /// number a compaction is measured against.
+    pub fn ledger_len(&self) -> usize {
+        self.session.ledger.len()
     }
 
     /// The whole submitted token vector, for a caller that wants to check the
@@ -1555,6 +1611,118 @@ impl<'a> Harness<'a> {
             .wiring(self.cfg.effort.as_deref())
             .system_update(self.system_updates, text);
         self.submit_item(item)
+    }
+
+    /// **Compaction.** One summary turn, then the fork.
+    ///
+    /// The turn asks for the summary over the prefix the server is already holding
+    /// — that is the whole cache argument, and [`run_compaction`] carries it. If
+    /// the model answers by proposing tool calls, the fork is refused: a summary is
+    /// a record, not an action, and a summary turn that *worked* is a turn that did
+    /// something with nobody watching. The instruction and the turn stay in the
+    /// transcript either way — nothing is reduced until the fork lands, so a
+    /// refusal here leaves the session exactly as it was, and the next attempt
+    /// appends a fresh instruction over this one.
+    pub fn compact(&mut self) -> Result<ForkReport, HarnessError> {
+        let mut sink = CapturingSink::new(self.hub.clone());
+        let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
+            .map_err(HarnessError::Turn)?;
+        if outcome.tool_calls > 0 {
+            return Err(HarnessError::Setup(format!(
+                "the summary turn proposed {} tool call(s); a summary is a record, not an \
+                 action, so nothing was compacted. The transcript is unchanged apart from \
+                 the instruction and the turn themselves — try again.",
+                outcome.tool_calls
+            )));
+        }
+        self.fork_to_summary(&outcome)
+    }
+
+    /// **The fork.** Replace the resident history with one summary item, in a new
+    /// transcript the store links back to this one.
+    ///
+    /// Split from [`Harness::compact`] so it can be driven without a model server:
+    /// the summary turn needs one, this half needs only the vocabulary, the store
+    /// and the harness — so the store, resume-chain and ledger behaviour is
+    /// testable offline, and the turn side is tested in `letibot-turn`.
+    ///
+    /// The old transcript is persisted first and kept whole — compaction never
+    /// deletes anything, it stops *carrying* it. The new transcript's body is one
+    /// system-update item holding the summary; the next prompt is the prefix plus
+    /// that item, which is the cold re-prefill `docs/compaction.md` §3 says is
+    /// unavoidable, measured in tokens rather than minutes.
+    pub fn fork_to_summary(
+        &mut self,
+        outcome: &CompactionOutcome,
+    ) -> Result<ForkReport, HarnessError> {
+        let old_id = self.transcript_id.clone();
+        let was_tokens = self.session.ledger.len();
+        // The old transcript is flushed with the summary turn in it, and before the
+        // fork writes anything: a fork that dropped the turn that justified it
+        // would leave the store unable to say where the summary came from. With no
+        // store this is a no-op, and the refusal below is the only thing that
+        // happens.
+        self.persist()?;
+        let Some(store) = self.store.as_ref() else {
+            return Err(HarnessError::Setup(
+                "compaction needs a store to fork into; this session has none, so there \
+                 is nowhere to put the replacement history and nothing to link it to"
+                    .into(),
+            ));
+        };
+        let n: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
+                [self.cfg.session_id.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+        let new_id = format!("{}#t{}", self.cfg.session_id, n);
+        // The fork point is the session **log's** seq, which is what §5.5's
+        // `forked_at_seq` means: where in the session's event stream the divergence
+        // happened, not where in the transcript.
+        let forked_at = self.hub.head_seq();
+        store
+            .put_fork(
+                &new_id,
+                &self.cfg.session_id,
+                &self.prefix_id,
+                &old_id,
+                forked_at as u32,
+            )
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+        let mut next = self
+            .engine
+            .open(&new_id, &self.prefix)
+            .map_err(|e| HarnessError::Setup(format!("opening the compacted transcript: {e}")))?;
+        let note = TranscriptItem::System {
+            text: format!(
+                "This conversation was compacted: everything said before this point is \
+                 replaced by the summary below, which was written over the full history \
+                 of transcript {old_id} and proposed no tool calls.\n\n{}",
+                outcome.summary
+            ),
+            origin: SystemOrigin::Update,
+        };
+        let mut sink = CapturingSink::new(self.hub.clone());
+        next.append_items(&self.engine, std::slice::from_ref(&note), &mut sink)?;
+        // The swap is the point of no return, and it is deliberately **after** every
+        // store write that could fail: a harness that swapped and then could not
+        // persist would be a session whose transcript row exists but whose body does
+        // not, which is the one state a resume cannot rebuild honestly.
+        self.session = next;
+        self.transcript_id = new_id.clone();
+        self.persisted = 0;
+        self.reconcile(&mut sink, std::slice::from_ref(&note));
+        self.persist()?;
+        Ok(ForkReport {
+            transcript_id: new_id,
+            parent_id: old_id,
+            forked_at,
+            was_tokens,
+            base_tokens: self.session.ledger.len(),
+        })
     }
 
     fn submit_item(&mut self, item: TranscriptItem) -> Result<Reply, HarnessError> {

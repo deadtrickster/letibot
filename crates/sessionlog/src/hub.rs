@@ -84,6 +84,12 @@ pub struct QueuedCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandKind {
     Prompt { text: String },
+    /// Compact the session: one summary turn, then the history is replaced by
+    /// that summary through a transcript fork. Serialized on the queue like a
+    /// prompt — it *is* a turn — and accepted on a stale `expected_seq` for the
+    /// same reason a prompt is: a head that asked while the screen moved still
+    /// meant it.
+    Compact,
     Interrupt { reason: String },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
@@ -163,6 +169,7 @@ impl CommandKind {
     fn verb(&self) -> &'static str {
         match self {
             CommandKind::Prompt { .. } => "prompt",
+            CommandKind::Compact => "compact",
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
         }
@@ -676,6 +683,10 @@ impl Hub {
                     format!("{REJECT_STALE_SEQ}: queued anyway as a follow-up user item")
                 }
                 (CommandKind::Prompt { .. }, false) => crate::protocol::NOTE_PROMPT_QUEUED.into(),
+                (CommandKind::Compact, true) => {
+                    format!("{REJECT_STALE_SEQ}: queued anyway")
+                }
+                (CommandKind::Compact, false) => crate::protocol::NOTE_COMPACT_QUEUED.into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
@@ -792,6 +803,25 @@ impl Hub {
     /// Non-blocking form, for a worker that also has other things to do.
     pub fn try_command(&self) -> Option<QueuedCommand> {
         self.lock().commands.pop_front()
+    }
+
+    /// The next command a **running turn** can act on, leaving the rest queued.
+    ///
+    /// Mid-turn steering may consume a prompt (a follow-up user item) or an
+    /// interrupt. Everything else belongs to the between-turn worker, and popping
+    /// it here would lose it: the worker is inside the very turn that is polling,
+    /// and would never see a command this path swallowed. Scanned rather than
+    /// popped-and-dropped for exactly that reason — a [`CommandKind::Compact`]
+    /// queued behind a running turn must still be there when the turn ends.
+    pub fn try_steering_command(&self) -> Option<QueuedCommand> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len()).find(|&i| {
+            matches!(
+                g.commands[i].kind,
+                CommandKind::Prompt { .. } | CommandKind::Interrupt { .. }
+            )
+        })?;
+        g.commands.remove(i)
     }
 
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`].

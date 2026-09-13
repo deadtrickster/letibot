@@ -327,6 +327,10 @@ fn run() -> Result<i32, String> {
             "  {session} · {} -> {} round(s), {} tool call(s)",
             cmd.identity, r.rounds, r.tool_calls
         ),
+        Outcome::Compacted(r) => eprintln!(
+            "  {session} · {} -> compacted, base {} -> {} tokens (transcript {})",
+            cmd.identity, r.was_tokens, r.base_tokens, r.transcript_id
+        ),
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}
     });

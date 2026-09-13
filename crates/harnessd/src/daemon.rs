@@ -211,6 +211,9 @@ impl Daemon {
                         "  {session_id} · monitor -> {} round(s), {} tool call(s)",
                         r.rounds, r.tool_calls
                     ),
+                    // A wake never compacts; the arm exists because the outcome is
+                    // the worker's one vocabulary.
+                    Outcome::Compacted(_) => {}
                     Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
                     Outcome::Ignored => {}
                 },

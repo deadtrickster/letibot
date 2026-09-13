@@ -44,7 +44,7 @@ use letibot_tokencore::store::Store;
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
-use crate::harness::{Harness, HarnessError, Parts, Reply};
+use crate::harness::{ForkReport, Harness, HarnessError, Parts, Reply};
 
 /// How long a monitor waiter blocks before re-checking whether the daemon is
 /// shutting down.
@@ -61,6 +61,9 @@ const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// What the worker did with one command.
 pub enum Outcome {
     Replied(Box<Reply>),
+    /// The session was compacted: one summary turn, then a transcript fork.
+    /// The report is the evidence, not the word.
+    Compacted(Box<ForkReport>),
     Failed(String),
     Ignored,
 }
@@ -255,6 +258,33 @@ impl<'a> Sessions<'a> {
         self.open.get(session_id)
     }
 
+    /// Compact a session: the summary turn, then the transcript fork.
+    ///
+    /// The same shape as [`Sessions::submit`] — open-or-reuse the harness, run,
+    /// publish a failure on the session's own log — because a compaction is a turn
+    /// with a fork behind it, not a different kind of thing. No title derivation
+    /// and no wake-arming: a summary proposes nothing and monitors do not fire on
+    /// it.
+    pub fn compact(&mut self, session_id: &str) -> Result<ForkReport, HarnessError> {
+        let hub = self.registry.get(session_id);
+        let harness = self.harness(session_id)?;
+        let out = harness.compact();
+        match out {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                let turn_id = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.last_turn_id().to_string())
+                    .unwrap_or_default();
+                if let Some(hub) = &hub {
+                    publish_failure(hub, &turn_id, &e);
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// **Arm the monitor wake for a session that has declared one.** T24's
     /// *"wakes the loop when it fires"*, which had no caller.
     ///
@@ -384,22 +414,25 @@ impl<'a> Sessions<'a> {
     /// Run one command against its session.
     pub fn dispatch(&mut self, session_id: &str, cmd: &QueuedCommand) -> Outcome {
         let hub = self.registry.get(session_id);
-        let harness = match self.harness(session_id) {
-            Ok(h) => h,
-            Err(e) => {
-                if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "session_unavailable".into(),
-                        detail: format!(
-                            "this session could not be opened, so nothing was run: {e}"
-                        ),
-                    });
-                }
-                return Outcome::Failed(e.to_string());
-            }
-        };
         match &cmd.kind {
             CommandKind::Prompt { text } => {
+                // Opened here rather than for the whole match: only a prompt needs
+                // the harness held across the call, and a held borrow would stop a
+                // compaction from re-entering `self.open`.
+                let harness = match self.harness(session_id) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        if let Some(hub) = &hub {
+                            hub.publish(SessionEvent::Warning {
+                                code: "session_unavailable".into(),
+                                detail: format!(
+                                    "this session could not be opened, so nothing was run: {e}"
+                                ),
+                            });
+                        }
+                        return Outcome::Failed(e.to_string());
+                    }
+                };
                 let out = match harness.submit(text) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => {
@@ -421,9 +454,14 @@ impl<'a> Sessions<'a> {
                 self.arm_wake(session_id);
                 out
             }
-            // Between turns there is nothing to interrupt. Announced rather than
-            // dropped: "I pressed the key and nothing happened" is the report this
-            // avoids.
+            // A compaction is a whole-session act and runs through
+            // [`Sessions::compact`], as a prompt runs through
+            // [`Sessions::submit`] — which also opens its harness, so nothing here
+            // holds one.
+            CommandKind::Compact => match self.compact(session_id) {
+                Ok(r) => Outcome::Compacted(Box::new(r)),
+                Err(e) => Outcome::Failed(e.to_string()),
+            },
             CommandKind::Interrupt { reason } => {
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
