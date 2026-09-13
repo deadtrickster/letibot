@@ -871,6 +871,13 @@ impl<'a> Harness<'a> {
             }
         }
 
+        // leticode's opencode parity — and a subagent's inheritance of it — is a fact
+        // of the *session*, not of the seat. A subagent re-seats to `coder` for its
+        // tools, so the seat alone would re-confine it to a project its parent left.
+        // Resolve it once here, before the backend, so it is in the `cfg` a subagent
+        // clones as its base.
+        cfg.unconfined = cfg.unconfined || cfg.seat == Seat::Leticode;
+
         // **The backend the seat needs, and the constructor is the disclosure.**
         //
         // Four constructors and each is spelled out so `grep -rn
@@ -893,7 +900,7 @@ impl<'a> Harness<'a> {
         // roots its backend at `/` (unconfined, no namespaces) and leaves the gating to
         // the permission ruleset and the mode. `backend_confined` records which case it
         // was, so the mode's `Confinement` prerequisite is a fact rather than a guess.
-        let (backend, backend_confined): (HostBackend, bool) = if cfg.seat == Seat::Leticode {
+        let (backend, backend_confined): (HostBackend, bool) = if cfg.unconfined {
             let b = if cfg.allow_bash {
                 HostBackend::executable("/")
             } else {
@@ -2688,7 +2695,7 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// reading the environment is a decision at a call site.
 fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
-    if cfg.seat.needs_exec_backend() {
+    if cfg.seat.needs_exec_backend() && !cfg.unconfined {
         env.with_pinned_shell(
             "the exec backend spawns /bin/sh -c, non-interactive, with the \
              environment cleared before its own pairs; PATH is the one fixed at \

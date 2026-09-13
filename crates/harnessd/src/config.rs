@@ -184,6 +184,14 @@ pub struct Config {
     /// session. Recorded into the store so a subagent tree is a fact on disk, not an
     /// id convention a picker has to reverse-engineer.
     pub parent_session_id: Option<String>,
+    /// Whether this session's backend is rooted at `/` — opencode parity: `read`
+    /// reaches the whole host and the permission ruleset, not a jail, is the gate.
+    ///
+    /// Set for [`Seat::Leticode`], and **inherited by its subagents**: a subagent
+    /// re-seats to [`Seat::Coder`] for its tools but must not be re-confined to a
+    /// project its parent already left. A subagent of a coder session stays confined,
+    /// because its parent is.
+    pub unconfined: bool,
     /// A human name for the session, or empty.
     ///
     /// Empty is the default and a head then shows the id. Deliberately **not**
@@ -446,6 +454,7 @@ impl Config {
             store: None,
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
+            unconfined: false,
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
