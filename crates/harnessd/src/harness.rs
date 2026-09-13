@@ -2538,6 +2538,13 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
             }
             r
         }
+        Seat::Leticode => {
+            let mut r = roles::leticode();
+            if !cfg.allow_bash {
+                r.tools.retain(|t| t != "bash");
+            }
+            r
+        }
     }
 }
 

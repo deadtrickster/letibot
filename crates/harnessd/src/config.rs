@@ -85,6 +85,12 @@ pub enum Seat {
     /// behind [`Config::allow_bash`] — `bash`. **Confined backend, never
     /// `HostBackend::executable`.**
     Runner,
+    /// leticode's seat: opencode's tool union by opencode's names — `read`, `write`,
+    /// `edit`, `grep`, `glob`, `todo_write`, `skill`, `lsp`, `task`, plus `bash`
+    /// behind [`Config::allow_bash`]. This is the seat that can spawn a subagent
+    /// (`task`). Writable backend; `bash` and `lsp` need a process host, so it
+    /// shares the confined backend with `coder` and `runner`.
+    Leticode,
 }
 
 impl Seat {
@@ -95,6 +101,7 @@ impl Seat {
             Seat::Researcher => "researcher",
             Seat::Coder => "coder",
             Seat::Runner => "runner",
+            Seat::Leticode => "leticode",
         }
     }
 
@@ -108,9 +115,10 @@ impl Seat {
             "researcher" => Ok(Seat::Researcher),
             "coder" => Ok(Seat::Coder),
             "runner" => Ok(Seat::Runner),
+            "leticode" | "opencode" => Ok(Seat::Leticode),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \
-                 researcher, coder, runner"
+                 researcher, coder, runner, leticode"
             )),
         }
     }
@@ -122,7 +130,7 @@ impl Seat {
     /// those — and this is what decides which constructor to call before the
     /// schemas exist.
     pub fn needs_writable_backend(self) -> bool {
-        matches!(self, Seat::Planner | Seat::Coder | Seat::Runner)
+        matches!(self, Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode)
     }
 
     /// Whether this seat needs a backend that can start processes, and therefore
@@ -139,7 +147,7 @@ impl Seat {
         //
         // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
         // the capability arrives because somebody typed it.
-        matches!(self, Seat::Runner | Seat::Coder)
+        matches!(self, Seat::Runner | Seat::Coder | Seat::Leticode)
     }
 
     /// The read-only grants this seat needs to be useful, beyond the project.
@@ -1074,11 +1082,13 @@ mod tests {
     #[test]
     fn an_unknown_role_is_refused_with_the_list() {
         let e = Seat::parse("codre").unwrap_err();
-        for known in ["orchestrator", "planner", "researcher", "coder", "runner"] {
+        for known in ["orchestrator", "planner", "researcher", "coder", "runner", "leticode"] {
             assert!(e.contains(known), "{e}");
         }
         assert_eq!(Seat::parse("coder").unwrap(), Seat::Coder);
         assert_eq!(Seat::parse("runner").unwrap(), Seat::Runner);
+        assert_eq!(Seat::parse("leticode").unwrap(), Seat::Leticode);
+        assert_eq!(Seat::parse("opencode").unwrap(), Seat::Leticode);
     }
 
     /// The model adjudicator is **named as unwired**, not silently missing.
