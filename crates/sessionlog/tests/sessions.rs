@@ -87,6 +87,7 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::Hello { session_id, .. } => format!("Hello({session_id})"),
         ServerFrame::Event(e) => format!("Event({})", e.event.kind()),
         ServerFrame::Sessions { current, .. } => format!("Sessions(current={current})"),
+        ServerFrame::Todos { session_id, .. } => format!("Todos({session_id})"),
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),

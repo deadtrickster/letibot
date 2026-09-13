@@ -169,6 +169,21 @@ pub fn read_only_tools(
     Ok(reg)
 }
 
+/// Add the session tool (`todo_write`) to a registry.
+///
+/// It is not in [`read_only_tools`] because its board is the session's own, restored
+/// from the store: the real harness passes the restored board, and a test passes an
+/// empty one. The read-only roles name `todo_write`, so any registry they are
+/// resolved against has to include it — this is the one registration that makes
+/// those roles resolvable, and the one the harness and the test harness share.
+pub fn with_session_tools(
+    mut reg: Registry,
+    board: std::sync::Arc<builtins::todo::TodoBoard>,
+) -> Result<Registry, RegisterError> {
+    reg.register(Box::new(builtins::todo::TodoWriteTool::new(board)))?;
+    Ok(reg)
+}
+
 /// Add the tools that need infrastructure this box does not run.
 ///
 /// `web_search`, `web_fetch` and `github`, over whatever [`ExternalBackends`] the
@@ -263,15 +278,16 @@ mod tests {
     fn the_m1_tool_set_fits_under_the_ceiling() {
         // §8.4 is a hard stop, not a guideline, and the set that ships must be
         // seatable by the role that ships it.
-        let mut reg = read_only_tools(std::sync::Arc::new(builtins::retrieval::Unavailable))
+        let reg = read_only_tools(std::sync::Arc::new(builtins::retrieval::Unavailable))
             .expect("the read-only registry");
         // `todo_write` is a session tool, not a read-only one, so it is not in
         // `read_only_tools` — but the role names it, so the registry the role is
         // resolved against has to know it. That is exactly the failure shape the
         // ceiling test exists to catch: a role that names a tool nobody registers.
-        reg.register(Box::new(builtins::todo::TodoWriteTool::new(
+        let reg = with_session_tools(
+            reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
-        )))
+        )
         .expect("todo_write registers");
         assert!(reg.len() <= DEFAULT_MAX_TOOLS, "{} tools", reg.len());
         let seated = reg.resolve_role(&roles::m1_orchestrator()).unwrap();

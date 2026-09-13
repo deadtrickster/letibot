@@ -79,18 +79,26 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
     // render byte-identically whether or not the network tools exist in the build,
     // or shipping this re-prefills every conversation that is already warm — which
     // is the cost §5.2 keeps naming.
-    let plain = letibot_tools::read_only_tools(std::sync::Arc::new(
-        letibot_tools::builtins::retrieval::Unavailable,
-    ))
+    let plain = letibot_tools::with_session_tools(
+        letibot_tools::read_only_tools(std::sync::Arc::new(
+            letibot_tools::builtins::retrieval::Unavailable,
+        ))
+        .unwrap(),
+        std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+    )
     .unwrap()
     .resolve_role(&roles::m1_orchestrator())
     .unwrap()
     .tools_json();
 
     let with_network = letibot_tools::external_tools(
-        letibot_tools::read_only_tools(std::sync::Arc::new(
-            letibot_tools::builtins::retrieval::Unavailable,
-        ))
+        letibot_tools::with_session_tools(
+            letibot_tools::read_only_tools(std::sync::Arc::new(
+                letibot_tools::builtins::retrieval::Unavailable,
+            ))
+            .unwrap(),
+            std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+        )
         .unwrap(),
         &ExternalBackends::unattached(),
     )

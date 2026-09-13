@@ -341,6 +341,14 @@ fn build_ext(
             crate::read_only_tools(retrieval).expect("built-ins register"),
         )
     };
+    // The session tool rides every registry, exactly as the real harness seats it:
+    // the read-only roles name `todo_write`, so a registry they resolve against has
+    // to include it. An empty board — these tests are not about the todo pane.
+    let registry = crate::with_session_tools(
+        registry,
+        Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
+    )
+    .expect("todo_write registers");
     // Registered, not seated: a role is what a session's prompt carries, and these
     // three plus the read-only seven are over §8.4's ceiling.
     let (registry, mount) = match &external {
