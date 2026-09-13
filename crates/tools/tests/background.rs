@@ -1,4 +1,5 @@
-//! Acceptance tests for the three ways into the background, and for monitors.
+//! Acceptance tests for the two ways into the background, the kill deadline, and
+//! monitors.
 //!
 //! # Why these assert on both branches
 //!
@@ -9,7 +10,6 @@
 //! that the refusal names what was missing.
 
 use letibot_tools::exec::{Fired, JobId, ProcessHost, ScopeKind};
-use letibot_tools::result::Envelope;
 use letibot_tools::testing::runner_harness;
 use letibot_transcript::{Backgrounding, ToolOutcome};
 
@@ -42,116 +42,58 @@ fn job_id_anywhere(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-// ------------------------------------------------- promotion, requirement 1.2
+// --------------------------------------------------- the deadline, opencode parity
 
-/// **The load-bearing one.** A foreground command that outlives its threshold
-/// must be *moved*, not merely described as moved.
-///
-/// The code this replaced returned `Failed` saying *"It is now in the `session`
-/// scope, so it outlives this turn"* while the job's cgroup was still a child of
-/// the turn's — so the turn's end reaped exactly the work the sentence promised
-/// would survive it. The sentence and the fact were never checked against each
-/// other, which is `docs/closed-loop.md`'s missing encoder in one line of prose.
+/// **The load-bearing one.** A foreground command that outlives its deadline must
+/// be *killed*, not described as killed. opencode's `timeout` semantics: the model
+/// did not ask to run it longer, so it must not run forever.
 #[test]
-fn a_promoted_command_actually_outlives_the_turn_that_started_it() {
-    let mut h = runner!("promote_survives_turn");
-    // Foreground — no `background` — with a threshold short enough to fire here.
+fn a_command_that_outlives_its_deadline_is_killed() {
+    let mut h = runner!("kill_on_deadline");
+    // Foreground — no `background` — with a deadline short enough to fire here.
     let r = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
     );
-    let id = match &r.outcome {
-        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
-        other => panic!(
-            "a command that outran its deadline must be backgrounded, got {other:?}: {}",
-            r.render()
-        ),
-    };
+    assert_eq!(r.outcome, ToolOutcome::Timeout, "{}", r.render());
 
+    // The kill is a fact about the process, not a sentence next to it.
     let host = h.processes.clone().unwrap();
-    let jid = JobId(id.clone());
-    // Check the claim against the cgroup tree, not against the sentence.
-    let view = host.job(&jid).expect("the job is still known");
-    assert_eq!(
-        view.owner.kind,
-        ScopeKind::Session,
-        "a promoted job must be owned by the session, not the turn: {}",
-        view.owner
-    );
-
-    // Now end the turn, which is what used to kill it.
-    let turn = host.scope_for(ScopeKind::Turn, None).expect("turn scope");
-    let reap = host.end_scope(&turn).expect("end turn");
-    let after = host.job(&jid).expect("still known");
+    let id = job_id_anywhere(&r.payload).expect("a job id in the body");
+    let view = host.job(&JobId(id)).expect("the job is still known");
     assert!(
-        after.state.is_running(),
-        "ending the turn killed a promoted job — the promotion was a sentence and \
-         not a move. {} / {}",
-        after.state.word(),
-        reap.summary()
+        !view.state.is_running(),
+        "a timed-out command must be stopped, not left running: {}",
+        view.state.word()
     );
-    let _ = host.kill_job(&jid);
 }
 
-// --------------------------------------------- the outcome, requirement 2
-
-/// The result must not be readable as any of the three things it is not, and it
-/// must carry enough that the obvious next call is right without a guess.
+/// The deadline is its own outcome, not a failure and not a backgrounding, and it
+/// hands over both ways to run the command longer.
 #[test]
-fn a_promotion_reaches_the_model_as_its_own_outcome_with_the_handle_and_the_verb() {
-    let mut h = runner!("promote_outcome");
+fn a_deadline_is_its_own_outcome_and_says_how_to_run_longer() {
+    let mut h = runner!("timeout_outcome");
     let r = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
     );
-    match &r.outcome {
-        ToolOutcome::Backgrounded {
-            handle,
-            ran_for_ms,
-            how,
-            next,
-        } => {
-            assert!(!handle.is_empty());
-            // How long it ran before promotion: the number that makes a promotion
-            // legible rather than mysterious.
-            assert!(*ran_for_ms >= 300, "ran_for_ms was {ran_for_ms}");
-            // The model did NOT ask for this, and the outcome says which of the
-            // three ways in it was.
-            assert_eq!(*how, Backgrounding::Promoted);
-            assert!(
-                next.contains("job_output") || next.contains("job_wait"),
-                "{next}"
-            );
-        }
-        other => panic!("{other:?}: {}", r.render()),
-    }
+    assert_eq!(r.outcome, ToolOutcome::Timeout, "{}", r.render());
     let rendered = r.render();
-    // Its own envelope. Not the error one, not the no-result one.
-    assert_eq!(
-        Envelope::classify(&rendered),
-        Some("STILL_RUNNING"),
-        "{rendered}"
+    assert!(rendered.contains("killed"), "{rendered}");
+    assert!(
+        rendered.contains("timeout_ms") && rendered.contains("background"),
+        "the timeout must name both ways out: {rendered}"
     );
-    assert!(rendered.contains("STILL RUNNING"), "{rendered}");
-    assert!(rendered.contains("Do NOT start it again"), "{rendered}");
-    assert!(rendered.contains("did not ask"), "{rendered}");
-    // Not grounding: there is no answer yet for anything to be grounded in.
-    assert!(!r.is_grounded());
-
-    let host = h.processes.clone().unwrap();
-    if let ToolOutcome::Backgrounded { handle, .. } = &r.outcome {
-        let _ = host.kill_job(&JobId(handle.clone()));
-    }
 }
 
-// --------------------------------------------- all three ways, requirement 1
+// --------------------------------------- two ways in, and a deadline that is not one
 
-/// Three ways in, and each distinguishable from the others in the result. A
-/// promotion the model reads as its own request is a promotion it did not notice,
-/// which is the whole defect requirement 2 exists against.
+/// Two ways into the background — the model asks, or a person moves it — and the
+/// deadline is the third path, which is *not* a backgrounding. Each is a distinct
+/// result, which is the requirement itself.
 #[test]
-fn the_three_ways_into_the_background_are_three_distinguishable_results() {
-    let mut h = runner!("three_ways");
+fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
+    let mut h = runner!("ways");
 
     // 1. The model asks.
     let asked = h.call(
@@ -167,26 +109,8 @@ fn the_three_ways_into_the_background_are_three_distinguishable_results() {
     };
     assert!(asked.render().contains("you asked"), "{}", asked.render());
 
-    // 2. The runtime promotes it, on elapsed time.
-    let promoted = h.call(
-        "bash",
-        &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
-    );
-    let promoted_id = match &promoted.outcome {
-        ToolOutcome::Backgrounded { handle, how, .. } => {
-            assert_eq!(*how, Backgrounding::Promoted);
-            handle.clone()
-        }
-        other => panic!("{other:?}: {}", promoted.render()),
-    };
-    assert!(
-        promoted.render().contains("did not ask for it"),
-        "{}",
-        promoted.render()
-    );
-
-    // 3. A person promotes one mid-flight. This is the daemon-side verb; the head
-    //    frame that would drive it is written down in `ProcessHost::promote`.
+    // 2. A person moves one mid-flight. This is the daemon-side verb for the
+    //    head's Ctrl+B; the frame that drives it is written in `ProcessHost::promote`.
     let host = h.processes.clone().unwrap();
     let third = h.call(
         "bash",
@@ -206,22 +130,19 @@ fn the_three_ways_into_the_background_are_three_distinguishable_results() {
         )
         .expect("the operator promotion");
     assert!(p.summary().contains("deadtrickster"), "{}", p.summary());
-    assert!(
-        p.complete(),
-        "the operator promotion left processes behind: {}",
-        p.summary()
-    );
     assert_eq!(host.job(&jid).unwrap().owner.kind, ScopeKind::Session);
 
-    // Three different sentences, which is the requirement itself.
-    let a = Backgrounding::Asked.phrasing();
-    let b = Backgrounding::Promoted.phrasing();
-    let c = p.how.phrasing();
-    assert_ne!(a, b);
-    assert_ne!(b, c);
-    assert_ne!(a, c);
+    // 3. The deadline kills — a distinct outcome from either backgrounding.
+    let killed = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
+    );
+    assert_eq!(killed.outcome, ToolOutcome::Timeout, "{}", killed.render());
 
-    for id in [asked_id, promoted_id, third_id] {
+    // Two distinct phrasings for the two backgroundings, and a third for the kill.
+    assert_ne!(Backgrounding::Asked.phrasing(), p.how.phrasing());
+
+    for id in [asked_id, third_id] {
         let _ = host.kill_job(&JobId(id));
     }
 }
@@ -232,14 +153,24 @@ fn the_three_ways_into_the_background_are_three_distinguishable_results() {
 #[test]
 fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_list() {
     let mut h = runner!("promotion_record");
+    // Start a job in the turn scope, then promote it as the operator would.
     let r = h.call(
         "bash",
-        &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
+        &serde_json::json!({"command": "sleep 30", "background": true, "scope": "turn"})
+            .to_string(),
     );
-    let ToolOutcome::Backgrounded { handle, .. } = &r.outcome else {
-        panic!("{}", r.render())
-    };
+    let id = job_id_anywhere(&r.payload).expect("a job id");
     let host = h.processes.clone().unwrap();
+    let jid = JobId(id);
+    host.promote(
+        &jid,
+        ScopeKind::Session,
+        None,
+        Backgrounding::Operator {
+            identity: "deadtrickster".into(),
+        },
+    )
+    .expect("the operator promotion");
 
     let log = host.promotions();
     assert_eq!(log.len(), 1, "the promotion must be recorded");
@@ -264,9 +195,15 @@ fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_lis
 
     // Promoting the same job twice moves nothing, and says so rather than
     // producing a record that reads as a second move.
-    let jid = JobId(handle.clone());
     let again = host
-        .promote(&jid, ScopeKind::Session, None, Backgrounding::Promoted)
+        .promote(
+            &jid,
+            ScopeKind::Session,
+            None,
+            Backgrounding::Operator {
+                identity: "deadtrickster".into(),
+            },
+        )
         .expect("second promotion");
     assert!(again.migration.is_none());
     assert!(

@@ -78,6 +78,18 @@ impl Invocation {
         }
     }
 
+    /// **The deadline passed and the command was killed.** opencode's `timeout`
+    /// semantics: the process is not left running in the background, it is
+    /// terminated, and the payload says how to ask for more time.
+    pub fn timed_out(payload: impl Into<String>) -> Self {
+        Invocation {
+            outcome: ToolOutcome::Timeout,
+            payload: payload.into(),
+            notes: Vec::new(),
+            edit: None,
+        }
+    }
+
     /// **Nothing ran.** Not a denial, not an abstention, not a failure — see
     /// [`crate::attach`], which is where the sentence a tool puts in `why` is
     /// built so that every tool with nothing behind it produces the same shape.
