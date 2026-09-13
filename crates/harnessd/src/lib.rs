@@ -93,6 +93,7 @@ pub mod harness;
 pub mod modes;
 pub mod progress;
 pub mod sessions;
+pub mod tasks;
 
 pub use answers::{Answers, HeadAdjudicator};
 pub use modes::ModeStore;
@@ -101,3 +102,4 @@ pub use daemon::Daemon;
 pub use sessions::{Outcome, Sessions};
 pub use dialect::{Dialect, Wiring};
 pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
+pub use tasks::{TaskEntry, TaskJournal};

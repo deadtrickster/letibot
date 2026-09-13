@@ -110,6 +110,9 @@ pub struct Parts {
     /// daemon. Wrapped in a lock because the `/mode` command writes it at run time
     /// while session opens read it. See `D13`.
     pub mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
+    /// The subagent (task) journal, shared with every subagent runner so spawns and
+    /// finishes land in one place and reach the dashboard's state file.
+    pub tasks: std::sync::Arc<crate::tasks::TaskJournal>,
 }
 
 impl Parts {
@@ -126,6 +129,9 @@ impl Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
             mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open())),
+            tasks: std::sync::Arc::new(crate::tasks::TaskJournal::new(
+                crate::tasks::default_state_path(),
+            )),
         })
     }
 }
@@ -971,6 +977,7 @@ impl<'a> Harness<'a> {
                 mode_store: parts.mode_store.clone(),
                 registry: session_registry.clone(),
                 base: cfg.clone(),
+                tasks: parts.tasks.clone(),
             });
         registry = letibot_tools::with_session_tools(registry, todo_board.clone(), task_runner)
             .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
@@ -2402,6 +2409,9 @@ struct HarnessTaskRunner {
     /// [`Harness::open_with_registry`] before this was built. Cloned as the base for
     /// each sub session; only the id, title and seat are overridden.
     base: Config,
+    /// The shared subagent journal, so a spawn and its finish reach the dashboard's
+    /// state file.
+    tasks: Arc<crate::tasks::TaskJournal>,
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
@@ -2412,12 +2422,47 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // resets, and a collision would resume the old subagent instead of spawning a
         // new one). The title is the subtask's first line, so a picker row says what
         // the subagent was for.
+        let spawned = std::time::Instant::now();
         let sub_id = format!(
             "{}-sub-{}",
             self.base.session_id,
             letibot_sessionlog::registry::now_ms()
         );
         let title = derive_title(prompt);
+        // The subagent seats the coder tools. `role` is honoured where it names a
+        // real seat; anything else is coder, which is the `task` tool's own default.
+        let seat = match role {
+            "orchestrator" => Seat::Orchestrator,
+            _ => Seat::Coder,
+        };
+        let parent = self.base.session_id.clone();
+
+        // The dashboard's tasks panel: record the spawn up front so it shows
+        // "running" through the open and the child turn, then its finish.
+        self.tasks.record(crate::tasks::TaskEntry {
+            name: sub_id.clone(),
+            role: seat.as_str().to_string(),
+            state: "running".into(),
+            tokens: 0,
+            elapsed: 0.0,
+            prompt: title.clone(),
+            parent: parent.clone(),
+        });
+        // Every early return from here on records the failure rather than leaving a
+        // "running" row forever.
+        let fail = |why: String| {
+            self.tasks.record(crate::tasks::TaskEntry {
+                name: sub_id.clone(),
+                role: seat.as_str().to_string(),
+                state: "failed".into(),
+                tokens: 0,
+                elapsed: spawned.elapsed().as_secs_f64(),
+                prompt: why.clone(),
+                parent: parent.clone(),
+            });
+            why
+        };
+
         let wiring = letibot_sessionlog::registry::SessionWiring {
             model: self.base.model.clone(),
             dialect: self.base.dialect.name().to_string(),
@@ -2427,17 +2472,11 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let sub_hub = self
             .registry
             .create(sub_id.clone(), title.clone(), wiring)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| fail(e.to_string()))?;
 
-        // The subagent seats the coder tools. `role` is honoured where it names a
-        // real seat; anything else is coder, which is the `task` tool's own default.
-        let seat = match role {
-            "orchestrator" => Seat::Orchestrator,
-            _ => Seat::Coder,
-        };
         let sub_cfg = Config {
-            session_id: sub_id,
-            title,
+            session_id: sub_id.clone(),
+            title: title.clone(),
             seat,
             ..self.base.clone()
         };
@@ -2448,6 +2487,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             vocab: self.vocab.clone(),
             wiring: self.wiring.clone(),
             mode_store: self.mode_store.clone(),
+            tasks: self.tasks.clone(),
         };
 
         let mut sub = Harness::open_with_registry(
@@ -2458,9 +2498,19 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             None,
             self.registry.clone(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| fail(e.to_string()))?;
 
-        let reply = sub.submit(prompt).map_err(|e| e.to_string())?;
+        let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
+        let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
+        self.tasks.record(crate::tasks::TaskEntry {
+            name: sub_id,
+            role: seat.as_str().to_string(),
+            state: "done".into(),
+            tokens,
+            elapsed: spawned.elapsed().as_secs_f64(),
+            prompt: reply.text.lines().next().unwrap_or("").to_string(),
+            parent,
+        });
         Ok(reply.text)
     }
 }
