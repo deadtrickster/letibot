@@ -113,6 +113,12 @@ pub struct Parts {
     /// The subagent (task) journal, shared with every subagent runner so spawns and
     /// finishes land in one place and reach the dashboard's state file.
     pub tasks: std::sync::Arc<crate::tasks::TaskJournal>,
+    /// The language servers this daemon can reach, shared with the `lsp` tool and
+    /// the dashboard's `lsp` panel.
+    pub lsp: std::sync::Arc<letibot_tools::builtins::lsp::LspConfig>,
+    /// The loaded skills, shared with the `skill` tool and the dashboard's `skills`
+    /// panel.
+    pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
 }
 
 impl Parts {
@@ -125,13 +131,20 @@ impl Parts {
         }
         let vocab = Vocab::load(&cfg.vocab_gguf)
             .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?;
+        let skills = std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
+        let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
+        let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
+            crate::tasks::default_state_path(),
+            lsp.clone(),
+            skills.clone(),
+        ));
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
             mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open())),
-            tasks: std::sync::Arc::new(crate::tasks::TaskJournal::new(
-                crate::tasks::default_state_path(),
-            )),
+            tasks,
+            lsp,
+            skills,
         })
     }
 }
@@ -978,9 +991,17 @@ impl<'a> Harness<'a> {
                 registry: session_registry.clone(),
                 base: cfg.clone(),
                 tasks: parts.tasks.clone(),
+                skills: parts.skills.clone(),
+                lsp: parts.lsp.clone(),
             });
-        registry = letibot_tools::with_session_tools(registry, todo_board.clone(), task_runner)
-            .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
+        registry = letibot_tools::with_session_tools(
+            registry,
+            todo_board.clone(),
+            task_runner,
+            parts.skills.clone(),
+            parts.lsp.clone(),
+        )
+        .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
             .register(Box::new(letibot_tools::builtins::write::Write))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::edit::Edit)))
@@ -1412,6 +1433,7 @@ impl<'a> Harness<'a> {
                             // daemon is running as then.
                             role: Some(cfg.seat.as_str().to_string()),
                             approvers: vec![],
+                            parent_session_id: cfg.parent_session_id.clone(),
                         })
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
                     }
@@ -2412,6 +2434,10 @@ struct HarnessTaskRunner {
     /// The shared subagent journal, so a spawn and its finish reach the dashboard's
     /// state file.
     tasks: Arc<crate::tasks::TaskJournal>,
+    /// The loaded skills and LSP config, shared with the sub session's `skill`/`lsp`
+    /// tools so a subagent sees the same capabilities the parent does.
+    skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
+    lsp: Arc<letibot_tools::builtins::lsp::LspConfig>,
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
@@ -2478,6 +2504,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             session_id: sub_id.clone(),
             title: title.clone(),
             seat,
+            parent_session_id: Some(parent.clone()),
             ..self.base.clone()
         };
 
@@ -2488,6 +2515,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             wiring: self.wiring.clone(),
             mode_store: self.mode_store.clone(),
             tasks: self.tasks.clone(),
+            lsp: self.lsp.clone(),
+            skills: self.skills.clone(),
         };
 
         let mut sub = Harness::open_with_registry(

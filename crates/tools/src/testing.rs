@@ -348,6 +348,8 @@ fn build_ext(
         registry,
         Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
         Arc::new(crate::builtins::task::NoTaskRunner),
+        Arc::new(crate::builtins::skill::SkillRegistry::default()),
+        Arc::new(crate::builtins::lsp::LspConfig::default()),
     )
     .expect("todo_write registers");
     // Registered, not seated: a role is what a session's prompt carries, and these

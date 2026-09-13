@@ -40,6 +40,58 @@ impl SkillRegistry {
         SkillRegistry { skills }
     }
 
+    /// Load the skills an operator has on disk, in the convention opencode and
+    /// Claude Code share: a directory of skills, each a subdirectory holding a
+    /// `SKILL.md` whose frontmatter names it and describes it.
+    ///
+    /// Scanned locations, first hit wins per name:
+    ///
+    /// * `~/.claude/skills/*/SKILL.md`
+    /// * `$XDG_CONFIG_HOME/letibot/skills/*/SKILL.md` (or `~/.config/letibot/skills`)
+    ///
+    /// A directory that cannot be read is skipped, not fatal: a skill is a
+    /// convenience, and a daemon that refused to start over one unreadable file
+    /// would be the convenience turned into an outage.
+    pub fn load_default() -> Self {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(std::path::PathBuf::from(&home).join(".claude/skills"));
+            dirs.push(std::path::PathBuf::from(&home).join(".config/letibot/skills"));
+        }
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            dirs.push(std::path::PathBuf::from(xdg).join("letibot/skills"));
+        }
+        Self::load_from_dirs(&dirs)
+    }
+
+    /// Load skills from each directory; a later directory's skill of the same name
+    /// wins, so `letibot/skills` can override a `.claude` skill.
+    pub fn load_from_dirs(dirs: &[std::path::PathBuf]) -> Self {
+        let mut skills: Vec<Skill> = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let skill_dir = entry.path();
+                if !skill_dir.is_dir() {
+                    continue;
+                }
+                let Some(skill) = load_one(&skill_dir) else {
+                    continue;
+                };
+                if let Some(existing) = skills.iter_mut().find(|s| s.name == skill.name) {
+                    *existing = skill;
+                } else {
+                    skills.push(skill);
+                }
+            }
+        }
+        // Deterministic order for a stable listing.
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        SkillRegistry { skills }
+    }
+
     pub fn names(&self) -> Vec<&str> {
         self.skills.iter().map(|s| s.name.as_str()).collect()
     }
@@ -58,6 +110,31 @@ impl SkillRegistry {
         }
         out
     }
+}
+
+/// One skill directory's `SKILL.md`: frontmatter `name` + `description`, then the
+/// body. `None` when the file is absent or the frontmatter cannot be read — a
+/// malformed skill is skipped, not loaded half-way.
+fn load_one(dir: &std::path::Path) -> Option<Skill> {
+    let text = std::fs::read_to_string(dir.join("SKILL.md")).ok()?;
+    let body = text.strip_prefix("---")?;
+    let (front, rest) = body.split_once("---")?;
+    let mut name = None;
+    let mut description = None;
+    for line in front.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("name:") {
+            name = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("description:") {
+            description = Some(v.trim().to_string());
+        }
+    }
+    let name = name.filter(|n| !n.is_empty())?;
+    Some(Skill::new(
+        name,
+        description.unwrap_or_default(),
+        rest.trim_start().to_string(),
+    ))
 }
 
 /// The `skill` tool.

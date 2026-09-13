@@ -97,6 +97,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             items: 3,
             last_activity_ms: 1_788_990_321_957,
             wiring: wiring("/home/dead"),
+            parent_session_id: None,
         },
         StoredBrief {
             session_id: "s-old".into(),
@@ -104,6 +105,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             items: 56,
             last_activity_ms: 1_788_987_703_152,
             wiring: wiring("/home/dead/Projects/rano"),
+            parent_session_id: None,
         },
     ]))));
     let h = serve_registry(r.clone(), socket_path(tag)).expect("bind");

@@ -297,6 +297,9 @@ pub struct StoredBrief {
     pub items: u32,
     pub last_activity_ms: u64,
     pub wiring: SessionWiring,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session.
+    pub parent_session_id: Option<String>,
 }
 
 /// Where a registry can find sessions it is not already holding.

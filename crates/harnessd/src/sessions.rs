@@ -633,6 +633,7 @@ impl SessionSource for StoreSessions {
                 title: s.title.unwrap_or_default(),
                 items: s.items,
                 last_activity_ms: s.last_activity_ms.max(0) as u64,
+                parent_session_id: s.parent_session_id,
                 wiring: SessionWiring {
                     // The session's own model and workspace, from its row. The
                     // dialect and endpoint are this daemon's — they are not stored

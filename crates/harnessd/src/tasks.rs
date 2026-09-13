@@ -20,7 +20,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use letibot_tools::builtins::lsp::LspConfig;
+use letibot_tools::builtins::skill::SkillRegistry;
 use serde::Serialize;
+use serde_json::json;
 
 /// One subagent, as the dashboard shows it.
 #[derive(Debug, Clone, Serialize)]
@@ -39,10 +42,7 @@ pub struct TaskEntry {
     pub parent: String,
 }
 
-/// The whole state file: `tasks` plus the panels that land later (`lsp`, `skills`).
-///
-/// The two empty panels are here rather than absent so the dashboard's
-/// `s.get("lsp", [])` reads the same whether the daemon has written them or not.
+/// The whole state file: `tasks` plus the `lsp` and `skills` panels.
 #[derive(Debug, Clone, Serialize)]
 struct StateFile {
     tasks: Vec<TaskEntry>,
@@ -59,15 +59,22 @@ struct StateFile {
 pub struct TaskJournal {
     entries: Mutex<Vec<TaskEntry>>,
     path: Option<PathBuf>,
+    /// The language servers the session can reach, so the `lsp` panel is a reading
+    /// of what is configured and installed rather than a claim.
+    lsp: Arc<LspConfig>,
+    /// The loaded skills, so the `skills` panel lists what the model can reach.
+    skills: Arc<SkillRegistry>,
 }
 
 impl TaskJournal {
     /// `None` path means in-memory only: `record` still updates the list, and
     /// nothing is written. This is what a test without `$XDG_RUNTIME_DIR` gets.
-    pub fn new(path: Option<PathBuf>) -> Self {
+    pub fn new(path: Option<PathBuf>, lsp: Arc<LspConfig>, skills: Arc<SkillRegistry>) -> Self {
         TaskJournal {
             entries: Mutex::new(Vec::new()),
             path,
+            lsp,
+            skills,
         }
     }
 
@@ -93,14 +100,37 @@ impl TaskJournal {
             .clone()
     }
 
-    fn flush(&self) {
+    /// Write the file now. Called after every `record`, and once at startup so the
+    /// `lsp` and `skills` panels are visible before any subagent has run.
+    pub fn flush(&self) {
         let Some(path) = &self.path else {
             return;
         };
+        // The lsp panel is a reading: which servers are configured, and whether each
+        // is installed. `n_diagnostics` stays 0 until the tool reports them.
+        let lsp: Vec<serde_json::Value> = self
+            .lsp
+            .servers
+            .keys()
+            .map(|lang| {
+                let program = &self.lsp.servers.get(lang).map(|a| a[0].as_str()).unwrap_or("");
+                json!({
+                    "language": lang,
+                    "installed": installed(program),
+                    "n_diagnostics": 0,
+                })
+            })
+            .collect();
+        let skills: Vec<serde_json::Value> = self
+            .skills
+            .skills
+            .iter()
+            .map(|s| json!({ "name": s.name, "description": s.description }))
+            .collect();
         let state = StateFile {
             tasks: self.snapshot(),
-            lsp: Vec::new(),
-            skills: Vec::new(),
+            lsp,
+            skills,
         };
         let Ok(body) = serde_json::to_string_pretty(&state) else {
             return;
@@ -111,6 +141,25 @@ impl TaskJournal {
             let _ = std::fs::rename(&tmp, path);
         }
     }
+}
+
+/// Whether `program` is an executable on `$PATH`. A direct scan rather than a
+/// `which` subprocess, so the dashboard's reading costs nothing and works where
+/// `which` does not.
+fn installed(program: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    for dir in path.split(':') {
+        let p = std::path::Path::new(dir).join(program);
+        if p.is_file() {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(md) = p.metadata() {
+                return md.permissions().mode() & 0o111 != 0;
+            }
+        }
+    }
+    false
 }
 
 /// Where the state file lives: `$XDG_RUNTIME_DIR/leticode-state.json`, falling back

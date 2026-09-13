@@ -99,7 +99,7 @@ use crate::vocab::TokenId;
 /// the migration test's fixture, which builds a v1 store by dropping this column.
 pub const ROLE_COLUMN: () = ();
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -131,7 +131,9 @@ CREATE TABLE IF NOT EXISTS session (
     owner          TEXT NOT NULL,
     approvers_json TEXT NOT NULL,    -- JSON array of identities
     created_at     INTEGER NOT NULL,
-    role           TEXT              -- v2; see ROLE_COLUMN below. NULL = unrecorded
+    role           TEXT,             -- v2; see ROLE_COLUMN below. NULL = unrecorded
+    parent_session_id TEXT           -- v4; the session that spawned this one as a
+                                     -- subagent. NULL = a top-level session
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -341,6 +343,10 @@ pub struct SessionRecord {
     pub approvers: Vec<String>,
     /// The role to seat, or `None` for the daemon's own.
     pub role: Option<String>,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session. Recorded so a subagent tree can be drawn from the store rather than
+    /// reconstructed from id conventions.
+    pub parent_session_id: Option<String>,
 }
 
 /// A session as the store holds it: enough to list it, pick it and resume it.
@@ -362,6 +368,9 @@ pub struct StoredSession {
     /// The role this session was opened with, or `None` if it predates v2 or was
     /// opened without one. `None` means the daemon's `--role`, not `coder`.
     pub role: Option<String>,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session.
+    pub parent_session_id: Option<String>,
     pub created_ms: i64,
     /// The newest transcript for this session, or `None` if it has none at all.
     pub transcript_id: Option<String>,
@@ -526,6 +535,14 @@ impl Store {
                  );",
             )?;
         }
+        if from < 4 {
+            // v4: a session records the session that spawned it as a subagent, so a
+            // subagent tree is a fact on disk rather than an id convention. NULL in
+            // every existing row: a session that predates v4 is a top-level one.
+            self.conn.execute_batch(
+                "ALTER TABLE session ADD COLUMN parent_session_id TEXT",
+            )?;
+        }
         Ok(())
     }
 
@@ -613,8 +630,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO session
                (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
-                created_at, role)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                created_at, role, parent_session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 rec.id,
                 rec.title,
@@ -625,6 +642,7 @@ impl Store {
                 serde_json::to_string(&rec.approvers)?,
                 now_ms(),
                 rec.role,
+                rec.parent_session_id,
             ],
         )?;
         Ok(())
@@ -815,10 +833,11 @@ impl Store {
                       WHERE i.transcript_id = (SELECT t.id FROM transcript t
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)),
-                    (SELECT MAX(i.created_at) FROM transcript_item i
+                     (SELECT MAX(i.created_at) FROM transcript_item i
                        JOIN transcript t ON t.id = i.transcript_id
                       WHERE t.session_id = s.id),
-                    s.role
+                    s.role,
+                    s.parent_session_id
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -837,6 +856,7 @@ impl Store {
                     items: r.get::<_, i64>(8)? as u32,
                     last_activity_ms: last.unwrap_or(created_ms),
                     role: r.get(10)?,
+                    parent_session_id: r.get(11)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -1012,6 +1032,7 @@ mod tests {
             owner: "deadtrickster".into(),
             role: None,
             approvers: vec!["deadtrickster".into()],
+            parent_session_id: None,
         })
         .unwrap();
         s.put_transcript("tr-1", "sess-1", &prefix_id).unwrap();
@@ -1243,6 +1264,7 @@ mod tests {
                 owner: "dead".into(),
                 role: None,
                 approvers: vec![],
+                parent_session_id: None,
             })
             .unwrap();
         }
@@ -1250,6 +1272,7 @@ mod tests {
             let c = rusqlite::Connection::open(&path).unwrap();
             c.execute_batch(
                 "ALTER TABLE session DROP COLUMN role;
+                 ALTER TABLE session DROP COLUMN parent_session_id;
                  DELETE FROM schema_version;
                  INSERT INTO schema_version (version) VALUES (1);",
             )
@@ -1259,6 +1282,15 @@ mod tests {
                 c.query_row("SELECT role FROM session", [], |r| r.get::<_, Option<String>>(0))
                     .is_err(),
                 "the fixture still has a role column, so it is not a v1 store"
+            );
+            assert!(
+                c.query_row(
+                    "SELECT parent_session_id FROM session",
+                    [],
+                    |r| r.get::<_, Option<String>>(0)
+                )
+                .is_err(),
+                "the fixture still has a parent_session_id column, so it is not a v1 store"
             );
         }
 
@@ -1291,6 +1323,7 @@ mod tests {
             owner: "dead".into(),
             role: Some("planner".into()),
             approvers: vec![],
+            parent_session_id: None,
         })
         .unwrap();
         assert_eq!(
@@ -1331,13 +1364,18 @@ mod tests {
                 owner: "dead".into(),
                 role: Some("coder".into()),
                 approvers: vec![],
+                parent_session_id: None,
             })
             .unwrap();
         }
         {
-            // Reverse the v3 step: the table goes away, the version says 2.
+            // Reverse the v3 step (the table goes away) and the v4 step (the column
+            // goes away), and the version says 2 — so the migration has to put both
+            // back.
             let c = rusqlite::Connection::open(&path).unwrap();
             c.execute("DROP TABLE todo", []).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN parent_session_id", [])
+                .unwrap();
             c.execute("UPDATE schema_version SET version = 2", []).unwrap();
         }
         let s = Store::open(&path).unwrap();

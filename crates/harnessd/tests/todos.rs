@@ -55,6 +55,7 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
             owner: "dead".into(),
             role: None,
             approvers: vec![],
+            parent_session_id: None,
         })
         .expect("the session row");
         s.put_todos(

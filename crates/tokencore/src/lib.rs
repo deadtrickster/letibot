@@ -587,6 +587,7 @@ mod tests {
                 owner: "deadtrickster".into(),
                 role: None,
             approvers: vec![],
+            parent_session_id: None,
             })
             .unwrap();
         store.put_transcript("t", "s", &prefix_id).unwrap();

@@ -175,6 +175,10 @@ pub struct Config {
     /// `None` keeps the transcript in memory only — usable, and honest about it.
     pub store: Option<PathBuf>,
     pub session_id: String,
+    /// The session that spawned this one as a subagent, or `None` for a top-level
+    /// session. Recorded into the store so a subagent tree is a fact on disk, not an
+    /// id convention a picker has to reverse-engineer.
+    pub parent_session_id: Option<String>,
     /// A human name for the session, or empty.
     ///
     /// Empty is the default and a head then shows the id. Deliberately **not**
@@ -436,6 +440,7 @@ impl Config {
             socket: letibot_sessionlog::server::default_socket_path(),
             store: None,
             session_id: format!("s-{}", now_ns()),
+            parent_session_id: None,
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
