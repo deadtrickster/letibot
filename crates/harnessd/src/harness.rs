@@ -947,6 +947,17 @@ impl<'a> Harness<'a> {
                 false,
             )
         };
+        // The home the backend expands `~` against is the session's, read once from
+        // the surroundings the gate will also carry — so a `~` and the gate's own
+        // `region_of` agree about where the operator lives.
+        let surroundings = surroundings_for(&cfg);
+        let backend = backend.with_home(
+            surroundings
+                .home
+                .clone()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default(),
+        );
         let backend_described = backend.describe();
         let backend_writable = backend.is_writable();
         let monitors = backend
@@ -1235,7 +1246,7 @@ impl<'a> Harness<'a> {
                     // direction, and the honest one until
                     // `Surroundings::with_pinned_shell` can be called for real. See
                     // the refusal note in `surroundings_for`.
-                    .with_surroundings(surroundings_for(&cfg))
+                    .with_surroundings(surroundings)
                     // §2. Without this the trail is `NotCollected` — *nobody
                     // looked*, which is not the same fact as an empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())

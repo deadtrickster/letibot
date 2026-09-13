@@ -179,6 +179,11 @@ pub trait ExecBackend: Send + Sync {
 pub struct HostBackend {
     root: PathBuf,
     writable: bool,
+    /// The operator's home directory, for expanding a leading `~` the way opencode's
+    /// `os.homedir()` does. Read once at construction, so `resolve` does not reach
+    /// into the environment on every call and so the value is a property of the
+    /// backend rather than of the process that happens to be calling it.
+    home: PathBuf,
     /// `Some` only via [`HostBackend::executable`]. Shared, because the job table
     /// and the scope tree are session state and a `HostBackend` is cloned freely.
     processes: Option<std::sync::Arc<crate::exec::HostProcesses>>,
@@ -191,9 +196,11 @@ impl HostBackend {
             .as_ref()
             .canonicalize()
             .map_err(|e| BackendError::Io(e.to_string()))?;
+        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
         Ok(HostBackend {
             root,
             writable: false,
+            home,
             processes: None,
         })
     }
@@ -336,6 +343,16 @@ impl HostBackend {
         &self.root
     }
 
+    /// Override the home directory used to expand a leading `~`.
+    ///
+    /// The harness sets this from the session's [`crate::intent::Surroundings`]
+    /// rather than leaving the backend to read `$HOME` itself, so a test can pin the
+    /// home and a session's `~` is a property of the session, not of the process.
+    pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.home = home.into();
+        self
+    }
+
     /// Resolve a tool-supplied path inside the root, **following symlinks as it
     /// goes** rather than checking one at the end.
     ///
@@ -371,7 +388,11 @@ impl HostBackend {
     /// containment at every step — which is answerable about a path whose tail does
     /// not exist yet, and is the only form that is.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, BackendError> {
-        let given = Path::new(path);
+        // A leading `~` is the operator's home, read the way a shell reads it.
+        // opencode expands it, and a path the model writes as `~/x` must not resolve
+        // to a literal directory named `~` under the root.
+        let expanded = expand_tilde(path, &self.home);
+        let given = Path::new(&expanded);
         let rel = match given.strip_prefix(&self.root) {
             Ok(r) => r.to_path_buf(),
             Err(_) if given.is_absolute() => {
@@ -684,6 +705,23 @@ const MAX_SYMLINK_HOPS: usize = 40;
 /// [`BackendError::Outside`], which already carries the path. Returning an
 /// `Option` rather than a `bool` plus an out-parameter is deliberate: there is no
 /// way to spell "refused" and still have a path to use.
+/// A leading `~` is the operator's home directory, read the way a shell reads it.
+/// `~` alone is the home itself; `~/x` is `x` under it. A path that is not
+/// `~`-prefixed, or a home that is empty, is returned unchanged — a literal `~`
+/// directory is the honest failure rather than a guessed home.
+fn expand_tilde(path: &str, home: &Path) -> String {
+    if home.as_os_str().is_empty() {
+        return path.to_string();
+    }
+    if path == "~" {
+        return home.to_string_lossy().to_string();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return format!("{}/{rest}", home.display());
+    }
+    path.to_string()
+}
+
 fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
     use std::collections::VecDeque;
     use std::ffi::OsString;
@@ -861,6 +899,26 @@ mod tests {
                 "{escape} must not resolve"
             );
         }
+    }
+
+    /// A leading `~` expands to the backend's home, the way opencode's
+    /// `os.homedir()` does — not to a literal directory named `~` under the root.
+    #[test]
+    fn a_leading_tilde_expands_to_the_backends_home() {
+        let d = tempdir::TempDir::new();
+        std::fs::create_dir_all(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/f.txt"), "tilta\n").unwrap();
+        // Root at `/` so the home (under the temp dir) is reachable, and pin the
+        // home to prove `~` means *it* and not a literal `~` directory.
+        let b = HostBackend::new("/")
+            .unwrap()
+            .with_home(d.path().to_path_buf());
+
+        let p = b.resolve("~/sub/f.txt").unwrap();
+        assert_eq!(p, d.path().join("sub/f.txt"));
+        assert_eq!(b.read("~/sub/f.txt").unwrap(), b"tilta\n");
+        // `~` alone is the home itself.
+        assert_eq!(b.resolve("~").unwrap(), d.path().to_path_buf());
     }
 
     #[test]
