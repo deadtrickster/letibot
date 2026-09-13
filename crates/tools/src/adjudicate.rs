@@ -465,6 +465,11 @@ pub fn permission_options() -> Vec<DecisionOption> {
             kind: OptionKind::AllowSession,
         },
         DecisionOption {
+            id: "allow_always".into(),
+            label: "Always allow this (path and tool)".into(),
+            kind: OptionKind::AllowAlways,
+        },
+        DecisionOption {
             id: "deny".into(),
             label: "Deny".into(),
             kind: OptionKind::Deny,
@@ -1124,6 +1129,11 @@ pub struct AdjudicatedGate {
     /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
     /// the key because that is what an execution vehicle changes.
     grants: Vec<crate::grant::Grant>,
+    /// opencode's permission model, verbatim: the operator's `permission` config
+    /// plus the `always` approvals, evaluated before the mode. `allow` admits,
+    /// `deny` refuses, `ask` falls through to the mode and the adjudicator. See
+    /// [`crate::permission`].
+    permission: crate::permission::Ruleset,
     /// §11.5's rows. In memory: the durable journal is `letibot-sessionlog`'s, and
     /// wiring this into it is W11's, not W10's.
     pub log: Vec<AdjudicationRow>,
@@ -1157,6 +1167,7 @@ impl AdjudicatedGate {
             agent: "agent".into(),
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
+            permission: crate::permission::Ruleset::new(),
             log: Vec::new(),
             seq: 0,
             surroundings: crate::intent::Surroundings::default(),
@@ -1175,6 +1186,15 @@ impl AdjudicatedGate {
     /// out it cannot honour the point it named.
     pub fn with_mode(mut self, mode: crate::mode::Mode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Install opencode's permission ruleset (the operator's `permission` config).
+    /// Evaluated before the mode: `allow` admits, `deny` refuses, `ask` falls
+    /// through. Later rules override earlier ones, so a config here is consulted
+    /// before any `always` approvals the caller appends.
+    pub fn with_permission(mut self, rules: crate::permission::Ruleset) -> Self {
+        self.permission = rules;
         self
     }
 
@@ -1668,6 +1688,50 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
+        // 1.5. opencode's permission model, evaluated before the mode (see
+        //      `crate::permission`). `deny` refuses, `allow` admits, `ask` falls
+        //      through to the mode and the adjudicator. Last-rule-wins over the
+        //      config plus the `always` approvals.
+        if !self.permission.is_empty() {
+            let pattern = permission_pattern(call.args);
+            let rule = crate::permission::evaluate(call.name, &pattern, &[&self.permission]);
+            match rule.action {
+                crate::permission::Action::Deny => {
+                    let d = AdjudicationDecision::selected(
+                        &req,
+                        "deny_and_tell",
+                        "gate:permission",
+                        &format!(
+                            "the `permission` config denies `{}` for `{pattern}`; no \
+                             adjudicator is consulted and none can override it",
+                            call.name
+                        ),
+                    );
+                    let tell = self.surface(&req, &d, "denied", breaker_state.clone());
+                    self.breaker.refused(&direction);
+                    let id = req.id.clone();
+                    self.record(req, d, "refuse", direction.key());
+                    return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
+                }
+                crate::permission::Action::Allow => {
+                    let d = AdjudicationDecision::selected(
+                        &req,
+                        "allow_once",
+                        "gate:permission",
+                        &format!(
+                            "the `permission` config allows `{}` for `{pattern}`; nothing \
+                             was consulted",
+                            call.name
+                        ),
+                    );
+                    self.breaker.admitted(&direction);
+                    self.record(req, d, "admit", direction.key());
+                    return GateDecision::Admit;
+                }
+                crate::permission::Action::Ask => {}
+            }
+        }
+
         // 2. **The point this session sits at.** See `crate::mode`.
         //
         //    It governs `Tier::MayApprove` and nothing else: `admits_unasked` answers
@@ -1769,23 +1833,34 @@ impl Gate for AdjudicatedGate {
                             // though the option list never offers it to an exec
                             // call: a safety property with one mechanism ships
                             // broken the first time somebody refactors the mechanism.
-                            && call.access!= Access::Exec
+                            && call.access != Access::Exec
                             && self.mode.grants == crate::mode::GrantScope::Session
                         {
-                            self.grants.push(crate::grant::Grant {
-                                written: crate::grant::Written::Enumerated {
-                                    patterns: vec![format!("{program} ({})", req.class)],
-                                },
-                                coverage: vec![crate::grant::Coverage {
-                                    program: program.clone(),
-                                    class: req.class,
-                                    intents: baseline.intents.clone(),
-                                }],
-                                why: format!(
-                                    "granted for this session by an answer to {}: {}",
-                                    req.id, decision.basis
-                                ),
-                            });
+                            if k == OptionKind::AllowAlways {
+                                // opencode's `always`: feed `(permission, pattern)` into
+                                // the permission ruleset, so a later call to this tool on
+                                // this path is admitted by `evaluate` before the mode.
+                                self.permission.push(crate::permission::Rule::new(
+                                    call.name,
+                                    permission_pattern(call.args),
+                                    crate::permission::Action::Allow,
+                                ));
+                            } else {
+                                self.grants.push(crate::grant::Grant {
+                                    written: crate::grant::Written::Enumerated {
+                                        patterns: vec![format!("{program} ({})", req.class)],
+                                    },
+                                    coverage: vec![crate::grant::Coverage {
+                                        program: program.clone(),
+                                        class: req.class,
+                                        intents: baseline.intents.clone(),
+                                    }],
+                                    why: format!(
+                                        "granted for this session by an answer to {}: {}",
+                                        req.id, decision.basis
+                                    ),
+                                });
+                            }
                         }
                         // The loop closed, so the error signal is gone.
                         self.breaker.admitted(&direction);
@@ -2058,6 +2133,18 @@ fn target_of(args: &Value) -> String {
 /// Every string is checked, not only `path`: a tool argument that is a path is
 /// not always spelled `path`, and a check that only looks at the well-known name
 /// is a check that tests the spelling rather than the fact.
+/// The pattern opencode's permission model tests a call against: the path for the
+/// file tools, the command for `bash`, else `*`.
+fn permission_pattern(args: &Value) -> String {
+    if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+        return p.to_string();
+    }
+    if let Some(c) = args.get("command").and_then(|v| v.as_str()) {
+        return c.to_string();
+    }
+    "*".to_string()
+}
+
 fn never_hit(args: &Value) -> Option<String> {
     let obj = args.as_object()?;
     for v in obj.values() {
@@ -2109,6 +2196,47 @@ mod tests {
             call_id: "c1",
             workspace: "/w",
             target_exists: Some(true),
+        }
+    }
+
+    /// opencode's `permission` config governs the gate before the mode: `deny`
+    /// refuses, `allow` admits, `ask` falls through.
+    #[test]
+    fn a_permission_config_denies_allows_and_asks() {
+        let config = crate::permission::config_to_ruleset(
+            &json!({
+                // `findLast` semantics: the default `*` comes first, the specific
+                // override last.
+                "edit": { "*": "ask", "*.secret": "deny" },
+                "write": "allow",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+        let mut g = AdjudicatedGate::closed().with_permission(config);
+
+        match g.admit(&call("edit", &json!({"path": "src/keys.secret"}))) {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::Denied { .. },
+                ..
+            } => {}
+            other => panic!("a denied permission must refuse, got {other:?}"),
+        }
+
+        match g.admit(&call("write", &json!({"path": "x.txt"}))) {
+            GateDecision::Admit => {}
+            other => panic!("an allowed permission must admit, got {other:?}"),
+        }
+
+        // `ask` falls through to the mode; a closed gate fails closed with NotRun.
+        match g.admit(&call("edit", &json!({"path": "src/lib.rs"}))) {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { .. },
+                ..
+            } => {}
+            other => panic!("an asked permission must fall through (closed -> not_run), got {other:?}"),
         }
     }
 

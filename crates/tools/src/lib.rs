@@ -99,6 +99,7 @@ pub mod files;
 pub mod grant;
 pub mod intent;
 pub mod mode;
+pub mod permission;
 pub mod result;
 pub mod runtime;
 pub mod schema;
