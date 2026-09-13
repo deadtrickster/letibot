@@ -1243,6 +1243,10 @@ impl<'a> Harness<'a> {
                     // `UNSEEN_PROJECT` — always-ask — which is the fail-closed default
                     // and not what the operator recorded for this tree.
                     .with_mode(cfg.mode)
+                    // opencode parity: exec follows the mode (so `allow-all` admits
+                    // `bash`) rather than the operator's rule that exec always asks.
+                    // Off for the confined seats, which keep the rule.
+                    .with_exec_follows_mode(cfg.unconfined)
                     // opencode's `permission` config (LETIBOT_PERMISSION), so the
                     // allow/deny/ask rules govern before the mode — and a subagent
                     // inherits them.
@@ -2680,7 +2684,17 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
         Seat::Leticode => {
             let mut r = roles::leticode();
             if !cfg.allow_bash {
-                r.tools.retain(|t| t != "bash");
+                // The whole exec surface is behind the flag: `bash` and the job
+                // verbs it feeds, and `monitor` which watches processes a shell
+                // starts. A session with no shell has nothing to wait on, read,
+                // kill or watch, and seating those would be a capability claim the
+                // backend refuses.
+                r.tools.retain(|t| {
+                    !matches!(
+                        t.as_str(),
+                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor"
+                    )
+                });
             }
             r
         }
@@ -2713,7 +2727,12 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// reading the environment is a decision at a call site.
 fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
-    if cfg.seat.needs_exec_backend() && !cfg.unconfined {
+    // The shell is pinned whenever the backend can start a process. Both the
+    // confined backend (coder/runner) and the unconfined leticode one (`--bash`)
+    // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a
+    // bare command name resolves through a pinned PATH either way, and the
+    // `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
+    if cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash) {
         env.with_pinned_shell(
             "the exec backend spawns /bin/sh -c, non-interactive, with the \
              environment cleared before its own pairs; PATH is the one fixed at \

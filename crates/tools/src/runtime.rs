@@ -435,6 +435,16 @@ pub mod roles {
                 "skill",
                 "lsp",
                 "task",
+                // The background-job surface, so a `bash` call that is backgrounded
+                // (asked, promoted, or by the operator) can be waited, read, killed
+                // and listed — and a condition can be watched across turns. Seated
+                // beside `bash`, not instead of it: a background task without
+                // `job_wait` is a handle the model cannot follow up on.
+                "job_list",
+                "job_output",
+                "job_wait",
+                "job_kill",
+                "monitor",
             ],
         )
     }

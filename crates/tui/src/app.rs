@@ -510,6 +510,9 @@ pub struct App {
     /// The subagent tree pane, a screen like `todos`: the subagents this session
     /// spawned, their state and their prompt. `ctrl-g`.
     subagents_pane: bool,
+    /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
+    /// subagent's session — the same two acts the picker keeps separate.
+    subagents_sel: usize,
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
     todos: Vec<letibot_sessionlog::event::TodoEntry>,
@@ -710,6 +713,7 @@ impl App {
             picker: false,
             todos_pane: false,
             subagents_pane: false,
+            subagents_sel: 0,
             todos: Vec::new(),
             repo_todos: None,
             stats: false,
@@ -1815,6 +1819,38 @@ impl App {
                         self.redraw = true;
                     }
                     return None;
+                }
+                _ => {}
+            }
+        }
+
+        // **An open subagent pane owns Up and Down, and Enter switches into the
+        // subagent.** The same two acts the picker keeps separate — arrows move the
+        // cursor, Enter confirms — so the tree is a screen you can act on, not just
+        // a list you read.
+        if self.subagents_pane && !self.subagents.is_empty() {
+            let n = self.subagents.len();
+            match k {
+                Key::Up => {
+                    self.subagents_sel = if self.subagents_sel == 0 {
+                        n - 1
+                    } else {
+                        self.subagents_sel - 1
+                    };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    self.subagents_sel = (self.subagents_sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    let id = self.subagents[self.subagents_sel.min(n - 1)]
+                        .session_id
+                        .clone();
+                    self.subagents_pane = false;
+                    return self.switch_to(id);
                 }
                 _ => {}
             }
@@ -3252,18 +3288,26 @@ impl App {
                 "    none spawned yet. The model spawns them with the task tool.",
             ));
         }
-        for s in &self.subagents {
+        for (i, s) in self.subagents.iter().enumerate() {
             let (mark, state_colour) = match s.state.as_str() {
                 "running" => ("[~]", sgr::YELLOW),
                 "done" => ("[x]", sgr::GREEN),
                 "failed" => ("[!]", sgr::RED),
                 _ => ("[ ]", ""),
             };
-            out.push(format!(
-                "    {} {}",
+            let picked = i == self.subagents_sel.min(self.subagents.len().saturating_sub(1));
+            let left = format!(
+                "{} {} {}",
+                if picked { "▸" } else { " " },
                 colour(&self.cfg, state_colour, mark),
                 s.prompt
-            ));
+            );
+            let left = if picked {
+                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+            } else {
+                left
+            };
+            out.push(left);
             out.push(dim(
                 &self.cfg,
                 &format!(
@@ -3277,7 +3321,7 @@ impl App {
         out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "    switch into one with /switch <id> — subagents are hidden from ctrl-s.",
+            "    arrows move, Enter switches into the subagent — subagents are hidden from ctrl-s.",
         ));
         out.into_iter()
             .map(|l| trim_to(&l, w))
