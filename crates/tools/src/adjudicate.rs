@@ -2969,7 +2969,7 @@ mod tests {
             },
         )))
         .with_mode(crate::mode::Mode::WRITES_ALLOWED)
-        .with_permission(crate::permission::defaults())
+        .with_permission(crate::permission::seed())
         .with_permission_sink(std::sync::Arc::new(move |r| {
             w.lock().unwrap().push(r.clone());
             Ok(())

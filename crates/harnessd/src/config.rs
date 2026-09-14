@@ -472,16 +472,24 @@ answer those directly. When a tool reports that it found nothing, say so — do 
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
-/// The permission ruleset, three layers in precedence order (last match wins):
-/// the shipped preapproved list (`permission::defaults`: read-only git and gh,
-/// the toolchains' build-and-test verbs, the shell's read-only utilities), then
-/// `~/.config/letibot/permission.json` — the file an *Always allow* answer
-/// appends to — then `LETIBOT_PERMISSION` (opencode's JSON object). A file that
-/// does not parse is reported on stderr and skipped, never silently emptied.
+/// The permission ruleset, two layers in precedence order (last match wins):
+/// `~/.config/letibot/permission.json` — the preapproved list, installed from
+/// the repository's `config/permission.json` the first time no file is there
+/// and the operator's from then on; the file an *Always allow* answer appends
+/// to — then `LETIBOT_PERMISSION` (opencode's JSON object). A file that does
+/// not parse is reported on stderr and skipped, never silently emptied.
 fn parse_permission() -> letibot_tools::permission::Ruleset {
     use letibot_tools::permission;
-    let mut rules = permission::defaults();
+    let mut rules = Vec::new();
     if let Some(path) = permission::file_path() {
+        match permission::install_seed(&path) {
+            Ok(true) => eprintln!(
+                "letibot: installed the preapproved list at {} — it is yours to edit",
+                path.display()
+            ),
+            Ok(false) => {}
+            Err(e) => eprintln!("letibot: the preapproved list was not installed: {e}"),
+        }
         match permission::load_file(&path) {
             Ok(mut r) => rules.append(&mut r),
             Err(e) => eprintln!("letibot: permission file not read: {e}"),
@@ -668,7 +676,6 @@ impl Config {
         // whether the list exists.
         {
             use letibot_tools::permission;
-            let shipped = permission::defaults().len();
             let file = permission::file_path();
             let from_file = file
                 .as_ref()
@@ -680,12 +687,13 @@ impl Config {
                 subject: "preapproved".into(),
                 state: format!("{} RULES", self.permission.len()),
                 detail: format!(
-                    "{shipped} shipped (read-only git and gh, cargo/go/npm/pytest build and \
-                     test verbs, the shell's read-only utilities), {from_file} from {}{}. A \
-                     `bash` command is tested one simple command at a time — every segment \
-                     must match, and a substitution, a redirection to a file or a group is \
-                     never matched — and `Always allow` on a prompt appends the program and \
-                     its verb to that file. `deny` rows outrank everything.",
+                    "{from_file} in {}{} — the list is that file (installed once from the \
+                     repository's config/permission.json: read-only git and gh, cargo/go/npm/\
+                     pytest build and test verbs, the shell's read-only utilities; yours from \
+                     then on). A `bash` command is tested one simple command at a time — every \
+                     segment must match, and a substitution, a redirection to a file or a \
+                     group is never matched — and `Always allow` on a prompt appends the \
+                     program and its verb to the file. `deny` rows outrank everything.",
                     file.as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "no file (no $HOME)".into()),

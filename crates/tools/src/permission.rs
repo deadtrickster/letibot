@@ -119,6 +119,10 @@ pub fn config_to_ruleset(
 ) -> Result<Ruleset, String> {
     let mut rules = Vec::new();
     for (key, value) in config {
+        // A note to the reader of the file, not a permission.
+        if key == "$comment" {
+            continue;
+        }
         flatten_rule(key, value, &mut rules)?;
     }
     Ok(rules)
@@ -179,170 +183,34 @@ fn flatten_rule(
 /// `-exec`), `awk` (`system()`), `sed` without `-n` (`-i`), `env` (prints
 /// secrets), `gh api` (POSTs), `cargo run`, `go run`, `git branch -d`, `git
 /// stash` beyond `list` — each is one flag away from a write or a disclosure.
-pub const DEFAULT_ALLOW: &[(&str, &[&str])] = &[(
-    "bash",
-    &[
-        // git, read-only
-        "git status*",
-        "git log*",
-        "git diff*",
-        "git show*",
-        "git blame*",
-        "git grep*",
-        "git ls-files*",
-        "git ls-tree*",
-        "git rev-parse*",
-        "git rev-list*",
-        "git describe*",
-        "git branch",
-        "git branch --list*",
-        "git branch -a*",
-        "git branch -r*",
-        "git branch -v*",
-        "git branch --show-current*",
-        "git tag",
-        "git tag -l*",
-        "git tag --list*",
-        "git remote",
-        "git remote -v*",
-        "git remote show*",
-        "git remote get-url*",
-        "git stash list*",
-        "git stash show*",
-        "git worktree list*",
-        "git config --get*",
-        "git config --list*",
-        "git config -l*",
-        "git cat-file*",
-        "git shortlog*",
-        "git count-objects*",
-        "git name-rev*",
-        "git merge-base*",
-        "git reflog",
-        "git reflog show*",
-        "git --version*",
-        // gh, read-only
-        "gh pr view*",
-        "gh pr list*",
-        "gh pr status*",
-        "gh pr checks*",
-        "gh pr diff*",
-        "gh issue view*",
-        "gh issue list*",
-        "gh issue status*",
-        "gh run list*",
-        "gh run view*",
-        "gh workflow list*",
-        "gh workflow view*",
-        "gh release list*",
-        "gh release view*",
-        "gh repo view*",
-        "gh search*",
-        "gh auth status*",
-        "gh --version*",
-        // rust
-        "cargo build*",
-        "cargo check*",
-        "cargo test*",
-        "cargo clippy*",
-        "cargo fmt*",
-        "cargo doc*",
-        "cargo tree*",
-        "cargo metadata*",
-        "cargo bench*",
-        "cargo --version*",
-        "rustc --version*",
-        "rustfmt --check*",
-        "rustfmt --edition*",
-        "rustup show*",
-        // go
-        "go build*",
-        "go test*",
-        "go vet*",
-        "go fmt*",
-        "go list*",
-        "go mod tidy*",
-        "go mod download*",
-        "go version*",
-        "gofmt*",
-        // other test runners
-        "pytest*",
-        "python3 -m pytest*",
-        "python -m pytest*",
-        "npm test*",
-        "npm run test*",
-        "npm run build*",
-        "npm run lint*",
-        "npx vitest*",
-        "npx jest*",
-        "pnpm test*",
-        "yarn test*",
-        "make test*",
-        "make check*",
-        "ctest*",
-        // the shell's read-only utilities
-        "ls*",
-        "cat*",
-        "head*",
-        "tail*",
-        "wc*",
-        "grep*",
-        "rg*",
-        "ugrep*",
-        "pwd",
-        "which*",
-        "type *",
-        "echo*",
-        "printf*",
-        "stat*",
-        "file*",
-        "du*",
-        "df*",
-        "date*",
-        "uname*",
-        "nproc",
-        "hostname",
-        "id",
-        "id -*",
-        "sha256sum*",
-        "md5sum*",
-        "diff*",
-        "sort*",
-        "uniq*",
-        "tr *",
-        "cut*",
-        "sed -n*",
-        "jq*",
-        "xxd*",
-        "hexdump*",
-        "strings*",
-        "readlink*",
-        "realpath*",
-        "basename*",
-        "dirname*",
-        "true",
-        "false",
-        "test *",
-        "[ *",
-        "tree*",
-        "nl*",
-        "column*",
-        "fold*",
-        "less*",
-        "tac*",
-    ],
-)];
+/// **The preapproved list is a file, not a constant.** `config/permission.json`
+/// in the repository is the seed — read-only git and gh, the toolchains' build
+/// and test verbs, the shell's read-only utilities — and it is INSTALLED into
+/// `~/.config/letibot/permission.json` the first time a daemon finds no file
+/// there. From then on the file is the operator's: what they add, what *Always
+/// allow* appends, what they delete. The operator's rule, 2026-09-14: *"this
+/// preapproved list must be in config, not hardcoded."*
+pub const SEED: &str = include_str!("../../../config/permission.json");
 
-/// [`DEFAULT_ALLOW`] as a ruleset, in the order written.
-pub fn defaults() -> Ruleset {
-    DEFAULT_ALLOW
-        .iter()
-        .flat_map(|(permission, patterns)| {
-            patterns
-                .iter()
-                .map(move |p| Rule::new(*permission, *p, Action::Allow))
-        })
-        .collect()
+/// The seed, parsed. What a fresh box starts with; a test's stand-in for the
+/// operator's file.
+pub fn seed() -> Ruleset {
+    let value: serde_json::Value =
+        serde_json::from_str(SEED).expect("config/permission.json parses");
+    config_to_ruleset(value.as_object().expect("an object"))
+        .expect("config/permission.json is a ruleset")
+}
+
+/// Put the seed at `path` if nothing is there. `Ok(true)` when it was installed.
+pub fn install_seed(path: &std::path::Path) -> Result<bool, String> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, SEED).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// A compound command as the simple commands it runs, or `None` when it cannot be
@@ -686,8 +554,8 @@ mod tests {
     // --- the preapproved list -------------------------------------------------
 
     #[test]
-    fn the_defaults_admit_read_only_git_and_the_test_verbs_and_nothing_wider() {
-        let d = defaults();
+    fn the_seed_admits_read_only_git_and_the_test_verbs_and_nothing_wider() {
+        let d = seed();
         let rs: &[&Ruleset] = &[&d];
         for ok in [
             "git status --short",
@@ -727,8 +595,8 @@ mod tests {
     }
 
     #[test]
-    fn the_operators_rows_outrank_the_defaults_in_both_directions() {
-        let d = defaults();
+    fn the_operators_rows_outrank_the_seed_in_both_directions() {
+        let d = seed();
         let mine = config_to_ruleset(&json(
             r#"{"bash": {"git log*": "deny", "cargo run*": "allow"}}"#,
         ))
