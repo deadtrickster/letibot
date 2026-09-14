@@ -1459,6 +1459,28 @@ fixed per sequence, independent of length. A sweep over many short distinct prom
 therefore far more expensive than its token count suggests. `server-context.cpp:4549`
 records four previous occurrences; this was the fifth.
 
+**A second cost, measured on a DENSE model, 2026-09-14 by `lubuntu1-lab` on .76
+(Qwen3.8-27B Q6, llama.cpp, stock).** Different mechanism from the recurrent
+accumulator above and it compounds with it:
+
+- A saved prompt-cache state costs roughly the **full `-c` allocation, not the
+  tokens actually used** — ~1.5 GiB each at `-c 8192`. So capacity is
+  `cache-ram / per-saved-state`, and the 8 GiB default holds about five
+  conversations. At 40 GiB: 16 of 16. Two levers, and only two: raise
+  `--cache-ram`, or lower `-c`.
+- Eviction is **capacity, not conflict**: interleaving A,B,A,B,A,B hits 94–95 %
+  once each has been seen. So the number to size against is *how many distinct
+  briefs are live*, not how they are ordered.
+- Warm 644 ms median against cold 1986 ms; the first touch of a new conversation
+  is always cold.
+- **`--cache-reuse` is silently disabled on that model** — `cache_reuse is not
+  supported by this context, it will be disabled`, logged with `--kv-unified`
+  both true and false, so unified KV is not the gate. The 94 % hits are the
+  slot's own longest-common-prefix match, not `cache_reuse`. Advice to rely on
+  that flag is therefore **model-dependent**, and a measurement taken on one
+  model does not port. Nobody has yet established what makes a context
+  unsupported; the suspicion is an attention property rather than a flag.
+
 Mitigation used, and worth generalising: the sweep harness refuses to start a condition
 below 40 GiB `MemAvailable`. Any future experiment that prefills many distinct prompts
 needs the same guard.
