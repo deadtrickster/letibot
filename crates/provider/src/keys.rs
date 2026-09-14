@@ -1,11 +1,14 @@
 //! Where a key comes from, and where it does not.
 //!
 //! Order: `--api-key` (a flag, for a one-off), the provider's environment
-//! variable, then `~/.config/letibot/providers.toml`. The file also carries the
-//! price table. Nothing else is read — there is no fallback to another
-//! provider's key, and a missing key is a refusal that names the variable and
-//! the file, because "unauthorized" from the provider three seconds later names
-//! neither.
+//! variable, `~/.config/letibot/providers.toml`, then **opencode's own store**
+//! (`~/.local/share/opencode/auth.json`, `type: api` entries) — the usual path
+//! on a box where the operator already logged a provider in through opencode,
+//! the way flowy's seat is read from where `flowy mint` left it. OAuth entries
+//! there are not keys and are not used. The file also carries the price table.
+//! There is no fallback to another provider's key, and a missing key is a
+//! refusal that names the variable, the file and the opencode store, because
+//! "unauthorized" from the provider three seconds later names none of them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -115,11 +118,52 @@ pub fn resolve(
             url,
         });
     }
+    if let Some(k) = opencode_key(preset.name) {
+        return Ok(Credentials {
+            key: k,
+            from: format!("opencode's store, {}", opencode_auth_file().display()),
+            prices,
+            url,
+        });
+    }
     Err(KeyError::Missing {
         provider: preset.name.into(),
         env: preset.key_env.into(),
         file,
     })
+}
+
+fn opencode_auth_file() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+        .unwrap_or_default()
+        .join("opencode")
+        .join("auth.json")
+}
+
+/// opencode's `auth.json`: `{"deepseek": {"type": "api", "key": "…"}, "xai":
+/// {"type": "oauth", …}}`. Only an `api` entry is a key. opencode's provider
+/// ids are ours for deepseek; `xai` is our `grok`; GLM is `zhipuai`/`zai`.
+fn opencode_key(provider: &str) -> Option<String> {
+    let raw = std::fs::read(opencode_auth_file()).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let ids: &[&str] = match provider {
+        "deepseek" => &["deepseek"],
+        "grok" => &["xai", "grok"],
+        "glm" => &["zhipuai", "zai", "glm", "bigmodel"],
+        _ => &[],
+    };
+    for id in ids {
+        if let Some(e) = v.get(*id)
+            && e.get("type").and_then(|t| t.as_str()) == Some("api")
+            && let Some(k) = e.get("key").and_then(|k| k.as_str())
+            && !k.trim().is_empty()
+        {
+            return Some(k.trim().to_string());
+        }
+    }
+    None
 }
 
 /// The operator's standing choice, from `[default]` in the file: which

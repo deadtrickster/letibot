@@ -258,36 +258,42 @@ if [ "$FORCE" = 1 ] && [ "${1:-}" != "--stop" ]; then
   die "--force only means something with --stop"
 fi
 
-case "${1:-}" in
-  --read-only)
-    ROLE=orchestrator; ADJ=""; shift ;;
-  --writes)
-    MODE=writes-allowed; shift ;;
-  --bash)
-    BASH_ON=1; shift ;;
-  --ask)
-    MODE=always-ask; shift ;;
-  --mode)
-    [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, allow-all)"
-    MODE="$2"; shift 2 ;;
-esac
-
-# Explicit overrides. Each names one of the three singleton servers; they do not
-# START it -- `model glm` / `systemctl --user start glm` does that.
-case "${1:-}" in
-  --glm)
-    DIALECT=glm; MODEL=glm-5.3-flash
-    VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
-    shift ;;
-  --flash)
-    DIALECT=qwen; MODEL=qwen-3.8-flash-next
-    VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-    shift ;;
-  --dense)
-    DIALECT=qwen; MODEL=qwen-3.8-27b
-    VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
-    shift ;;
-esac
+# One loop over every flag, in any order and any number. Two single-shot
+# `case "$1"` blocks used to stand here — the mode flag first, then the model
+# flag — so `--glm --bash` consumed `--glm` and handed `--bash` on as the
+# one-shot prompt: harnessd ran in the foreground with `--prompt --bash`, the
+# vocabulary loaded, and GLM answered a prompt that said "--bash". Measured
+# 2026-09-14, from the operator's own leticode --glm --bash.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --read-only)
+      ROLE=orchestrator; ADJ=""; shift ;;
+    --writes)
+      MODE=writes-allowed; shift ;;
+    --bash)
+      BASH_ON=1; shift ;;
+    --ask)
+      MODE=always-ask; shift ;;
+    --mode)
+      [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, allow-all)"
+      MODE="$2"; shift 2 ;;
+    # Explicit model overrides. Each names one of the three singleton servers;
+    # they do not START it -- `model glm` / `systemctl --user start glm` does.
+    --glm)
+      DIALECT=glm; MODEL=glm-5.3-flash
+      VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
+      shift ;;
+    --flash)
+      DIALECT=qwen; MODEL=qwen-3.8-flash-next
+      VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
+      shift ;;
+    --dense)
+      DIALECT=qwen; MODEL=qwen-3.8-27b
+      VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+      shift ;;
+    *) break ;;
+  esac
+done
 
 # `--bash` implies the grants; without a shell there is nothing to grant them to.
 EXEC_ARGS=()
