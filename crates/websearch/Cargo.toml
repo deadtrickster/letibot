@@ -1,0 +1,18 @@
+[package]
+name = "letibot-websearch"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The `SearchProvider` seam this crate fills. The trait lives in `tools`; the
+# implementation lives here, so a TLS stack never enters the crate that is
+# otherwise a function of a call and a filesystem.
+letibot-tools.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+# Blocking, rustls. The same client `letibot-provider` uses, for the same reason:
+# no async runtime anywhere in this tree.
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }

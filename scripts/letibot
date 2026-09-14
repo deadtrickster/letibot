@@ -104,6 +104,9 @@ already up, then attaches the TUI head to it.
                               writes land in a sibling directory when it ends
   letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
   letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered
+  letibot --web-search brave  attach Brave behind `web_search` (else the tool refuses).
+                              Key: --brave-key, $BRAVE_API_KEY, or [brave] key= in
+                              ~/.config/letibot/providers.toml
   letibot --model M           the provider's model (default: the preset's)
   LETIBOT_MODE=writes-allowed letibot        the same, by env
 
@@ -130,12 +133,14 @@ for a in "$@"; do
   # `--vm-arg --mem` hands `--mem` to firecode.
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
-    --vm-arg|--provider|--model|--mode|--session|-s|--rename|--delete) skip=1 ;;
+    --vm-arg|--provider|--model|--mode|--session|-s|--rename|--delete|\
+    --web-search|--brave-key) skip=1 ;;
   esac
   case "$a" in
     --help|-h|help|--read-only|--writes|--bash|--ask|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
-    --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model) ;;
+    --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model|\
+    --web-search|--brave-key) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
     *) break ;;
@@ -303,6 +308,12 @@ while [ $# -gt 0 ]; do
     --provider)
       [ $# -ge 2 ] || die "--provider NAME   (deepseek, glm, grok)"
       EXTRA_ARGS+=(--provider "$2"); PROVIDER_SET=1; shift 2 ;;
+    --web-search)
+      [ $# -ge 2 ] || die "--web-search NAME   (brave)"
+      EXTRA_ARGS+=(--web-search "$2"); shift 2 ;;
+    --brave-key)
+      [ $# -ge 2 ] || die "--brave-key KEY"
+      EXTRA_ARGS+=(--brave-key "$2"); shift 2 ;;
     --model)
       [ $# -ge 2 ] || die "--model NAME"
       MODEL_OVERRIDE="$2"; shift 2 ;;

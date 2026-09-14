@@ -1086,7 +1086,32 @@ impl<'a> Harness<'a> {
         // session's prompt carries. A seat that names `web_search` gets a tool that
         // refuses with `not_run` naming what is missing; a seat that does not name
         // it never sees it. Neither is a stub that answers.
-        let external = letibot_tools::ExternalBackends::unattached();
+        // **Nothing is attached unless the operator attached it.** A search
+        // provider is egress and a credential; the default stays the tool that
+        // refuses and says what would attach one.
+        let mut external = letibot_tools::ExternalBackends::unattached();
+        if let Some(name) = cfg.web_search.as_deref() {
+            match name {
+                "brave" => match letibot_websearch::Brave::attach(None) {
+                    Ok(b) => external.search = std::sync::Arc::new(b),
+                    // Refuse at open, not at the first search: a 401 three seconds
+                    // into a turn names neither the key nor the file it is missing
+                    // from. `web_search` stays the refusing tool and the banner
+                    // says why.
+                    Err(why) => {
+                        return Err(HarnessError::Setup(format!(
+                            "--web-search brave: {why}"
+                        )));
+                    }
+                },
+                other => {
+                    return Err(HarnessError::Setup(format!(
+                        "--web-search {other}: this build has `brave`"
+                    )));
+                }
+            }
+        }
+        let external = external;
         // T21.3's two halves, both constructed for every session. The ledger is the
         // error signal and the sink is the encoder; attaching them costs nothing and
         // not attaching them makes every completion `Verification::NoEncoder`, which
@@ -3006,6 +3031,17 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // the session is open. A subagent hears through its parent.
     if cfg.parent_session_id.is_none() && seat != Seat::Runner {
         r.tools.push("flowy".into());
+    }
+    // **`web_search` is seated only when something is behind it**, and a subagent
+    // inherits that, because a survey is the errand most worth handing one.
+    //
+    // Conditional for the reason `external/mod.rs` gives: a tool schema is prompt
+    // bytes in the stable prefix, so seating it unconditionally would re-prefill
+    // every stored conversation on this box to add a tool that refuses. A session
+    // started without `--web-search` is byte-identical to yesterday's.
+    if cfg.web_search.is_some() && seat != Seat::Runner {
+        r.tools.push("web_search".into());
+        r.max_tools += 1;
     }
     r
 }

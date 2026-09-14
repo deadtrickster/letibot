@@ -20,6 +20,7 @@ letibot-tools.workspace = true
 letibot-flowy.workspace = true
 # The cloud providers (D10 mode 3): the one crate with a TLS stack in it.
 letibot-provider.workspace = true
+letibot-websearch.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 serde.workspace = true
 # preserve_order for the reason every crate in this tree needs it: a tool call's

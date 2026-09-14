@@ -116,6 +116,10 @@ fn usage() -> String {
      \x20 --vm-arg ARG              passed to `firecode up` verbatim, repeatable:\n\
      \x20                           --vm-arg --mem --vm-arg 8192 --vm-arg --add-dir\n\
      \x20                           --vm-arg ~/.rustup (a toolchain the guest lacks)\n\
+     \x20 --web-search brave        attach a provider behind `web_search`. Without\n\
+     \x20                           it the tool refuses and says so\n\
+     \x20 --brave-key KEY           for this run; else $BRAVE_API_KEY, else\n\
+     \x20                           [brave] key= in ~/.config/letibot/providers.toml\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -234,6 +238,13 @@ fn run() -> Result<i32, String> {
             }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),
+            // What is behind `web_search`. Without it the tool refuses and names
+            // this flag, which is the state every session has had until now.
+            "--web-search" => cfg.web_search = Some(next()?),
+            // Held by the websearch crate, not by `Config` — which derives
+            // `Debug`, and a secret in a struct that can be `{:?}`-printed is a
+            // secret one `eprintln!` away from a log.
+            "--brave-key" => letibot_websearch::set_flag_key(next()?),
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?

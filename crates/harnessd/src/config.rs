@@ -268,6 +268,11 @@ pub struct Config {
     /// Where this session's tools run: the host (its own boundary), or a
     /// firecode VM — a subagent's `where`. `Host` for every session the operator
     /// opened.
+    /// Which search provider is behind `web_search`, by name (`brave`), or `None`
+    /// for the tool that refuses. **The key is deliberately not here**: it is
+    /// resolved at attach from `$BRAVE_API_KEY` or `providers.toml`, so a secret
+    /// never rides in a struct that derives `Debug`.
+    pub web_search: Option<String>,
     pub placement: letibot_tools::builtins::task::Placement,
     /// Extra arguments for `firecode up` when the placement is a VM — the
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
@@ -541,6 +546,7 @@ impl Config {
             permission: parse_permission(),
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
+            web_search: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             provider: None,

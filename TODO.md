@@ -99,6 +99,39 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
+## R17 — Brave behind `web_search` — **SETTLED 2026-09-14 (claude-lab2x1), not yet run live**
+
+*"I bought brave search api key, I want web search tool"* (2026-09-14). The seam
+was already there: `web_search` has shipped as a refusing tool since the external
+module was written, precisely so the schema could be fixed before anything cached
+against it. This fills it.
+
+- New crate `letibot-websearch` — `Brave` implements
+  `letibot_tools::…::web::SearchProvider` over ureq+rustls. Its own crate because
+  `letibot-tools` is deliberately *a function of a call and a filesystem*; the
+  trait is the seam that keeps TLS out of it.
+- Key: `--brave-key` → `$BRAVE_API_KEY` / `$BRAVE_SEARCH_API_KEY` → `[brave] key`
+  in `~/.config/letibot/providers.toml`. **Refuses at attach**, naming all three.
+  The key is held in a `OnceLock` in the websearch crate, never in `Config`,
+  which derives `Debug`.
+- Seated **only when attached** (`role_for_seat`, like `flowy`'s door), so a
+  session without `--web-search` is byte-identical to yesterday's and nothing
+  re-prefills. `max_tools` rises by one when it is.
+- Only `web.results` is read; `<strong>` stripped; a URL-less hit dropped;
+  `considered` carries the denominator; Brave's `query.altered` is surfaced as
+  `rewritten_query` because a silently rewritten query is a rewritten query.
+- Tests: 3 unit (key order and refusal text, the `[brave]` section read, markup),
+  4 against a stand-in Brave (the key rides in `X-Subscription-Token`, `site:`
+  goes out as Brave's operator, 401/429/transport each say which they are, an
+  empty result is empty rather than invented).
+
+**Open: never run against the real API.** No key on this box yet — every test is
+against a fake, and the daemon was only proved to *attach* and *seat*. The first
+live search is the operator's, with the key; what could still be wrong is
+Brave's actual field names, which were written from its documented shape.
+
+---
+
 ## R16 — the preapproved list, Always allow, `ps`, a shell by default, and sudo-to-the-head — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 The operator, 2026-09-14: *"we badly need a list of preapproved globs, like all

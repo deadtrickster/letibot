@@ -280,6 +280,27 @@ From a shell (Claude seats): `flowy waiter check` for the listener, `firecode
 list` for VMs, and for anything else read the pid from `ps -o pid,args` and
 `kill` the number — never the pattern.
 
+## 6b. web_search, when a provider is attached
+
+```
+letibot --web-search brave [--brave-key KEY]      else $BRAVE_API_KEY, else
+                                                  [brave] key= in providers.toml
+web_search  query="…" [max_results=N] [site=host]
+```
+
+`web_search` ships in every build as a tool that **refuses** — the schema is
+fixed so attaching one later does not re-prefill stored conversations — and it
+is **seated only when a provider is attached**, so a session started without
+`--web-search` is byte-identical to one from before this existed. With Brave
+behind it the banner says so and names where the key came from.
+
+What comes back: title, URL and snippet per hit, the count Brave had before
+the cap (`showing 3 of 27` is a different fact from `showing 3`), and the
+rewritten query when Brave searched for something else. Markup is stripped;
+only `web.results` is read, so an FAQ or infobox block is never reported as a
+search hit. A missing key refuses **at attach**, naming all three places, not
+as a 401 mid-turn. Fetched text is untrusted — the tool result says so.
+
 ## 7. sudo: the password comes from the head, never a tty
 
 A `sudo …` from a letibot shell does not reach for a terminal (there is none;

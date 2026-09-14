@@ -448,6 +448,7 @@ dependencies = [
  "letibot-tools",
  "letibot-transcript",
  "letibot-turn",
+ "letibot-websearch",
  "libc",
  "serde",
  "serde_json",
@@ -550,6 +551,16 @@ dependencies = [
 [[package]]
 name = "letibot-ui"
 version = "0.1.0"
+
+[[package]]
+name = "letibot-websearch"
+version = "0.1.0"
+dependencies = [
+ "letibot-tools",
+ "serde",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "libc"
