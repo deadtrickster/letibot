@@ -87,6 +87,12 @@ fn key_from_file(path: &std::path::Path) -> Option<String> {
         if !in_section {
             continue;
         }
+        // A commented-out key is not a key. The section ships with
+        // `# key = "BSA-..."` as a placeholder, and reading that would attach a
+        // garbage credential and turn a clean "no key" refusal into a 401.
+        if line.starts_with('#') {
+            continue;
+        }
         if let Some(v) = line.strip_prefix("key") {
             let v = v.trim_start().strip_prefix('=')?.trim();
             return Some(v.trim_matches(['"', '\'']).to_string());
@@ -319,6 +325,11 @@ mod tests {
         assert_eq!(key_from_file(&f).as_deref(), Some("BSA-xyz"));
         // No `[brave]` section at all is a miss, not the first key in the file.
         std::fs::write(&f, "[deepseek]\nkey = \"nope\"\n").unwrap();
+        assert_eq!(key_from_file(&f), None);
+        // The section as it ships: a header and a commented placeholder. Reading
+        // that would attach a garbage credential, so the answer is still None and
+        // the operator still gets the refusal that names all three places.
+        std::fs::write(&f, "[brave]\n# key = \"BSA-...\"\n").unwrap();
         assert_eq!(key_from_file(&f), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
