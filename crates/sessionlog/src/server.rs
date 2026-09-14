@@ -238,7 +238,10 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             reason: if held.is_empty() {
                 format!("{REJECT_UNKNOWN_SESSION}: this daemon holds none yet")
             } else {
-                format!("{REJECT_UNKNOWN_SESSION} {session_id:?}; it holds {}", held.join(", "))
+                format!(
+                    "{REJECT_UNKNOWN_SESSION} {session_id:?}; it holds {}",
+                    held.join(", ")
+                )
             },
         })?;
         return Ok(());
@@ -261,6 +264,41 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     reason: "already attached; use Switch to change session".into(),
                 })?;
                 break Ok(());
+            }
+            Ok(ClientFrame::Askpass { prompt, command }) => {
+                // `sudo` in this session wants a password. Raise it, wait here —
+                // this connection is the helper's and sends nothing else — and
+                // answer on it. The deadline is sudo's patience, roughly: past it
+                // the helper exits and sudo reports that no password was given.
+                const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+                let deadline = crate::event::now_ms() + PATIENCE.as_millis() as u64;
+                let (req_id, rx) = seat.hub.request_secret(&prompt, &command, deadline);
+                let secret = match rx.recv_timeout(PATIENCE) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        seat.hub
+                            .abandon_secret(&req_id, "nobody, before the deadline");
+                        None
+                    }
+                };
+                writer
+                    .lock()
+                    .unwrap()
+                    .write(&ServerFrame::Secret { secret })?;
+            }
+            Ok(ClientFrame::Secret { req_id, secret }) => {
+                // A head's answer. Not a command: it is never queued, announced or
+                // logged with its payload. `give_secret` publishes the settlement.
+                if !seat.hub.give_secret(&req_id, secret, &identity) {
+                    seat.hub.publish(crate::event::SessionEvent::Warning {
+                        code: "secret_late".into(),
+                        detail: format!(
+                            "{}: nothing was waiting on {req_id} — the helper had given up, \
+                             or another head answered first",
+                            identity
+                        ),
+                    });
+                }
             }
             Ok(ClientFrame::ListSessions) => {
                 let f = ServerFrame::Sessions {
@@ -431,9 +469,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     Some(next) => {
                         leave(&mut seat);
                         registry.set_default(&next.session_id());
-                        seat = seat_in(
-                            &registry, next, since_seq, &kind, &identity, &caps, &writer,
-                        )?;
+                        seat =
+                            seat_in(&registry, next, since_seq, &kind, &identity, &caps, &writer)?;
                     }
                 }
             }

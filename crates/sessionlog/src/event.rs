@@ -308,7 +308,6 @@ fn truncate_target(s: &str) -> String {
     format!("{}{ELLIPSIS}", &s[..end])
 }
 
-
 /// One event. `(session_id, seq, ts)` live on [`Envelope`], not here, because an
 /// event that has not been appended yet has none of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -537,9 +536,24 @@ pub enum SessionEvent {
         identity: String,
     },
     /// §18's post-flight assertions land here, and so do §8.5's guards.
-    Warning {
-        code: String,
-        detail: String,
+    Warning { code: String, detail: String },
+    /// `sudo` inside a session's command wants a password. The head shows the
+    /// command and sudo's prompt, takes the password in a masked field, and
+    /// answers with [`crate::protocol::ClientFrame::Secret`]. The event carries
+    /// no secret and is safe to persist; the answer is never an event.
+    SecretRequested {
+        req_id: String,
+        prompt: String,
+        command: String,
+        /// Unix millis; after it the helper gives up and `sudo` fails.
+        deadline: u64,
+    },
+    /// Whether a password was given for `req_id`, and by which head — the
+    /// record, without the secret.
+    SecretSettled {
+        req_id: String,
+        given: bool,
+        by: String,
     },
     /// §6. `plan` is untyped until W14 says what `ExplainPlan` is.
     Explain {
@@ -711,6 +725,8 @@ impl SessionEvent {
             SessionEvent::SessionRenamed { .. } => "SessionRenamed",
             SessionEvent::TodosUpdated { .. } => "TodosUpdated",
             SessionEvent::Warning { .. } => "Warning",
+            SessionEvent::SecretRequested { .. } => "SecretRequested",
+            SessionEvent::SecretSettled { .. } => "SecretSettled",
             SessionEvent::Explain { .. } => "Explain",
             SessionEvent::CommandIssued { .. } => "CommandIssued",
             SessionEvent::DenialRaised { .. } => "DenialRaised",

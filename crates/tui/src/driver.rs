@@ -157,6 +157,9 @@ pub fn tick(
             Action::Slash { line } => {
                 client.slash(app.seq, &line)?;
             }
+            Action::Secret { req_id, secret } => {
+                client.secret(&req_id, secret)?;
+            }
             Action::Quit => {
                 let _ = client.detach();
             }

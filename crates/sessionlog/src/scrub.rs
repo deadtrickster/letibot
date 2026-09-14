@@ -61,6 +61,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         SessionEvent::ToolProgress { .. } => true,
         // An open question. Settled ones are dropped, open ones are rescued.
         SessionEvent::DecisionRequested { .. } => true,
+        // A password prompt is answered on the connection that raised it, within
+        // its deadline; replayed, it would show a masked field for a sudo that
+        // has long since failed. Its settlement is a record and stays.
+        SessionEvent::SecretRequested { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.
@@ -81,6 +85,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::HeadAttached { .. }
         | SessionEvent::HeadDetached { .. }
         | SessionEvent::Warning { .. }
+        | SessionEvent::SecretSettled { .. }
         | SessionEvent::Explain { .. }
         // Durable: "bob interrupted at 14:02" stays true. It is a record of what a
         // head did, not a request for a head to do something.

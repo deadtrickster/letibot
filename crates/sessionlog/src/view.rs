@@ -569,6 +569,10 @@ impl SessionView {
                 let over = self.warnings.len().saturating_sub(self.bounds.warnings);
                 self.warnings.drain(..over);
             }
+            // A password request is live for two minutes and answered on the
+            // connection that asked; a head attaching later has nothing to do
+            // with it, and a settled one is history.
+            SessionEvent::SecretRequested { .. } | SessionEvent::SecretSettled { .. } => {}
             // §6's plan is a full document. It belongs in the log, where a head can
             // ask for it by seq; carrying every one of them in every snapshot would
             // make the snapshot grow with the session.

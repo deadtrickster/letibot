@@ -250,7 +250,9 @@ impl Tool for Bash {
             scope,
             scope_name,
             background,
-            env: vec![],
+            // So a helper the command runs can say what it is running for —
+            // `letibot-askpass` puts it on the password card.
+            env: vec![("LETIBOT_COMMAND".to_string(), command.to_string())],
         };
         let id = match host.spawn(&req) {
             Ok(id) => id,

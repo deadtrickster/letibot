@@ -1044,6 +1044,31 @@ impl<'a> Harness<'a> {
                     ),
                     true,
                 );
+                // **What every command carries.** The way back to this daemon
+                // (`letibot-askpass` uses it to put a sudo password prompt in
+                // front of the head), `HOME`, and — when the helper is beside
+                // this binary — a `sudo` shim ahead of `PATH` that asks the head
+                // instead of a terminal. See `crate::sudo`.
+                let mut env = vec![
+                    ("LETIBOT_SOCKET".to_string(), cfg.socket.display().to_string()),
+                    ("LETIBOT_SESSION".to_string(), cfg.session_id.clone()),
+                ];
+                if let Ok(home) = std::env::var("HOME") {
+                    env.push(("HOME".to_string(), home));
+                }
+                match crate::sudo::install() {
+                    Ok(plumbing) => {
+                        env.push((
+                            "SUDO_ASKPASS".to_string(),
+                            plumbing.askpass.display().to_string(),
+                        ));
+                        h.set_path_prefix(Some(plumbing.shims.display().to_string()));
+                    }
+                    Err(why) => {
+                        eprintln!("letibot: sudo will have no way to ask for a password: {why}")
+                    }
+                }
+                h.set_standing_env(env);
             }
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(backend), described, writable, monitors)

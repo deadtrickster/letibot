@@ -147,7 +147,7 @@ use crate::view::Snapshot;
 /// would fail to parse it — the same mid-session deserialization failure, and the
 /// same ATTACH-time refusal. No new event: the promotion is the `bash` tool's own
 /// `Backgrounded` result, attributed to the operator.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -265,6 +265,23 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         line: String,
+    },
+    /// **`sudo` wants a password.** Sent by `letibot-askpass`, the helper the
+    /// session's shell runs as `SUDO_ASKPASS`, attached as a head of kind
+    /// `askpass`. The daemon raises [`crate::event::SessionEvent::SecretRequested`]
+    /// to every head, waits for a [`ClientFrame::Secret`], and answers this
+    /// connection with [`ServerFrame::Secret`] — the one frame that carries a
+    /// password, on the one connection that hands it to `sudo`. `prompt` is
+    /// sudo's own; `command` is what the session was running, so the person
+    /// typing the password sees what it is for. Added at `PROTOCOL_VERSION` 12.
+    Askpass { prompt: String, command: String },
+    /// A head's answer to a `SecretRequested`: the password, or `None` for a
+    /// refusal. **Never logged, never persisted, never in a `CommandIssued`.** It
+    /// goes from this frame to the waiting `Askpass` connection and nowhere else;
+    /// the log gets a `SecretSettled` saying whether one was given, by whom.
+    Secret {
+        req_id: String,
+        secret: Option<String>,
     },
     /// Answer an open **permission**: grant or deny, by option id.
     ///
@@ -449,6 +466,10 @@ pub enum ServerFrame {
     /// `NewSession` is answered with the whole list rather than with the new id
     /// alone, because a head that has just created a session is a head about to
     /// draw a picker, and the list it would then ask for is this one.
+    /// The password for the `Askpass` this connection sent, or `None`: nobody
+    /// gave one before the deadline, or a head refused. Only ever written to an
+    /// `askpass` head. Added at `PROTOCOL_VERSION` 12.
+    Secret { secret: Option<String> },
     Sessions {
         sessions: Vec<SessionBrief>,
         /// The session this connection is in right now.

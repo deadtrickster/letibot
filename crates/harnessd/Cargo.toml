@@ -40,3 +40,7 @@ path = "src/bin/letibot-m1.rs"
 
 [dev-dependencies]
 letibot-tools = { workspace = true, features = ["testing"] }
+
+[[bin]]
+name = "letibot-askpass"
+path = "src/bin/letibot-askpass.rs"

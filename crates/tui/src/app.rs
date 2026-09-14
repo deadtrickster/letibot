@@ -114,6 +114,11 @@ pub enum Action {
     Mode { name: String },
     /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
     Slash { line: String },
+    /// A password for `sudo`, or a refusal. Never logged by anything on the way.
+    Secret {
+        req_id: String,
+        secret: Option<String>,
+    },
     Quit,
 }
 
@@ -440,6 +445,12 @@ pub struct App {
     hist_class: Option<RowClass>,
     turn: Option<TurnPane>,
     open: Vec<OpenDecision>,
+    /// `sudo` in the session wants a password: the request, and what has been
+    /// typed for it so far. Kept OUT of the composer, so it is never in the
+    /// composer's history, never completed, never shown: the composer draws a
+    /// dot per character while this is `Some`.
+    secret: Option<SecretAsk>,
+    secret_buf: String,
     /// Which option of `open[0]` is highlighted.
     ///
     /// A permission prompt used to be answered by TYPING an option id or its first
@@ -697,6 +708,8 @@ impl App {
             hist_class: None,
             turn: None,
             open: Vec::new(),
+            secret: None,
+            secret_buf: String::new(),
             sel: 0,
             notes: Vec::new(),
             heads: 0,
@@ -917,6 +930,9 @@ impl App {
                 }
                 Disposition::Control
             }
+            // Only ever written to an `askpass` head; a TUI that sees one has a
+            // daemon confused about who it is talking to.
+            ServerFrame::Secret { .. } => Disposition::Control,
             ServerFrame::Resync {
                 reason,
                 dropped,
@@ -1509,6 +1525,38 @@ impl App {
             // no way to say "seen". A warning is an event with a place in the
             // conversation, and putting it there is what makes it scroll away like
             // one — and still be there when you scroll back.
+            SessionEvent::SecretRequested {
+                req_id,
+                prompt,
+                command,
+                deadline,
+            } => {
+                self.secret = Some(SecretAsk {
+                    req_id,
+                    prompt,
+                    command,
+                    deadline,
+                });
+                self.secret_buf.clear();
+                self.redraw = true;
+                Disposition::Rendered
+            }
+            SessionEvent::SecretSettled { req_id, given, by } => {
+                if self.secret.as_ref().is_some_and(|s| s.req_id == req_id) {
+                    self.secret = None;
+                    self.secret_buf.clear();
+                }
+                self.note(Note::Warned(Warned {
+                    code: "sudo".into(),
+                    detail: if given {
+                        format!("password given by {by}")
+                    } else {
+                        format!("no password given ({by})")
+                    },
+                    ts,
+                }));
+                Disposition::Rendered
+            }
             SessionEvent::Warning { code, detail } => {
                 // `turn_failed` is the log's grep-able record of the same fact
                 // `TurnFailed` puts under the turn, and the daemon publishes both
@@ -1627,6 +1675,42 @@ impl App {
         // Any key is an acknowledgement of whatever the notice said.
         if !matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
             self.notice_ttl = self.notice_ttl.min(1);
+        }
+        // **A password field owns the keyboard.** While `sudo` is waiting, every
+        // key is the password's: characters and pastes go into the buffer, Enter
+        // sends it, Esc or Ctrl+C refuses. Nothing reaches the composer, the
+        // ladder or the scrollback, so a password cannot land in a prompt.
+        if let Some(ask) = &self.secret {
+            let req_id = ask.req_id.clone();
+            match k {
+                Key::Char(c) => self.secret_buf.push(c),
+                Key::Paste(s) => self.secret_buf.push_str(s.trim_end_matches(['\n', '\r'])),
+                Key::Backspace => {
+                    self.secret_buf.pop();
+                }
+                Key::KillToStart | Key::KillToEnd => self.secret_buf.clear(),
+                Key::Enter => {
+                    let secret = std::mem::take(&mut self.secret_buf);
+                    self.secret = None;
+                    self.redraw = true;
+                    return Some(Action::Secret {
+                        req_id,
+                        secret: Some(secret),
+                    });
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.secret_buf.clear();
+                    self.secret = None;
+                    self.redraw = true;
+                    return Some(Action::Secret {
+                        req_id,
+                        secret: None,
+                    });
+                }
+                _ => {}
+            }
+            self.redraw = true;
+            return None;
         }
         match k {
             Key::CtrlR => {
@@ -2522,9 +2606,10 @@ impl App {
             }
         }
 
-        let dec: Vec<String> = match self.open.first() {
-            Some(d) => self.decision_lines(d, w),
-            None => Vec::new(),
+        let dec: Vec<String> = match (&self.secret, self.open.first()) {
+            (Some(ask), _) => self.secret_lines(ask, w),
+            (None, Some(d)) => self.decision_lines(d, w),
+            (None, None) => Vec::new(),
         };
         let inflight = self.inflight_line(w);
         let notice = self
@@ -2716,7 +2801,14 @@ impl App {
     /// stops early leaves the field's right wall hanging in space.
     fn composer_rows(&self, w: usize, max_rows: usize, boxed: bool) -> (Vec<String>, usize, usize) {
         let inner = self.composer_cols();
-        let (lines, (crow, ccol)) = self.editor.render(inner, self.cfg.palette());
+        let (lines, (crow, ccol)) = if self.secret.is_some() {
+            // A dot per character, and the caret after the last one. The text
+            // itself is never rendered, not even to compute a width.
+            let n = self.secret_buf.chars().count();
+            (vec!["•".repeat(n)], (0, n))
+        } else {
+            self.editor.render(inner, self.cfg.palette())
+        };
         let n = lines.len().max(1);
         let show = max_rows.clamp(1, n);
         // Scroll to the row being edited, never to the top: a composer taller than
@@ -3462,6 +3554,31 @@ impl App {
             &self.cfg,
             "  switching does not stop anything: a turn keeps running in the session you \
              left, and it is still there when you come back.",
+        ));
+        out
+    }
+
+    /// The password card: what is asking, for which command, and the two keys.
+    fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
+        let left = ask.deadline.saturating_sub(self.now_ms) / 1000;
+        let mut out = Vec::new();
+        out.push(colour(
+            &self.cfg,
+            sgr::YELLOW,
+            &trim_to(&format!("sudo wants a password — {}", ask.prompt.trim()), w),
+        ));
+        for l in wrap(&format!("for: {}", ask.command), w) {
+            out.push(l);
+        }
+        out.push(self.cfg.palette().paint(
+            Role::Faint,
+            &trim_to(
+                &format!(
+                    "type it below (shown as dots), Enter sends it once to sudo and nowhere \
+                     else; Esc refuses · {left}s left"
+                ),
+                w,
+            ),
         ));
         out
     }
@@ -4968,6 +5085,15 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
 /// screen fits.
 pub fn line_width(s: &str) -> usize {
     visible_width(s)
+}
+
+/// An open password request, as the head shows it.
+#[derive(Debug, Clone)]
+struct SecretAsk {
+    req_id: String,
+    prompt: String,
+    command: String,
+    deadline: u64,
 }
 
 /// Something that happened between two transcript rows.
@@ -6772,6 +6898,64 @@ mod tests {
     /// is committed to the transcript one round at a time — so once round one's
     /// row had a body, its sentence was in history and still in the pane below the
     /// cards. Measured at 60x34 on the operator's session.
+    /// `sudo` wants a password: the card names the command, the keys are the
+    /// field's alone, the screen shows dots and never the text, Enter sends it
+    /// once as an `Action::Secret`, and the composer's history never had it.
+    #[test]
+    fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-1".into(),
+                prompt: "[sudo] password for dead: ".into(),
+                command: "sudo apt install x".into(),
+                deadline: 1_000_000,
+            },
+        )));
+        let card = a.screen(100, 20).join("\n");
+        assert!(card.contains("sudo wants a password"), "{card}");
+        assert!(card.contains("sudo apt install x"), "{card}");
+        for c in "hunter2".chars() {
+            assert!(a.key(Key::Char(c)).is_none());
+        }
+        let typing = a.screen(100, 20).join("\n");
+        assert!(!typing.contains("hunter2"), "the password is on the screen:\n{typing}");
+        assert!(typing.contains("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"), "{typing}");
+        assert!(a.input().is_empty(), "the composer must never hold it");
+        assert!(a.key(Key::Backspace).is_none());
+        assert!(a.key(Key::Char('2')).is_none());
+        let sent = a.key(Key::Enter);
+        assert_eq!(
+            sent,
+            Some(Action::Secret {
+                req_id: "secret-s-1".into(),
+                secret: Some("hunter2".into()),
+            })
+        );
+        assert!(a.input().is_empty());
+        assert!(a.editor.history().iter().all(|h| !h.contains("hunter2")));
+        let after = a.screen(100, 20).join("\n");
+        assert!(!after.contains("sudo wants a password"), "{after}");
+
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-2".into(),
+                prompt: "[sudo] password: ".into(),
+                command: "sudo true".into(),
+                deadline: 1_000_000,
+            },
+        )));
+        assert_eq!(
+            a.key(Key::Esc),
+            Some(Action::Secret {
+                req_id: "secret-s-2".into(),
+                secret: None,
+            })
+        );
+    }
+
     #[test]
     fn a_rounds_prose_moves_into_the_transcript_rather_than_being_copied_into_it() {
         let mut a = app();

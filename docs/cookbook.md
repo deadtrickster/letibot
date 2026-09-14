@@ -279,3 +279,15 @@ monitor name=N pid=P                   one process, by handle
 From a shell (Claude seats): `flowy waiter check` for the listener, `firecode
 list` for VMs, and for anything else read the pid from `ps -o pid,args` and
 `kill` the number — never the pattern.
+
+## 7. sudo: the password comes from the head, never a tty
+
+A `sudo …` from a letibot shell does not reach for a terminal (there is none;
+40 attempts on this box died on that). The command is privilege escalation, so
+it asks the operator first like anything on the always-ask list; once admitted,
+`sudo` runs through a shim that adds `-A`, `letibot-askpass` asks the daemon,
+and the head shows a masked field naming the command. Type the password there —
+it goes to `sudo` and nowhere else: not the log, not the transcript, not the
+model. Two minutes, Esc refuses. `sudo -n` is untouched, so a probe still
+answers *no*. Nothing to type as an agent; if you need a package, run the
+`sudo` and the operator's head handles the password (or it fails honestly).

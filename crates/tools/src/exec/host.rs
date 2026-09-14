@@ -355,6 +355,15 @@ pub struct HostProcesses {
     /// seat time rather than whatever the environment carries when the command
     /// runs (R10 / `docs/boundary-and-adjudication.md` §5, layer 1).
     pinned_path: String,
+    /// What every command of this session carries besides `PATH`: the daemon's
+    /// socket and this session's id (so a helper the command runs can find its
+    /// way back — `letibot-askpass` does), `SUDO_ASKPASS`, and `HOME`. Set once
+    /// by the daemon after construction; the request's own pairs come after and
+    /// win. Not the process environment: layer 1 cleared that on purpose.
+    standing_env: Mutex<Vec<(String, String)>>,
+    /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
+    /// `sudo` the session runs is the one that asks the head instead of a tty.
+    path_prefix: Mutex<Option<String>>,
     /// The monitors this session declared. **On the host, not beside it**,
     /// because a monitor's owner is one of this host's scopes and the reaping
     /// path has to be able to take its watchers with it.
@@ -439,8 +448,11 @@ impl HostProcesses {
             jobs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
             promotions: Mutex::new(Vec::new()),
-            pinned_path: std::env::var("PATH")
-                .unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
+            pinned_path: std::env::var("PATH").unwrap_or_else(|_| {
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
+            }),
+            standing_env: Mutex::new(Vec::new()),
+            path_prefix: Mutex::new(None),
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
@@ -535,6 +547,17 @@ impl HostProcesses {
             why,
             outlives_the_turn: outlives,
         });
+    }
+
+    /// The pairs every command of this session carries — see the field. Later
+    /// calls replace earlier ones wholesale.
+    pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
+        *self.standing_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
+    }
+
+    /// A directory searched before the pinned `PATH` — see the field.
+    pub fn set_path_prefix(&self, dir: Option<String>) {
+        *self.path_prefix.lock().unwrap_or_else(|e| e.into_inner()) = dir;
     }
 
     /// Resolve a **listening TCP port** to the pid holding it, and protect it.
@@ -724,9 +747,28 @@ impl ProcessHost for HostProcesses {
         // planted in this process's own parent; the filter is what keeps a
         // session's env configuration from re-arming it.
         cmd.env_clear();
-        cmd.env("PATH", &self.pinned_path);
-        for (k, v) in &req.env {
-            if !matches!(k.as_str(), "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS") {
+        let prefix = self
+            .path_prefix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        cmd.env(
+            "PATH",
+            match prefix {
+                Some(p) => format!("{p}:{}", self.pinned_path),
+                None => self.pinned_path.clone(),
+            },
+        );
+        let standing = self
+            .standing_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for (k, v) in standing.iter().chain(req.env.iter()) {
+            if !matches!(
+                k.as_str(),
+                "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PATH"
+            ) {
                 cmd.env(k, v);
             }
         }

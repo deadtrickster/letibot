@@ -99,7 +99,7 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
-## R16 — the preapproved list, Always allow, `ps`, and a shell by default — **SETTLED 2026-09-14 (claude-lab2x1), sudo OPEN**
+## R16 — the preapproved list, Always allow, `ps`, a shell by default, and sudo-to-the-head — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 The operator, 2026-09-14: *"we badly need a list of preapproved globs, like all
 read only git and gh commands, cargo, go, and other tests. and good old Allow
@@ -135,31 +135,42 @@ Done:
 - **`leticode` seats the shell by default** (`--no-bash` to refuse it), the
   way opencode's coder has bash. What it runs unasked is the list above.
 
-**Open — sudo.** Every one of 40 attempts on this box died on the tty check;
-opencode twice tried to fake the terminal. The operator's ask: *"if model wants
-a sudo i must be able to enter password safely and let it run … some detached
-shell that inherits all the params or some other shim"*. Three shapes, in the
-order to try:
+**Sudo — SETTLED 2026-09-14, shape 1.** The operator's ask: *"if model wants a
+sudo i must be able to enter password safely and let it run … some other shim …
+i honestly dont care now"*. Built as `SUDO_ASKPASS` routed to the head:
 
-1. **`SUDO_ASKPASS` routed to the head.** The session's shell gets
-   `SUDO_ASKPASS=letibot-askpass` and `sudo -A`; the helper connects to the
-   daemon's socket and raises a decision card *"sudo wants a password for
-   `apt install x`"* with a masked text field; the head sends the password
-   once over the socket; the helper prints it to sudo and exits; nothing is
-   logged, nothing reaches the transcript or the model. Needs the TUI text
-   field on question cards (an open item already) and a `Password` card
-   kind that the log never persists. The action itself still goes through
-   the gate first — a `sudo …` is on the always-ask list, so the operator
-   sees the command before the password is asked.
-2. **`Defaults timestamp_type=global`** in sudoers, one line: the operator
-   runs `sudo -v` in any terminal and the daemon's `sudo -n` works for the
-   ticket's lifetime. Cheapest, no code — but it is the operator's sudoers
-   and it widens every process of the user, not only the session's.
-3. **A detached privileged shell** (`sudo -s` in a tmux pane the operator
-   authenticated) that the daemon sends commands to. Inherits everything,
-   audits nothing, and the pane outlives the decision; last resort.
+- Every command of a host session runs with `SUDO_ASKPASS` pointing at
+  `letibot-askpass` (a fourth binary in the harnessd crate) and a `sudo` **shim**
+  ahead of `PATH` (`crate::sudo`, written once to `$XDG_RUNTIME_DIR/letibot/
+  shims`) that execs the real sudo with `-A` — except for `sudo -n`, left alone,
+  so a probe still answers *no* honestly. The daemon also puts `LETIBOT_SOCKET`,
+  `LETIBOT_SESSION` and `LETIBOT_COMMAND` in every command's env (a new
+  `HostProcesses::set_standing_env` / `set_path_prefix`).
+- The command itself passed the gate first — `sudo …` is privilege escalation,
+  always-ask — so the operator saw and admitted it before any password.
+- The helper attaches as an `askpass` head and sends one `Askpass` frame
+  (PROTOCOL_VERSION 12). The daemon raises `SecretRequested` to every head; the
+  TUI shows a card naming the command and sudo's prompt with a **masked field
+  that owns the keyboard** (dots on screen, never the composer, never its
+  history); the head answers with a `Secret` frame; the password goes head →
+  daemon → helper → sudo's stdin and **nowhere else** — no log, no view, no
+  transcript, no `CommandIssued`. The log gets `SecretSettled { given, by }`,
+  the record without the secret. Deadline two minutes; Esc refuses; a late or
+  duplicate answer is a `secret_late` warning.
+- Tests: `letibot-sessionlog`'s `askpass` socket test (the secret reaches only
+  the helper; refusal and late answer are honest; the hub state and log never
+  hold it); the TUI `password_field` test (dots, keyboard ownership, no history);
+  `letibot-tools`… the `sudo::install` shim test (adds `-A`, leaves `-n`); and
+  the live `sudo_live` (SUDO_LIVE=1) that runs the box's real sudo through the
+  shim and gets its wrong-password refusal, not a tty error.
 
-Until one lands, the honest behaviour is the one the scan shows Claude Code
+Shape 2 (`Defaults timestamp_type=global`) and shape 3 (a detached privileged
+shell) were the alternatives; shape 1 is the one that keeps the secret off the
+log and scopes to the session. Not yet done: the remote/ACP heads have no
+password card (only the TUI does), so a session driven only by one of those
+still cannot answer a sudo — the frames are there, the UI is not.
+
+The behaviour when no head answers is the one the scan shows Claude Code
 already has: probe `sudo -n true`, announce the refusal, write the root half as
 a script for the operator, and stop — never `script -q` or `echo '' | sudo -S`.
 

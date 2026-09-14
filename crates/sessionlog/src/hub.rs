@@ -22,7 +22,7 @@
 //!   an `Err`.
 //! - **TCP close is detach, never abort.** [`Hub::detach`] does not touch any turn.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
 use letibot_transcript::TranscriptItem;
@@ -83,14 +83,18 @@ pub struct QueuedCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandKind {
-    Prompt { text: String },
+    Prompt {
+        text: String,
+    },
     /// Compact the session: one summary turn, then the history is replaced by
     /// that summary through a transcript fork. Serialized on the queue like a
     /// prompt — it *is* a turn — and accepted on a stale `expected_seq` for the
     /// same reason a prompt is: a head that asked while the screen moved still
     /// meant it.
     Compact,
-    Interrupt { reason: String },
+    Interrupt {
+        reason: String,
+    },
     /// A head asked to move the running command to the background. **Not queued
     /// like a prompt** — it is acted on by the exec backend's wait loop, which is
     /// already blocked where the worker cannot reach — but the frame still rides the
@@ -99,14 +103,21 @@ pub enum CommandKind {
     /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
     /// an opencode name…), persisted in the mode store. Serialized on the queue like
     /// everything else; unlike a prompt it does not start a turn. See `D13`.
-    Mode { name: String },
+    Mode {
+        name: String,
+    },
     /// A slash command for the daemon: `flowy …`, `models …`.
-    Slash { line: String },
+    Slash {
+        line: String,
+    },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
     /// `..` — a second variant would have silently skipped those arms.
-    Answer { req_id: String, reply: Reply },
+    Answer {
+        req_id: String,
+        reply: Reply,
+    },
 }
 
 /// What a head sent back, and the two things it can be.
@@ -219,6 +230,11 @@ struct Inner {
     /// Where a settled decision goes instead of the command queue. See
     /// [`AnswerSink`] for why the queue cannot carry it.
     answers: Option<Arc<dyn AnswerSink>>,
+    /// Open password requests: `req_id` → the channel to the `askpass` connection
+    /// waiting on it. The secret goes through the channel and nowhere else — not
+    /// the log, not the view, not a `CommandIssued`.
+    secrets: HashMap<String, std::sync::mpsc::SyncSender<Option<String>>>,
+    next_secret: u64,
 }
 
 /// What a session looks like from outside it: enough for a picker, and cheap
@@ -287,6 +303,8 @@ impl Hub {
                 closed: false,
                 bell: None,
                 answers: None,
+                secrets: HashMap::new(),
+                next_secret: 0,
             }),
             cv: Condvar::new(),
             promote: Arc::new(Mutex::new(None)),
@@ -302,7 +320,10 @@ impl Hub {
     /// Take the pending promote request, clearing it. `Some(identity)` when a head
     /// asked.
     pub fn take_promote_request(&self) -> Option<String> {
-        self.promote.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.promote
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// A head asked to move the running command to the background. Resolve that
@@ -342,6 +363,61 @@ impl Hub {
     /// as it always was.
     pub fn set_answer_sink(&self, sink: Arc<dyn AnswerSink>) {
         self.lock().answers = Some(sink);
+    }
+
+    /// `sudo` wants a password: raise it to every head, hand back the receiver
+    /// the `askpass` connection waits on. `deadline` is when the helper gives up,
+    /// so a head can show it.
+    pub fn request_secret(
+        &self,
+        prompt: &str,
+        command: &str,
+        deadline_ms: u64,
+    ) -> (String, std::sync::mpsc::Receiver<Option<String>>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let req_id = {
+            let mut g = self.lock();
+            g.next_secret += 1;
+            let id = format!("secret-{}-{}", g.log.session_id(), g.next_secret);
+            g.secrets.insert(id.clone(), tx);
+            id
+        };
+        self.publish(SessionEvent::SecretRequested {
+            req_id: req_id.clone(),
+            prompt: prompt.to_string(),
+            command: command.to_string(),
+            deadline: deadline_ms,
+        });
+        (req_id, rx)
+    }
+
+    /// A head answered a password request. `true` when a helper was still
+    /// waiting on it; the log records that it was answered and by whom, never
+    /// what with.
+    pub fn give_secret(&self, req_id: &str, secret: Option<String>, by: &str) -> bool {
+        let tx = self.lock().secrets.remove(req_id);
+        let Some(tx) = tx else {
+            return false;
+        };
+        let given = secret.is_some();
+        let delivered = tx.try_send(secret).is_ok();
+        self.publish(SessionEvent::SecretSettled {
+            req_id: req_id.to_string(),
+            given: given && delivered,
+            by: by.to_string(),
+        });
+        delivered
+    }
+
+    /// The helper gave up (deadline, or its connection closed): forget the request.
+    pub fn abandon_secret(&self, req_id: &str, by: &str) {
+        if self.lock().secrets.remove(req_id).is_some() {
+            self.publish(SessionEvent::SecretSettled {
+                req_id: req_id.to_string(),
+                given: false,
+                by: by.to_string(),
+            });
+        }
     }
 
     /// Who can answer an open decision in this session, in the sink's own words.
@@ -718,10 +794,7 @@ impl Hub {
                 {
                     return ServerFrame::Rejected {
                         client_request_id,
-                        reason: format!(
-                            "{}: {defect}",
-                            crate::question::REJECT_MALFORMED_ANSWER
-                        ),
+                        reason: format!("{}: {defect}", crate::question::REJECT_MALFORMED_ANSWER),
                         expected_seq,
                         actual_seq: actual,
                     };
@@ -765,10 +838,7 @@ impl Hub {
             // Taken here, rung *after* the lock is released: `Bell::ring` takes its
             // own mutex, and taking a second lock inside this one is how a lock
             // order gets invented by accident.
-            ring = g
-                .bell
-                .clone()
-                .map(|b| (b, g.log.session_id().to_string()));
+            ring = g.bell.clone().map(|b| (b, g.log.session_id().to_string()));
             // **An interrupt cancels a decision that is being waited on.** It still
             // queues — the turn is interrupted the way it always was — and the sink
             // is told as well, because the thread blocked inside a tool call is not
@@ -953,10 +1023,7 @@ mod tests {
             hub.request_promote_from(&a.head_id).as_deref(),
             Some("dead@lab2x1")
         );
-        assert_eq!(
-            hub.take_promote_request().as_deref(),
-            Some("dead@lab2x1")
-        );
+        assert_eq!(hub.take_promote_request().as_deref(), Some("dead@lab2x1"));
         // Taken, not read: a second take sees nothing, so the bash wait loop cannot
         // promote the same command twice.
         assert_eq!(hub.take_promote_request(), None);
@@ -992,7 +1059,10 @@ mod tests {
             bodies.len(),
             1,
             "the body never reached a head that was watching: {:?}",
-            b.events().iter().map(|e| e.event.kind()).collect::<Vec<_>>()
+            b.events()
+                .iter()
+                .map(|e| e.event.kind())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1232,7 +1302,11 @@ mod tests {
         assert!(matches!(f, ServerFrame::Accepted { .. }), "{f:?}");
         assert_eq!(
             sink.0.lock().unwrap().as_slice(),
-            [("r1".to_string(), "alice".to_string(), "permission".to_string())],
+            [(
+                "r1".to_string(),
+                "alice".to_string(),
+                "permission".to_string()
+            )],
             "the answer must reach whoever is blocked on it, with who said it"
         );
         assert!(

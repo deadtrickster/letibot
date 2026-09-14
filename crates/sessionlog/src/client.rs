@@ -194,6 +194,26 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// A head's answer to a `SecretRequested`: the password, or `None` to refuse.
+    /// Not a command — no request id comes back, nothing is announced.
+    pub fn secret(&mut self, req_id: &str, secret: Option<String>) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Secret {
+            req_id: req_id.to_string(),
+            secret,
+        })?;
+        Ok(())
+    }
+
+    /// The `askpass` helper's one frame: `sudo` wants a password for `command`.
+    /// The answer arrives on the reader as [`ServerFrame::Secret`].
+    pub fn askpass(&mut self, prompt: &str, command: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Askpass {
+            prompt: prompt.to_string(),
+            command: command.to_string(),
+        })?;
+        Ok(())
+    }
+
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
@@ -262,11 +282,7 @@ impl HeadClient {
     }
 
     /// Name a session, or clear its name with an empty title.
-    pub fn rename_session(
-        &mut self,
-        session_id: &str,
-        title: &str,
-    ) -> Result<String, ClientError> {
+    pub fn rename_session(&mut self, session_id: &str, title: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::RenameSession {
             client_request_id: client_request_id.clone(),
