@@ -1063,22 +1063,31 @@ impl Condition for TimerCondition {
     }
 }
 
-/// A command whose exit is the condition. `Expect::AnyExit` fires when the command
-/// exits — whatever the code — which is the "run this and tell me when it returns"
-/// case; `Expect::OutputContains` fires when its stdout contains the string.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a command condition fires on. `AnyExit` when the command exits — whatever
+/// the code; `OutputContains` when its stdout contains the string; `NumberAbove`
+/// and `NumberBelow` when its stdout is a number that crosses the threshold (a
+/// temperature, a token count, a latency).
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommandExpect {
     AnyExit,
     OutputContains(String),
+    NumberAbove(f64),
+    NumberBelow(f64),
 }
 
-/// A command returning: the condition is met by the command exiting, or by its
-/// output matching. Run on the host, not through the session's exec boundary — a
-/// monitor condition is a check, not a job.
+/// A command returning: the condition is met by the command exiting, its output
+/// matching, or its numeric output crossing a threshold. The command is **spawned
+/// once and polled** (`try_wait`), not run to completion on every look — so a
+/// command that blocks until some external event (a bash script waiting on a
+/// marker) works as a condition without stalling the poller. Run on the host, not
+/// through the session's exec boundary — a monitor condition is a check, not a job.
 #[derive(Debug)]
 pub struct CommandCondition {
     argv: Vec<String>,
     expect: CommandExpect,
+    /// The running child, spawned lazily on the first look and re-checked each look.
+    /// Behind the `Mutex` so a continuous monitor's `rearm` can restart it.
+    child: Mutex<Option<std::process::Child>>,
 }
 
 impl CommandCondition {
@@ -1087,6 +1096,7 @@ impl CommandCondition {
         Arc::new(CommandCondition {
             argv,
             expect: CommandExpect::AnyExit,
+            child: Mutex::new(None),
         })
     }
 
@@ -1095,38 +1105,89 @@ impl CommandCondition {
         Arc::new(CommandCondition {
             argv,
             expect: CommandExpect::OutputContains(s.into()),
+            child: Mutex::new(None),
         })
     }
 
+    /// Fire when the command's stdout is a number strictly above `n`.
+    pub fn above(argv: Vec<String>, n: f64) -> Arc<Self> {
+        Self::new(argv, CommandExpect::NumberAbove(n))
+    }
+
+    /// Fire when the command's stdout is a number strictly below `n`.
+    pub fn below(argv: Vec<String>, n: f64) -> Arc<Self> {
+        Self::new(argv, CommandExpect::NumberBelow(n))
+    }
+
     pub fn new(argv: Vec<String>, expect: CommandExpect) -> Arc<Self> {
-        Arc::new(CommandCondition { argv, expect })
+        Arc::new(CommandCondition {
+            argv,
+            expect,
+            child: Mutex::new(None),
+        })
+    }
+
+    /// Spawn the child on the first look, if it is not already running.
+    fn ensure_spawned(&self) -> Result<(), String> {
+        let mut child = self.child.lock().expect("command child");
+        if child.is_some() {
+            return Ok(());
+        }
+        let Some(prog) = self.argv.first() else {
+            return Err("the command was empty, so it cannot be run".into());
+        };
+        let c = std::process::Command::new(prog)
+            .args(&self.argv[1..])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("the command could not be run: {e}"))?;
+        *child = Some(c);
+        Ok(())
     }
 }
 
 impl Condition for CommandCondition {
     fn met(&self) -> Option<String> {
-        let Some(prog) = self.argv.first() else {
-            return Some("the command was empty, so it cannot be run".into());
-        };
-        match std::process::Command::new(prog)
-            .args(&self.argv[1..])
-            .output()
-        {
-            Ok(o) => match &self.expect {
-                CommandExpect::AnyExit => Some(match o.status.code() {
-                    Some(0) => "the command exited 0".into(),
-                    Some(n) => format!("the command exited {n}"),
-                    None => "the command exited (signalled)".into(),
-                }),
-                CommandExpect::OutputContains(s)
-                    if String::from_utf8_lossy(&o.stdout).contains(s.as_str()) =>
-                {
-                    Some(format!("the command's output contained `{s}`"))
-                }
-                _ => None,
-            },
-            Err(e) => Some(format!("the command could not be run: {e}")),
+        if let Err(e) = self.ensure_spawned() {
+            return Some(e);
         }
+        let mut child = self.child.lock().expect("command child");
+        let c = child.as_mut()?;
+        match c.try_wait() {
+            Ok(Some(status)) => {
+                // The child has exited, so draining its stdout cannot block.
+                let mut out = Vec::new();
+                if let Some(mut so) = c.stdout.take() {
+                    let _ = std::io::Read::read_to_end(&mut so, &mut out);
+                }
+                let text = String::from_utf8_lossy(&out);
+                match &self.expect {
+                    CommandExpect::AnyExit => Some(match status.code() {
+                        Some(0) => "the command exited 0".into(),
+                        Some(n) => format!("the command exited {n}"),
+                        None => "the command exited (signalled)".into(),
+                    }),
+                    CommandExpect::OutputContains(s) if text.contains(s.as_str()) => {
+                        Some(format!("the command's output contained `{s}`"))
+                    }
+                    CommandExpect::NumberAbove(n) => parse_number(&text).and_then(|v| {
+                        (v > *n).then(|| format!("{v} is above {n}"))
+                    }),
+                    CommandExpect::NumberBelow(n) => parse_number(&text).and_then(|v| {
+                        (v < *n).then(|| format!("{v} is below {n}"))
+                    }),
+                    _ => None,
+                }
+            }
+            Ok(None) => None,
+            Err(e) => Some(format!("the command could not be waited: {e}")),
+        }
+    }
+
+    fn rearm(&self) {
+        // A continuous command monitor restarts the command after each firing.
+        *self.child.lock().expect("command child") = None;
     }
 
     fn describe(&self) -> String {
@@ -1135,8 +1196,21 @@ impl Condition for CommandCondition {
             CommandExpect::OutputContains(s) => {
                 format!("command `{}` printing `{s}`", self.argv.join(" "))
             }
+            CommandExpect::NumberAbove(n) => {
+                format!("command `{}` printing a number above {n}", self.argv.join(" "))
+            }
+            CommandExpect::NumberBelow(n) => {
+                format!("command `{}` printing a number below {n}", self.argv.join(" "))
+            }
         }
     }
+}
+
+/// The first number in a command's stdout, for a numeric threshold. Whitespace is
+/// trimmed; a unit suffix like `°C` or `ms` is ignored.
+fn parse_number(text: &str) -> Option<f64> {
+    text.split_whitespace()
+        .find_map(|w| w.trim_end_matches(['C', 'c', 's', 'm']).parse::<f64>().ok())
 }
 
 /// A log tail: fires on each new line that matches a filter. A **continuous**
@@ -1269,6 +1343,23 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Tick until something fires or the budget runs out. The command condition
+    /// spawns and polls a child, so its first firing is asynchronous; a fixed
+    /// single `tick()` races the spawn.
+    fn tick_until(ms: &Monitors, budget: Duration) -> Vec<Firing> {
+        let deadline = Instant::now() + budget;
+        loop {
+            let f = ms.tick();
+            if !f.is_empty() {
+                return f;
+            }
+            if Instant::now() >= deadline {
+                return Vec::new();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -1545,7 +1636,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let f = ms.tick();
+        let f = tick_until(&ms, Duration::from_secs(2));
         assert_eq!(f.len(), 1, "any exit fires, even non-zero");
         assert!(
             f[0].fired.word().contains("exited"),
@@ -1567,6 +1658,53 @@ mod tests {
         )
         .unwrap();
         assert!(ms.tick().is_empty(), "no match, no firing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bash_script_waits_for_a_marker_and_fires_when_it_appears() {
+        let dir = tmp();
+        let script = dir.join("wait.sh");
+        let marker = dir.join("marker");
+        std::fs::write(
+            &script,
+            "#!/bin/bash\n# Wait for the marker file to appear, then exit.\n\
+             while [ ! -f \"$1\" ]; do sleep 0.01; done\n",
+        )
+        .unwrap();
+        let ms = Arc::new(Monitors::new());
+        // Run the script through `bash`; its exit is the condition. It blocks
+        // until the marker exists, which is what a second process provides.
+        let cond = CommandCondition::any(vec![
+            "bash".into(),
+            script.display().to_string(),
+            marker.display().to_string(),
+        ]);
+        ms.declare(
+            "w",
+            scope(&dir),
+            Watch::Custom(CustomWatch(cond)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        // The script is blocked waiting: nothing has fired.
+        assert!(
+            tick_until(&ms, Duration::from_millis(60)).is_empty(),
+            "nothing fires while the script waits"
+        );
+        // The second process (the test) makes the marker; the script exits and the
+        // monitor fires.
+        std::fs::write(&marker, b"x").unwrap();
+        let f = tick_until(&ms, Duration::from_secs(2));
+        assert_eq!(f.len(), 1, "the marker made the script exit");
+        assert!(
+            f[0].fired.word().contains("exited"),
+            "the firing names the exit: {}",
+            f[0].fired.word()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1602,4 +1740,6 @@ mod tests {
         assert_eq!(ms.firings().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
 }
+
