@@ -666,6 +666,13 @@ pub struct Harness<'a> {
     /// `Some` when this harness was rebuilt from the store rather than opened fresh.
     /// The daemon prints it; a head is told through the log, by the rows themselves.
     resumed: Option<ResumeReport>,
+    /// What `open` decided that the operator would otherwise learn a turn later,
+    /// for a session that was NOT resumed — the resume report carries the same
+    /// notes for one that was. Measured 2026-09-14: a one-shot started with
+    /// `--mode allow-all` ran at `writes allowed` because the project store said
+    /// so, and the note saying so went into a report nobody printed, because the
+    /// session was new.
+    open_notes: Vec<String>,
     /// A title this harness derived and the daemon has not yet published. See
     /// [`Harness::take_new_title`].
     new_title: Option<String>,
@@ -934,7 +941,13 @@ impl<'a> Harness<'a> {
             } else {
                 HostBackend::new("/")
             }
-            .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?;
+            .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?
+            // Reaching the whole host is not the same as starting at its root: a
+            // relative path, and a command's `cwd`, start in the workspace.
+            .with_cwd(&cfg.workspace)
+            .map_err(|e| {
+                HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
+            })?;
             (b, false)
         } else if cfg.seat.needs_exec_backend() && may_exec {
             (
@@ -1129,6 +1142,19 @@ impl<'a> Harness<'a> {
             registry
                 .register(t)
                 .map_err(|e| HarnessError::Setup(format!("registering an extra tool: {e}")))?;
+        }
+        // The `flowy` door is `Sessions`' to seat, with the daemon's slot behind
+        // it. A harness opened without `Sessions` — a test, a one-off — still has
+        // roles that name the tool, so it gets the door with nothing behind it:
+        // the tool then says "no seat" and names `/flowy login`, which is true.
+        if cfg.parent_session_id.is_none()
+            && cfg.seat != Seat::Runner
+            && registry.get("flowy").is_none()
+        {
+            let (door, _slot) = letibot_flowy::Flowy::unattached();
+            registry
+                .register(Box::new(door))
+                .map_err(|e| HarnessError::Setup(format!("registering the flowy door: {e}")))?;
         }
 
         // **The role comes from the SESSION when the session has one.**
@@ -1627,6 +1653,7 @@ impl<'a> Harness<'a> {
             system_updates: 0,
             last_turn_id: String::new(),
             resumed: resume,
+            open_notes: notes,
             new_title: None,
             trail,
             todos: todo_board,
@@ -2141,6 +2168,12 @@ impl<'a> Harness<'a> {
     /// What a resume rebuilt, or `None` for a session opened fresh.
     pub fn resumed(&self) -> Option<&ResumeReport> {
         self.resumed.as_ref()
+    }
+
+    /// The notes `open` made about a session it did not resume — see the field.
+    /// Empty for a resumed session, whose notes are in [`Harness::resumed`].
+    pub fn open_notes(&self) -> &[String] {
+        &self.open_notes
     }
 
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {

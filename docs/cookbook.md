@@ -135,6 +135,28 @@ task(prompt, role?, access?, where?)
 - A survey: `task(prompt: "…", role: "researcher", access: "read-only")`. In a
   VM it has no shell at all; the reads go over vsock at 0.5 s each.
 - Subagents have no flowy voice; they route through you. The room hears you.
+- The copy a VM boots on carries the source's `.git` but not its
+  `.git/worktrees`: firecode's shared-tree guard counts a repository's
+  worktrees, and a copy of a checkout with 28 of them was refused as "the
+  shared checkout of a repository with 28 worktrees" until they were left out.
+- A leticode session without `--bash` has no shell and neither does any
+  subagent it spawns on the host; asked to run `cargo test`, both GLM and
+  DeepSeek said so rather than inventing a result line — that is the seat
+  working. `--bash` at start is what grants a shell; `/models` does not.
+
+## 4b. Paths in a leticode session
+
+The backend is rooted at `/` (opencode parity: `read` reaches the whole host
+and the ruleset, not a jail, is the gate), and **relative paths start at the
+workspace**, the same as a command's `cwd`. Measured before that was true:
+`read crates/flowy/src/context.rs` answered `no file`, the model went looking
+from `/home` down with `glob` and `grep`, read a 27 GB model shard whole, and
+the daemon spent twelve minutes in the kernel. Two sessions, same shape.
+
+What bounds a search now: files over 16 MiB are never opened, a rung stops
+after 512 MiB read, the result counts what it did not open, `read` refuses a
+file over 256 MiB by size before opening it, and a walk from `/` never
+enters `/proc`, `/sys`, `/dev` or `/run`.
 
 ## 5. letibot from a folder, and the two wizards
 
@@ -144,6 +166,12 @@ letibot --attach [DIR]       connect only
 letibot --daemons            every folder's daemon on this box
 letibot --stop [--all]       this folder's daemon, by pid — never every harnessd on the box
 ```
+
+The mode is a property of the project, not of the flag: a row in
+`~/.config/letibot/modes.tsv` wins over `--mode`, and the banner says so
+(`mode is X for DIR (from the project store), not the daemon default Y`).
+`allow-all` on a bare host is refused by its confinement prerequisite either
+way — it is the point a VM runs at.
 
 In the head:
 

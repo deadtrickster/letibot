@@ -227,14 +227,27 @@ impl FabricContext {
     }
 }
 
-/// The first paragraph that is not a heading, cut to [`SUMMARY_CHARS`] on a
-/// word boundary with an ellipsis. Markdown emphasis is left alone; it costs
-/// nothing and a summary that reads like the page is easier to match to it.
+/// The first paragraph that is not a heading, a blockquote or an HTML
+/// comment, cut to [`SUMMARY_CHARS`] on a word boundary with an ellipsis.
+/// Markdown emphasis is left alone; it costs nothing and a summary that
+/// reads like the page is easier to match to it.
 pub fn first_paragraph(body: &str) -> String {
     let mut para = String::new();
     for block in body.split("\n\n") {
         let block = block.trim();
         if block.is_empty() || block.starts_with('#') || block.starts_with("---") {
+            continue;
+        }
+        // A blockquote: every non-empty line of the block opens with '>'.
+        if block
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| l.starts_with('>'))
+        {
+            continue;
+        }
+        // An HTML comment and nothing else: opens `<!--`, closes `-->`.
+        if block.starts_with("<!--") && block.ends_with("-->") {
             continue;
         }
         para = block.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -267,6 +280,28 @@ mod tests {
         assert!(s.ends_with('…'));
         assert!(s.chars().count() <= SUMMARY_CHARS + 1);
         assert_eq!(first_paragraph("# only a heading"), "");
+    }
+
+    #[test]
+    fn the_summary_skips_a_blockquote() {
+        let body = "# Title\n\n> Quoted from another page.\n> Still the quote.\n\nThe first real paragraph.";
+        assert_eq!(first_paragraph(body), "The first real paragraph.");
+        // One plain line and the block is prose, not a quote — kept whole.
+        assert_eq!(
+            first_paragraph("> Quoted.\nA plain line."),
+            "> Quoted. A plain line."
+        );
+    }
+
+    #[test]
+    fn the_summary_skips_an_html_comment() {
+        let body = "<!-- draft: not for the summary -->\n\nThe first real paragraph.";
+        assert_eq!(first_paragraph(body), "The first real paragraph.");
+        // A comment may run over several lines and still be only a comment.
+        assert_eq!(
+            first_paragraph("<!-- one\n two -->\n\nProse after the comment."),
+            "Prose after the comment."
+        );
     }
 
     #[test]

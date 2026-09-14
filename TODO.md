@@ -99,6 +99,40 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
+## R15 — a leticode session started at `/`, and searched it — **SETTLED 2026-09-14 (claude-lab2x1)**
+
+Measured twice, driving local GLM as a one-shot coder on this repository: `read
+crates/flowy/src/context.rs` → `no file`, because the whole-host backend joined the
+relative path to its root and the root is `/`. The model then did the reasonable
+thing — `glob` and `grep` from `/home` down for the file — and the daemon read a
+27 GB model shard into memory and spent twelve minutes in the kernel with no head
+able to reach it. Four fixes, all with tests:
+
+- `HostBackend` has a `cwd`; relative paths and a command's `cwd` start there
+  (`with_cwd`, `ExecBackend::workdir`); the harness sets it to the workspace for
+  the `/`-rooted backend; the disclosure says `relative paths start at DIR`.
+- `grep` opens no file over 16 MiB, stops a rung after 512 MiB read, and the
+  result counts what it did not open. `read` refuses a file over 256 MiB by size
+  before opening it. A walk never enters `/proc`, `/sys`, `/dev`, `/run`.
+- The VM copy leaves out `.git/worktrees`: firecode's shared-tree guard counted
+  the source's 28 and refused the copy.
+- A NEW session's open-time notes reach the banner and the head (`open_note`):
+  the project store choosing `writes allowed` over `--mode allow-all` used to go
+  into a report only a resumed session printed.
+
+After the fix the same GLM one-shot read the file, made the edit, added the two
+tests (5/5 pass) and, having no shell, said it could not run them rather than
+inventing a result line. DeepSeek, live, did the same on `grep.rs` for ≈ $0.02
+(`docs/providers.md` "Verified").
+
+**Open, small.** `Mode::ALLOW_ALL` on a bare host is refused by its confinement
+prerequisite and the project store overrides `--mode` — both by design — but a
+one-shot with no adjudicator then has a `bash` that fails closed on every call.
+A one-shot wanting a shell needs `--bash` and an adjudicator, or a VM. Whether
+`--mode` on the command line should beat the store row is the operator's call.
+
+---
+
 ## R14 — inject the fabric's skills and memories into the session — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 Done: `letibot_flowy::context` + `Sessions::with_fabric` / `refresh_fabric`, the

@@ -67,8 +67,15 @@ tokens and cost instead.
   model called `read`, the harness ran it, round 2 carried the `tool` result,
   the answer came back; footer `320 prompt tokens (120 cached), 35 out, cost
   $0.000101`.
-- **Not verified live**: no provider key exists on lab2x1. The first live run
-  is the operator's, with a key; the fake speaks the documented wire shape.
+- **Live, 2026-09-14, DeepSeek** (key from opencode's `auth.json`): a leticode
+  one-shot on this repository asked to add a unit test to `grep.rs` — 17
+  rounds, 17 tool calls, 357 156 prompt tokens of which 328 064 were cache
+  hits (92 %), 2 687 out; at the prices above that is ≈ $0.02. The test it
+  wrote compiled after one scope fix (`FILE_CEILING` → `super::FILE_CEILING`)
+  and passes. Asked to run `cargo test` in a session with no shell, it said it
+  could not and did not invent a result line. Two short one-shots after:
+  `3036 prompt tokens (2816 cached), 1 out, cost $0.000141`.
+- GLM and Grok: presets and wire shape only; no live run yet.
 
 ## Token saving under a meter — the operator's notes, and where each lands
 

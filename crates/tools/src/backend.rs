@@ -128,6 +128,13 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// A tool's `cwd` argument — relative to where the session sits — in the form
+    /// [`crate::exec::ProcessHost::spawn`] wants it: relative to the root. The
+    /// identity by default; a backend whose root and workspace differ maps it.
+    fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
+        Ok(cwd.to_string())
+    }
+
     /// Whether [`ExecBackend::write`] can do anything.
     ///
     /// Defaults to `false` — a backend that has not said it is writable is not
@@ -206,6 +213,18 @@ pub struct HostBackend {
     /// into the environment on every call and so the value is a property of the
     /// backend rather than of the process that happens to be calling it.
     home: PathBuf,
+    /// Where a RELATIVE path starts. The root for a confined backend; the session's
+    /// workspace for one rooted at `/`.
+    ///
+    /// Measured 2026-09-14, twice, on a leticode one-shot: `read
+    /// crates/flowy/src/context.rs` answered `no file`, because the path was joined
+    /// to the root and the root was `/`. The model then went looking for the file
+    /// with `glob` and `grep` from `/home` downwards, read a 27 GB model shard into
+    /// memory on the way, and the daemon spent twelve minutes in the kernel. A
+    /// relative path is relative to where the session sits, the way opencode's
+    /// `read` joins it to the worktree — being able to reach the whole host is not
+    /// the same as starting there.
+    cwd: PathBuf,
     /// A head asked to move the running command to the background, and this is who.
     /// `None` when no request is pending. Wired by the daemon from the session's
     /// hub; the `bash` tool's wait loop reads it.
@@ -224,12 +243,33 @@ impl HostBackend {
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
         Ok(HostBackend {
+            cwd: root.clone(),
             root,
             writable: false,
             home,
             promote: Arc::new(std::sync::Mutex::new(None)),
             processes: None,
         })
+    }
+
+    /// Where relative paths start. Must lie under the root; a `cwd` outside it is
+    /// refused, because a relative path could then resolve to something the root
+    /// was chosen to exclude.
+    pub fn with_cwd(mut self, cwd: impl AsRef<Path>) -> Result<Self, BackendError> {
+        let cwd = cwd
+            .as_ref()
+            .canonicalize()
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        if !cwd.starts_with(&self.root) {
+            return Err(BackendError::Outside(cwd.display().to_string()));
+        }
+        self.cwd = cwd;
+        Ok(self)
+    }
+
+    /// Where relative paths start — see [`HostBackend::with_cwd`].
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     /// Wire the shared "move the running command to the background" channel from the
@@ -431,6 +471,14 @@ impl HostBackend {
         // to a literal directory named `~` under the root.
         let expanded = expand_tilde(path, &self.home);
         let given = Path::new(&expanded);
+        // A relative path starts where the session sits, not at the root: the two
+        // differ only for a backend rooted at `/`, and there the difference is the
+        // whole workspace.
+        let given = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            self.cwd.join(given)
+        };
         let rel = match given.strip_prefix(&self.root) {
             Ok(r) => r.to_path_buf(),
             Err(_) if given.is_absolute() => {
@@ -446,10 +494,15 @@ impl HostBackend {
     /// separated. Absolute host paths in a tool result are the same staleness
     /// clause 6 refuses in a description.
     pub fn display(&self, p: &Path) -> String {
-        p.strip_prefix(&self.root)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .replace('\\', "/")
+        // Under the workspace, relative to it; elsewhere under a `/` root, the
+        // absolute path — `home/dead/x` with the slash stripped is a path that
+        // resolves to nothing when the model hands it back.
+        let shown = match p.strip_prefix(&self.cwd) {
+            Ok(r) => r,
+            Err(_) if self.root == Path::new("/") => p,
+            Err(_) => p.strip_prefix(&self.root).unwrap_or(p),
+        };
+        shown.to_string_lossy().replace('\\', "/")
     }
 }
 
@@ -483,10 +536,11 @@ impl ExecBackend for HostBackend {
             .map(|a| shell_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
+        let cwd = self.workdir(&cmd.cwd)?;
         let id = host
             .spawn(&SpawnRequest {
                 command: joined,
-                cwd: cmd.cwd.clone(),
+                cwd,
                 scope: ScopeKind::Turn,
                 scope_name: None,
                 background: false,
@@ -708,7 +762,15 @@ impl ExecBackend for HostBackend {
             (true, None) => "writable".to_string(),
             (false, None) => "read-only".to_string(),
         };
-        format!("host filesystem, {mode}, rooted at {}", self.root.display())
+        if self.cwd == self.root {
+            format!("host filesystem, {mode}, rooted at {}", self.root.display())
+        } else {
+            format!(
+                "host filesystem, {mode}, rooted at {}; relative paths start at {}",
+                self.root.display(),
+                self.cwd.display()
+            )
+        }
     }
 
     fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
@@ -717,10 +779,26 @@ impl ExecBackend for HostBackend {
             .map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
     }
 
+    /// The request's `cwd` is relative to where the session sits, the same as
+    /// every other path a tool hands this backend; the process host wants it
+    /// relative to the root. They differ only for a backend rooted at `/`, and
+    /// there `.` used to mean the root of the filesystem.
+    fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
+        let dir = self.resolve(cwd)?;
+        Ok(dir
+            .strip_prefix(&self.root)
+            .unwrap_or(&dir)
+            .to_string_lossy()
+            .into_owned())
+    }
+
     fn promote_requested(&self) -> Option<String> {
         // Take, not read: whoever acts on the request (the `bash` wait loop) clears
         // it, so a second pass does not promote the same command twice.
-        self.promote.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.promote
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 }
 
@@ -917,7 +995,13 @@ pub fn default_skip(e: &DirEntry) -> bool {
     matches!(
         e.name.as_str(),
         ".git" | "target" | "node_modules" | ".venv" | "__pycache__" | ".cache"
-    )
+    ) ||
+    // On a backend rooted at `/` a walk can reach the kernel's own trees. `/proc`
+    // holds files whose size lies and whose reads block; `/sys` and `/dev` are not
+    // files; `/run` is sockets and pid files. None is a place a search for source
+    // would find it. Matched on the absolute path, so a project directory that
+    // happens to be called `dev` is still walked.
+    matches!(e.path.as_str(), "/proc" | "/sys" | "/dev" | "/run")
 }
 
 #[cfg(test)]
@@ -931,6 +1015,64 @@ mod tests {
         std::fs::write(d.path().join("README.md"), "hello\n").unwrap();
         let b = HostBackend::new(d.path()).unwrap();
         (d, b)
+    }
+
+    /// A backend rooted at `/` with the workspace as its cwd: a relative path is
+    /// the workspace's, an absolute one is the host's, and what is shown back is
+    /// relative to the workspace when under it and absolute otherwise. The
+    /// measured failure was `read crates/x.rs` -> `/crates/x.rs` -> "no file".
+    #[test]
+    fn relative_paths_start_at_the_cwd_not_the_root() {
+        let d = tempdir::TempDir::new();
+        std::fs::create_dir_all(d.path().join("ws/src")).unwrap();
+        std::fs::write(d.path().join("ws/src/lib.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(d.path().join("outside.txt"), "x\n").unwrap();
+        let ws = d.path().join("ws").canonicalize().unwrap();
+        let b = HostBackend::new("/").unwrap().with_cwd(&ws).unwrap();
+        assert_eq!(b.cwd(), ws.as_path());
+        assert_eq!(b.read("src/lib.rs").unwrap(), b"fn main() {}\n");
+        assert_eq!(b.read("./src/lib.rs").unwrap(), b"fn main() {}\n");
+        assert_eq!(
+            b.read(&ws.join("src/lib.rs").to_string_lossy()).unwrap(),
+            b"fn main() {}\n"
+        );
+        // Absolute paths outside the workspace are still the host's, this is a `/` root.
+        assert_eq!(
+            b.read(&d.path().join("outside.txt").to_string_lossy())
+                .unwrap(),
+            b"x\n"
+        );
+        // Shown back: relative under the workspace, absolute elsewhere.
+        assert_eq!(b.display(&ws.join("src/lib.rs")), "src/lib.rs");
+        let outside = d.path().canonicalize().unwrap().join("outside.txt");
+        assert_eq!(b.display(&outside), outside.to_string_lossy());
+        // A command's `.` is the workspace, root-relative for the process host.
+        let wd = b.workdir(".").unwrap();
+        assert_eq!(Path::new("/").join(&wd), ws);
+        assert!(!wd.starts_with('/'), "root-relative, got {wd}");
+        // The pseudo-filesystems are skipped by the default walk on such a root.
+        for p in ["/proc", "/sys", "/dev", "/run"] {
+            let e = DirEntry {
+                path: p.into(),
+                name: p[1..].into(),
+                is_dir: true,
+                bytes: 0,
+            };
+            assert!(default_skip(&e), "{p} must be skipped");
+        }
+        let e = DirEntry {
+            path: "src/dev".into(),
+            name: "dev".into(),
+            is_dir: true,
+            bytes: 0,
+        };
+        assert!(
+            !default_skip(&e),
+            "a project directory called dev is walked"
+        );
+        // A cwd outside the root is refused.
+        let confined = HostBackend::new(&ws).unwrap();
+        assert!(confined.with_cwd(d.path()).is_err());
     }
 
     #[test]

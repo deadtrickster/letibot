@@ -390,7 +390,14 @@ fn run() -> Result<i32, String> {
                 }
             }
         }
-        None => eprintln!("  new session — nothing in the store to resume under this id"),
+        None => {
+            eprintln!("  new session — nothing in the store to resume under this id");
+            for note in sessions.open_notes(&session_id) {
+                for line in wrap(&note, term_cols().clamp(48, 100).saturating_sub(11)) {
+                    eprintln!("           {line}");
+                }
+            }
+        }
     }
     eprintln!();
     for line in banner(&disclosures, term_cols()) {

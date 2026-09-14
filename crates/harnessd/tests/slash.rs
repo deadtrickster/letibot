@@ -31,6 +31,9 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     // reads the environment concurrently.
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", &scratch);
+        // opencode's store is a key source too; the developer's own login must not
+        // reach this assertion.
+        std::env::set_var("XDG_DATA_HOME", &scratch);
         std::env::remove_var("DEEPSEEK_API_KEY");
     }
 

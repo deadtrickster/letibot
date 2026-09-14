@@ -183,6 +183,14 @@ impl FirecodeSpec {
                 "target".into(),
                 ".claude/worktrees".into(),
                 "node_modules".into(),
+                // The registrations of the source's other worktrees. A copy has
+                // none of them, and firecode's shared-tree guard counts them:
+                // measured 2026-09-14, a leticode subagent's copy of this
+                // repository was refused as "the shared checkout of a repository
+                // with 28 worktrees" — the checkout was a copy, the 28 were the
+                // original's, and every one of them pointed back at a tree the
+                // guest could not see.
+                ".git/worktrees".into(),
             ],
             writable: true,
             exec: true,

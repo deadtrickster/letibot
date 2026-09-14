@@ -156,11 +156,15 @@ impl Tool for Grep {
 
         let mut tried: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
+        let mut unopened: Option<String> = None;
         let mut parseable: Vec<&'static str> = Vec::new();
 
         for attempt in &ladder {
             let scan = search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
             files_scanned = files_scanned.max(scan.scanned);
+            if attempt.scope == scope {
+                unopened = unopened_note(scan.skipped_large, scan.unreached);
+            }
             // Only from the scope the model ASKED about. The widened rung reads
             // the whole session root, and letting its languages count would
             // produce "the files searched here are rust" about a `path: docs`
@@ -211,6 +215,9 @@ impl Tool for Grep {
                      `max_matches`"
                 ));
             }
+            if let Some(n) = &unopened {
+                inv = inv.with_note(n.clone());
+            }
             return inv;
         }
 
@@ -254,6 +261,9 @@ impl Tool for Grep {
                 .map(|g| format!(" matching `{g}`"))
                 .unwrap_or_default()
         );
+        if let Some(n) = &unopened {
+            body.push_str(&format!("{n}\n"));
+        }
         body.push_str("relaxations tried, all of them empty:\n");
         for t in &tried {
             body.push_str(&format!("  - {t}\n"));
@@ -380,12 +390,28 @@ fn compile_failed(e: &PatternError) -> Invocation {
     )
 }
 
+/// The largest file a search opens. A source file is kilobytes; a file past this
+/// is a model shard, a database, a tarball — and one leticode session, searching
+/// from `/home` for a file it had mis-addressed, read a 27 GB shard whole into
+/// memory and spent twelve minutes in the kernel. Skipped files are counted and
+/// named in the result, so a search that missed something says so.
+pub const FILE_CEILING: u64 = 16 * 1024 * 1024;
+
+/// The most bytes one rung of a search reads in total. Past it the rung stops and
+/// says how many files it never reached — a bounded answer that names its bound,
+/// not a daemon that stops answering heads.
+pub const BYTES_BUDGET: u64 = 512 * 1024 * 1024;
+
 /// What one rung of the ladder found, and over what.
 struct Scan {
     hits: Vec<Hit>,
     /// Files actually OPENED. The denominator; zero is a failed scope.
     scanned: usize,
     truncated: bool,
+    /// Files over [`FILE_CEILING`], never opened.
+    skipped_large: usize,
+    /// Files after [`BYTES_BUDGET`] ran out, never opened.
+    unreached: usize,
     /// The languages among the files opened that `outline` has a grammar for.
     /// Collected here because it is the only place that knows which files were
     /// really read, and a suggestion to use `outline` is only honest if it would
@@ -427,12 +453,24 @@ fn search(
 
     let mut hits = Vec::new();
     let mut scanned = 0usize;
+    let mut skipped_large = 0usize;
+    let mut unreached = 0usize;
+    let mut read_bytes = 0u64;
     let mut languages: Vec<&'static str> = Vec::new();
     for (i, e) in files.iter().enumerate() {
         if i > 0 && i % 500 == 0 {
             // §8.5: progress is liveness. A walk over a large tree must produce it.
             ctx.progress(format!("scanned {i} of {} files", files.len()));
         }
+        if e.bytes > FILE_CEILING {
+            skipped_large += 1;
+            continue;
+        }
+        if read_bytes >= BYTES_BUDGET {
+            unreached = files.len() - i;
+            break;
+        }
+        read_bytes += e.bytes;
         let Ok(bytes) = ctx.backend.read(&e.path) else {
             continue;
         };
@@ -465,6 +503,8 @@ fn search(
                 hits,
                 scanned,
                 truncated: true,
+                skipped_large,
+                unreached,
                 languages,
             };
         }
@@ -473,7 +513,36 @@ fn search(
         hits,
         scanned,
         truncated: false,
+        skipped_large,
+        unreached,
         languages,
+    }
+}
+
+/// The files a rung did not open, as a note — or nothing, when it opened them all.
+fn unopened_note(scan_skipped: usize, scan_unreached: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if scan_skipped > 0 {
+        parts.push(format!(
+            "{scan_skipped} file(s) over {} MiB were not opened",
+            FILE_CEILING / (1024 * 1024)
+        ));
+    }
+    if scan_unreached > 0 {
+        parts.push(format!(
+            "{scan_unreached} file(s) were never reached: the search stopped after \
+             reading {} MiB",
+            BYTES_BUDGET / (1024 * 1024)
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{}. This says nothing about those files; narrow `path` or `glob` to \
+             reach them.",
+            parts.join("; ")
+        ))
     }
 }
 
@@ -783,5 +852,38 @@ mod tests {
         let mut h = harness();
         let r = h.call("grep", r#"{"pattern":"x","path":"srcc"}"#);
         assert!(r.payload.contains("src"), "{}", r.payload);
+    }
+
+    /// A file past [`FILE_CEILING`] is never opened, and the result says so.
+    ///
+    /// The defect this guards is the one the ceiling was added for: a search that
+    /// silently skipped a file would report an absence it did not establish. The
+    /// skipped file is created SPARSE — `set_len` gives it the size without the
+    /// bytes — so the test costs a metadata call rather than 16 MiB of writes, and
+    /// its name is a candidate for the same search so that only the ceiling can
+    /// explain its absence from the hits.
+    #[test]
+    fn a_file_over_the_ceiling_is_skipped_and_the_result_says_so() {
+        let mut h = harness();
+        h.write_file("src/small.rs", "pub fn quokka_sentinel() {}\n");
+        let big =
+            std::fs::File::create(h.root().join("src/big_candidate.rs")).expect("sparse file");
+        big.set_len(super::FILE_CEILING + 1).expect("set_len");
+        drop(big);
+
+        let r = h.call("grep", r#"{"pattern":"quokka_sentinel","path":"src"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(r.payload.contains("src/small.rs:"), "{}", r.payload);
+        assert!(
+            !r.payload.contains("big_candidate.rs"),
+            "a file over the ceiling must not be read:\n{}",
+            r.payload
+        );
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("were not opened"), "{notes}");
+        assert!(
+            notes.contains("big_candidate.rs") || notes.contains("1 file(s)"),
+            "{notes}"
+        );
     }
 }

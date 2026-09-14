@@ -104,19 +104,28 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     let w = h.wiring();
 
     assert_eq!(w.role, "orchestrator");
+    // `todo_write` is the session's own list, `flowy` the door to the room — a
+    // door with nothing behind it in a session opened without a seat, which says
+    // so and names `/flowy login`. Both were decided (2026-09-14); the next
+    // addition is not a decision until it is written down here too.
     assert_eq!(
         w.seated,
-        vec!["read", "grep", "glob", "ask_code", "ask_corpus", "read_spill"],
+        vec!["read", "grep", "glob", "ask_code", "ask_corpus", "read_spill", "todo_write", "flowy"],
         "the default tool set changed; that is a re-prefill for every stored session \
          as well as a capability change"
     );
     assert!(!w.has_write_tools, "seated: {:?}", w.seated);
     assert!(!w.has_exec_tools, "seated: {:?}", w.seated);
-    assert!(!w.has_network_tools, "seated: {:?}", w.seated);
+    // `flowy` declares `Network`: the door is seated, so the session opens with a
+    // gate that can name it — nothing behind it is reached without a seat.
+    assert!(w.has_network_tools, "seated: {:?}", w.seated);
     assert!(!w.backend_writable);
+    // The door is gated, so the session carries the head adjudicator — and says
+    // that nobody is attached to it, rather than claiming one is. A read-only
+    // session with no door would need none; this one has a door.
     assert!(
-        w.adjudicator.starts_with("none"),
-        "a read-only session needs no adjudicator and must not claim one: {}",
+        w.adjudicator.contains("none attached"),
+        "no head is attached and the adjudicator must say so: {}",
         w.adjudicator
     );
 

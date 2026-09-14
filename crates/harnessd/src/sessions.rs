@@ -525,6 +525,14 @@ impl<'a> Sessions<'a> {
                         }
                     }
                 }
+                if let Some(hub) = &hub {
+                    for note in h.open_notes() {
+                        hub.publish(SessionEvent::Warning {
+                            code: "open_note".into(),
+                            detail: note.clone(),
+                        });
+                    }
+                }
                 self.publish_title(session_id);
                 Ok(true)
             }
@@ -543,6 +551,15 @@ impl<'a> Sessions<'a> {
     /// What a session was rebuilt from, for the daemon's own banner.
     pub fn resume_report(&self, session_id: &str) -> Option<crate::harness::ResumeReport> {
         self.open.get(session_id).and_then(|h| h.resumed().cloned())
+    }
+
+    /// What opening a NEW session decided that the operator should hear — the mode
+    /// the project store chose over the flag, for one. Empty for a resumed session.
+    pub fn open_notes(&self, session_id: &str) -> Vec<String> {
+        self.open
+            .get(session_id)
+            .map(|h| h.open_notes().to_vec())
+            .unwrap_or_default()
     }
 
     /// Move a title the harness derived into the registry, where a picker reads it.

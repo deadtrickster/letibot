@@ -238,9 +238,15 @@ impl Tool for Bash {
                 .clamp(1, MAX_TIMEOUT_MS),
         );
 
+        let cwd = match ctx.backend.workdir(cwd) {
+            Ok(c) => c,
+            Err(e) => {
+                return Invocation::failed(format!("cwd `{cwd}`: {e}"), String::new());
+            }
+        };
         let req = SpawnRequest {
             command: command.to_string(),
-            cwd: cwd.to_string(),
+            cwd,
             scope,
             scope_name,
             background,

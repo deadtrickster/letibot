@@ -49,6 +49,23 @@ impl Tool for Read {
             );
         };
 
+        // The whole file is read before a window of it is shown, so a file that is
+        // not text — a model shard, a database — would be read whole first. Sized
+        // before it is opened; the ceiling is far above any source file.
+        if let Some(e) = ctx.backend.stat(path)
+            && !e.is_dir
+            && e.bytes > super::grep::FILE_CEILING * 16
+        {
+            return Invocation::failed(
+                format!(
+                    "{path} is {} MiB, which is not a file `read` shows",
+                    e.bytes / (1024 * 1024)
+                ),
+                "a file this size is data, not text. `bash` with `head -c`, `xxd` or \
+                 the tool that made it is the way to look inside.",
+            );
+        }
+
         let bytes = match ctx.backend.read(path) {
             Ok(b) => b,
             Err(BackendError::IsADirectory(_)) => return directory(ctx, path),
