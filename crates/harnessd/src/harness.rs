@@ -907,7 +907,23 @@ impl<'a> Harness<'a> {
         use letibot_tools::schema::Access as Cls;
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
-        let (backend, backend_confined): (HostBackend, bool) = if cfg.unconfined {
+        // **A VM placement is the boundary, so the mode inside is allow-all.** §5:
+        // no decision is made because the action is inside. The downgrade still
+        // composes on top — it is the caller's explicit ask. Set here, before the
+        // gate is built from `cfg.mode`, and disclosed by `placement`.
+        let in_vm = cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
+        if in_vm {
+            cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
+        }
+        let (backend, backend_confined): (HostBackend, bool) = if in_vm {
+            // A placeholder the VM arm below replaces; the host tree is not touched
+            // by a session placed in a VM, and this read-only view is never used.
+            (
+                HostBackend::new(&cfg.workspace)
+                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                true,
+            )
+        } else if cfg.unconfined {
             let b = if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {
@@ -977,11 +993,30 @@ impl<'a> Harness<'a> {
         // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());
-        let backend_described = backend.describe();
-        let backend_writable = backend.is_writable();
-        let monitors = backend
-            .host_processes()
-            .and_then(|h| h.monitors().cloned());
+        // One boxed backend from here on, whichever substrate: the host one built
+        // above, or a firecode VM booted on a copy of the workspace.
+        let (backend, backend_described, backend_writable, monitors): (
+            Box<dyn letibot_tools::backend::ExecBackend>,
+            String,
+            bool,
+            Option<Arc<Monitors>>,
+        ) = if in_vm {
+            let mut spec = letibot_tools::firecode::FirecodeSpec::new(&cfg.workspace, &cfg.session_id);
+            spec.writable = may_write;
+            spec.exec = may_exec;
+            let fc = letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
+                HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
+            })?;
+            let described = fc.describe();
+            let writable = fc.is_writable();
+            let monitors = fc.host_processes().and_then(|h| h.monitors().cloned());
+            (Box::new(fc), described, writable, monitors)
+        } else {
+            let described = backend.describe();
+            let writable = backend.is_writable();
+            let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
+            (Box::new(backend), described, writable, monitors)
+        };
 
         // Retrieval is inert and stays inert: `ask_code` and `ask_corpus` abstain,
         // and nothing is behind them. T16.6 checked rather than recalled — no MCP
@@ -1324,7 +1359,7 @@ impl<'a> Harness<'a> {
         };
 
         let spiller = build_spiller(&cfg)?;
-        let runtime = ToolRuntime::new(registry, Box::new(backend))
+        let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate);
 
@@ -1715,6 +1750,13 @@ impl<'a> Harness<'a> {
     /// The daemon needs them to arm the wake; nothing else does.
     pub fn monitors(&self) -> Option<&Arc<Monitors>> {
         self.monitors.as_ref()
+    }
+
+    /// The session is over: let the backend release what it holds and say where
+    /// its work went. A host backend says nothing; a firecode one brings its VM
+    /// down and names the sibling directory.
+    pub fn close_backend(&self) -> Option<String> {
+        self.runtime.backend.close()
     }
 
     /// The session's own scope, for a monitor the daemon declares on the session's
@@ -2526,18 +2568,11 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // children are denied, plus what this call asks. A downgraded session
         // cannot spawn a wider child by naming a wider role.
         let downgrade = self.base.downgrade.and(&spec.downgrade);
-        // Placement is a declared seam and an honest refusal until the backend
-        // exists. Running on the host and calling it a VM would be the boundary
-        // claim this whole design is built not to make (§5, §11.3).
-        if spec.placement == Placement::Firecode {
-            return Err(
-                "no firecode backend in this build: `where: firecode` is the placement seam \
-                 (W10) and nothing implements it yet, so the subagent was NOT spawned on the \
-                 host in its place. Omit `where`, or use `host`, to run it inside this \
-                 session's own boundary with the same downgrade."
-                    .into(),
-            );
-        }
+        // Placement: a VM is booted on a copy of this session's workspace by the
+        // child's own `open` (see `firecode.rs`); a boot that fails is a spawn that
+        // fails, named — never a subagent run on the host and called a VM.
+        let placement = spec.placement;
+        let _ = Placement::Host;
         // A subagent is a real session: mint its id and create its hub. The id is a
         // nanosecond timestamp suffix rather than a counter, so a subagent minted
         // after a daemon restart cannot collide with a persisted one (a counter
@@ -2622,6 +2657,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             seat,
             parent_session_id: Some(parent.clone()),
             downgrade,
+            placement,
             ..self.base.clone()
         };
 
@@ -2647,6 +2683,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         .map_err(|e| fail(e.to_string()))?;
 
         let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
+        // The child is done: release its substrate now, not when the harness is
+        // dropped, so the parent is told where the work went in the same reply.
+        let landed = sub.close_backend();
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
@@ -2659,7 +2698,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             parent: parent.clone(),
         });
         publish("done", &first_line);
-        Ok(reply.text)
+        Ok(match landed {
+            Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
+            None => reply.text,
+        })
     }
 }
 

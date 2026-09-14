@@ -42,7 +42,15 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R12 — the firecode backend for subagents, and the cookbook — **IN PROGRESS 2026-09-14 (claude-lab2x1)**
+## R12 — the firecode backend for subagents, and the cookbook — **SETTLED 2026-09-14 (claude-lab2x1)**
+
+Done: `crates/tools/src/firecode.rs` + the harness placement; live test
+`crates/tools/tests/firecode_live.rs` (up 6.9 s, read/write/list/stat/run/job,
+down landing the guest's writes); an end-to-end run where a leticode session
+spawned `task(role: researcher, access: read-only, where: firecode)` and the child
+listed the workspace inside the VM and had no shell; `docs/cookbook.md`, filed as
+skill `01M2FRW9D3A8K8V9660BJQX5PZ`. Left open, in `docs/subagents.md` §4:
+checkpoints, `--cwd` made after boot, the child's own voice.
 
 **Given by the operator 2026-09-14**, leaving for the day: *"1. firecode + cookbook"*.
 Design and measured numbers in `docs/subagents.md` §3. The `task` tool's `where:

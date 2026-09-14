@@ -170,6 +170,15 @@ pub trait ExecBackend: Send + Sync {
     fn promote_requested(&self) -> Option<String> {
         None
     }
+
+    /// The session is over: release what the backend holds and say where its
+    /// work went, if anywhere a caller should know about. `None` by default — a
+    /// host backend holds nothing and its writes were where they always were.
+    /// A firecode backend brings its VM down and names the sibling directory
+    /// the guest's tree landed in.
+    fn close(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The host filesystem, confined to a root.

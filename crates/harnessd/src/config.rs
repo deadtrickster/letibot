@@ -250,6 +250,10 @@ pub struct Config {
     /// inherited by every subagent it spawns and only ever added to. `none` for
     /// a session the operator opened. See `letibot_tools::schema::Downgrade`.
     pub downgrade: letibot_tools::schema::Downgrade,
+    /// Where this session's tools run: the host (its own boundary), or a
+    /// firecode VM — a subagent's `where`. `Host` for every session the operator
+    /// opened.
+    pub placement: letibot_tools::builtins::task::Placement,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -496,6 +500,7 @@ impl Config {
             permission: parse_permission(),
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
+            placement: letibot_tools::builtins::task::Placement::Host,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -791,6 +796,14 @@ impl Config {
                      session and never widened",
                     self.downgrade.describe()
                 ),
+            ));
+        }
+        if self.placement == letibot_tools::builtins::task::Placement::Firecode {
+            out.push(Disclosure::on(
+                "placement",
+                "a firecode VM holding a copy of the workspace: the VM is the boundary, the \
+                 mode inside is allow-all, and what this session writes lands in a sibling \
+                 directory when it ends",
             ));
         }
         // **The room.** Whether anybody said anywhere reaches this session, and as

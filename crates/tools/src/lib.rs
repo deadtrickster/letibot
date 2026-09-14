@@ -96,6 +96,7 @@ pub mod edit;
 pub mod events;
 pub mod exec;
 pub mod files;
+pub mod firecode;
 pub mod grant;
 pub mod intent;
 pub mod mode;
