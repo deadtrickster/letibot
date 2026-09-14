@@ -214,9 +214,9 @@ impl Tool for JobList {
         // it.
         if let Some(monitors) = host.monitors() {
             let live = monitors.list();
-            let done = monitors.history();
+            let done = monitors.firings();
             body.push_str(&format!(
-                "\n{} monitor(s) watching, {} settled",
+                "\n{} monitor(s) watching, {} fired",
                 live.len(),
                 done.len()
             ));
@@ -241,15 +241,14 @@ impl Tool for JobList {
                     m.ttl().as_secs_f32(),
                 ));
             }
-            for m in &done {
-                // **Why it fired, not that it did.** A settled monitor whose
-                // record said only "done" would have thrown away the answer it
-                // was declared to get.
+            for f in &done {
+                // **Why it fired, not that it did.** A firing whose record said only
+                // "done" would have thrown away the answer it was declared to get.
                 body.push_str(&format!(
                     "  {} — was watching {} — {}\n",
-                    m.name,
-                    m.watch.describe(),
-                    m.settled().map(|f| f.word()).unwrap_or_default()
+                    f.name,
+                    f.watch,
+                    f.fired.word()
                 ));
             }
         }

@@ -94,11 +94,8 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// nobody is waiting on it this instant.
 const TICK: Duration = Duration::from_millis(250);
 
-/// What a monitor watches. **Four, and not one of them holds a pattern.**
-///
-/// Adding a fifth is a deliberate act and the bar is the one in this module's
-/// docs: it keys on a handle, a path or a port, and a model cannot write a string
-/// into it that gets matched against a process.
+/// What a monitor watches. The built-in conditions are the first-class, listable
+/// ones; [`Watch::Custom`] carries a caller-supplied [`Condition`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Watch {
     /// A job leaving `Running`. Keyed on the handle the model already holds.
@@ -112,6 +109,67 @@ pub enum Watch {
     /// A **loopback** TCP port reaching the wanted state. No host argument: see
     /// this module's docs for why that omission is load-bearing.
     Port { port: u16, want: PortState },
+    /// A caller-supplied condition: a timer, a command, a log tail, a flowy
+    /// watcher. The open seam — built-ins are here, everything else is a
+    /// [`Condition`].
+    Custom(CustomWatch),
+}
+
+/// A [`Watch::Custom`], behind an `Arc` so the enum stays `Clone`. Compared by
+/// pointer identity: two `Custom` watches are equal iff they are the same
+/// condition object.
+#[derive(Clone)]
+pub struct CustomWatch(pub Arc<dyn Condition>);
+
+impl std::fmt::Debug for CustomWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Custom({})", self.0.describe())
+    }
+}
+
+impl PartialEq for CustomWatch {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CustomWatch {}
+
+/// A condition a monitor watches. The open seam: a flowy watcher, a log tail, a
+/// health check — anything that can answer "is it met" — is a `Condition`, not a
+/// new arm of a closed enum.
+///
+/// Evaluation is **poll-based**: the monitor's runner calls [`Condition::met`]
+/// each pass. A condition that can be signalled instead (a job's `finished`
+/// condvar) overrides [`Condition::wait`] so the runner blocks rather than polls;
+/// until then it polls on [`TICK`].
+pub trait Condition: Send + Sync {
+    /// Evaluate now. `Some(why)` when the condition is met, `None` otherwise.
+    fn met(&self) -> Option<String>;
+
+    /// How the runner waits before the next evaluation. `Block` means the
+    /// condition can signal (push); `Sleep` means poll.
+    ///
+    /// Defaults to polling on [`TICK`]; a blockable condition overrides it.
+    fn wait(&self) -> Wait {
+        Wait::Sleep(TICK)
+    }
+
+    /// Reset after a firing, so a **continuous** monitor watches for the next
+    /// occurrence. Default: stateless — the condition is re-evaluated as-is.
+    fn rearm(&self) {}
+
+    /// One line for a listing.
+    fn describe(&self) -> String;
+}
+
+/// How a runner waits before the next evaluation.
+#[derive(Debug, Clone, Copy)]
+pub enum Wait {
+    /// Block up to the deadline; the condition wakes the runner (push).
+    Block(Duration),
+    /// Sleep this long and evaluate again (poll).
+    Sleep(Duration),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +193,14 @@ impl PortState {
             _ => None,
         }
     }
+
+    /// The other state, for a continuous port monitor that alternates.
+    pub fn flip(self) -> PortState {
+        match self {
+            PortState::Listening => PortState::Closed,
+            PortState::Closed => PortState::Listening,
+        }
+    }
 }
 
 impl Watch {
@@ -148,6 +214,7 @@ impl Watch {
             Watch::Port { port, want } => {
                 format!("loopback port {port} becoming {}", want.as_str())
             }
+            Watch::Custom(c) => c.0.describe(),
         }
     }
 }
@@ -227,7 +294,6 @@ pub struct Monitor {
     /// renewal moves it.
     deadline: Mutex<Instant>,
     ttl: Mutex<Duration>,
-    state: Mutex<Option<Fired>>,
     probe: Probe,
     /// **Presence, before absence.** A [`Watch::Scope`] must see the cgroup hold
     /// something before an empty one means anything: an empty scope at t=0 is a
@@ -235,6 +301,27 @@ pub struct Monitor {
     /// the two apart. Unused by the other three probes, which have no such
     /// ambiguity — a path either changed or did not.
     seen_populated: AtomicBool,
+    /// **Continuous** rather than one-shot: after a firing the monitor re-arms and
+    /// keeps watching instead of settling. One-shot is the default; a continuous
+    /// monitor lives until its TTL or an explicit retire. It is a **persistent**
+    /// watcher — it does not die between firings; each firing is an event in the
+    /// stream the harness wakes on.
+    repeat: bool,
+}
+
+/// One firing of a monitor — a message in the stream the harness wakes on. A
+/// continuous monitor produces a stream of these without dying; a one-shot monitor
+/// produces exactly one. Recorded separately from the live [`Monitor`], so a
+/// continuous monitor's stream of firings is a list of events rather than a shared
+/// mutable cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Firing {
+    pub name: String,
+    /// The condition, described.
+    pub watch: String,
+    pub declared_by: String,
+    pub fired: Fired,
+    pub at: SystemTime,
 }
 
 /// The resolved thing a monitor looks at each tick.
@@ -247,8 +334,18 @@ pub struct Monitor {
 enum Probe {
     Job(Arc<Job>),
     Scope(ScopeId),
-    Path { path: PathBuf, baseline: PathFacts },
-    Port { port: u16, want: PortState },
+    Path {
+        path: PathBuf,
+        /// Behind a lock so a **continuous** monitor can re-baseline at the new
+        /// state after each firing.
+        baseline: Mutex<PathFacts>,
+    },
+    Port {
+        port: u16,
+        /// Behind a lock so a continuous monitor can flip its target after firing.
+        want: Mutex<PortState>,
+    },
+    Custom(Arc<dyn Condition>),
 }
 
 impl std::fmt::Debug for Probe {
@@ -316,25 +413,13 @@ impl PathFacts {
 }
 
 impl Monitor {
-    /// Whether this monitor is still watching. `None` is watching; `Some` is one
-    /// of the four endings and is final.
-    pub fn settled(&self) -> Option<Fired> {
-        self.state.lock().expect("monitor state").clone()
-    }
-
-    pub fn is_watching(&self) -> bool {
-        self.state.lock().expect("monitor state").is_none()
-    }
-
     pub fn ttl(&self) -> Duration {
         *self.ttl.lock().expect("monitor ttl")
     }
 
-    /// How long before the TTL takes it, or `None` once it has settled.
+    /// How long before the TTL takes it. A monitor is live until it expires,
+    /// retires or its owner ends; `remaining` is the TTL countdown.
     pub fn remaining(&self) -> Option<Duration> {
-        if !self.is_watching() {
-            return None;
-        }
         let d = *self.deadline.lock().expect("monitor deadline");
         Some(d.saturating_duration_since(Instant::now()))
     }
@@ -351,13 +436,15 @@ impl Monitor {
         *self.deadline.lock().expect("monitor deadline") = Instant::now() + ttl;
     }
 
-    fn settle(&self, f: Fired) -> bool {
-        let mut s = self.state.lock().expect("monitor state");
-        if s.is_some() {
-            return false;
+    /// One firing event for this monitor, carrying the ending and the attribution.
+    fn firing(&self, fired: Fired) -> Firing {
+        Firing {
+            name: self.name.clone(),
+            watch: self.watch.describe(),
+            declared_by: self.declared_by.clone(),
+            fired,
+            at: SystemTime::now(),
         }
-        *s = Some(f);
-        true
     }
 
     /// One look. `Some(why)` when the condition has happened.
@@ -400,16 +487,18 @@ impl Monitor {
                 None
             }
             Probe::Path { path, baseline } => PathFacts::read(path)
-                .changed_from(baseline)
+                .changed_from(&baseline.lock().expect("path baseline"))
                 .map(|w| format!("`{}`: {w}", path.display())),
             Probe::Port { port, want } => {
+                let want = *want.lock().expect("port want");
                 let now = if super::host::port_is_listening(*port) {
                     PortState::Listening
                 } else {
                     PortState::Closed
                 };
-                (now == *want).then(|| format!("loopback port {port} is {}", want.as_str()))
+                (now == want).then(|| format!("loopback port {port} is {}", want.as_str()))
             }
+            Probe::Custom(c) => c.met(),
         }
     }
 
@@ -437,6 +526,7 @@ impl Monitor {
                     "not listening"
                 }
             ),
+            Probe::Custom(c) => format!("the condition `{}` was not met", c.describe()),
         }
     }
 }
@@ -451,6 +541,7 @@ impl Monitor {
         probe: Probe,
         declared_by: String,
         ttl: Duration,
+        repeat: bool,
     ) -> Monitor {
         Monitor {
             name,
@@ -461,9 +552,28 @@ impl Monitor {
             started: Instant::now(),
             deadline: Mutex::new(Instant::now() + ttl),
             ttl: Mutex::new(ttl),
-            state: Mutex::new(None),
             probe,
             seen_populated: AtomicBool::new(false),
+            repeat,
+        }
+    }
+
+    /// Re-arm after a firing, in place: a **continuous** monitor is persistent, so
+    /// it re-baselines its probe for the *next* occurrence rather than dying. The
+    /// path is re-read at its new state, the port's target flips, and a custom
+    /// condition re-arms itself. A job or scope is terminal and has no next
+    /// occurrence.
+    fn rearm(&self) {
+        match &self.probe {
+            Probe::Path { path, baseline } => {
+                *baseline.lock().expect("path baseline") = PathFacts::read(path);
+            }
+            Probe::Port { want, .. } => {
+                let flip = want.lock().expect("port want").flip();
+                *want.lock().expect("port want") = flip;
+            }
+            Probe::Custom(c) => c.rearm(),
+            Probe::Job(_) | Probe::Scope(_) => {}
         }
     }
 }
@@ -566,10 +676,10 @@ struct Registry {
     /// Ordered by name so a listing is stable across calls; an unstable listing
     /// re-renders differently every turn and costs the prefix cache.
     live: BTreeMap<String, Arc<Monitor>>,
-    /// Settled monitors, kept so that "why did it fire" survives the firing. A
-    /// record that is deleted at the moment it becomes interesting is not a
-    /// record.
-    history: Vec<Arc<Monitor>>,
+    /// The stream of firings, kept so that "why did it fire" survives the firing. A
+    /// record that is deleted at the moment it becomes interesting is not a record.
+    /// A continuous monitor appends one entry per firing without leaving `live`.
+    events: Vec<Firing>,
     /// Whether the poller thread is running. Not a handle: the thread exits on
     /// its own when nothing is watching, and holding a `JoinHandle` for a thread
     /// nobody joins is bookkeeping that can only go stale.
@@ -584,7 +694,8 @@ impl Monitors {
     /// Declare a watch. **Refuses rather than replacing** when the name is taken.
     ///
     /// `job` must be the live handle rather than an id, so that a monitor cannot
-    /// be declared against a job that does not exist — see [`Probe`].
+    /// be declared against a job that does not exist — see [`Probe`]. `repeat`
+    /// makes it **continuous**: it re-arms after each firing instead of settling.
     pub fn declare(
         self: &Arc<Self>,
         name: &str,
@@ -593,6 +704,7 @@ impl Monitors {
         job: Option<Arc<Job>>,
         declared_by: &str,
         ttl: Duration,
+        repeat: bool,
     ) -> Result<Arc<Monitor>, Box<MonitorError>> {
         if ttl > MAX_TTL {
             return Err(Box::new(MonitorError::Unbounded {
@@ -611,12 +723,13 @@ impl Monitors {
                 // The baseline is read HERE, at declaration, and not at the first
                 // tick: a baseline read a quarter-second late has already missed
                 // the change it exists to detect.
-                baseline: PathFacts::read(p),
+                baseline: Mutex::new(PathFacts::read(p)),
             },
             (Watch::Port { port, want }, _) => Probe::Port {
                 port: *port,
-                want: *want,
+                want: Mutex::new(*want),
             },
+            (Watch::Custom(c), _) => Probe::Custom(c.0.clone()),
         };
 
         let mut reg = self.inner.lock().expect("monitors");
@@ -636,6 +749,7 @@ impl Monitors {
             probe,
             declared_by.to_string(),
             ttl,
+            repeat,
         ));
         reg.live.insert(name.to_string(), Arc::clone(&m));
         let start = !reg.polling;
@@ -666,18 +780,18 @@ impl Monitors {
         Ok(m)
     }
 
-    /// Retire one by name.
-    pub fn retire(&self, name: &str, by: &str) -> Option<Arc<Monitor>> {
+    /// Retire one by name. Returns the firing record (`Cancelled`).
+    pub fn retire(&self, name: &str, by: &str) -> Option<Firing> {
         let mut reg = self.inner.lock().expect("monitors");
         let m = reg.live.remove(name)?;
-        m.settle(Fired::Cancelled {
+        let f = m.firing(Fired::Cancelled {
             by: by.to_string(),
             after: m.age(),
         });
-        reg.history.push(Arc::clone(&m));
+        reg.events.push(f.clone());
         drop(reg);
         self.settled.notify_all();
-        Some(m)
+        Some(f)
     }
 
     /// **Retire every monitor a scope owned, because the scope ended.**
@@ -686,7 +800,7 @@ impl Monitors {
     /// lands at the moment the scope goes and says which scope took it. A monitor
     /// that merely stopped being polled would be a watcher that went quiet, and a
     /// watcher that goes quiet looks exactly like one whose condition never fired.
-    pub fn retire_under(&self, scope: &ScopeId) -> Vec<Arc<Monitor>> {
+    pub fn retire_under(&self, scope: &ScopeId) -> Vec<Firing> {
         let mut reg = self.inner.lock().expect("monitors");
         let doomed: Vec<String> = reg
             .live
@@ -697,12 +811,12 @@ impl Monitors {
         let mut out = Vec::new();
         for n in doomed {
             if let Some(m) = reg.live.remove(&n) {
-                m.settle(Fired::OwnerEnded {
+                let f = m.firing(Fired::OwnerEnded {
                     scope: scope.clone(),
                     after: m.age(),
                 });
-                reg.history.push(Arc::clone(&m));
-                out.push(m);
+                reg.events.push(f.clone());
+                out.push(f);
             }
         }
         drop(reg);
@@ -723,23 +837,18 @@ impl Monitors {
             .collect()
     }
 
-    /// Everything that has settled, in the order it settled. The falsifier: a
-    /// session with no monitors and a session whose monitors all expired without
-    /// firing are different facts.
-    pub fn history(&self) -> Vec<Arc<Monitor>> {
-        self.inner.lock().expect("monitors").history.clone()
+    /// The stream of firings, in the order they fired. The falsifier: a session
+    /// with no monitors and a session whose monitors all expired without firing
+    /// are different facts — and a **continuous** monitor contributes one entry per
+    /// firing while it keeps watching.
+    pub fn firings(&self) -> Vec<Firing> {
+        self.inner.lock().expect("monitors").events.clone()
     }
 
-    /// One monitor by name, live or settled. **Settled ones are still findable**:
-    /// the moment a monitor becomes interesting is the moment it fires, and a
-    /// lookup that only saw live ones would answer "no such monitor" about the
-    /// one that just did its job.
+    /// One live monitor by name. A settled one is no longer watching, so it is not
+    /// here — its firing is in [`Monitors::firings`].
     pub fn get(&self, name: &str) -> Option<Arc<Monitor>> {
-        let reg = self.inner.lock().expect("monitors");
-        reg.live
-            .get(name)
-            .cloned()
-            .or_else(|| reg.history.iter().rev().find(|m| m.name == name).cloned())
+        self.inner.lock().expect("monitors").live.get(name).cloned()
     }
 
     /// The names watching right now, for a refusal that has to say what there is.
@@ -753,34 +862,34 @@ impl Monitors {
             .collect()
     }
 
-    /// **The wake seam.** Block until a monitor settles, or until the deadline.
+    /// **The wake seam.** Block until a monitor fires, or until the deadline.
     ///
     /// This is what a loop calls between turns: it is the "wakes the loop when it
     /// fires" half of T24's sentence, and it is a `Condvar` rather than a poll so
     /// that a caller waiting on it costs nothing while nothing is happening.
     ///
-    /// Returns the monitors that settled **during this call**, which is why it
-    /// takes a `since`: a caller that asked twice would otherwise be handed the
-    /// same firing twice and act on it twice.
-    pub fn wait_for_any(&self, since: usize, deadline: Duration) -> Vec<Arc<Monitor>> {
+    /// Returns the firings **during this call**, which is why it takes a `since`: a
+    /// caller that asked twice would otherwise be handed the same firing twice and
+    /// act on it twice.
+    pub fn wait_for_any(&self, since: usize, deadline: Duration) -> Vec<Firing> {
         let reg = self.inner.lock().expect("monitors");
         let (reg, _) = self
             .settled
-            .wait_timeout_while(reg, deadline, |r| r.history.len() <= since)
+            .wait_timeout_while(reg, deadline, |r| r.events.len() <= since)
             .expect("monitors");
-        reg.history.iter().skip(since).cloned().collect()
+        reg.events.iter().skip(since).cloned().collect()
     }
 
-    /// How many monitors have settled. The cursor [`Monitors::wait_for_any`] takes.
+    /// How many firings have happened. The cursor [`Monitors::wait_for_any`] takes.
     pub fn settled_count(&self) -> usize {
-        self.inner.lock().expect("monitors").history.len()
+        self.inner.lock().expect("monitors").events.len()
     }
 
     /// One pass over every live monitor. Exposed so a test does not have to sleep
     /// for the poller — a test that waits on a thread it cannot see is a test that
     /// is flaky on a loaded box.
-    pub fn tick(&self) -> Vec<Arc<Monitor>> {
-        let mut settled = Vec::new();
+    pub fn tick(&self) -> Vec<Firing> {
+        let mut fired = Vec::new();
         let live: Vec<(String, Arc<Monitor>)> = {
             let reg = self.inner.lock().expect("monitors");
             reg.live
@@ -813,18 +922,25 @@ impl Monitors {
             } else {
                 None
             };
-            let Some(f) = ending else { continue };
-            if m.settle(f) {
-                let mut reg = self.inner.lock().expect("monitors");
+            let Some(ending) = ending else { continue };
+            let is_fire = matches!(ending, Fired::Fired { .. });
+            let event = m.firing(ending);
+            let mut reg = self.inner.lock().expect("monitors");
+            if m.repeat && is_fire {
+                // **Continuous**: the monitor persists — it does not die and get
+                // re-declared. It re-baselines its probe for the next occurrence and
+                // keeps watching; the firing is one message in the stream.
+                m.rearm();
+            } else {
                 reg.live.remove(&name);
-                reg.history.push(Arc::clone(&m));
-                settled.push(m);
             }
+            reg.events.push(event.clone());
+            fired.push(event);
         }
-        if !settled.is_empty() {
+        if !fired.is_empty() {
             self.settled.notify_all();
         }
-        settled
+        fired
     }
 
     /// One thread for **all** monitors, and it exits when there is nothing left
@@ -852,6 +968,153 @@ impl Monitors {
                     }
                 }
             });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shipped conditions. A flowy watcher, a log tail, a health check — these are the
+// examples of the [`Condition`] seam, and the things a caller builds its own on
+// top of.
+// ---------------------------------------------------------------------------
+
+/// A timer: fires when the deadline passes. One-shot by default; on a continuous
+/// monitor it re-arms and fires every `interval`.
+#[derive(Debug)]
+pub struct TimerCondition {
+    interval: Duration,
+    next: Mutex<Instant>,
+}
+
+impl TimerCondition {
+    /// Fire after `interval`, and — when the monitor is continuous — every
+    /// `interval` after each firing.
+    pub fn after(interval: Duration) -> Arc<Self> {
+        Arc::new(TimerCondition {
+            interval,
+            next: Mutex::new(Instant::now() + interval),
+        })
+    }
+}
+
+impl Condition for TimerCondition {
+    fn met(&self) -> Option<String> {
+        let next = *self.next.lock().expect("timer");
+        (Instant::now() >= next)
+            .then(|| format!("the {:.1}s timer elapsed", self.interval.as_secs_f32()))
+    }
+
+    fn rearm(&self) {
+        let mut next = self.next.lock().expect("timer");
+        *next = Instant::now() + self.interval;
+    }
+
+    fn describe(&self) -> String {
+        format!("a timer every {:.1}s", self.interval.as_secs_f32())
+    }
+}
+
+/// A command whose exit is the condition. `Expect::ExitZero` fires when the
+/// command exits 0; `Expect::OutputContains` fires when its output contains the
+/// string. Run on the host, not through the session's exec boundary — a monitor
+/// condition is a check, not a job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandExpect {
+    ExitZero,
+    OutputContains(String),
+}
+
+/// A command returning: the condition is met by the command's exit code or output.
+#[derive(Debug)]
+pub struct CommandCondition {
+    argv: Vec<String>,
+    expect: CommandExpect,
+}
+
+impl CommandCondition {
+    pub fn new(argv: Vec<String>, expect: CommandExpect) -> Arc<Self> {
+        Arc::new(CommandCondition { argv, expect })
+    }
+}
+
+impl Condition for CommandCondition {
+    fn met(&self) -> Option<String> {
+        let Some(prog) = self.argv.first() else {
+            return Some("the command was empty, so it cannot be run".into());
+        };
+        match std::process::Command::new(prog)
+            .args(&self.argv[1..])
+            .output()
+        {
+            Ok(o) => match &self.expect {
+                CommandExpect::ExitZero if o.status.success() => {
+                    Some("the command exited 0".into())
+                }
+                CommandExpect::OutputContains(s)
+                    if String::from_utf8_lossy(&o.stdout).contains(s.as_str()) =>
+                {
+                    Some(format!("the command's output contained `{s}`"))
+                }
+                _ => None,
+            },
+            Err(e) => Some(format!("the command could not be run: {e}")),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match &self.expect {
+            CommandExpect::ExitZero => format!("command `{}` exiting 0", self.argv.join(" ")),
+            CommandExpect::OutputContains(s) => {
+                format!("command `{}` printing `{s}`", self.argv.join(" "))
+            }
+        }
+    }
+}
+
+/// A log tail: fires on each new line that matches a filter. A **continuous**
+/// monitor's example — the condition is stateless between firings except for how
+/// far it has read, which `rearm` advances.
+#[derive(Debug)]
+pub struct LogTailCondition {
+    path: PathBuf,
+    contains: String,
+    read: Mutex<u64>,
+}
+
+impl LogTailCondition {
+    pub fn new(path: impl Into<PathBuf>, contains: impl Into<String>) -> Arc<Self> {
+        Arc::new(LogTailCondition {
+            path: path.into(),
+            contains: contains.into(),
+            read: Mutex::new(0),
+        })
+    }
+}
+
+impl Condition for LogTailCondition {
+    fn met(&self) -> Option<String> {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return None;
+        };
+        let mut read = self.read.lock().expect("log tail");
+        let start = (*read).min(bytes.len() as u64) as usize;
+        let tail = &bytes[start..];
+        // Advance only when there is a matching line, so a continuous monitor
+        // fires once per new matching line and not once per tick.
+        for line in String::from_utf8_lossy(tail).lines() {
+            if line.contains(&self.contains) {
+                *read = bytes.len() as u64;
+                return Some(format!("a line matched `{}`: {line}", self.contains));
+            }
+        }
+        None
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "path `{}` growing a line containing `{}`",
+            self.path.display(),
+            self.contains
+        )
     }
 }
 
@@ -895,6 +1158,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
+        false,
         )
         .expect("first");
         let e = ms
@@ -905,6 +1169,7 @@ mod tests {
                 None,
                 "turn-2",
                 DEFAULT_TTL,
+            false,
             )
             .unwrap_err();
         let msg = e.to_string();
@@ -931,13 +1196,14 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
+        false,
         )
         .unwrap();
         assert!(ms.tick().is_empty(), "nothing has changed yet");
         std::fs::write(&p, b"hello").unwrap();
         let fired = ms.tick();
         assert_eq!(fired.len(), 1);
-        match fired[0].settled().unwrap() {
+        match &fired[0].fired {
             Fired::Fired { why, .. } => {
                 assert!(why.contains("now exists"), "{why}");
                 assert!(why.contains("out.log"), "{why}");
@@ -958,12 +1224,13 @@ mod tests {
             None,
             "turn-1",
             Duration::from_millis(1),
+        false,
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(5));
         let settled = ms.tick();
         assert_eq!(settled.len(), 1);
-        let f = settled[0].settled().unwrap();
+        let f = &settled[0].fired;
         assert!(!f.happened(), "an expiry learned nothing about the world");
         match f {
             Fired::Expired { last_seen, .. } => {
@@ -988,6 +1255,7 @@ mod tests {
                 None,
                 "turn-1",
                 MAX_TTL + Duration::from_secs(1),
+            false,
             )
             .unwrap_err();
         assert!(e.to_string().contains("past the cap"), "{e}");
@@ -1009,19 +1277,20 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
+        false,
         )
         .unwrap();
         let retired = ms.retire_under(&owner);
         assert_eq!(retired.len(), 1);
-        match retired[0].settled().unwrap() {
-            Fired::OwnerEnded { scope, .. } => assert_eq!(scope, owner),
+        match &retired[0].fired {
+            Fired::OwnerEnded { scope, .. } => assert_eq!(scope, &owner),
             other => panic!("{other:?}"),
         }
         assert!(
             ms.list().is_empty(),
             "a retired monitor is not still listed"
         );
-        assert_eq!(ms.history().len(), 1, "and it is still in the record");
+        assert_eq!(ms.firings().len(), 1, "and it is still in the record");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1036,6 +1305,7 @@ mod tests {
             None,
             "turn-1",
             Duration::from_secs(1),
+        false,
         )
         .unwrap();
         let before = ms.list()[0].remaining().unwrap();
@@ -1063,6 +1333,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
+        false,
         )
         .unwrap();
         // There is no `cgroup.events` here, so `populated_at` reads false — which
@@ -1071,6 +1342,94 @@ mod tests {
             ms.tick().is_empty(),
             "an empty scope that was never seen populated is a boot window"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_continuous_path_monitor_fires_on_each_change_without_dying() {
+        let dir = tmp();
+        let ms = Arc::new(Monitors::new());
+        let p = dir.join("f");
+        ms.declare(
+            "c",
+            scope(&dir),
+            Watch::Path(p.clone()),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            true,
+        )
+        .unwrap();
+        assert!(ms.tick().is_empty());
+        std::fs::write(&p, b"one").unwrap();
+        let f1 = ms.tick();
+        assert_eq!(f1.len(), 1);
+        assert!(matches!(&f1[0].fired, Fired::Fired { .. }));
+        // A continuous monitor is persistent: it does not die between firings.
+        assert_eq!(ms.list().len(), 1, "a continuous monitor does not die");
+        std::fs::write(&p, b"two").unwrap();
+        let f2 = ms.tick();
+        assert_eq!(f2.len(), 1);
+        assert!(matches!(&f2[0].fired, Fired::Fired { .. }));
+        assert_eq!(ms.firings().len(), 2, "two firings, one monitor");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_timer_condition_fires_after_its_interval_and_rearms() {
+        let dir = tmp();
+        let ms = Arc::new(Monitors::new());
+        let timer = TimerCondition::after(Duration::from_millis(10));
+        ms.declare(
+            "t",
+            scope(&dir),
+            Watch::Custom(CustomWatch(timer)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            true,
+        )
+        .unwrap();
+        assert!(ms.tick().is_empty());
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(ms.tick().len(), 1);
+        // Re-armed: no immediate re-fire, then fires again after another interval.
+        assert!(ms.tick().is_empty());
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(ms.tick().len(), 1);
+        assert_eq!(ms.firings().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_condition_fires_on_exit_zero_and_not_on_non_zero() {
+        let dir = tmp();
+        let ms = Arc::new(Monitors::new());
+        let yes = CommandCondition::new(vec!["true".into()], CommandExpect::ExitZero);
+        ms.declare(
+            "yes",
+            scope(&dir),
+            Watch::Custom(CustomWatch(yes)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        assert_eq!(ms.tick().len(), 1, "`true` exits 0");
+
+        let no = CommandCondition::new(vec!["false".into()], CommandExpect::ExitZero);
+        ms.declare(
+            "no",
+            scope(&dir),
+            Watch::Custom(CustomWatch(no)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        assert!(ms.tick().is_empty(), "`false` exits non-zero, so no firing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

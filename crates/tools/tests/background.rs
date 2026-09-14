@@ -302,8 +302,8 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
     std::fs::write(root.join("marker-a"), b"x").expect("write the marker");
     let fired = monitors.tick();
     assert_eq!(fired.len(), 1, "the monitor must fire on the change");
-    let why = match fired[0].settled().unwrap() {
-        Fired::Fired { why, .. } => why,
+    let why = match &fired[0].fired {
+        Fired::Fired { why, .. } => why.clone(),
         other => panic!("{other:?}"),
     };
     assert!(why.contains("now exists"), "{why}");

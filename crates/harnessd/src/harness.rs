@@ -557,23 +557,21 @@ impl HubSteering {
     }
 }
 
-/// A settled monitor, as the sentence the model is given.
+/// A monitor firing, as the sentence the model is given.
 ///
 /// It reports **why it fired**, not that it did — T24 requirement 3 — because
 /// `Fired::word` distinguishes a firing from an expiry, and a monitor that expired
 /// learned nothing about the world.
-fn monitor_notice(fired: &[Arc<letibot_tools::exec::monitor::Monitor>]) -> String {
+fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
     let mut s = String::from("[monitor] ");
-    s.push_str(&format!("{} watch(es) settled:\n", fired.len()));
-    for m in fired {
+    s.push_str(&format!("{} watch(es) fired:\n", fired.len()));
+    for f in fired {
         s.push_str(&format!(
             "  - `{}` ({}), declared by {}: {}\n",
-            m.name,
-            m.watch.describe(),
-            m.declared_by,
-            m.settled()
-                .map(|f| f.word())
-                .unwrap_or_else(|| "settled with no recorded ending".into()),
+            f.name,
+            f.watch,
+            f.declared_by,
+            f.fired.word(),
         ));
     }
     s.push_str(
@@ -626,7 +624,7 @@ impl SteeringSource for HubSteering {
         if settled <= since {
             return None;
         }
-        let fired: Vec<_> = monitors.history().into_iter().skip(since).collect();
+        let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
         self.monitor_cursor.store(settled, Ordering::SeqCst);
         if fired.is_empty() {
             return None;
@@ -1740,7 +1738,7 @@ impl<'a> Harness<'a> {
         if settled <= since {
             return Ok(None);
         }
-        let fired: Vec<_> = monitors.history().into_iter().skip(since).collect();
+        let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
         self.monitor_cursor.store(settled, Ordering::SeqCst);
         if fired.is_empty() {
             return Ok(None);

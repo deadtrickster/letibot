@@ -82,7 +82,8 @@ impl Tool for Monitor {
                     "port": {"type": "integer", "description": "Watch this TCP port on the loopback interface. There is no host argument; it is always this machine."},
                     "port_state": {"type": "string", "description": "`listening` (the default) fires when something starts listening; `closed` fires when nothing is."},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
-                    "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."}
+                    "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
+                    "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
                 },
                 "required": ["name"]
             }),
@@ -124,19 +125,17 @@ impl Tool for Monitor {
 
         match action {
             "retire" => {
-                let Some(m) = monitors.retire(name, "the model") else {
+                let Some(f) = monitors.retire(name, "the model") else {
                     return unknown_monitor(host, name);
                 };
                 return Invocation::ok(format!(
                     "retired `{name}`, which was watching {}.\n  declared by: {}\n  \
                      it had {} left\n\nIt never fired: retiring is not the condition \
                      happening, and nothing above is evidence about {}.",
-                    m.watch.describe(),
-                    m.declared_by,
-                    m.settled()
-                        .map(|f| f.word())
-                        .unwrap_or_else(|| "an unknown amount of time".into()),
-                    m.watch.describe(),
+                    f.watch,
+                    f.declared_by,
+                    f.fired.word(),
+                    f.watch,
                 ));
             }
             "renew" => {
@@ -319,6 +318,7 @@ impl Tool for Monitor {
         }
 
         let declared_by = format!("turn {}", ctx.turn_id());
+        let repeat = args.get("repeat").and_then(|v| v.as_bool()).unwrap_or(false);
         match monitors.declare(
             name,
             owner.clone(),
@@ -326,6 +326,7 @@ impl Tool for Monitor {
             job_handle,
             &declared_by,
             ttl,
+            repeat,
         ) {
             Ok(m) => {
                 let mut inv = Invocation::ok(format!(
@@ -429,10 +430,10 @@ fn unknown_monitor(host: &dyn ProcessHost, asked: &str) -> Invocation {
         }
         s
     };
-    if let Some(done) = monitors.history().into_iter().find(|m| m.name == asked) {
+    if let Some(done) = monitors.firings().into_iter().find(|f| f.name == asked) {
         body.push_str(&format!(
             "\n`{asked}` has already ended: {}. It is in `job_list`'s record.\n",
-            done.settled().map(|f| f.word()).unwrap_or_default()
+            done.fired.word()
         ));
     }
     Invocation::failed(format!("no monitor called `{asked}` is watching"), body)
