@@ -44,6 +44,7 @@ pub mod monitor;
 pub mod outline;
 pub mod pattern;
 pub mod pkill;
+pub mod ps;
 pub mod read;
 pub mod read_spill;
 pub mod retrieval;

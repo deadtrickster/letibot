@@ -254,10 +254,10 @@ pub struct Config {
     /// costs. `--role coder` used to mean both, so an operator who wanted to edit had
     /// to pick a role and thereby also picked an approval policy they were never shown.
     pub mode: letibot_tools::mode::Mode,
-    /// opencode's `permission` config, as a resolved ruleset (allow/deny/ask per
-    /// tool and pattern). Loaded from `LETIBOT_PERMISSION` (a JSON object); empty
-    /// means the mode decides and nothing else is configured. A subagent inherits
-    /// this, so its calls are governed by the same rules as the session it came from.
+    /// The permission ruleset (allow/deny/ask per tool and pattern): the shipped
+    /// preapproved list, then `~/.config/letibot/permission.json`, then
+    /// `LETIBOT_PERMISSION` — see [`parse_permission`]. A subagent inherits this,
+    /// so its calls are governed by the same rules as the session it came from.
     pub permission: letibot_tools::permission::Ruleset,
     /// The flowy seat this daemon holds, when asked to. See [`FlowyConfig`].
     pub flowy: Option<FlowyConfig>,
@@ -472,20 +472,28 @@ answer those directly. When a tool reports that it found nothing, say so — do 
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
-/// opencode's `permission` config, read from `LETIBOT_PERMISSION` (a JSON object of
-/// per-tool allow/deny/ask). Missing or malformed is an empty ruleset — the mode
-/// decides and nothing else is configured.
+/// The permission ruleset, three layers in precedence order (last match wins):
+/// the shipped preapproved list (`permission::defaults`: read-only git and gh,
+/// the toolchains' build-and-test verbs, the shell's read-only utilities), then
+/// `~/.config/letibot/permission.json` — the file an *Always allow* answer
+/// appends to — then `LETIBOT_PERMISSION` (opencode's JSON object). A file that
+/// does not parse is reported on stderr and skipped, never silently emptied.
 fn parse_permission() -> letibot_tools::permission::Ruleset {
-    let Some(raw) = std::env::var("LETIBOT_PERMISSION").ok() else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Vec::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return Vec::new();
-    };
-    letibot_tools::permission::config_to_ruleset(obj).unwrap_or_default()
+    use letibot_tools::permission;
+    let mut rules = permission::defaults();
+    if let Some(path) = permission::file_path() {
+        match permission::load_file(&path) {
+            Ok(mut r) => rules.append(&mut r),
+            Err(e) => eprintln!("letibot: permission file not read: {e}"),
+        }
+    }
+    if let Some(raw) = std::env::var("LETIBOT_PERMISSION").ok()
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(obj) = value.as_object()
+    {
+        rules.append(&mut permission::config_to_ruleset(obj).unwrap_or_default());
+    }
+    rules
 }
 
 impl Config {
@@ -654,6 +662,38 @@ impl Config {
             },
             active: true,
         });
+        // **The preapproved list.** What never asks, by count and by source, and
+        // where an *Always allow* answer lands — so an operator who is asked about
+        // `git status` can see that the list did not cover it rather than wonder
+        // whether the list exists.
+        {
+            use letibot_tools::permission;
+            let shipped = permission::defaults().len();
+            let file = permission::file_path();
+            let from_file = file
+                .as_ref()
+                .and_then(|p| permission::load_file(p).ok())
+                .map(|r| r.len())
+                .unwrap_or(0);
+            let env = std::env::var_os("LETIBOT_PERMISSION").is_some();
+            out.push(Disclosure {
+                subject: "preapproved".into(),
+                state: format!("{} RULES", self.permission.len()),
+                detail: format!(
+                    "{shipped} shipped (read-only git and gh, cargo/go/npm/pytest build and \
+                     test verbs, the shell's read-only utilities), {from_file} from {}{}. A \
+                     `bash` command is tested one simple command at a time — every segment \
+                     must match, and a substitution, a redirection to a file or a group is \
+                     never matched — and `Always allow` on a prompt appends the program and \
+                     its verb to that file. `deny` rows outrank everything.",
+                    file.as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "no file (no $HOME)".into()),
+                    if env { ", plus $LETIBOT_PERMISSION" } else { "" }
+                ),
+                active: true,
+            });
+        }
         // **The seat, read from the resolved registry rather than from `--role`.**
         // A role that resolved to fewer tools than its name suggests is exactly the
         // thing an operator should be able to see, so the names travel with it.

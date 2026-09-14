@@ -13,7 +13,21 @@
 #   leticode --continue          reopen the newest session (its stored role wins)
 #
 # Everything `letibot` takes is forwarded unchanged (--glm/--flash/--dense,
-# --mode, --bash, --sessions, --stop, ...). The dashboard is a separate window:
+# --mode, --sessions, --stop, ...). The dashboard is a separate window:
 #   ~/bin/leticode-dash
+#
+# The shell is ON by default here — opencode's coder has bash, and the operator's
+# rule (2026-09-14): "when i do leticode, --bash must be a default". What it may
+# run without asking is the preapproved list (harnessd's `preapproved`
+# disclosure; ~/.config/letibot/permission.json). `--no-bash` seats no shell.
 export LETIBOT_ROLE=leticode
-exec letibot "$@"
+: "${LETIBOT_BASH:=1}"
+export LETIBOT_BASH
+for a in "$@"; do
+  case "$a" in
+    --no-bash) LETIBOT_BASH="" ;;
+  esac
+done
+args=()
+for a in "$@"; do [ "$a" = "--no-bash" ] || args+=("$a"); done
+exec letibot "${args[@]}"

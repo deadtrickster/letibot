@@ -263,6 +263,8 @@ mod tests {
             cmdline: cmd.into(),
             age: Duration::from_secs(90),
             state: 'S',
+            cpu_ticks: 0,
+            rss_kb: 0,
         };
         let found = vec![
             p(10, "llama-server --port 8080"),

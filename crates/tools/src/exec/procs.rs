@@ -43,6 +43,22 @@ pub struct ProcInfo {
     /// `/proc` until its parent reaps it — which, after a kill from here, may
     /// be never soon. [`alive`] treats it as gone.
     pub state: char,
+    /// CPU time consumed so far, user plus system, in clock ticks.
+    pub cpu_ticks: u64,
+    /// Resident set, in kilobytes.
+    pub rss_kb: u64,
+}
+
+impl ProcInfo {
+    /// CPU consumed over the process's lifetime, as a percentage of one core:
+    /// the `top`-shaped number for "what is this box busy with".
+    pub fn cpu_percent(&self) -> f64 {
+        let secs = self.age.as_secs_f64();
+        if secs <= 0.0 {
+            return 0.0;
+        }
+        (self.cpu_ticks as f64 / clock_ticks() as f64) / secs * 100.0
+    }
 }
 
 impl ProcInfo {
@@ -89,6 +105,10 @@ pub fn read(pid: u32) -> Option<ProcInfo> {
     let state = rest.first()?.chars().next()?;
     let ppid: u32 = rest.get(1)?.parse().ok()?;
     let start: u64 = rest.get(19)?.parse().ok()?;
+    let utime: u64 = rest.get(11).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let stime: u64 = rest.get(12).and_then(|v| v.parse().ok()).unwrap_or(0);
+    // rss(21) is in pages; a page is 4 KiB on every box this runs on.
+    let rss_pages: u64 = rest.get(21).and_then(|v| v.parse().ok()).unwrap_or(0);
     let cmdline = std::fs::read(dir.join("cmdline"))
         .map(|b| {
             b.split(|&c| c == 0)
@@ -107,6 +127,8 @@ pub fn read(pid: u32) -> Option<ProcInfo> {
         cmdline,
         age,
         state,
+        cpu_ticks: utime + stime,
+        rss_kb: rss_pages * 4,
     })
 }
 
@@ -170,6 +192,15 @@ pub fn find(pattern: &str, exclude: &[u32]) -> Vec<ProcInfo> {
     if pattern.is_empty() {
         return Vec::new();
     }
+    let mut out = all(exclude);
+    out.retain(|p| p.cmdline.contains(pattern) || p.comm.contains(pattern));
+    out
+}
+
+/// Every live process of this user, minus this process, its ancestors, pid 1
+/// and `exclude`. The listing `ps` answers questions over; [`find`] is this
+/// with a substring.
+pub fn all(exclude: &[u32]) -> Vec<ProcInfo> {
     let me = self_and_ancestors();
     // SAFETY: getuid cannot fail.
     let my_uid = unsafe { getuid() };
@@ -191,9 +222,7 @@ pub fn find(pattern: &str, exclude: &[u32]) -> Vec<ProcInfo> {
         if p.state == 'Z' {
             continue;
         }
-        if p.cmdline.contains(pattern) || p.comm.contains(pattern) {
-            out.push(p);
-        }
+        out.push(p);
     }
     out.sort_by_key(|p| p.pid);
     out

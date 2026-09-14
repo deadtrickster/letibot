@@ -460,12 +460,16 @@ pub mod roles {
                 // `pkill`: find by a string, kill by pid, never itself. Seated
                 // with the exec surface, because signalling a process is one.
                 "pkill",
+                // `ps`: the question `ps | grep -v grep` was asked 294 times to
+                // answer (`PS_USE.md`), as a read-only table that never lists
+                // this process. Seated with the shell, which is what it looks at.
+                "ps",
             ],
         );
-        // Seventeen: the opencode union, the room (`flowy`, seated by the daemon
-        // when it holds a seat) and `pkill`. The ceiling is a guard against a
-        // prompt nobody counted, and this is the count, counted.
-        r.max_tools = 17;
+        // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
+        // when it holds a seat), `pkill` and `ps`. The ceiling is a guard against
+        // a prompt nobody counted, and this is the count, counted.
+        r.max_tools = 18;
         r
     }
 

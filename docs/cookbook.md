@@ -236,7 +236,29 @@ Every open session's `flowy` tool is a door: with no seat it says so and names
 `/flowy login`; after a login, every open root session is attached, its
 monitor declared, the shelf installed, the fabric block appended.
 
-## 6. Processes: never `pkill -f` from a shell
+**What never asks.** `leticode` seats a shell by default (`--no-bash` refuses
+it), and the shell runs the preapproved list without a prompt: read-only git
+and gh, cargo/go/npm/pytest build-and-test verbs, the shell's read-only
+utilities — 142 prefix rules, the `preapproved` line of the banner counts
+them. A compound command is tested one simple command at a time (`git log; rm
+x` is not `git log`), and anything with `$(…)`, a backtick, a `> file`, a
+group or a leading `VAR=` goes to the prompt. On a prompt, **Always allow**
+writes the program and its verb (`cargo run*`) to
+`~/.config/letibot/permission.json`, opencode's shape, hand-editable; a
+`deny` row there outranks the shipped list. `$LETIBOT_PERMISSION` on top.
+
+## 6. Processes: never `ps | grep -v grep`, never `pkill -f`
+
+Measured on this box (`PS_USE.md`): 294 `ps` pipelines in 22 days, 80 % of
+them one question — *is X running, since when, with what arguments* — every
+one a ritual matched against the shell running it. In letibot:
+
+```
+ps pattern=X                           pid, ppid, age, state, CPU%, RSS, command line;
+                                       this daemon and its ancestors are never rows
+ps pid=N | children_of=N               one process; a pid's children
+ps top=cpu|mem limit=8                 the busiest first
+```
 
 `pkill -f PATTERN` matches the shell running it, because the shell's own
 command line carries the pattern. It has killed running commands and the

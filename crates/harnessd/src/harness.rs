@@ -1134,6 +1134,7 @@ impl<'a> Harness<'a> {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobKill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::monitor::Monitor)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
+            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
         let mut registry = letibot_tools::external_tools(registry, &external)
             .map_err(|e| HarnessError::Setup(format!("registering the outside-world tools: {e}")))?;
@@ -1348,6 +1349,13 @@ impl<'a> Harness<'a> {
                     // allow/deny/ask rules govern before the mode — and a subagent
                     // inherits them.
                     .with_permission(downgraded_ruleset(&cfg.permission, &cfg.downgrade, &schemas))
+                    // *Always allow* is written to the operator's file, so it is a
+                    // preapproval every later daemon starts with.
+                    .with_permission_sink(std::sync::Arc::new(|rule| {
+                        let path = letibot_tools::permission::file_path()
+                            .ok_or_else(|| "no $HOME, so no permission file".to_string())?;
+                        letibot_tools::permission::append_to_file(&path, rule)
+                    }))
                     // Layer A needs to know where it is standing. Undeclared means
                     // `ShellTrust::Unknown`, under which a **bare** command name is
                     // unresolved and the call is `not_run` — the fail-closed
@@ -3008,7 +3016,7 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                 r.tools.retain(|t| {
                     !matches!(
                         t.as_str(),
-                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor" | "pkill"
+                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor" | "pkill" | "ps"
                     )
                 });
             }

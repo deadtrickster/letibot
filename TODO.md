@@ -99,6 +99,72 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
+## R16 — the preapproved list, Always allow, `ps`, and a shell by default — **SETTLED 2026-09-14 (claude-lab2x1), sudo OPEN**
+
+The operator, 2026-09-14: *"we badly need a list of preapproved globs, like all
+read only git and gh commands, cargo, go, and other tests. and good old Allow
+Always from opencode and Claude Code"*; *"when i do leticode --bash must be a
+default"*; and, from the two transcript scans on this box (`PS_USE.md`: 294
+`ps` pipelines in 22 days; `SUDO_USE.md`: 40 `sudo` attempts, 0 succeeded):
+*"we need tools/skills for ps - i dont want models to reinvent the same commands
+and i want a solution for sudo"*.
+
+Done:
+
+- **The preapproved list** — `permission::DEFAULT_ALLOW`, 142 prefix rules for
+  `bash`: read-only git and gh, cargo/go/npm/pytest build-and-test verbs, the
+  shell's read-only utilities. Deliberately absent: `find` (`-delete`), `awk`
+  (`system()`), `sed` without `-n`, `env`, `gh api`, `cargo run`, `git branch
+  -d`. A compound command is tested **one simple command at a time** — every
+  segment must match — and a substitution, a redirection to a file, a group, a
+  here-doc or a leading assignment is never matched (`bash_segments`). That is
+  a parser for the purpose of NOT admitting, the one job `docs/tool-survey.md`
+  allows a shell parser in a gate. Precedence: shipped < `~/.config/letibot/
+  permission.json` < `$LETIBOT_PERMISSION`, last match wins; a `deny` row
+  outranks everything. The `preapproved` disclosure counts them.
+- **Always allow** — offered on every prompt whose tier is not always-ask, exec
+  included (the 2026-09-11 rule *"exec asks every time"* is revised: a session
+  GRANT is still never offered for exec; a durable RULE, in a file the operator
+  reads and edits, is the operator's own preapproval). For `bash` the rule is
+  the program and its verb (`cargo run --bin x` → `cargo run*`); for a file
+  tool, the path. Written to `permission.json` through a sink; the row says
+  when it could not be.
+- **`ps`** — read-only; `pattern` / `pid` / `children_of` / `top cpu|mem`;
+  pid, ppid, age, state, CPU%, RSS, command line; never lists this process;
+  `PROTECTED` and `job` marks as `pkill`. Seated with the shell.
+- **`leticode` seats the shell by default** (`--no-bash` to refuse it), the
+  way opencode's coder has bash. What it runs unasked is the list above.
+
+**Open — sudo.** Every one of 40 attempts on this box died on the tty check;
+opencode twice tried to fake the terminal. The operator's ask: *"if model wants
+a sudo i must be able to enter password safely and let it run … some detached
+shell that inherits all the params or some other shim"*. Three shapes, in the
+order to try:
+
+1. **`SUDO_ASKPASS` routed to the head.** The session's shell gets
+   `SUDO_ASKPASS=letibot-askpass` and `sudo -A`; the helper connects to the
+   daemon's socket and raises a decision card *"sudo wants a password for
+   `apt install x`"* with a masked text field; the head sends the password
+   once over the socket; the helper prints it to sudo and exits; nothing is
+   logged, nothing reaches the transcript or the model. Needs the TUI text
+   field on question cards (an open item already) and a `Password` card
+   kind that the log never persists. The action itself still goes through
+   the gate first — a `sudo …` is on the always-ask list, so the operator
+   sees the command before the password is asked.
+2. **`Defaults timestamp_type=global`** in sudoers, one line: the operator
+   runs `sudo -v` in any terminal and the daemon's `sudo -n` works for the
+   ticket's lifetime. Cheapest, no code — but it is the operator's sudoers
+   and it widens every process of the user, not only the session's.
+3. **A detached privileged shell** (`sudo -s` in a tmux pane the operator
+   authenticated) that the daemon sends commands to. Inherits everything,
+   audits nothing, and the pane outlives the decision; last resort.
+
+Until one lands, the honest behaviour is the one the scan shows Claude Code
+already has: probe `sudo -n true`, announce the refusal, write the root half as
+a script for the operator, and stop — never `script -q` or `echo '' | sudo -S`.
+
+---
+
 ## R15 — a leticode session started at `/`, and searched it — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 Measured twice, driving local GLM as a one-shot coder on this repository: `read

@@ -466,7 +466,7 @@ pub fn permission_options() -> Vec<DecisionOption> {
         },
         DecisionOption {
             id: "allow_always".into(),
-            label: "Always allow this (path and tool)".into(),
+            label: "Always allow this (written to ~/.config/letibot/permission.json)".into(),
             kind: OptionKind::AllowAlways,
         },
         DecisionOption {
@@ -484,6 +484,34 @@ pub fn permission_options() -> Vec<DecisionOption> {
 
 /// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
 ///
+/// The ladder for an exec-class call: no session grant (the operator's rule of
+/// 2026-09-11, a shell asks every time), and *Always allow* as a durable rule
+/// over the program and its verb (the revision of 2026-09-14).
+pub fn exec_options() -> Vec<DecisionOption> {
+    vec![
+        DecisionOption {
+            id: "allow_once".into(),
+            label: "Allow this one".into(),
+            kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "allow_always".into(),
+            label: "Always allow this program and verb (written to ~/.config/letibot/permission.json)".into(),
+            kind: OptionKind::AllowAlways,
+        },
+        DecisionOption {
+            id: "deny".into(),
+            label: "Deny".into(),
+            kind: OptionKind::Deny,
+        },
+        DecisionOption {
+            id: "deny_and_tell".into(),
+            label: "Deny, and tell the model why".into(),
+            kind: OptionKind::DenyAndTell,
+        },
+    ]
+}
+
 /// Same as [`permission_options`] without `allow_session`, and the label says where
 /// the missing option went rather than leaving its absence to be guessed at. An
 /// operator who wants to stop being asked needs a different point, not a different
@@ -494,6 +522,11 @@ pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
             id: "allow_once".into(),
             label: "Allow this one".into(),
             kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "allow_always".into(),
+            label: "Always allow this (written to ~/.config/letibot/permission.json)".into(),
+            kind: OptionKind::AllowAlways,
         },
         DecisionOption {
             id: "deny".into(),
@@ -1134,6 +1167,10 @@ pub struct AdjudicatedGate {
     /// `deny` refuses, `ask` falls through to the mode and the adjudicator. See
     /// [`crate::permission`].
     permission: crate::permission::Ruleset,
+    /// Where an *Always allow* answer is written down so it outlives the process
+    /// — the daemon hands in `~/.config/letibot/permission.json`. Without one the
+    /// answer holds for the session and the row says so.
+    permission_sink: Option<std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>>,
     /// **opencode parity: exec follows the mode.**
     ///
     /// Off by default, which is the operator's rule (2026-09-11): no point admits an
@@ -1177,6 +1214,7 @@ impl AdjudicatedGate {
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
             permission: crate::permission::Ruleset::new(),
+            permission_sink: None,
             exec_follows_mode: false,
             log: Vec::new(),
             seq: 0,
@@ -1213,6 +1251,20 @@ impl AdjudicatedGate {
     pub fn with_permission(mut self, rules: crate::permission::Ruleset) -> Self {
         self.permission = rules;
         self
+    }
+
+    /// Where *Always allow* writes its rule. See the field.
+    pub fn with_permission_sink(
+        mut self,
+        sink: std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        self.permission_sink = Some(sink);
+        self
+    }
+
+    /// The rules in force, for a disclosure.
+    pub fn permission_rules(&self) -> &crate::permission::Ruleset {
+        &self.permission
     }
 
     /// Which point this gate is at, for the disclosure.
@@ -1484,11 +1536,12 @@ impl AdjudicatedGate {
             options: if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                 always_ask_options()
             } else if call.access == Access::Exec {
-                // The operator's rule (2026-09-11): exec and bash ask every time, so
-                // a standing option is never offered — the gate would decline to
-                // honour it, and an operator is never shown a button whose effect
-                // the gate would then decline to honour.
-                always_ask_options()
+                // The operator's rule (2026-09-11): exec asks every time, so a SESSION
+                // grant is never offered. Revised 2026-09-14 — *"good old Allow Always"*:
+                // a durable rule, written to a file the operator reads and edits, is
+                // the operator's own preapproval and is offered. `git log; rm x` under
+                // a `git log*` rule still asks: the rule is tested per segment.
+                exec_options()
             } else if self.mode.grants == crate::mode::GrantScope::Session {
                 permission_options()
             } else {
@@ -1718,8 +1771,18 @@ impl Gate for AdjudicatedGate {
         //      config plus the `always` approvals.
         if !self.permission.is_empty() {
             let pattern = permission_pattern(call.args);
-            let rule = crate::permission::evaluate(call.name, &pattern, &[&self.permission]);
-            match rule.action {
+            // A `bash` command is tested segment by segment against the prefix
+            // rules — `git log; rm -rf ~` is not `git log` — and a compound the
+            // splitter cannot read is asked, never allowed. See
+            // `permission::bash_segments`.
+            let action = if call.args.get("command").and_then(|v| v.as_str()).is_some()
+                && call.access == Access::Exec
+            {
+                crate::permission::evaluate_bash(&pattern, &[&self.permission])
+            } else {
+                crate::permission::evaluate(call.name, &pattern, &[&self.permission]).action
+            };
+            match action {
                 crate::permission::Action::Deny => {
                     let d = AdjudicationDecision::selected(
                         &req,
@@ -1853,7 +1916,37 @@ impl Gate for AdjudicatedGate {
                         // which is what the point means; recording a session grant
                         // there would be the point saying one thing and the gate doing
                         // another.
-                        if matches!(k, OptionKind::AllowSession | OptionKind::AllowAlways)
+                        // *Always allow* is a RULE, not a grant: it goes into the
+                        // permission ruleset (and the file behind it), at any point
+                        // whose decider is a person, exec included — the operator's
+                        // revision of 2026-09-14. For `bash` the pattern is the
+                        // program and its verb (`cargo test*`), the way Claude Code's
+                        // `Bash(cargo test:*)` reads; for a file tool it is the path.
+                        if k == OptionKind::AllowAlways && !matches!(req.tier, Tier::AlwaysAsk { .. }) {
+                            let pattern = match call.args.get("command").and_then(|v| v.as_str()) {
+                                Some(cmd) if call.access == Access::Exec => {
+                                    crate::permission::always_pattern_for_command(cmd)
+                                }
+                                _ => permission_pattern(call.args),
+                            };
+                            let rule = crate::permission::Rule::new(
+                                call.name,
+                                pattern,
+                                crate::permission::Action::Allow,
+                            );
+                            if let Some(sink) = &self.permission_sink
+                                && let Err(e) = sink(&rule)
+                            {
+                                // The rule holds for this session either way; the
+                                // audit row carries why it will not outlive it.
+                                eprintln!(
+                                    "letibot: the always-allow rule `{}` for `{}` was not \
+                                     written down: {e}",
+                                    rule.pattern, rule.permission
+                                );
+                            }
+                            self.permission.push(rule);
+                        } else if k == OptionKind::AllowSession
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
                             // The operator's exec rule, guarded here as well even
                             // though the option list never offers it to an exec
@@ -1862,31 +1955,20 @@ impl Gate for AdjudicatedGate {
                             && call.access != Access::Exec
                             && self.mode.grants == crate::mode::GrantScope::Session
                         {
-                            if k == OptionKind::AllowAlways {
-                                // opencode's `always`: feed `(permission, pattern)` into
-                                // the permission ruleset, so a later call to this tool on
-                                // this path is admitted by `evaluate` before the mode.
-                                self.permission.push(crate::permission::Rule::new(
-                                    call.name,
-                                    permission_pattern(call.args),
-                                    crate::permission::Action::Allow,
-                                ));
-                            } else {
-                                self.grants.push(crate::grant::Grant {
-                                    written: crate::grant::Written::Enumerated {
-                                        patterns: vec![format!("{program} ({})", req.class)],
-                                    },
-                                    coverage: vec![crate::grant::Coverage {
-                                        program: program.clone(),
-                                        class: req.class,
-                                        intents: baseline.intents.clone(),
-                                    }],
-                                    why: format!(
-                                        "granted for this session by an answer to {}: {}",
-                                        req.id, decision.basis
-                                    ),
-                                });
-                            }
+                            self.grants.push(crate::grant::Grant {
+                                written: crate::grant::Written::Enumerated {
+                                    patterns: vec![format!("{program} ({})", req.class)],
+                                },
+                                coverage: vec![crate::grant::Coverage {
+                                    program: program.clone(),
+                                    class: req.class,
+                                    intents: baseline.intents.clone(),
+                                }],
+                                why: format!(
+                                    "granted for this session by an answer to {}: {}",
+                                    req.id, decision.basis
+                                ),
+                            });
                         }
                         // The loop closed, so the error signal is gone.
                         self.breaker.admitted(&direction);
@@ -2857,12 +2939,64 @@ mod tests {
             "no standing permission is recorded for an exec-class call"
         );
         assert!(
-            g.log.iter().all(|r| {
-                r.request.option("allow_session").is_none()
-                    && r.request.option("allow_always").is_none()
-            }),
-            "exec is never offered a standing option"
+            g.log.iter().all(|r| r.request.option("allow_session").is_none()),
+            "exec is never offered a session grant"
         );
+        // The revision of 2026-09-14: a DURABLE rule is offered — it is the
+        // operator's own preapproval, in a file they read — and it is not a grant.
+        assert!(
+            g.log.iter().all(|r| r.request.option("allow_always").is_some()),
+            "exec is offered Always allow, as a rule"
+        );
+    }
+
+    /// *"good old Allow Always"* (the operator, 2026-09-14): the answer writes a
+    /// rule over the program and its verb, the rule admits the next call before
+    /// the mode is consulted, `git log; rm x` under `git log*` still asks, and
+    /// the sink saw the rule once.
+    #[test]
+    fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let written: std::sync::Arc<std::sync::Mutex<Vec<crate::permission::Rule>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = written.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(req, "allow_always", "human:test", "fine"))
+            },
+        )))
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_permission(crate::permission::defaults())
+        .with_permission_sink(std::sync::Arc::new(move |r| {
+            w.lock().unwrap().push(r.clone());
+            Ok(())
+        }))
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+        // `cargo run` is not on the shipped list, so the first call asks.
+        let args = json!({"command": "cargo run --bin x"});
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let rules = written.lock().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].permission, "bash");
+        assert_eq!(rules[0].pattern, "cargo run*");
+        drop(rules);
+        // The second, different `cargo run` is admitted by the rule, nobody asked.
+        let again = json!({"command": "cargo run --bin y -- --flag"});
+        assert_eq!(g.admit(&bash(&again)), GateDecision::Admit);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // A compound that hides a second command behind the prefix asks.
+        let hidden = json!({"command": "cargo run; rm -rf /w"});
+        assert_eq!(g.admit(&bash(&hidden)), GateDecision::Admit);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
+        // And the shipped list admits a read-only git without asking at all.
+        let ro = json!({"command": "git status --short"});
+        assert_eq!(g.admit(&bash(&ro)), GateDecision::Admit);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]
