@@ -89,6 +89,9 @@ pub struct Sessions<'a> {
     /// Each root session's condition on the seat, so a title change can rename
     /// the session's address (`@seat/title`).
     seated: HashMap<String, Arc<letibot_flowy::InboxCondition>>,
+    /// The fabric block each root session last saw, so a refresh after a
+    /// compaction is a system update only when something changed.
+    fabric_seen: HashMap<String, String>,
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired.
@@ -137,8 +140,10 @@ impl<'a> Sessions<'a> {
             armed: std::collections::HashSet::new(),
             seat,
             seated: HashMap::new(),
+            fabric_seen: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
+        let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
         let harness = Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
@@ -178,6 +183,83 @@ impl<'a> Sessions<'a> {
         let tool: Box<dyn letibot_tools::runtime::Tool> =
             Box::new(letibot_flowy::Flowy::new(seat.clone(), cond.clone()));
         (Some(tool), Some(cond))
+    }
+
+    /// The fabric block into a root session's system prompt, and its provenance
+    /// into the disclosure. A session that is not seated gets neither, and the
+    /// disclosure says `fabric: OFF` when a seat exists.
+    ///
+    /// Message 0 is never rewritten, so a resumed session keeps the block it
+    /// was opened with; `refresh_fabric` appends a system update when a fresh
+    /// reading differs — that is the path after a compaction too.
+    fn with_fabric(&mut self, session_id: &str, mut cfg: Config, seated: bool) -> Config {
+        let Some(seat) = &self.seat else {
+            return cfg;
+        };
+        if !seated {
+            return cfg;
+        }
+        let (block, line) = self.fabric_block(seat);
+        cfg.system = format!("{}\n\n{block}", cfg.system.trim_end());
+        cfg.fabric = Some(line);
+        self.fabric_seen.insert(session_id.to_string(), block);
+        cfg
+    }
+
+    /// The block and its one-line provenance.
+    fn fabric_block(&self, seat: &letibot_flowy::Seat) -> (String, String) {
+        use letibot_flowy::FabricSource;
+        let (ctx, source) = seat.fabric();
+        match (ctx, source) {
+            (Some(ctx), src @ FabricSource::Live) => {
+                let line = format!(
+                    "{} skill summaries and {} memory titles from the node, read at {}; the \
+                     model loads a body through `skill` or `flowy get` when it needs one",
+                    ctx.skills.len(),
+                    ctx.memories.len(),
+                    ctx.read_at
+                );
+                (ctx.render(&src), line)
+            }
+            (Some(ctx), src @ FabricSource::Cached { .. }) => {
+                let line = format!(
+                    "CACHED — the node is unreachable; {} skills and {} memories from the copy \
+                     read at {}, labelled stale in the prompt",
+                    ctx.skills.len(),
+                    ctx.memories.len(),
+                    ctx.read_at
+                );
+                (ctx.render(&src), line)
+            }
+            (_, FabricSource::Unreachable { why }) => (
+                letibot_flowy::FabricContext::render_unreachable(seat.name(), &why),
+                format!("UNREACHABLE — {why}; no cached copy, and the prompt says so"),
+            ),
+            (None, src) => (
+                letibot_flowy::FabricContext::render_unreachable(seat.name(), &format!("{src:?}")),
+                "UNREACHABLE".into(),
+            ),
+        }
+    }
+
+    /// Re-read the fabric for a root session and, when the block changed, append
+    /// it as a system update (§5.3). Called after a compaction. Returns whether
+    /// an update went in.
+    pub fn refresh_fabric(&mut self, session_id: &str) -> Result<bool, HarnessError> {
+        let Some(seat) = self.seat.clone() else {
+            return Ok(false);
+        };
+        if !self.seated.contains_key(session_id) {
+            return Ok(false);
+        }
+        let (block, _line) = self.fabric_block(&seat);
+        if self.fabric_seen.get(session_id) == Some(&block) {
+            return Ok(false);
+        }
+        let h = self.harness(session_id)?;
+        h.system_update(&block)?;
+        self.fabric_seen.insert(session_id.to_string(), block);
+        Ok(true)
     }
 
     /// Declare the session's `flowy` monitor — continuous, owned by the session
@@ -357,6 +439,7 @@ impl<'a> Sessions<'a> {
                 ..self.base.clone()
             };
             let (tool, cond) = self.seat_tool(session_id);
+            let cfg = self.with_fabric(session_id, cfg, cond.is_some());
             let h = Harness::open_with_registry(self.parts, cfg, hub, None, tool, self.registry.clone())?;
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
@@ -414,7 +497,20 @@ impl<'a> Sessions<'a> {
         let harness = self.harness(session_id)?;
         let out = harness.compact();
         match out {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                // The fabric may have moved since the session opened; after a
+                // compaction is the moment to say so, as an update, never as a
+                // rewrite of message 0.
+                if let Err(e) = self.refresh_fabric(session_id)
+                    && let Some(hub) = &hub
+                {
+                    hub.publish(SessionEvent::Warning {
+                        code: "fabric_refresh_failed".into(),
+                        detail: e.to_string(),
+                    });
+                }
+                Ok(r)
+            }
             Err(e) => {
                 let turn_id = self
                     .open

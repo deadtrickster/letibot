@@ -99,7 +99,13 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
-## R14 — inject the fabric's skills and memories into the session — **OPEN, given 2026-09-14**
+## R14 — inject the fabric's skills and memories into the session — **SETTLED 2026-09-14 (claude-lab2x1)**
+
+Done: `letibot_flowy::context` + `Sessions::with_fabric` / `refresh_fabric`, the
+`fabric` disclosure, live test (8 skills, 42 memories; cache served with the node
+away). Not run through a `--flowy` daemon end to end on this box: the seat's reader
+is held by another session's listener and `Seat::open` refuses, as it should.
+`docs/flowy-monitor.md` §5c.
 
 *"3. I want flowy skills, memories etc to be injected. how? skills are summaries of
 full pages, memories are titles."* At session open (and after a compaction), when

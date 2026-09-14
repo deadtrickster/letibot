@@ -16,6 +16,7 @@
 //! | the `Condition` a session's monitor watches | [`inbox`] |
 //! | a todo, an artifact, a thread somebody decided to watch | [`subs`] |
 //! | the fabric's skills, through the `skill` tool | [`shelf`] |
+//! | the shelf and the memories as a block in the system prompt | [`context`] |
 //! | the tool the model drives all of it with | [`tool`] |
 //!
 //! # Persistent seats, temporary minds
@@ -61,6 +62,7 @@
 
 pub mod attention;
 pub mod client;
+pub mod context;
 pub mod creds;
 pub mod inbox;
 pub mod render;
@@ -73,6 +75,7 @@ pub mod waiter;
 
 pub use attention::{Attention, Level};
 pub use client::{Event, Node, NodeError};
+pub use context::{FabricContext, Source as FabricSource};
 pub use creds::{Credentials, Onboarding, Source};
 pub use inbox::InboxCondition;
 pub use seat::{Seat, SeatState};

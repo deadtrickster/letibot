@@ -322,6 +322,26 @@ say what to do instead) and the rewrite of the seat brief's start-of-session
 ritual (`flowy instructions` instead of a row id that 404s from another
 project).
 
+### 5c. The fabric block: skills as summaries, memories as titles
+
+Given by the operator: *"skills are summaries of full pages, memories are
+titles."* `letibot_flowy::context` reads the shelf (`kind=skill`, first
+paragraph of each body, cut at 220 chars) and the memories (`kind=note`,
+titles), renders one block, and `Sessions` puts it into a root session's
+system prompt at open — message 0, never rewritten — and after a compaction
+appends a fresh reading as a **system update** when it changed. The block
+names the doors to the rest (`skill load`, `flowy get`).
+
+**Offline is a state.** `FabricContext::read` is live (and refreshes the copy
+at `~/.local/state/letibot/flowy/<seat>-fabric.json`), else the cached copy
+with its `read_at` and the prompt saying THE NODE IS UNREACHABLE, else a block
+that says no copy exists — never an empty block that reads as "there are no
+skills". The disclosure line `fabric` says which. A session with no seat has
+no block; a seat with a subagent gives it none (it routes through its parent).
+
+Measured live on lab2x1: 8 skills and 42 memories, ~2.5 KB of block; the
+cache path exercised by pointing the reader at a closed port.
+
 ## 6. What flowy would have to provide for this to get better
 
 Built to what exists; these are the deltas, in the order they would pay:

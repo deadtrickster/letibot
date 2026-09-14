@@ -271,6 +271,10 @@ pub struct Config {
     pub placement: letibot_tools::builtins::task::Placement,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
+    /// What the fabric block in the system prompt is, said by whoever composed
+    /// it (`Sessions`): live, cached with its age, or unreachable. `None` when
+    /// there is no seat, and then there is no block.
+    pub fabric: Option<String>,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -519,6 +523,7 @@ impl Config {
             downgrade: letibot_tools::schema::Downgrade::none(),
             placement: letibot_tools::builtins::task::Placement::Host,
             provider: None,
+            fabric: None,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -815,6 +820,18 @@ impl Config {
                     self.downgrade.describe()
                 ),
             ));
+        }
+        // **The fabric block.** What the model was told exists on the shelf and
+        // in the memories, and where that reading came from.
+        match (&self.flowy, &self.fabric) {
+            (None, _) => {}
+            (Some(_), None) => out.push(Disclosure::off(
+                "fabric",
+                "OFF",
+                "the seat is held but no fabric block was composed for this session — a \
+                 subagent, or a session opened before the seat was up.",
+            )),
+            (Some(_), Some(line)) => out.push(Disclosure::on("fabric", line.clone())),
         }
         match &self.provider {
             None => {}

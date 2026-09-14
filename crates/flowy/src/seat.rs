@@ -463,6 +463,16 @@ impl Seat {
         self.node().dm(to, body, thread)
     }
 
+    /// The fabric block for this seat: live, cached with its age, or
+    /// unreachable — see [`crate::context`]. `None` in the first slot means no
+    /// copy at all; the source says why.
+    pub fn fabric(&self) -> (Option<crate::context::FabricContext>, crate::context::Source) {
+        let project = self
+            .identity_focus()
+            .unwrap_or_default();
+        crate::context::FabricContext::read(&self.node(), self.name(), &project, None)
+    }
+
     /// Rows of one kind, through the seat's node and token.
     pub fn node_artifacts_of_kind(
         &self,

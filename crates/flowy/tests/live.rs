@@ -123,3 +123,52 @@ fn the_fabric_shelf_lists_and_loads_a_skill() {
     assert_eq!(by_id.body, by_title.body);
     eprintln!("loaded `{}`: {} bytes", by_id.name, by_id.body.len());
 }
+
+/// The fabric block, live and then from the cache with the node "away".
+#[test]
+fn the_fabric_block_reads_live_then_serves_the_cache_labelled_stale() {
+    if std::env::var("FLOWY_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("SKIPPED: FLOWY_LIVE is not 1 — the check did not run and this is not a pass");
+        return;
+    }
+    use letibot_flowy::{FabricContext, FabricSource, Node};
+    let creds = discover(&Onboarding::usual()).expect("a seat on the usual path");
+    let node = Node::new(
+        creds.endpoint.clone(),
+        creds.addr.clone(),
+        creds.token.clone(),
+    );
+    let cache = std::env::temp_dir().join(format!("letibot-fabric-live-{}", std::process::id()));
+    let (ctx, src) = FabricContext::read(&node, &creds.agent, "Lab", Some(&cache));
+    assert_eq!(src, FabricSource::Live);
+    let ctx = ctx.unwrap();
+    eprintln!(
+        "{} skills, {} memories",
+        ctx.skills.len(),
+        ctx.memories.len()
+    );
+    assert!(
+        ctx.skills.iter().any(|s| s.title.starts_with("cookbook")),
+        "the cookbook is on the shelf"
+    );
+    let block = ctx.render(&src);
+    eprintln!("{}", block.lines().take(6).collect::<Vec<_>>().join("\n"));
+    assert!(block.contains("Skills on the shelf"));
+
+    // The node "away": a port nothing listens on. The cache answers, labelled.
+    let away = Node::new(
+        letibot_flowy::creds::parse_addr("http://127.0.0.1:9").unwrap(),
+        "http://127.0.0.1:9",
+        "t",
+    );
+    let (ctx2, src2) = FabricContext::read(&away, &creds.agent, "Lab", Some(&cache));
+    assert!(matches!(src2, FabricSource::Cached { .. }), "{src2:?}");
+    assert_eq!(ctx2.unwrap().skills.len(), ctx.skills.len());
+    let stale = ctx.render(&src2);
+    assert!(stale.contains("THE NODE IS UNREACHABLE"), "{stale}");
+    // No cache at all: unreachable, said so.
+    let (none, src3) = FabricContext::read(&away, "other-seat", "Lab", Some(&cache));
+    assert!(none.is_none());
+    assert!(matches!(src3, FabricSource::Unreachable { .. }));
+    let _ = std::fs::remove_dir_all(&cache);
+}
