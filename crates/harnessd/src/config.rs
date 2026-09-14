@@ -165,6 +165,25 @@ impl Seat {
     }
 }
 
+/// How the daemon reaches the flowy fabric. `None` is no flowy at all — the
+/// no-flowy mode `docs/tool-design-brief.md` §3b keeps — and it is the default.
+///
+/// Every field optional: what is missing is looked up along the usual path
+/// (`$FLOWY_*`, `~/.config/flowy/env-<seat>`, `~/.config/flowy/agents/<seat>`),
+/// and the daemon's banner says where each value came from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FlowyConfig {
+    /// The seat's name. Omitted: `$FLOWY_AGENT`, else the only seat on the box.
+    pub seat: Option<String>,
+    pub addr: Option<String>,
+    pub token_file: Option<PathBuf>,
+    /// Declare the inbox reader at the head of the log before listening. OFF by
+    /// default and never implied: a reader that silently appears is a typo that
+    /// produces an inbox which is permanently empty, and the same refusal appears
+    /// when the token has been switched — see `letibot_flowy::client::NodeError`.
+    pub new_reader: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
@@ -225,6 +244,8 @@ pub struct Config {
     /// means the mode decides and nothing else is configured. A subagent inherits
     /// this, so its calls are governed by the same rules as the session it came from.
     pub permission: letibot_tools::permission::Ruleset,
+    /// The flowy seat this daemon holds, when asked to. See [`FlowyConfig`].
+    pub flowy: Option<FlowyConfig>,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -469,6 +490,7 @@ impl Config {
             grants_ro: Vec::new(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
+            flowy: None,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -752,6 +774,31 @@ impl Config {
                      fires while nothing is running is a condition nobody acts on.",
                 ));
             }
+        }
+        // **The room.** Whether anybody said anywhere reaches this session, and as
+        // what. `--flowy` is the whole switch; the seat's own line — listening,
+        // stalled, stopped — is printed by the daemon from the seat, not from here,
+        // because a config cannot know whether a listener is actually attached.
+        match (&self.flowy, wiring.seated.iter().any(|t| t == "flowy")) {
+            (None, _) => out.push(Disclosure::off(
+                "flowy",
+                "OFF",
+                "no --flowy, so this session hears no room and speaks in none. Nothing \
+                 said on the fabric reaches it, and it cannot be addressed.",
+            )),
+            (Some(_), true) => out.push(Disclosure::on(
+                "flowy",
+                "a message for the seat arrives as a firing of the `flowy` monitor; \
+                 the `flowy` tool sets attention per room, subscribes to rows and \
+                 threads, and speaks as the seat.",
+            )),
+            (Some(_), false) => out.push(Disclosure::off(
+                "flowy",
+                "NOT SEATED",
+                "--flowy was given, but this session has no `flowy` tool: a subagent \
+                 (which hears the room through its parent, by design), or a role with \
+                 no spare seat (runner). Nothing said on the fabric reaches it directly.",
+            )),
         }
         out
     }

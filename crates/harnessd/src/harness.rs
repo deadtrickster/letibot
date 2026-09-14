@@ -1701,6 +1701,17 @@ impl<'a> Harness<'a> {
         self.monitors.as_ref()
     }
 
+    /// The session's own scope, for a monitor the daemon declares on the session's
+    /// behalf — the flowy listener. `None` when the backend cannot start processes,
+    /// which is also when there are no monitors to declare it in.
+    pub fn session_scope(&self) -> Option<letibot_tools::exec::ScopeId> {
+        self.runtime
+            .backend
+            .processes()?
+            .scope_for(letibot_tools::exec::ScopeKind::Session, None)
+            .ok()
+    }
+
     /// The cursor into settled monitors, shared with this session's steering source
     /// so a firing is delivered exactly once however it is noticed.
     pub fn monitor_cursor(&self) -> &Arc<AtomicUsize> {
@@ -2663,6 +2674,21 @@ fn role_for(cfg: &Config) -> Role {
 /// deliberately not per session: a shell is the one capability that is not the
 /// session's to record.
 fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
+    let mut r = base_role_for_seat(seat, cfg);
+    // **The room, when the daemon holds a seat.** The `flowy` tool is registered
+    // by `Sessions` for a root session of a daemon started with `--flowy`, and the
+    // role names it under exactly the same condition — `Registry::resolve_role`
+    // refuses a role naming a tool the session does not have, and a role that
+    // silently omitted it would be a session that can hear the room and not
+    // answer. A subagent hears through its parent. The runner has no spare seat
+    // (`m2_runner` is nine and says so).
+    if cfg.flowy.is_some() && cfg.parent_session_id.is_none() && seat != Seat::Runner {
+        r.tools.push("flowy".into());
+    }
+    r
+}
+
+fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
     match seat {
         Seat::Orchestrator => roles::m1_orchestrator(),
         Seat::Planner => roles::planner(),
@@ -2785,6 +2811,38 @@ mod tests {
         let l = Arc::new(l);
         drop(IntentSink::new(l.clone(), letibot_tools::NullToolSink));
         Arc::try_unwrap(l).expect("the sink was just dropped")
+    }
+
+    #[test]
+    fn flowy_is_seated_for_a_root_session_of_a_seated_daemon_and_nowhere_else() {
+        let mut cfg = Config::for_this_box(std::env::temp_dir());
+        cfg.seat = Seat::Leticode;
+        cfg.allow_bash = true;
+        let without = role_for(&cfg);
+        assert!(!without.tools.iter().any(|t| t == "flowy"));
+
+        cfg.flowy = Some(crate::config::FlowyConfig::default());
+        let root = role_for(&cfg);
+        assert!(root.tools.iter().any(|t| t == "flowy"));
+        // The whole opencode union plus the room fits the ceiling exactly; a tool
+        // added to leticode after this has to take a seat from something.
+        assert!(
+            root.tools.len() <= root.max_tools,
+            "{} > {}",
+            root.tools.len(),
+            root.max_tools
+        );
+
+        // A subagent hears through its parent.
+        cfg.parent_session_id = Some("parent".into());
+        assert!(!role_for(&cfg).tools.iter().any(|t| t == "flowy"));
+
+        // The runner has no spare seat, and the disclosure says NOT SEATED.
+        cfg.parent_session_id = None;
+        cfg.seat = Seat::Runner;
+        let runner = role_for(&cfg);
+        assert!(!runner.tools.iter().any(|t| t == "flowy"));
+        assert!(runner.tools.len() <= runner.max_tools);
     }
 
     #[test]

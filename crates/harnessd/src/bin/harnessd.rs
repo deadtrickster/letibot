@@ -39,6 +39,26 @@ use letibot_harnessd::{Daemon, Dialect, Outcome, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
 
+/// Resolve the credentials and open the seat. Every refusal in here names what
+/// was looked at, because "no flowy" and "the wrong flowy" must not read alike.
+fn open_seat(f: &letibot_harnessd::config::FlowyConfig) -> Result<letibot_flowy::Seat, String> {
+    let onboarding = letibot_flowy::Onboarding {
+        addr: f.addr.clone(),
+        agent: f.seat.clone(),
+        token: None,
+        token_file: f.token_file.clone(),
+        config_dir: None,
+        read_env: true,
+    };
+    let creds = letibot_flowy::creds::discover(&onboarding).map_err(|e| e.to_string())?;
+    let seat = letibot_flowy::Seat::open(creds, None, None).map_err(|e| e.to_string())?;
+    if f.new_reader {
+        let r = seat.declare_reader().map_err(|e| format!("declaring the reader: {e}"))?;
+        eprintln!("harnessd: declared inbox reader `{}` at cursor {}", r.reader, r.cursor);
+    }
+    Ok(seat)
+}
+
 fn usage() -> String {
     "harnessd [--workspace DIR] [--socket PATH] [--store PATH]\n\
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
@@ -64,6 +84,21 @@ fn usage() -> String {
      \x20 --intent-prose            also read the assistant's prose for commitments\n\
      \x20                           it did not act on. The tool-declared half is\n\
      \x20                           always on; this half has false positives\n\
+     \x20 --flowy                   hold a flowy seat: messages for it wake the\n\
+     \x20                           session as firings of the `flowy` monitor, and\n\
+     \x20                           the `flowy` tool speaks as it. The seat comes\n\
+     \x20                           from the usual path ($FLOWY_AGENT, else the only\n\
+     \x20                           token under ~/.config/flowy/agents/) unless\n\
+     \x20                           --flowy-seat NAME says which. Never the\n\
+     \x20                           operator's own ~/.config/flowy/token\n\
+     \x20 --flowy-seat NAME         which seat (implies --flowy)\n\
+     \x20 --flowy-addr URL          the node, else $FLOWY_ADDR, else the seat's env\n\
+     \x20                           file, else http://127.0.0.1:8787\n\
+     \x20 --flowy-token-file PATH   the token, else the seat's file\n\
+     \x20 --flowy-new-reader        declare the inbox reader at the head of the log.\n\
+     \x20                           Never implied: `no inbox reader` is also what a\n\
+     \x20                           SWITCHED token says, and re-declaring there loses\n\
+     \x20                           every message since the switch\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -142,6 +177,18 @@ fn run() -> Result<i32, String> {
             "--bash" => cfg.allow_bash = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             "--intent-prose" => cfg.intent_prose = true,
+            "--flowy" => {
+                cfg.flowy.get_or_insert_with(Default::default);
+            }
+            "--flowy-seat" => cfg.flowy.get_or_insert_with(Default::default).seat = Some(next()?),
+            "--flowy-addr" => cfg.flowy.get_or_insert_with(Default::default).addr = Some(next()?),
+            "--flowy-token-file" => {
+                cfg.flowy.get_or_insert_with(Default::default).token_file =
+                    Some(PathBuf::from(next()?));
+            }
+            "--flowy-new-reader" => {
+                cfg.flowy.get_or_insert_with(Default::default).new_reader = true;
+            }
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
@@ -219,13 +266,38 @@ fn run() -> Result<i32, String> {
     let session_id = cfg.session_id.clone();
     let store_path = cfg.store.clone();
 
-    let mut sessions = match Sessions::open_first(&parts, cfg, registry.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            daemon.shutdown();
-            return Err(e.to_string());
-        }
+    // The seat, before the first session: a `--flowy` that cannot be honoured is
+    // a startup error, not a session that quietly hears nothing. Opening takes
+    // the local waiter claim and the spool; the node is not touched until the
+    // loop starts, so a node that is away right now is a stall the banner
+    // reports rather than a refusal to start.
+    let seat = match &cfg.flowy {
+        None => None,
+        Some(f) => match open_seat(f) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                daemon.shutdown();
+                return Err(format!("--flowy: {e}"));
+            }
+        },
     };
+
+    let mut sessions =
+        match Sessions::open_first_with_seat(&parts, cfg, registry.clone(), seat.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                daemon.shutdown();
+                return Err(e.to_string());
+            }
+        };
+    if let Some(seat) = &seat {
+        seat.start();
+        // The fabric's skills, through the same `skill` tool as the disk's. One
+        // shelf per daemon, because one seat per daemon.
+        parts
+            .skills
+            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(seat.clone())));
+    }
     let (prefix_tokens, ledger_head) = sessions
         .harness_of(&session_id)
         .map(|h| (h.tokens().len(), h.ledger_head()))
@@ -247,6 +319,26 @@ fn run() -> Result<i32, String> {
     eprintln!("  socket   {socket}");
     eprintln!("  prefix   {prefix_tokens} tokens, head {ledger_head}");
     eprintln!("  sessions 1 open — a head can list them, switch, and make more");
+    if let Some(seat) = &seat {
+        // From the seat, not from the config: what it is, where the credential came
+        // from, and where the reader stands — a reading, not a claim.
+        eprintln!("  flowy    {}", seat.credentials().describe());
+        match seat.reader() {
+            Ok(Some(r)) => eprintln!(
+                "           reader `{}` at cursor {} — listening as this process (pid {})",
+                r.reader,
+                r.cursor,
+                std::process::id()
+            ),
+            Ok(None) => eprintln!(
+                "           reader `{}` is NOT DECLARED on the node; the listener will stop \
+                 on its first poll. Pass --flowy-new-reader if this seat has never \
+                 listened — and read the refusal first if it has",
+                seat.name()
+            ),
+            Err(e) => eprintln!("           node not answering yet ({e}); the listener will keep trying"),
+        }
+    }
     // What this session actually is: rebuilt from the store, or new. Printed as
     // numbers, because "resumed" on its own is the claim and the row count, the token
     // count and the chain head are the evidence.
@@ -315,6 +407,9 @@ fn run() -> Result<i32, String> {
             }
         }
         daemon.shutdown();
+        if let Some(seat) = &seat {
+            seat.stop();
+        }
         return Ok(if failed > 0 { 1 } else { 0 });
     }
 
@@ -341,6 +436,14 @@ fn run() -> Result<i32, String> {
         Outcome::Ignored => {}
     });
     daemon.shutdown();
+    // The seat after the daemon: the listener's next poll window sees the stop and
+    // the waiter claim is released with it. `std::process::exit` above runs no
+    // destructors, so this is said here rather than left to a drop.
+    if let Some(seat) = &seat {
+        seat.stop();
+    }
+    drop(sessions);
+    drop(seat);
     Ok(0)
 }
 

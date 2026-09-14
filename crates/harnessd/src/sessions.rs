@@ -82,6 +82,28 @@ pub struct Sessions<'a> {
     /// processes under one reader costs: the roster shows a seat attached while the
     /// real one hears nothing.
     armed: std::collections::HashSet<String>,
+    /// The flowy seat this daemon holds, when it holds one. Daemon-level, on
+    /// purpose: a seat is a persistent identity with one inbox reader, and a
+    /// session is a temporary consumer of it — see `letibot_flowy`'s crate docs.
+    seat: Option<letibot_flowy::Seat>,
+    /// Each root session's condition on the seat, so a title change can rename
+    /// the session's address (`@seat/title`).
+    seated: HashMap<String, Arc<letibot_flowy::InboxCondition>>,
+}
+
+/// Which sessions attach to the seat, and how the attachment is wired.
+///
+/// **Root sessions only.** A subagent spawned by `task` hears the room through
+/// its parent and speaks through it: one name, one mind under it at a time. So
+/// the tool and the monitor are given to a session with no `parent_session_id`
+/// and to nothing else.
+fn is_root(registry: &Registry, session_id: &str) -> bool {
+    registry
+        .list()
+        .iter()
+        .find(|b| b.session_id == session_id)
+        .map(|b| b.parent_session_id.is_none())
+        .unwrap_or(true)
 }
 
 impl<'a> Sessions<'a> {
@@ -92,20 +114,128 @@ impl<'a> Sessions<'a> {
         cfg: Config,
         registry: Arc<Registry>,
     ) -> Result<Sessions<'a>, HarnessError> {
+        Self::open_first_with_seat(parts, cfg, registry, None)
+    }
+
+    /// [`Sessions::open_first`] with the daemon's flowy seat, which the first
+    /// session attaches to like every root session after it.
+    pub fn open_first_with_seat(
+        parts: &'a Parts,
+        cfg: Config,
+        registry: Arc<Registry>,
+        seat: Option<letibot_flowy::Seat>,
+    ) -> Result<Sessions<'a>, HarnessError> {
         let id = cfg.session_id.clone();
         let hub = registry
             .get(&id)
             .ok_or_else(|| HarnessError::Setup(format!("session {id} is not in the registry")))?;
-        let harness = Harness::open_with_registry(parts, cfg.clone(), hub, None, None, registry.clone())?;
-        let mut open = HashMap::new();
-        open.insert(id, harness);
-        Ok(Sessions {
+        let mut sessions = Sessions {
             parts,
-            base: cfg,
-            registry,
-            open,
+            base: cfg.clone(),
+            registry: registry.clone(),
+            open: HashMap::new(),
             armed: std::collections::HashSet::new(),
-        })
+            seat,
+            seated: HashMap::new(),
+        };
+        let (tool, cond) = sessions.seat_tool(&id);
+        let harness = Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
+        sessions.open.insert(id.clone(), harness);
+        sessions.declare_flowy_monitor(&id, cond);
+        Ok(sessions)
+    }
+
+    /// The seat this daemon holds, if any.
+    pub fn seat(&self) -> Option<&letibot_flowy::Seat> {
+        self.seat.as_ref()
+    }
+
+    /// The `flowy` tool for a session, and the condition behind it — or nothing,
+    /// for a daemon with no seat or a session that is not a root.
+    fn seat_tool(
+        &self,
+        session_id: &str,
+    ) -> (
+        Option<Box<dyn letibot_tools::runtime::Tool>>,
+        Option<Arc<letibot_flowy::InboxCondition>>,
+    ) {
+        let Some(seat) = &self.seat else {
+            return (None, None);
+        };
+        if !is_root(&self.registry, session_id) {
+            return (None, None);
+        }
+        // The title is the session's short address on the fabric — `@seat/title`
+        // beside `@seat/id` — so agents on one project can name each other.
+        let title = self
+            .registry
+            .list()
+            .iter()
+            .find(|b| b.session_id == session_id)
+            .map(|b| b.title.clone())
+            .unwrap_or_default();
+        let cond = seat.attach_as(session_id, &title, letibot_flowy::Attention::default());
+        let tool: Box<dyn letibot_tools::runtime::Tool> =
+            Box::new(letibot_flowy::Flowy::new(seat.clone(), cond.clone()));
+        (Some(tool), Some(cond))
+    }
+
+    /// Declare the session's `flowy` monitor — continuous, owned by the session
+    /// scope, renewed by the seat's loop — and arm the wake. The operator's
+    /// words: *"I don't want to fiddle with monitors."* The model never declares
+    /// this one; it finds it in `job_list`.
+    ///
+    /// A session whose backend cannot hold a monitor gets the tool and no
+    /// listener, and the disclosure says `NOT SEATED` rather than pretending.
+    fn declare_flowy_monitor(
+        &mut self,
+        session_id: &str,
+        cond: Option<Arc<letibot_flowy::InboxCondition>>,
+    ) {
+        let (Some(cond), Some(seat)) = (cond, &self.seat) else {
+            return;
+        };
+        self.seated.insert(session_id.to_string(), cond.clone());
+        let Some(h) = self.open.get(session_id) else {
+            return;
+        };
+        let (Some(monitors), Some(owner)) = (h.monitors().cloned(), h.session_scope()) else {
+            if let Some(hub) = self.registry.get(session_id) {
+                hub.publish(SessionEvent::Warning {
+                    code: "flowy_not_seated".into(),
+                    detail: format!(
+                        "seat `{}` is attached to this session but its backend cannot hold \
+                         a monitor, so nothing said on the fabric can wake it. The `flowy` \
+                         tool still speaks; `flowy status` shows what is pending.",
+                        seat.name()
+                    ),
+                });
+            }
+            return;
+        };
+        use letibot_tools::exec::monitor::{CustomWatch, MAX_TTL, Watch};
+        match monitors.declare(
+            "flowy",
+            owner,
+            Watch::Custom(CustomWatch(cond)),
+            None,
+            "harnessd",
+            MAX_TTL,
+            true,
+        ) {
+            Ok(_) => {
+                seat.keep_renewing(&monitors, "flowy");
+                self.arm_wake(session_id);
+            }
+            Err(e) => {
+                if let Some(hub) = self.registry.get(session_id) {
+                    hub.publish(SessionEvent::Warning {
+                        code: "flowy_not_seated".into(),
+                        detail: format!("the `flowy` monitor could not be declared: {e}"),
+                    });
+                }
+            }
+        }
     }
 
     /// What a session is attached to, from the daemon's own command line.
@@ -185,6 +315,9 @@ impl<'a> Sessions<'a> {
             return;
         };
         if let Some(title) = h.take_new_title() {
+            if let Some(c) = self.seated.get(session_id) {
+                c.set_alias(&title);
+            }
             self.registry.set_title(session_id, title);
         }
     }
@@ -205,8 +338,17 @@ impl<'a> Sessions<'a> {
             // carries the root from the store. `self.base.workspace` is the daemon's
             // command line, which is a fact about the daemon.
             let ws = self.registry.wiring(session_id).workspace;
+            // Whether this is somebody's subagent is the registry's fact, not the
+            // command line's: a resumed subagent must not be seated as a root.
+            let parent = self
+                .registry
+                .list()
+                .iter()
+                .find(|b| b.session_id == session_id)
+                .and_then(|b| b.parent_session_id.clone());
             let cfg = Config {
                 session_id: session_id.to_string(),
+                parent_session_id: parent,
                 workspace: if ws.is_empty() {
                     self.base.workspace.clone()
                 } else {
@@ -214,8 +356,10 @@ impl<'a> Sessions<'a> {
                 },
                 ..self.base.clone()
             };
-            let h = Harness::open_with_registry(self.parts, cfg, hub, None, None, self.registry.clone())?;
+            let (tool, cond) = self.seat_tool(session_id);
+            let h = Harness::open_with_registry(self.parts, cfg, hub, None, tool, self.registry.clone())?;
             self.open.insert(session_id.to_string(), h);
+            self.declare_flowy_monitor(session_id, cond);
         }
         Ok(self.open.get_mut(session_id).expect("just inserted"))
     }

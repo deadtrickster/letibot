@@ -216,6 +216,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-flowy"
+version = "0.1.0"
+dependencies = [
+ "letibot-http",
+ "letibot-tools",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-harnessd"
 version = "0.1.0"
 dependencies = [
@@ -223,6 +234,7 @@ dependencies = [
  "letibot-dialect",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
+ "letibot-flowy",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",
@@ -232,6 +244,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "letibot-http"
+version = "0.1.0"
 
 [[package]]
 name = "letibot-sessionlog"
@@ -304,6 +320,7 @@ dependencies = [
  "letibot-backend",
  "letibot-dialect",
  "letibot-dialect-glm",
+ "letibot-http",
  "letibot-tokencore",
  "letibot-transcript",
  "letibot-turn",

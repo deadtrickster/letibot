@@ -1,0 +1,12 @@
+[package]
+name = "letibot-http"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Nothing. The whole point of this crate is that the two things in this tree
+# which speak HTTP — the turn engine to llama-server, the flowy connector to the
+# node — share ONE framing implementation and pull no runtime for it.
+[dependencies]

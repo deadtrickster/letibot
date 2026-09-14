@@ -16,6 +16,8 @@ letibot-tokencore.workspace = true
 letibot-backend.workspace = true
 letibot-turn.workspace = true
 letibot-tools.workspace = true
+# The flowy seat the daemon holds, and the `flowy` tool a root session gets.
+letibot-flowy.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 serde.workspace = true
 # preserve_order for the reason every crate in this tree needs it: a tool call's

@@ -6,6 +6,8 @@ members = [
     "crates/dialect-glm",
     "crates/dialect-qwen",
     "crates/tokencore",
+    "crates/http",
+    "crates/flowy",
     "crates/backend",
     "crates/turn",
     "crates/sessionlog",
@@ -30,6 +32,8 @@ letibot-dialect = { path = "crates/dialect" }
 letibot-dialect-glm = { path = "crates/dialect-glm" }
 letibot-dialect-qwen = { path = "crates/dialect-qwen" }
 letibot-tokencore = { path = "crates/tokencore" }
+letibot-http = { path = "crates/http" }
+letibot-flowy = { path = "crates/flowy" }
 letibot-backend = { path = "crates/backend" }
 letibot-turn = { path = "crates/turn" }
 letibot-sessionlog = { path = "crates/sessionlog" }

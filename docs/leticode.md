@@ -10,6 +10,12 @@ serenedash-style dashboard over the pieces that are new.
   (`Action`, `Rule`, `evaluate`, wildcard, `config_to_ruleset`), wired into
   `AdjudicatedGate` before the mode, with an `allow_always` reply feeding
   `(permission, pattern)` back into the ruleset.
+- `crates/flowy` — the seat on the fabric, as a monitor: `harnessd --flowy`
+  holds one persistent seat per daemon, a root session attaches with its own
+  per-room attention table and gets a continuous `flowy` monitor whose firings
+  are the messages; `flowy` is the sixteenth tool (`status`, `attention`,
+  `subscribe`, `say`, …). Subagents route through the parent. See
+  `docs/flowy-monitor.md`.
 
 ## The three tools, and what each is
 

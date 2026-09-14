@@ -10,6 +10,7 @@ repository.workspace = true
 letibot-transcript.workspace = true
 letibot-dialect.workspace = true
 letibot-tokencore.workspace = true
+letibot-http.workspace = true
 letibot-backend.workspace = true
 serde.workspace = true
 # preserve_order for the same reason dialect-glm needs it: a tool call's argument
