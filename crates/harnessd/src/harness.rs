@@ -898,15 +898,26 @@ impl<'a> Harness<'a> {
         // roots its backend at `/` (unconfined, no namespaces) and leaves the gating to
         // the permission ruleset and the mode. `backend_confined` records which case it
         // was, so the mode's `Confinement` prerequisite is a fact rather than a guess.
+        //
+        // **A downgrade closes doors here too**, not only at the gate: a subagent
+        // denied `exec` gets no process host, and one denied `write` gets a
+        // read-only view — the same three facts the disclosure names. Applied
+        // before the seat's needs, because a need the downgrade denies is not a
+        // need this session has.
+        use letibot_tools::schema::Access as Cls;
+        let may_exec = !cfg.downgrade.denies(Cls::Exec);
+        let may_write = !cfg.downgrade.denies(Cls::Write);
         let (backend, backend_confined): (HostBackend, bool) = if cfg.unconfined {
-            let b = if cfg.allow_bash {
+            let b = if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
-            } else {
+            } else if may_write {
                 HostBackend::writable("/")
+            } else {
+                HostBackend::new("/")
             }
             .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?;
             (b, false)
-        } else if cfg.seat.needs_exec_backend() {
+        } else if cfg.seat.needs_exec_backend() && may_exec {
             (
                 HostBackend::confined_granting(
                     &cfg.workspace,
@@ -939,7 +950,7 @@ impl<'a> Harness<'a> {
                 })?,
                 true,
             )
-        } else if cfg.seat.needs_writable_backend() {
+        } else if cfg.seat.needs_writable_backend() && may_write {
             (
                 HostBackend::writable(&cfg.workspace)
                     .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
@@ -1096,9 +1107,14 @@ impl<'a> Harness<'a> {
             }
             None => role_for(&cfg),
         };
-        let registry = registry.resolve_role(&role).map_err(|e| {
-            HarnessError::Setup(format!("seating the `{}` role: {e}", cfg.seat.as_str()))
-        })?;
+        let registry = registry
+            .resolve_role(&role)
+            .map_err(|e| {
+                HarnessError::Setup(format!("seating the `{}` role: {e}", cfg.seat.as_str()))
+            })?
+            // The downgrade, applied to what is SEATED: a denied class's tools leave
+            // the prompt, so the model is not told it has what the gate would refuse.
+            .without_access(&cfg.downgrade.deny);
         let schemas = registry.schemas();
         let seated: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
 
@@ -1251,7 +1267,7 @@ impl<'a> Harness<'a> {
                     // opencode's `permission` config (LETIBOT_PERMISSION), so the
                     // allow/deny/ask rules govern before the mode — and a subagent
                     // inherits them.
-                    .with_permission(cfg.permission.clone())
+                    .with_permission(downgraded_ruleset(&cfg.permission, &cfg.downgrade, &schemas))
                     // Layer A needs to know where it is standing. Undeclared means
                     // `ShellTrust::Unknown`, under which a **bare** command name is
                     // unresolved and the call is `not_run` — the fail-closed
@@ -2499,7 +2515,29 @@ struct HarnessTaskRunner {
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
-    fn run(&self, prompt: &str, role: &str) -> Result<String, String> {
+    fn run(
+        &self,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+    ) -> Result<String, String> {
+        use letibot_tools::builtins::task::Placement;
+        let role = spec.role.as_str();
+        // **The downgrade is a union**: whatever this session was denied, its
+        // children are denied, plus what this call asks. A downgraded session
+        // cannot spawn a wider child by naming a wider role.
+        let downgrade = self.base.downgrade.and(&spec.downgrade);
+        // Placement is a declared seam and an honest refusal until the backend
+        // exists. Running on the host and calling it a VM would be the boundary
+        // claim this whole design is built not to make (§5, §11.3).
+        if spec.placement == Placement::Firecode {
+            return Err(
+                "no firecode backend in this build: `where: firecode` is the placement seam \
+                 (W10) and nothing implements it yet, so the subagent was NOT spawned on the \
+                 host in its place. Omit `where`, or use `host`, to run it inside this \
+                 session's own boundary with the same downgrade."
+                    .into(),
+            );
+        }
         // A subagent is a real session: mint its id and create its hub. The id is a
         // nanosecond timestamp suffix rather than a counter, so a subagent minted
         // after a daemon restart cannot collide with a persisted one (a counter
@@ -2513,11 +2551,15 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             letibot_sessionlog::registry::now_ms()
         );
         let title = derive_title(prompt);
-        // The subagent seats the coder tools. `role` is honoured where it names a
-        // real seat; anything else is coder, which is the `task` tool's own default.
-        let seat = match role {
-            "orchestrator" => Seat::Orchestrator,
-            _ => Seat::Coder,
+        // The subagent seats the role it was asked for — any seat this build knows
+        // — and coder when none was named, which is the `task` tool's own default.
+        // A role this build does not know is refused by name rather than seated
+        // as coder: a survey asked for as `researcher` and run as a coder would
+        // be a subagent with more than it was meant to have.
+        let seat = if role.is_empty() || role == "coder" {
+            Seat::Coder
+        } else {
+            Seat::parse(role)?
         };
         let parent = self.base.session_id.clone();
 
@@ -2579,6 +2621,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             title: title.clone(),
             seat,
             parent_session_id: Some(parent.clone()),
+            downgrade,
             ..self.base.clone()
         };
 
@@ -2653,6 +2696,53 @@ fn steer_for_turn(
     } else {
         ledger.reconcile(turn_id, "").steering()
     }
+}
+
+/// The parent's ruleset plus a `deny` per tool of a denied class. The tools are
+/// not seated either (see `without_access`), so this is the third reader of the
+/// same fact and the one that holds if a name reaches the gate anyway: last
+/// rule wins in opencode's `evaluate`, and these are last.
+///
+/// Two sources of names. The seated schemas, by their declared class — after
+/// `without_access` that set is empty, which is the point. And the well-known
+/// names of each class whether seated or not, so a tool registered outside the
+/// role later (an `extra_tool`) that carries a denied class is refused by name
+/// rather than admitted because nobody wrote a rule for it. A rule about an
+/// unseated name costs nothing.
+fn downgraded_ruleset(
+    parent: &letibot_tools::permission::Ruleset,
+    downgrade: &letibot_tools::schema::Downgrade,
+    seated: &[letibot_tools::schema::ToolSchema],
+) -> letibot_tools::permission::Ruleset {
+    use letibot_tools::permission::{Action, Rule};
+    use letibot_tools::schema::Access;
+    let mut rules = parent.clone();
+    if downgrade.is_none() {
+        return rules;
+    }
+    let well_known: &[(Access, &[&str])] = &[
+        (Access::Write, &["write", "edit", "exit_plan_mode"]),
+        (Access::Exec, &["bash", "monitor", "job_kill", "lsp"]),
+        (Access::Network, &["flowy", "web_search", "web_fetch", "forge", "mcp"]),
+    ];
+    let mut names: Vec<String> = Vec::new();
+    for (class, known) in well_known {
+        if downgrade.denies(*class) {
+            names.extend(known.iter().map(|n| n.to_string()));
+        }
+    }
+    names.extend(
+        seated
+            .iter()
+            .filter(|s| downgrade.denies(s.access))
+            .map(|s| s.name.clone()),
+    );
+    names.sort();
+    names.dedup();
+    for name in names {
+        rules.push(Rule::new(&name, "*", Action::Deny));
+    }
+    rules
 }
 
 /// The role a seat resolves to, with `bash` removed when it was not asked for.
@@ -2759,7 +2849,8 @@ fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a
     // bare command name resolves through a pinned PATH either way, and the
     // `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
-    if cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash) {
+    let may_exec = !cfg.downgrade.denies(letibot_tools::schema::Access::Exec);
+    if (cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash)) && may_exec {
         env.with_pinned_shell(
             "the exec backend spawns /bin/sh -c, non-interactive, with the \
              environment cleared before its own pairs; PATH is the one fixed at \
@@ -2811,6 +2902,33 @@ mod tests {
         let l = Arc::new(l);
         drop(IntentSink::new(l.clone(), letibot_tools::NullToolSink));
         Arc::try_unwrap(l).expect("the sink was just dropped")
+    }
+
+    #[test]
+    fn a_downgrade_denies_the_seated_tools_of_its_classes_and_the_well_known_names() {
+        use letibot_tools::permission::{Action, Rule};
+        use letibot_tools::schema::{Access, Downgrade, ToolSchema};
+        let seated = vec![
+            ToolSchema::new("read", "r", serde_json::json!({}), Access::Read),
+            ToolSchema::new("edit", "e", serde_json::json!({}), Access::Write),
+            ToolSchema::new("bash", "b", serde_json::json!({}), Access::Exec),
+            ToolSchema::new("flowy", "f", serde_json::json!({}), Access::Network),
+            ToolSchema::new("odd_writer", "o", serde_json::json!({}), Access::Write),
+        ];
+        let parent = vec![Rule::new("edit", "*", Action::Allow)];
+        let rules = downgraded_ruleset(&parent, &Downgrade::parse("no-write").unwrap(), &seated);
+        let denied: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.action == Action::Deny)
+            .map(|r| r.permission.as_str())
+            .collect();
+        assert!(denied.contains(&"edit") && denied.contains(&"write") && denied.contains(&"odd_writer"), "{denied:?}");
+        assert!(!denied.contains(&"read") && !denied.contains(&"bash") && !denied.contains(&"flowy"), "{denied:?}");
+        // Last rule wins: the parent's allow for `edit` is overridden.
+        let r = letibot_tools::permission::evaluate("edit", "anything", &[&rules]);
+        assert_eq!(r.action, Action::Deny);
+        // No downgrade, no change.
+        assert_eq!(downgraded_ruleset(&parent, &Downgrade::none(), &seated), parent);
     }
 
     #[test]

@@ -246,6 +246,10 @@ pub struct Config {
     pub permission: letibot_tools::permission::Ruleset,
     /// The flowy seat this daemon holds, when asked to. See [`FlowyConfig`].
     pub flowy: Option<FlowyConfig>,
+    /// What this session is denied below its role — a subagent's downgrade,
+    /// inherited by every subagent it spawns and only ever added to. `none` for
+    /// a session the operator opened. See `letibot_tools::schema::Downgrade`.
+    pub downgrade: letibot_tools::schema::Downgrade,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -491,6 +495,7 @@ impl Config {
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
+            downgrade: letibot_tools::schema::Downgrade::none(),
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -774,6 +779,19 @@ impl Config {
                      fires while nothing is running is a condition nobody acts on.",
                 ));
             }
+        }
+        // **A subagent's downgrade**, said as what is gone: the tools of those
+        // classes are not seated, the backend is opened without them, and the
+        // ruleset denies them by name. Three readers of one fact, disclosed once.
+        if !self.downgrade.is_none() {
+            out.push(Disclosure::on(
+                "downgrade",
+                format!(
+                    "{} — below the role's own permissions, inherited from the spawning \
+                     session and never widened",
+                    self.downgrade.describe()
+                ),
+            ));
         }
         // **The room.** Whether anybody said anywhere reaches this session, and as
         // what. `--flowy` is the whole switch; the seat's own line — listening,

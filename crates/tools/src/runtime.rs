@@ -844,6 +844,17 @@ impl Registry {
     /// §8.4, enforced: **refuse to seat a role** whose resolved tool count exceeds
     /// its ceiling, naming the overflow, and refuse one that names a tool this
     /// build does not have.
+    /// Drop every tool of a denied access class. A subagent's downgrade, applied
+    /// after the role is resolved: the tools leave the prompt entirely, so the
+    /// model is not told it has a capability the gate would refuse.
+    pub fn without_access(mut self, denied: &std::collections::BTreeSet<crate::schema::Access>) -> Registry {
+        if denied.is_empty() {
+            return self;
+        }
+        self.tools.retain(|t| !denied.contains(&t.schema().access));
+        self
+    }
+
     pub fn resolve_role(self, role: &Role) -> Result<Registry, RoleError> {
         let have = self.names();
         let missing: Vec<String> = role
@@ -1167,6 +1178,22 @@ mod tests {
             name: name.into(),
             arguments: args.into(),
         }
+    }
+
+    #[test]
+    fn without_access_drops_a_class_and_leaves_the_rest_in_role_order() {
+        let mut reg = Registry::new();
+        reg.register(Box::new(Probe { access: Access::Read })).unwrap();
+        let mut denied = std::collections::BTreeSet::new();
+        denied.insert(Access::Read);
+        assert!(reg.schemas().iter().any(|s| s.name == "probe"));
+        let reg = reg.without_access(&denied);
+        assert!(reg.schemas().is_empty());
+        let mut reg = Registry::new();
+        reg.register(Box::new(Probe { access: Access::Read })).unwrap();
+        let mut other = std::collections::BTreeSet::new();
+        other.insert(Access::Exec);
+        assert_eq!(reg.without_access(&other).schemas().len(), 1);
     }
 
     #[test]

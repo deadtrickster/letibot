@@ -39,6 +39,94 @@ pub enum Access {
     Session,
 }
 
+/// What a subagent is denied **below** the session that spawned it. A set of
+/// access classes, and it only ever removes: a subagent's downgrade is the
+/// parent's downgrade plus its own, so nothing a parent could not do can be
+/// handed down by naming a wider role. `Read` and `Session` cannot be denied —
+/// a subagent that cannot read its files or its own todo list is not a
+/// subagent, and a caller asking for that is told so.
+///
+/// Three things read it, and all three must agree: the tools seated (a denied
+/// class's tools are not in the prompt, so the model is not told it has a
+/// capability it does not); the backend (no writable view without `Write`, no
+/// process host without `Exec`); and the permission ruleset (a `deny` rule per
+/// denied tool, so a call that reached the gate anyway is refused by name).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Downgrade {
+    pub deny: std::collections::BTreeSet<Access>,
+}
+
+impl Downgrade {
+    pub fn none() -> Self {
+        Downgrade::default()
+    }
+
+    /// `read-only` (no write, exec or network), or any of `no-write`, `no-exec`,
+    /// `no-network`, comma-separated. Anything else is refused by name.
+    pub fn parse(s: &str) -> Result<Downgrade, String> {
+        let mut d = Downgrade::default();
+        for word in s.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            match word.to_ascii_lowercase().as_str() {
+                "read-only" | "readonly" | "read_only" | "survey" => {
+                    d.deny.insert(Access::Write);
+                    d.deny.insert(Access::Exec);
+                    d.deny.insert(Access::Network);
+                }
+                "no-write" | "no_write" | "nowrite" => {
+                    d.deny.insert(Access::Write);
+                }
+                "no-exec" | "no_exec" | "noexec" => {
+                    d.deny.insert(Access::Exec);
+                }
+                "no-network" | "no_network" | "nonetwork" | "offline" => {
+                    d.deny.insert(Access::Network);
+                }
+                "no-read" | "no-session" | "no_read" | "no_session" => {
+                    return Err(format!(
+                        "`{word}` is not a downgrade: a subagent that cannot read, or cannot \
+                         keep its own todo list, is not a subagent"
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "`{other}` is not a downgrade. There are four: `read-only` (no write, \
+                         exec or network), `no-write`, `no-exec`, `no-network`, comma-separated"
+                    ));
+                }
+            }
+        }
+        Ok(d)
+    }
+
+    pub fn denies(&self, a: Access) -> bool {
+        self.deny.contains(&a)
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.deny.is_empty()
+    }
+
+    /// This downgrade plus another. Union, never intersection: the child of a
+    /// downgraded session inherits every denial and may add its own.
+    pub fn and(&self, other: &Downgrade) -> Downgrade {
+        Downgrade {
+            deny: self.deny.union(&other.deny).copied().collect(),
+        }
+    }
+
+    /// `no write, no exec` — for a disclosure or a listing.
+    pub fn describe(&self) -> String {
+        if self.deny.is_empty() {
+            return "none".into();
+        }
+        self.deny
+            .iter()
+            .map(|a| format!("no {}", a.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 impl Access {
     pub fn as_str(&self) -> &'static str {
         match self {

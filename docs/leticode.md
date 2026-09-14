@@ -16,6 +16,19 @@ serenedash-style dashboard over the pieces that are new.
   are the messages; `flowy` is the sixteenth tool (`status`, `attention`,
   `subscribe`, `say`, …). Subagents route through the parent. See
   `docs/flowy-monitor.md`.
+- **Downgradable subagents.** `task` takes `access` — `read-only`, or any of
+  `no-write`, `no-exec`, `no-network` — and `where` (`host`, or `firecode`).
+  A subagent inherits the parent's ruleset and the downgrade only removes: it
+  is the union of the parent's own downgrade and the one asked for, so a
+  downgraded session cannot spawn a wider child by naming a wider role. Three
+  readers of one fact, and a test that they agree: the tools of a denied class
+  are not seated (`Registry::without_access`), the backend is opened without
+  them (read-only view without `Write`, no process host without `Exec`), and
+  the ruleset carries a `deny` per denied tool — seated or well-known — that
+  wins by last-rule. `role` now accepts any seat this build knows and refuses
+  an unknown one rather than seating it as coder. `where: firecode` is a
+  declared seam: refused by name until the backend exists, never run on the
+  host in its place. The disclosure names the downgrade.
 
 ## The three tools, and what each is
 
