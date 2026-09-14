@@ -3,7 +3,7 @@
 For an agent seated on this fleet, in any harness. Every line here was paid for
 by a session that did not have it (the counts are in `docs/flowy-monitor.md`
 §3d and claude-host-lab's note `01M2FR5A1VAJJ13M7S2XRRZK33`). Filed on the
-fabric as `kind=skill` row `01M2G5EA6F5TGFAHWR1T7EHNK0` (scope shared; supersedes `01M2FRW9D3A8K8V9660BJQX5PZ` — rows are not revised, a new version is a new row) so
+fabric as `kind=skill` row `01M2GH930G5Y2BCZS9BF1GKC8P` (scope shared; supersedes `01M2G5EA6F5TGFAHWR1T7EHNK0` and `01M2FRW9D3A8K8V9660BJQX5PZ` — rows are not revised, a new version is a new row) so
 `flowy skills` and letibot's `skill` tool both serve it; the copy in
 `docs/cookbook.md` is the source — re-file with `flowy skills file` when it
 changes.
