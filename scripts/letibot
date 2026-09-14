@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+# One command to start chatting: brings up harnessd if it is not already up,
+# then attaches the TUI head to it.
+#
+# WHY IT IS TWO PROCESSES AND NOT ONE. The daemon owns the session, the ledger and
+# the model connection; the TUI is one head among several that may attach to it.
+# That separation is the point of the design, not an accident of packaging -- you
+# can close this window mid-turn and reattach, and the turn keeps running, because
+# idle means quiet rather than unwatched. A second head can attach at the same time
+# and see the same stream from a snapshot.
+#
+#   letibot                     attach, starting the daemon if needed
+#   letibot --continue          reopen the newest session in THIS workspace
+#   letibot --session ID        reopen a particular one
+#   letibot --sessions          what is on disk: id, title, workspace, age, rows
+#   letibot --new [TITLE]       start a fresh session
+#   letibot --rename ID TITLE   name a stored session
+#   letibot --delete ID         remove a stored session that has no rows
+#   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+#   letibot --glm               use GLM instead of Qwen (needs GLM serving on 8080)
+#   letibot --stop              stop the daemon
+#   letibot --status            is it up, and on what
+#
+# HOW A SESSION IS REOPENED, IN BOTH DIRECTIONS. Every one of the session commands
+# has to work with a daemon already running and with none, and the two paths are
+# genuinely different:
+#
+#   no daemon    start harnessd with `--session ID`. It finds the transcript in the
+#                store, replays the stored TOKENS into a new ledger, verifies the
+#                hash chain twice, and refuses by name if it does not reproduce.
+#   daemon up    ask it over the socket (`letibot-tui --resume ID`), which is the
+#                same two frames the ctrl-s picker sends. Restarting the daemon
+#                instead would take down every other session on the box to open one.
+#
+# The daemon logs to ~/logs/harnessd.log; the socket lives in $XDG_RUNTIME_DIR.
+
+set -euo pipefail
+
+BIN="${LETIBOT_BIN:-/home/dead/Projects/letibot/target/release}"
+
+# ONE DAEMON PER FOLDER, tmux-style. The workspace is the git toplevel when you
+# are inside a checkout (so `letibot` in a subdirectory joins the daemon of the
+# repo, not a second one), else the directory you are standing in. Its daemon
+# lives at a socket named by the workspace's path, and a small record beside the
+# socket says what it is - pid, role, model, when it started - so `--status`,
+# `--stop` and `--daemons` act on THIS folder's daemon by pid, never on every
+# harnessd on the box.
+#
+#   letibot                     connect to this folder's daemon, or start one
+#   letibot --attach [DIR]      connect only; refuse to start one
+#   letibot --daemons           every folder's daemon on this box, live or stale
+#   letibot --stop [--all]      this folder's daemon (or all of them)
+WORKSPACE="${LETIBOT_WORKSPACE:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
+WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
+RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/letibot"
+mkdir -p "$RUNDIR"
+KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
+RECORD="$RUNDIR/$KEY.json"
+STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
+LOG="${LETIBOT_LOG:-$HOME/logs/harnessd.log}"
+ENDPOINT="${LETIBOT_ENDPOINT:-127.0.0.1:8080}"
+
+die() { echo "letibot: $*" >&2; exit 1; }
+
+# HELP BEFORE ANYTHING. No network, no daemon probe, no vocabulary: a question
+# about the command must not cost a model turn to answer.
+#
+# Found 2026-09-13, and the mechanism is worth writing down: `--help` matched no
+# case below, nothing shifted it, and by the one-shot branch `$#` was still 1 --
+# so it ran `harnessd --prompt "--help"`. The banner printed, the vocabulary
+# loaded (the multi-second hang), and GLM answered the prompt "--help" with
+# usage examples. The operator's report -- "prints something then hangs then
+# offers usage examples" -- was the model's answer to a flag it was never meant
+# to see. Any typo'd flag (`--halp`, `--vesion`) rode the same fall-through and
+# became a billed turn, so unknown `--` words are now refused rather than
+# prompted; a one-shot prompt whose first word begins with `--` is rare enough
+# that refusing it with a name of the mistake is the honest trade.
+usage() {
+  cat <<'EOF'
+letibot — one command to start chatting: brings up harnessd if it is not
+already up, then attaches the TUI head to it.
+
+  letibot                     attach, starting the daemon if needed
+  letibot --continue          reopen the newest session in THIS workspace
+  letibot --session ID        reopen a particular one
+  letibot --sessions          what is on disk: id, title, workspace, age, rows
+  letibot --new [TITLE]       start a fresh session
+  letibot --rename ID TITLE   name a stored session
+  letibot --delete ID         remove a stored session that has no rows
+  letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+  letibot --glm               use GLM instead of Qwen (needs GLM serving on 8080)
+  letibot --stop              stop the daemon
+  letibot --stop --force      interrupt all in-flight turns, then stop
+  letibot --status            is it up, and on what
+
+  letibot --read-only         no write tools at all (orchestrator seat)
+  letibot --ask               the old behaviour: every write asks, every time
+  letibot --writes            approve a class once, for the session (default)
+  letibot --mode N            read-only | always-ask | writes-allowed | automode | allow-all
+  letibot --bash              seat the shell, and grant the toolchain
+  LETIBOT_MODE=writes-allowed letibot        the same, by env
+
+Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
+LETIBOT_LOG LETIBOT_ENDPOINT LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
+LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_GRANTS_RO
+
+The daemon logs to ~/logs/harnessd.log. Model choice is detected from what the
+server on 8080 has loaded (letibot --status reports it); explicit --glm/--flash/
+--dense choose a model only when the daemon STARTS.
+EOF
+}
+
+for a in "$@"; do
+  case "$a" in
+    --help|-h|help) usage; exit 0 ;;
+    --*) : ;;
+    *) break ;;  # the prompt starts here; nothing after it is a flag
+  esac
+done
+for a in "$@"; do
+  case "$a" in
+    --help|-h|help|--read-only|--writes|--bash|--ask|--glm|--flash|--dense|--attach|--daemons|--all|\
+    --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
+    --rename|--delete|--mode|--force) ;;
+    --*) die "unknown flag: $a
+         ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
+    *) break ;;
+  esac
+done
+
+# Qwen is the default because it is what this box serves. Both Qwen models ship a
+# byte-identical template, so this one dialect covers Flash-Next and the 27B dense.
+# WRITES BY DEFAULT. `letibot` with no flags can edit files, and every write is
+# gated -- the head asks you and you answer in the TUI. Read-only is `--read-only`.
+#
+# It was the other way round until 2026-09-10 and that was wrong twice over: the
+# operator hit "no edit tools" with no way to change it in place, which is a
+# refusal that cannot be lifted from where it is met -- the exact failure
+# docs/boundary-and-adjudication.md 4b makes a requirement -- and it made the
+# price of writing a file a flag nobody should have to know.
+ROLE="${LETIBOT_ROLE:-coder}"
+# `head` posts the decision to the attached TUI and waits for your answer.
+# `console` reads the daemon's own stdin, which a detached daemon does not have,
+# so every write would refuse with "nobody answered".
+ADJ="${LETIBOT_ADJUDICATOR:-head}"
+
+# APPROVAL POLICY, which is not the role.
+#
+# `always-ask` is the daemon default and its grant scope is `Once`: an answer settles
+# that one call. So choosing "allow this class for the rest of the session" at that
+# point recorded nothing, and the next write asked again -- reported twice as
+# "allow_session doesn't stick" before the cause was found.
+#
+# `writes-allowed` is the point whose grant scope is `Session`. It is the one to start
+# in if you want to approve edits once and be left alone.
+#
+#   letibot --writes            approve a class once, for the session
+#   LETIBOT_MODE=writes-allowed letibot        the same, by env
+#
+# The mode is a property of the DAEMON, decided when it starts -- like the model and
+# the role. A daemon already running cannot be re-pointed; stop it first.
+# DEFAULT: writes are allowed for the session.
+#
+# `always-ask` is harnessd's own default and it is right for a tree nobody has seen
+# before -- `letibot_tools::mode::UNSEEN_PROJECT` is literally that constant. It is
+# wrong as the way you work every day: its grant scope is `Once`, so every edit asks,
+# and the answer settles that call and nothing else.
+#
+# This is the operator's standing request, asked for three times: "i want to allow
+# edits for the entire session". `writes-allowed` is the named point whose grant scope
+# is `Session`, so approving a class approves it until the daemon stops.
+#
+# It is NOT a silent widening. The daemon prints the point and its four dials at
+# startup -- `write admit, exec ask, network ask, grants session` -- so what changed is
+# on the screen, and commands, the network and the always-ask list (privilege
+# escalation, deleting outside the project, a host never seen before) still ask at
+# every point. Nothing at any mode reaches an inexpressible action.
+#
+#   letibot            writes allowed, approve a class once per session
+#   letibot --ask      the old behaviour: every write asks, every time
+#   letibot --mode N   read-only | always-ask | writes-allowed | automode | allow-all
+MODE="${LETIBOT_MODE:-writes-allowed}"
+
+# A SHELL, AND WHAT IT NEEDS TO BE USEFUL.
+#
+# `--bash` seats the shell on the coder seat. It is a flag and not a default because
+# `bash` is the one tool whose result is an arbitrary byte stream, and the single choke
+# point every tool result would pass through does not exist yet
+# (docs/boundary-and-adjudication.md §5). Every exec call still asks.
+#
+# The grants are the other half. The confined view is HERMETIC: `$HOME` inside is a
+# fresh tmpfs, so `~/.cargo` and `~/.rustup` are ABSENT — the same property that keeps a
+# secret out, pointed at the toolchain. Without them `cargo` is not found and a shell is
+# a shell that cannot build. Checked 2026-09-11: neither holds a `credentials.toml` or
+# anything else credential-shaped.
+#
+# Read-only in the view still means readable INTO THE TRANSCRIPT, which is why these are
+# named here where you can see them rather than compiled into the daemon.
+#
+#   letibot --bash       seat the shell, and grant the toolchain
+#   LETIBOT_BASH=1       the same, for a shell you do not want to keep typing in
+BASH_ON="${LETIBOT_BASH:-}"
+GRANTS_RO="${LETIBOT_GRANTS_RO:-$HOME/.cargo $HOME/.rustup}"
+
+# WHICH MODEL. Three servers share port 8080 and are systemd `Conflicts=` with
+# each other, so exactly one is up at a time. That makes the question answerable
+# rather than declarable: ASK THE SERVER what it loaded instead of making the
+# operator remember and type it.
+#
+# This matters beyond convenience. The vocab is how the harness counts tokens and
+# how it renders tool calls, and the dialect is which parser reads the model's
+# output. Naming the wrong one does not fail loudly -- it produces a token ledger
+# that is quietly wrong and tool calls that arrive as literal <function...> text.
+# A flag the operator must keep in sync with a service they switched an hour ago
+# is a mistake waiting to be made; /props already knows the answer.
+#
+# The explicit flags remain, because detection needs a server and there are two
+# times there isn't one: the model is still loading, and you want the daemon up
+# first. LETIBOT_DIALECT / LETIBOT_MODEL / LETIBOT_VOCAB still win over both.
+model_by_path() {
+  # $1 = model_path from /props -> "dialect|alias|vocab", or empty if unrecognised
+  case "$1" in
+    *glm-5.3-flash*|*GLM-5.3-Flash*)
+      echo "glm|glm-5.3-flash|$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf" ;;
+    *Flash-Next*|*flash-next*)
+      echo "qwen|qwen-3.8-flash-next|$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf" ;;
+    *Qwen3.8-27B*)
+      echo "qwen|qwen-3.8-27b|$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Qwen is the fallback because it is what this box serves most of the time. Both
+# Qwen models ship a byte-identical template, so the one dialect covers
+# Flash-Next and the 27B dense; only the vocab differs between them.
+DETECTED=""
+if [ -z "${LETIBOT_DIALECT:-}${LETIBOT_MODEL:-}${LETIBOT_VOCAB:-}" ]; then
+  DETECTED="$(model_by_path "$(curl -sf -m 2 "http://$ENDPOINT/props" 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("model_path",""))' 2>/dev/null)")"
+fi
+
+if [ -n "$DETECTED" ]; then
+  DIALECT="${DETECTED%%|*}"
+  MODEL="$(echo "$DETECTED" | cut -d'|' -f2)"
+  VOCAB="${DETECTED##*|}"
+else
+  DIALECT="${LETIBOT_DIALECT:-qwen}"
+  MODEL="${LETIBOT_MODEL:-qwen-3.8-flash-next}"
+  VOCAB="${LETIBOT_VOCAB:-$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL.gguf}"
+fi
+
+# --force only means something with --stop, and saying so beats silently
+# ignoring it: a flag that does nothing is a flag the operator cannot trust.
+FORCE=0
+for a in "$@"; do [ "$a" = "--force" ] && FORCE=1; done
+if [ "$FORCE" = 1 ] && [ "${1:-}" != "--stop" ]; then
+  die "--force only means something with --stop"
+fi
+
+case "${1:-}" in
+  --read-only)
+    ROLE=orchestrator; ADJ=""; shift ;;
+  --writes)
+    MODE=writes-allowed; shift ;;
+  --bash)
+    BASH_ON=1; shift ;;
+  --ask)
+    MODE=always-ask; shift ;;
+  --mode)
+    [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, allow-all)"
+    MODE="$2"; shift 2 ;;
+esac
+
+# Explicit overrides. Each names one of the three singleton servers; they do not
+# START it -- `model glm` / `systemctl --user start glm` does that.
+case "${1:-}" in
+  --glm)
+    DIALECT=glm; MODEL=glm-5.3-flash
+    VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
+    shift ;;
+  --flash)
+    DIALECT=qwen; MODEL=qwen-3.8-flash-next
+    VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
+    shift ;;
+  --dense)
+    DIALECT=qwen; MODEL=qwen-3.8-27b
+    VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+    shift ;;
+esac
+
+# `--bash` implies the grants; without a shell there is nothing to grant them to.
+EXEC_ARGS=()
+if [ -n "$BASH_ON" ]; then
+  EXEC_ARGS+=(--bash)
+  for g in $GRANTS_RO; do
+    [ -e "$g" ] && EXEC_ARGS+=(--grant-ro "$g")
+  done
+fi
+
+# LIVENESS IS A CONVERSATION, NOT A FILE. A stale socket outlives a crashed daemon,
+# so the honest test is talking to it. What the daemon *says* when it refuses is kept
+# in PROBE, because there is one refusal that must not be treated as "not running":
+# a daemon speaking a different protocol version is alive and serving, and starting a
+# second one over it would unlink its socket, leave it orphaned holding every session
+# it has, and give no sign that had happened.
+PROBE=""
+up() {
+  [ -S "$SOCKET" ] || return 1
+  PROBE="$("$BIN/letibot-tui" --socket "$SOCKET" --no-tty --since 0 </dev/null 2>&1 >/dev/null)" \
+    && return 0
+  return 1
+}
+
+# Refuse rather than route around it. Restarting somebody's daemon is their decision,
+# and it is a safe one -- the transcripts are on disk and `--continue` brings them
+# back -- but it is not one this script gets to make while a turn may be running.
+version_skew_or_continue() {
+  case "$PROBE" in
+    *"protocol version"*)
+      echo "letibot: the daemon on $SOCKET does not speak this build's protocol." >&2
+      echo "         $PROBE" >&2
+      echo "         It is alive and still serving its sessions, so nothing was started" >&2
+      echo "         over it. Stop it when you are ready (letibot --stop) and run this" >&2
+      echo "         again; every transcript is on disk and letibot --continue reopens" >&2
+      echo "         the newest one in this workspace." >&2
+      exit 1 ;;
+  esac
+}
+
+# The record beside the socket: what this folder's daemon is. Written by the
+# launcher when it starts one; read by --status, --stop, --daemons and the
+# attach banner. The pid in it is how the daemon is stopped - a name is how
+# every harnessd on the box gets stopped.
+record_write() {
+  python3 - "$RECORD" "$WORKSPACE" "$SOCKET" "$1" "$ROLE" "$MODEL" "$DIALECT" "${BASH_ON:-}" <<'PY'
+import json, sys, time
+rec, ws, sock, pid, role, model, dialect, bash = sys.argv[1:9]
+json.dump({"workspace": ws, "socket": sock, "pid": int(pid), "role": role, "model": model,
+           "dialect": dialect, "bash": bool(bash), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+          open(rec, "w"))
+PY
+}
+record_field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$RECORD" "$1" 2>/dev/null; }
+daemon_pid() {
+  # The pid LISTENING on our socket, which is the daemon whatever the record says;
+  # the record is a fallback for a box without `ss`.
+  local p
+  p="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)"
+  [ -n "$p" ] && { echo "$p"; return 0; }
+  p="$(record_field pid)"
+  [ -n "$p" ] && [ -d "/proc/$p" ] && { echo "$p"; return 0; }
+  return 1
+}
+daemon_line() {
+  # One line about this folder's daemon, for the attach banner and --status.
+  local p started role model
+  p="$(daemon_pid || true)"; started="$(record_field started)"; role="$(record_field role)"; model="$(record_field model)"
+  echo "harnessd for $WORKSPACE${p:+ (pid $p)}${started:+, up since $started}${role:+, role $role}${model:+, model $model}"
+}
+
+# Questions about the store need no socket, no model and no vocabulary. They are
+# answered before any of that is checked, so `letibot --sessions` still works on a
+# box whose model server is down -- which is exactly when you want to look.
+case "${1:-}" in
+  --sessions|--list)
+    exec "$BIN/harnessd" --store "$STORE" --list-sessions ;;
+  --rename)
+    [ $# -ge 2 ] || die "--rename ID [TITLE]  (an empty title clears the name)"
+    exec "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;
+  --delete)
+    [ $# -ge 2 ] || die "--delete ID"
+    exec "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
+  --daemons)
+    # Every folder's daemon: the records, each checked against a live listener.
+    found=0
+    for r in "$RUNDIR"/*.json; do
+      [ -f "$r" ] || continue
+      found=1
+      ws="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["workspace"])' "$r")"
+      sock="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["socket"])' "$r")"
+      pid="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["pid"])' "$r")"
+      if ss -lxpH 2>/dev/null | grep -qF "$sock"; then state="up (pid $pid)"; else state="STALE (nothing listens on its socket)"; fi
+      echo "$ws  $state  $sock"
+    done
+    [ "$found" = 1 ] || echo "no daemons recorded under $RUNDIR"
+    exit 0 ;;
+  --stop)
+    if [ "${2:-}" = "--all" ]; then
+      for r in "$RUNDIR"/*.json; do
+        [ -f "$r" ] || continue
+        pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$r")"
+        ws="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$r")"
+        if [ -d "/proc/$pid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | head -1 | grep -q harnessd; then
+          kill "$pid" && echo "stopped $ws (pid $pid)"
+        else
+          echo "stale record for $ws (pid $pid gone)"; rm -f "$r"
+        fi
+      done
+      exit 0
+    fi
+    if p="$(daemon_pid)"; then
+      if [ "$FORCE" = 1 ]; then
+        # Abort the turns BEFORE the signal, over the protocol: a busy daemon's
+        # worker finishes a turn mid-flight before honouring SIGTERM, and a wedged
+        # one never does. An interrupt is the frame an Esc-Esc sends.
+        "$BIN/letibot-tui" --socket "$SOCKET" --interrupt-all || true
+      fi
+      kill "$p" && echo "stopped $(daemon_line)"
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -d "/proc/$p" ] || break
+        sleep 0.5
+      done
+      if [ -d "/proc/$p" ]; then
+        [ "$FORCE" = 1 ] && kill -9 "$p" 2>/dev/null && echo "killed (pid $p)"
+      fi
+      rm -f "$RECORD"
+    else
+      echo "no daemon for $WORKSPACE (letibot --daemons lists the others)"
+    fi
+    exit 0 ;;
+  --status)
+    if up; then
+      echo "up: $(daemon_line)"
+      echo "socket   $SOCKET"
+    elif [ -n "$PROBE" ]; then
+      # Something answered and refused. That is a different fact from silence, and
+      # printing "not running" for it is how a live daemon gets a second one started
+      # on top of it.
+      echo "on $SOCKET, but not speaking to this build: $PROBE"
+    else
+      echo "no daemon for $WORKSPACE"
+    fi
+    # the model is a separate fact from the daemon, so report it separately
+    printf 'model    %s ' "$ENDPOINT"
+    if curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
+      # Name what is actually loaded, not what the default says. One port serves
+      # three models by rotation, so "ok" alone answers the wrong question.
+      echo "ok  ($MODEL, dialect $DIALECT)"
+    else
+      echo "NOT SERVING"
+    fi
+    exit 0 ;;
+  --attach)
+    # Connect only. A second argument names another folder's daemon.
+    if [ -n "${2:-}" ]; then
+      WORKSPACE="$(cd "$2" && pwd -P)" || die "--attach DIR: no such directory $2"
+      KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+      SOCKET="$RUNDIR/$KEY.sock"; RECORD="$RUNDIR/$KEY.json"
+    fi
+    if up; then
+      echo "letibot: attached to $(daemon_line)" >&2
+      exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}"
+    fi
+    version_skew_or_continue
+    echo "letibot: no harnessd for $WORKSPACE - run \`letibot\` there to start one" >&2
+    echo "         (letibot --daemons lists the folders that have one)" >&2
+    exit 1 ;;
+esac
+
+# Which session this invocation is about, decided before anything is started.
+# SESSION is the id to reopen; NEW_TITLE (when set) means make a fresh one instead.
+SESSION=""
+NEW_TITLE=""
+WANT_NEW=0
+case "${1:-}" in
+  --continue|-c)
+    shift
+    # Scoped to this workspace by default. A session's workspace is a stored fact,
+    # and reopening a ~/ conversation while standing in Projects/rano is almost
+    # never what was meant -- so the scope is a path prefix with the exact match
+    # preferred, which lets `--continue` work from a subdirectory without reaching
+    # sideways into a sibling tree.
+    # stderr is deliberately NOT captured: harnessd prints which session it picked,
+    # its title, its row count and its workspace there. Continuing the wrong
+    # conversation is not a keystroke you can take back -- the next thing you type
+    # lands in it -- so the pick is announced before the head opens over it.
+    if ! SESSION="$("$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
+      echo "letibot: no session with anything in it under $WORKSPACE." >&2
+      echo '         "letibot --sessions" lists what is on disk; plain "letibot" starts a new one.' >&2
+      exit 1
+    fi
+    ;;
+  --session|-s)
+    [ $# -ge 2 ] || die "--session ID   (\`letibot --sessions\` lists them)"
+    SESSION="$2"; shift 2 ;;
+  --new|-n)
+    shift
+    WANT_NEW=1
+    NEW_TITLE="${1:-}"; [ $# -gt 0 ] && shift || true ;;
+esac
+
+[ -x "$BIN/harnessd" ] || die "no harnessd at $BIN — run: cargo build --release"
+curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
+  || die "nothing serving on $ENDPOINT. Start the model first (systemctl --user start qwen-flash-next)."
+
+# THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
+#
+# A daemon renders and submits TOKEN IDS, so its vocab has to be the vocab of the
+# server on the other end. Nothing reconciles that at runtime: --dialect, --model
+# and --vocab are decided when the daemon starts, so `letibot --glm` against an
+# already-running Qwen daemon sets three variables that are then never used, and
+# the detection above is equally powerless -- it also only feeds a daemon START.
+#
+# Measured 2026-09-10, and it is why this check exists: GLM took port 8080, the
+# Qwen-bound daemon stayed up, and every turn came back
+#   http 400 {"error":{"code":400,"message":"Prompt contains invalid tokens"}}
+# That is the honest failure -- ids from one vocab are not ids in the other, and
+# llama.cpp validates them. A client sending `messages` rather than ids would have
+# received a plausible WRONG ANSWER instead of a 400, which is the whole argument
+# for submitting ids.
+#
+# Refuse in the same call that would have failed, and hand over the fix, per
+# docs/tool-design-brief.md 2.1.
+daemon_models() {
+  # Only the pids actually LISTENING on OUR socket. A stale daemon whose path was
+  # rebound out from under it still shows in `ps`, and killing or trusting the
+  # wrong one is how a live session gets taken down to fix a dead one.
+  local pids
+  pids="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+  local pid
+  for pid in $pids; do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk '/^--model$/{getline; print; exit}'
+  done
+}
+
+if up; then
+  SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("model_alias",""))' 2>/dev/null)"
+  BOUND="$(daemon_models | paste -sd, -)"
+  if [ -n "$SERVING" ] && [ -n "$BOUND" ] && ! printf '%s\n' "$BOUND" | tr ',' '\n' | grep -qxF "$SERVING"; then
+    echo "letibot: the daemon on $SOCKET is bound to '$BOUND' but $ENDPOINT is serving '$SERVING'." >&2
+    echo "         A daemon submits token ids, so the vocabs must match; every turn would come" >&2
+    echo "         back http 400 \"Prompt contains invalid tokens\"." >&2
+    echo "         --glm/--flash/--dense choose a model only when the daemon STARTS. They" >&2
+    echo "         cannot rebind one that is already running, and neither can autodetection." >&2
+    echo "" >&2
+    echo "         Fix:  letibot --stop && letibot" >&2
+    echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one." >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
+
+# One-shot: no daemon, no socket, no TUI. Useful in scripts and for a quick question.
+if [ $# -gt 0 ]; then
+  exec "$BIN/harnessd" --dialect "$DIALECT" --model "$MODEL" --endpoint "$ENDPOINT" \
+       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
+       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" \
+       ${SESSION:+--session "$SESSION"} --prompt "$*"
+fi
+
+if ! up; then
+  version_skew_or_continue
+  # Nothing answered, so the file is a leftover.
+  rm -f "$SOCKET"
+  # The daemon opens its first session eagerly, so passing `--session ID` here is
+  # what makes the resume -- and its hash-chain check -- happen at startup, where a
+  # failure is a line in this terminal rather than a surprise inside a prompt.
+  setsid "$BIN/harnessd" --dialect "$DIALECT" --model "$MODEL" --endpoint "$ENDPOINT" \
+      --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
+      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" \
+      ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
+      >>"$LOG" 2>&1 </dev/null &
+  DPID=$!
+  echo "letibot: no harnessd for $WORKSPACE - starting one (role $ROLE, model $MODEL, pid $DPID)" >&2
+  for _ in $(seq 1 60); do up && break; sleep 0.5; done
+  up || { echo "letibot: daemon did not come up; last lines of $LOG:" >&2; tail -15 "$LOG" >&2; exit 1; }
+  record_write "$DPID"
+  # The session was named on the daemon's own command line, so the head attaches to
+  # it by being the head of that daemon. Nothing more to ask for.
+  exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}"
+fi
+
+# A daemon is already up. Ask it, rather than restarting it: a restart would cost
+# every other session on this box to open one, and one of them may be mid-turn.
+echo "letibot: attached to $(daemon_line)" >&2
+
+# LANDED IS NOT RUNNING. `--bash` is a DAEMON flag: it decides which tools the seat
+# is given at open, and a daemon that is already up was opened without it. Attaching
+# here gets you that daemon's seat, not the one you just asked for -- and the way
+# you would find out is a model saying it has no `bash` tool, three turns in.
+# So say it here, where the choice is still yours to make.
+# Read the daemon's own argv out of /proc, matched by EXACT process name. The
+# obvious spelling -- `pgrep -af 'harnessd .*--bash'` -- matches its own caller:
+# any shell whose command line happens to mention both strings is a hit, and the
+# check then reports that a shell-less daemon has a shell. Measured here on
+# 2026-09-11, one hour after it was written.
+daemon_has_bash() {
+  local p
+  p="$(daemon_pid)" || return 1
+  tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx -- '--bash'
+}
+
+if [ -n "$BASH_ON" ] && ! daemon_has_bash; then
+  echo "letibot: a daemon is ALREADY RUNNING and it was started WITHOUT --bash," >&2
+  echo "         so this session will not have a shell. --bash is decided when the" >&2
+  echo "         daemon opens, and a running one cannot be re-seated." >&2
+  echo "" >&2
+  echo "         Its own sessions may be mid-turn, so this does not restart it." >&2
+  echo "         To get a shell:  letibot --stop  &&  letibot --bash" >&2
+  echo "" >&2
+  echo "         Attaching to the existing daemon in 5s; ctrl-c to stop." >&2
+  sleep 5
+fi
+
+if [ "$WANT_NEW" = 1 ]; then
+  exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}" \
+       --new-session "$NEW_TITLE"
+fi
+if [ -n "$SESSION" ]; then
+  exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}" \
+       --resume "$SESSION"
+fi
+exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}"

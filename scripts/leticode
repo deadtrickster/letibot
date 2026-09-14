@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# leticode — letibot seated as leticode: the opencode tool union
+# (read, write, edit, grep, glob, todo_write, skill, lsp, task).
+#
+# It is the same daemon, store and socket as `letibot`; only the default seat
+# differs, and the seat is decided when the daemon starts. So a daemon already
+# running with another role stays that role — `letibot --stop` first to get a
+# fresh leticode daemon.
+#
+#   leticode                     attach / start, leticode seat
+#   leticode "one question"      one-shot, no TUI
+#   leticode --new               a fresh leticode session
+#   leticode --continue          reopen the newest session (its stored role wins)
+#
+# Everything `letibot` takes is forwarded unchanged (--glm/--flash/--dense,
+# --mode, --bash, --sessions, --stop, ...). The dashboard is a separate window:
+#   ~/bin/leticode-dash
+export LETIBOT_ROLE=leticode
+exec letibot "$@"
