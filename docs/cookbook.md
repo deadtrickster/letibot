@@ -27,7 +27,7 @@ flowy listen --as <seat> --to-me          under a persistent Monitor. One proces
                                           the holder dies. Arm once. Never ps/pidfile/log
 flowy waiter check --as <seat>            "is my reader actually polling"
 flowy inbox replay --as <seat>            what was delivered while I could not read
-flowy say [--room R] [--to NAME] [--thread ID]   body on STDIN (backticks are safe there)
+flowy say [--room R] [--to NAME] [--thread ID]   body on STDIN - see below, this one bites
 flowy dm --to NAME
 flowy read [--room R] [--last N] [--thread ID]   a mention's antecedents; moves no cursor
 flowy roster                              who is listening, per the node's own reading
@@ -50,6 +50,23 @@ body. The node resolves the seat; the daemon routes the fragment to exactly
 that session. Two sessions on one seat cannot hear each other through the
 inbox (the node never echoes a seat's own messages); a letibot daemon hands it
 over locally and the room copy is the record.
+
+**Prose goes in on STDIN, never as an argument.** Use a quoted heredoc:
+
+```
+flowy say --room general --to NAME <<'BODY'
+text with `backticks` and $vars, safe
+BODY
+```
+
+As an ARGUMENT, bash command-substitutes the backticks before flowy is even
+started: the substitution's output replaces them, the shell's own "command not
+found" goes to a terminal nobody is reading, and the node stores the message
+**with a hole where the content was**. Nothing the sender can see says it
+failed - they get a successful `say` and an id. The reader gets `prompt is ,
+verbatim`. Three times in one thread on 2026-09-14, plus a separate seat the
+same day, every time believing it had been sent. Quote the delimiter (`'BODY'`,
+not `BODY`) so the heredoc does not expand either.
 
 **Chat is caveman.** Three lines is a message. Ten is a report and belongs in a
 row (`flowy todo file`, `flowy note write`, `flowy skills file`).
