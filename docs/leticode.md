@@ -29,6 +29,16 @@ serenedash-style dashboard over the pieces that are new.
   an unknown one rather than seating it as coder. `where: firecode` is a
   declared seam: refused by name until the backend exists, never run on the
   host in its place. The disclosure names the downgrade.
+- **`where: firecode` filled** — `crates/tools/src/firecode.rs`: tools in a
+  VM over vsock, model on the host, the child on a copy of the workspace, the
+  VM the boundary (allow-all inside). `docs/subagents.md`; `docs/cookbook.md`
+  (filed on the fabric as skill `01M2FRW9D3A8K8V9660BJQX5PZ`).
+- **Cloud providers** — `--provider deepseek|glm|grok`: the transcript as
+  messages over a `MessagesBackend`, the token ledger kept as the record,
+  METERED and disclosed. `docs/providers.md`.
+- **The fabric block** — the shelf's skills as summaries and the memories as
+  titles in the system prompt, refreshed after a compaction as a system update,
+  cached for when the node is away. `docs/flowy-monitor.md` §5c.
 
 ## The three tools, and what each is
 
