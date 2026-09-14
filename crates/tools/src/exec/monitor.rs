@@ -70,7 +70,7 @@
 //! watching.** No monitors, no thread. A thread per monitor would have made this
 //! module the leak.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -161,6 +161,15 @@ pub trait Condition: Send + Sync {
 
     /// One line for a listing.
     fn describe(&self) -> String;
+
+    /// **Push**: called once at declaration with a signal the condition can ping
+    /// when it changes, so the poller wakes immediately rather than on [`TICK`].
+    /// The default does nothing — a poll condition. A blockable one (a channel
+    /// fed by a subprocess, a job handle) overrides this and pings `signal`.
+    ///
+    /// `self: Arc<Self>` so an implementation can move itself into a notifier
+    /// thread.
+    fn install(self: Arc<Self>, _signal: Arc<dyn Fn() + Send + Sync>) {}
 }
 
 /// How a runner waits before the next evaluation.
@@ -669,6 +678,10 @@ pub struct Monitors {
     /// Woken when a monitor settles. **This is the wake seam** — see
     /// [`Monitors::wait_for_any`].
     settled: Condvar,
+    /// Woken by a blockable condition (push) so the poller re-polls immediately
+    /// instead of waiting out [`TICK`]. Guarded by [`Monitors::wake_guard`].
+    wake: Condvar,
+    wake_guard: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -688,7 +701,30 @@ struct Registry {
 
 impl Monitors {
     pub fn new() -> Monitors {
-        Monitors::default()
+        Monitors {
+            inner: Mutex::new(Registry::default()),
+            settled: Condvar::new(),
+            wake: Condvar::new(),
+            wake_guard: Mutex::new(()),
+        }
+    }
+
+    /// **Push**: a blockable condition calls this when it changes, so the poller
+    /// wakes now rather than on the next [`TICK`]. Cheap and idempotent — a wake
+    /// with nothing new to look at costs one re-poll.
+    pub fn signal(&self) {
+        self.wake.notify_all();
+    }
+
+    /// The signal a [`Condition::install`] gets: a `'static` closure that pings this
+    /// registry's poller.
+    fn signal_fn(self: &Arc<Self>) -> Arc<dyn Fn() + Send + Sync> {
+        let weak = Arc::downgrade(self);
+        Arc::new(move || {
+            if let Some(me) = weak.upgrade() {
+                me.signal();
+            }
+        })
     }
 
     /// Declare a watch. **Refuses rather than replacing** when the name is taken.
@@ -729,7 +765,14 @@ impl Monitors {
                 port: *port,
                 want: Mutex::new(*want),
             },
-            (Watch::Custom(c), _) => Probe::Custom(c.0.clone()),
+            (Watch::Custom(c), _) => {
+                let cond = c.0.clone();
+                // Install the push signal, so a blockable condition wakes the
+                // poller instead of waiting out TICK. Clone into `install` — it
+                // takes `self` by value — and keep the original for the probe.
+                cond.clone().install(self.signal_fn());
+                Probe::Custom(cond)
+            }
         };
 
         let mut reg = self.inner.lock().expect("monitors");
@@ -956,8 +999,15 @@ impl Monitors {
             .name("letibot-monitors".into())
             .spawn(move || {
                 loop {
-                    std::thread::sleep(TICK);
+                    // Wait for a push signal or the poll interval, whichever comes
+                    // first. A blockable condition (a job, a channel) wakes this
+                    // immediately; everything else is re-polled every TICK.
                     let Some(me) = weak.upgrade() else { return };
+                    let g = me.wake_guard.lock().expect("monitor wake");
+                    let _ = me
+                        .wake
+                        .wait_timeout(g, TICK)
+                        .expect("monitor wake");
                     me.tick();
                     let mut reg = me.inner.lock().expect("monitors");
                     if reg.live.is_empty() {
@@ -1013,17 +1063,18 @@ impl Condition for TimerCondition {
     }
 }
 
-/// A command whose exit is the condition. `Expect::ExitZero` fires when the
-/// command exits 0; `Expect::OutputContains` fires when its output contains the
-/// string. Run on the host, not through the session's exec boundary — a monitor
-/// condition is a check, not a job.
+/// A command whose exit is the condition. `Expect::AnyExit` fires when the command
+/// exits — whatever the code — which is the "run this and tell me when it returns"
+/// case; `Expect::OutputContains` fires when its stdout contains the string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandExpect {
-    ExitZero,
+    AnyExit,
     OutputContains(String),
 }
 
-/// A command returning: the condition is met by the command's exit code or output.
+/// A command returning: the condition is met by the command exiting, or by its
+/// output matching. Run on the host, not through the session's exec boundary — a
+/// monitor condition is a check, not a job.
 #[derive(Debug)]
 pub struct CommandCondition {
     argv: Vec<String>,
@@ -1031,6 +1082,22 @@ pub struct CommandCondition {
 }
 
 impl CommandCondition {
+    /// Fire when the command exits, whatever the code.
+    pub fn any(argv: Vec<String>) -> Arc<Self> {
+        Arc::new(CommandCondition {
+            argv,
+            expect: CommandExpect::AnyExit,
+        })
+    }
+
+    /// Fire when the command's stdout contains `s`.
+    pub fn containing(argv: Vec<String>, s: impl Into<String>) -> Arc<Self> {
+        Arc::new(CommandCondition {
+            argv,
+            expect: CommandExpect::OutputContains(s.into()),
+        })
+    }
+
     pub fn new(argv: Vec<String>, expect: CommandExpect) -> Arc<Self> {
         Arc::new(CommandCondition { argv, expect })
     }
@@ -1046,9 +1113,11 @@ impl Condition for CommandCondition {
             .output()
         {
             Ok(o) => match &self.expect {
-                CommandExpect::ExitZero if o.status.success() => {
-                    Some("the command exited 0".into())
-                }
+                CommandExpect::AnyExit => Some(match o.status.code() {
+                    Some(0) => "the command exited 0".into(),
+                    Some(n) => format!("the command exited {n}"),
+                    None => "the command exited (signalled)".into(),
+                }),
                 CommandExpect::OutputContains(s)
                     if String::from_utf8_lossy(&o.stdout).contains(s.as_str()) =>
                 {
@@ -1062,7 +1131,7 @@ impl Condition for CommandCondition {
 
     fn describe(&self) -> String {
         match &self.expect {
-            CommandExpect::ExitZero => format!("command `{}` exiting 0", self.argv.join(" ")),
+            CommandExpect::AnyExit => format!("command `{}` exiting", self.argv.join(" ")),
             CommandExpect::OutputContains(s) => {
                 format!("command `{}` printing `{s}`", self.argv.join(" "))
             }
@@ -1115,6 +1184,65 @@ impl Condition for LogTailCondition {
             self.path.display(),
             self.contains
         )
+    }
+}
+
+/// A channel-fed condition: a subprocess (or thread) writes messages to the
+/// `Sender`, and each message is a firing. This is the **push** case — the
+/// condition pings the poller on each message instead of being polled, so a
+/// continuous monitor wakes the instant a message lands. One message per firing.
+#[derive(Debug)]
+pub struct ChannelCondition {
+    /// The receiver, taken by [`Condition::install`] and moved into the notifier
+    /// thread — `mpsc::Receiver` is `Send` but not `Sync`, so it cannot be shared,
+    /// and sharing it behind a `Mutex` would hold a lock for the whole of a
+    /// blocking `recv` (which deadlocks against the poller). `None` after install.
+    rx: Mutex<Option<std::sync::mpsc::Receiver<String>>>,
+    /// Messages the notifier has received and the poller has not yet drained.
+    pending: Mutex<VecDeque<String>>,
+}
+
+impl ChannelCondition {
+    /// A condition and the sender that feeds it. Drop the last `Sender` to end the
+    /// monitor's stream (the notifier thread exits; the monitor then idles until
+    /// its TTL).
+    pub fn channel() -> (Arc<Self>, std::sync::mpsc::Sender<String>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Arc::new(ChannelCondition {
+                rx: Mutex::new(Some(rx)),
+                pending: Mutex::new(VecDeque::new()),
+            }),
+            tx,
+        )
+    }
+}
+
+impl Condition for ChannelCondition {
+    fn met(&self) -> Option<String> {
+        self.pending.lock().expect("channel pending").pop_front()
+    }
+
+    fn install(self: Arc<Self>, signal: Arc<dyn Fn() + Send + Sync>) {
+        // Take the receiver out and move it into a notifier thread that pings the
+        // poller per message, so the monitor fires the instant one lands.
+        let Some(rx) = self.rx.lock().expect("channel rx").take() else {
+            return;
+        };
+        let weak = Arc::downgrade(&self);
+        let _ = std::thread::Builder::new()
+            .name("letibot-condition".into())
+            .spawn(move || {
+                for m in rx {
+                    let Some(me) = weak.upgrade() else { return };
+                    me.pending.lock().expect("channel pending").push_back(m);
+                    signal();
+                }
+            });
+    }
+
+    fn describe(&self) -> String {
+        "a channel that messages are pushed into".into()
     }
 }
 
@@ -1402,23 +1530,11 @@ mod tests {
     }
 
     #[test]
-    fn a_command_condition_fires_on_exit_zero_and_not_on_non_zero() {
+    fn a_command_condition_fires_on_any_exit_and_on_output_match() {
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
-        let yes = CommandCondition::new(vec!["true".into()], CommandExpect::ExitZero);
-        ms.declare(
-            "yes",
-            scope(&dir),
-            Watch::Custom(CustomWatch(yes)),
-            None,
-            "turn-1",
-            DEFAULT_TTL,
-            false,
-        )
-        .unwrap();
-        assert_eq!(ms.tick().len(), 1, "`true` exits 0");
-
-        let no = CommandCondition::new(vec!["false".into()], CommandExpect::ExitZero);
+        // Any exit: a command that exits non-zero still fires.
+        let no = CommandCondition::any(vec!["false".into()]);
         ms.declare(
             "no",
             scope(&dir),
@@ -1429,7 +1545,61 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(ms.tick().is_empty(), "`false` exits non-zero, so no firing");
+        let f = ms.tick();
+        assert_eq!(f.len(), 1, "any exit fires, even non-zero");
+        assert!(
+            f[0].fired.word().contains("exited"),
+            "the firing says the code: {}",
+            f[0].fired.word()
+        );
+
+        // Output contains: fires only when the output matches. `true` prints
+        // nothing, so a `marker` match never fires.
+        let out = CommandCondition::containing(vec!["true".into()], "marker");
+        ms.declare(
+            "out",
+            scope(&dir),
+            Watch::Custom(CustomWatch(out)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        assert!(ms.tick().is_empty(), "no match, no firing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_channel_condition_fires_on_each_pushed_message() {
+        let dir = tmp();
+        let ms = Arc::new(Monitors::new());
+        let (cond, tx) = ChannelCondition::channel();
+        ms.declare(
+            "ch",
+            scope(&dir),
+            Watch::Custom(CustomWatch(cond)),
+            None,
+            "turn-1",
+            DEFAULT_TTL,
+            true,
+        )
+        .unwrap();
+        // The push path: the notifier pings the poller, which fires and settles the
+        // wake seam. Wait on that seam rather than racing the poller thread.
+        tx.send("first".into()).unwrap();
+        let fired = ms.wait_for_any(0, Duration::from_secs(2));
+        assert_eq!(fired.len(), 1, "the pushed message fires");
+        assert!(
+            matches!(&fired[0].fired, Fired::Fired { why, .. } if why == "first"),
+            "{:?}",
+            fired[0].fired
+        );
+        // Continuous: a second message is a second firing, from one monitor.
+        tx.send("second".into()).unwrap();
+        let again = ms.wait_for_any(1, Duration::from_secs(2));
+        assert_eq!(again.len(), 1);
+        assert_eq!(ms.firings().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

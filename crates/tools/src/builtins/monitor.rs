@@ -32,7 +32,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::exec::monitor::{DEFAULT_TTL, MAX_TTL, MonitorError, PortState, Watch};
+use crate::exec::monitor::{
+    CommandCondition, CustomWatch, DEFAULT_TTL, MAX_TTL, MonitorError, PortState, TimerCondition,
+    Watch,
+};
 use crate::exec::{JobId, ProcessHost, ScopeId, ScopeKind};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
@@ -81,6 +84,8 @@ impl Tool for Monitor {
                     "path": {"type": "string", "description": "Watch this path, relative to the workspace, appear, vanish, or change size or modification time."},
                     "port": {"type": "integer", "description": "Watch this TCP port on the loopback interface. There is no host argument; it is always this machine."},
                     "port_state": {"type": "string", "description": "`listening` (the default) fires when something starts listening; `closed` fires when nothing is."},
+                    "timer_ms": {"type": "integer", "description": "Watch a timer: fire after this many milliseconds. With repeat, it fires every interval."},
+                    "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
                     "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
@@ -175,7 +180,7 @@ impl Tool for Monitor {
         // Exactly one condition. Two would be one monitor with one firing for two
         // questions, which is `job_wait`'s job/scope rule and the same reasoning:
         // a single answer to two questions tells you neither.
-        let asked: Vec<&str> = ["job", "scope", "path", "port"]
+        let asked: Vec<&str> = ["job", "scope", "path", "port", "timer_ms", "command"]
             .into_iter()
             .filter(|k| args.get(*k).is_some())
             .collect();
@@ -190,10 +195,11 @@ impl Tool for Monitor {
                     )
                 },
                 "give exactly one of `job` (a job id), `scope` (a cgroup), `path` (a \
-                 file or directory) or `port` (a loopback TCP port). There is \
-                 deliberately no argument for a shell command or a process name: a \
-                 condition written as a pattern matches the process evaluating it, \
-                 and a handle cannot. Nothing was declared.",
+                 file or directory), `port` (a loopback TCP port), `timer_ms` (a \
+                 timer) or `command` (a command whose exit is the condition). There \
+                 is deliberately no argument for a process name: a condition written \
+                 as a pattern matches the process evaluating it, and a handle cannot. \
+                 Nothing was declared.",
             );
         }
 
@@ -238,6 +244,23 @@ impl Tool for Monitor {
                 );
             }
             Watch::Path(root.join(p.trim_start_matches("./")))
+        } else if let Some(ms) = args.get("timer_ms").and_then(|v| v.as_u64()) {
+            if ms == 0 {
+                return Invocation::failed(
+                    "`timer_ms` must be positive",
+                    "give a positive number of milliseconds. Nothing was declared.",
+                );
+            }
+            Watch::Custom(CustomWatch(TimerCondition::after(std::time::Duration::from_millis(ms))))
+        } else if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+            let argv: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
+            if argv.is_empty() {
+                return Invocation::failed(
+                    "`command` was empty",
+                    "give a command. Nothing was declared.",
+                );
+            }
+            Watch::Custom(CustomWatch(CommandCondition::any(argv)))
         } else {
             let Some(port) = args.get("port").and_then(|v| v.as_u64()) else {
                 return Invocation::failed(
@@ -464,7 +487,8 @@ mod tests {
             "pattern",
             "match",
             "cmdline",
-            "command",
+            // `command` is now a legitimate condition — run a command and fire on
+            // its exit — not a process-name pattern. The rest stay banned.
             "name_regex",
             "grep",
             "regex",

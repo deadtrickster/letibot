@@ -86,8 +86,8 @@ pub use confine::{
 pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
 pub use jobs::{JobId, JobState, OutputSlice};
 pub use monitor::{
-    CommandCondition, CommandExpect, Condition, CustomWatch, Firing, Fired, LogTailCondition,
-    Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
+    ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Firing, Fired,
+    LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
 };
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
