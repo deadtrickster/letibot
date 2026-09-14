@@ -65,7 +65,12 @@ impl Tool for Monitor {
              leaving the running state), `scope` (a cgroup emptying), `path` (a file \
              or directory appearing, vanishing, or changing size or modification \
              time) or `port` (a loopback TCP port becoming listenable, or with \
-             `port_state: \"closed\"`, stopping). Optionally `owner` to say which \
+             `port_state: \"closed\"`, stopping), `pid` (a process, by pid — resolved \
+             to its start time now, so a reused pid is not it) or `process` (every \
+             process of this user whose command line contains the string, found ONCE \
+             now — this daemon, its ancestors and its protected processes are removed \
+             before matching, so it cannot find itself — and then watched by pid and \
+             start time until all are gone; `pkill` lists the same set). Optionally `owner` to say which \
              scope reaps it (`turn`, `session` — the default — or a named scope that \
              already exists) and `ttl_ms`, which is capped; `action: \"renew\"` \
              extends it and `action: \"retire\"` ends it. `job_list` shows every \
@@ -85,6 +90,8 @@ impl Tool for Monitor {
                     "port": {"type": "integer", "description": "Watch this TCP port on the loopback interface. There is no host argument; it is always this machine."},
                     "port_state": {"type": "string", "description": "`listening` (the default) fires when something starts listening; `closed` fires when nothing is."},
                     "timer_ms": {"type": "integer", "description": "Watch a timer: fire after this many milliseconds. With repeat, it fires every interval."},
+                    "pid": {"type": "integer", "description": "Watch one process leave, by pid. Resolved to (pid, start time) now; this daemon and its ancestors are refused."},
+                    "process": {"type": "string", "description": "Watch every process of this user whose command line contains this string leave. Found once, now, never including this daemon or its ancestors; then watched by handle. Fires when all are gone."},
                     "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
@@ -180,10 +187,12 @@ impl Tool for Monitor {
         // Exactly one condition. Two would be one monitor with one firing for two
         // questions, which is `job_wait`'s job/scope rule and the same reasoning:
         // a single answer to two questions tells you neither.
-        let asked: Vec<&str> = ["job", "scope", "path", "port", "timer_ms", "command"]
-            .into_iter()
-            .filter(|k| args.get(*k).is_some())
-            .collect();
+        let asked: Vec<&str> = [
+            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process",
+        ]
+        .into_iter()
+        .filter(|k| args.get(*k).is_some())
+        .collect();
         if asked.len() != 1 {
             return Invocation::failed(
                 if asked.is_empty() {
@@ -196,13 +205,13 @@ impl Tool for Monitor {
                 },
                 "give exactly one of `job` (a job id), `scope` (a cgroup), `path` (a \
                  file or directory), `port` (a loopback TCP port), `timer_ms` (a \
-                 timer) or `command` (a command whose exit is the condition). There \
-                 is deliberately no argument for a process name: a condition written \
-                 as a pattern matches the process evaluating it, and a handle cannot. \
-                 Nothing was declared.",
+                 timer), `command` (a command whose exit is the condition), `pid` (a \
+                 process by pid) or `process` (processes found by a string in their \
+                 command line, once, never this daemon). Nothing was declared.",
             );
         }
 
+        let mut notes: Vec<String> = Vec::new();
         let mut job_handle = None;
         let watch = if let Some(id) = args.get("job").and_then(|v| v.as_str()) {
             let jid = JobId(id.to_string());
@@ -251,7 +260,65 @@ impl Tool for Monitor {
                     "give a positive number of milliseconds. Nothing was declared.",
                 );
             }
-            Watch::Custom(CustomWatch(TimerCondition::after(std::time::Duration::from_millis(ms))))
+            Watch::Custom(CustomWatch(TimerCondition::after(
+                std::time::Duration::from_millis(ms),
+            )))
+        } else if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()) {
+            let pid = pid as u32;
+            if crate::exec::procs::self_and_ancestors().contains(&pid) {
+                return Invocation::failed(
+                    format!("pid {pid} is this daemon or an ancestor of it"),
+                    "watching the process that evaluates your calls for its own exit is \
+                     not a condition; nothing was declared.",
+                );
+            }
+            let Some(p) = crate::exec::procs::read(pid).filter(|p| p.state != 'Z') else {
+                return Invocation::failed(
+                    format!("no process {pid}"),
+                    "it is not running (or not yours to read), so there is nothing to watch \
+                     leave. Nothing was declared.",
+                );
+            };
+            let what = format!("pid {pid} ({})", p.cmdline);
+            Watch::Custom(CustomWatch(crate::exec::procs::ProcessCondition::over(
+                vec![p],
+                what,
+            )))
+        } else if let Some(pat) = args.get("process").and_then(|v| v.as_str()) {
+            let pat = pat.trim();
+            if pat.is_empty() {
+                return Invocation::failed(
+                    "`process` was empty",
+                    "give a string. Nothing was declared.",
+                );
+            }
+            // Resolved ONCE, here. The pattern never reaches the poller.
+            let protected: Vec<u32> = host.protected().into_iter().map(|p| p.pid).collect();
+            let found = crate::exec::procs::find(pat, &protected);
+            if found.is_empty() {
+                return Invocation::failed(
+                    format!("no process of this user matches `{pat}`"),
+                    "not counting this daemon, its ancestors and what it protects, which are \
+                     never matched. A monitor over nothing would fire at once and read as \
+                     news, so nothing was declared. `pkill` with the same pattern lists what \
+                     this would have watched.",
+                );
+            }
+            notes.push(format!(
+                "watching {} process(es) found now for `{pat}`, by pid and start time: {}. A \
+                 process that starts later and would match is NOT watched — the pattern \
+                 was used once, to find these.",
+                found.len(),
+                found
+                    .iter()
+                    .map(|p| p.line())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+            let what = format!("`{pat}` ({} found)", found.len());
+            Watch::Custom(CustomWatch(crate::exec::procs::ProcessCondition::over(
+                found, what,
+            )))
         } else if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
             let argv: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
             if argv.is_empty() {
@@ -316,7 +383,6 @@ impl Tool for Monitor {
         // wanted state produces a monitor that fires on its first tick, and the
         // model then reads a firing as news. The harness can see this and the model
         // cannot, so it says so.
-        let mut notes: Vec<String> = Vec::new();
         if let Watch::Port { port, want } = &watch {
             let now = crate::exec::host::port_is_listening(*port);
             if (now && *want == PortState::Listening) || (!now && *want == PortState::Closed) {
@@ -341,7 +407,10 @@ impl Tool for Monitor {
         }
 
         let declared_by = format!("turn {}", ctx.turn_id());
-        let repeat = args.get("repeat").and_then(|v| v.as_bool()).unwrap_or(false);
+        let repeat = args
+            .get("repeat")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         match monitors.declare(
             name,
             owner.clone(),
@@ -495,7 +564,12 @@ mod tests {
             "predicate",
             "until",
             "shell",
-            "process",
+            // `process` is no longer banned, and the reason it was is the reason it
+            // is not: the hazard was a pattern matched by a SHELL against output
+            // that included the shell. `process` is resolved by the in-process
+            // finder (`exec::procs::find`), which removes this daemon, its
+            // ancestors and its protected pids before matching, and the monitor
+            // then holds (pid, start time) handles — the pattern is never polled.
             // Not a pattern, but the same shape of mistake: a host argument turns
             // a loopback check into an arbitrary network reach, and then every
             // monitor call has to be network-gated.

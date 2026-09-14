@@ -36,6 +36,12 @@ serenedash-style dashboard over the pieces that are new.
 - **Cloud providers** — `--provider deepseek|glm|grok`: the transcript as
   messages over a `MessagesBackend`, the token ledger kept as the record,
   METERED and disclosed. `docs/providers.md`.
+- **`pkill` and a process watcher that cannot self-match** —
+  `crates/tools/src/exec/procs.rs` is an in-process `/proc` finder that removes
+  this daemon, its ancestors and its protected pids before matching; `pkill`
+  lists by pattern and kills by (pid, start time) only; `monitor process=` /
+  `pid=` resolve to handles once and watch those. The daemon declares its model
+  server protected. leticode is 17 tools with it.
 - **The fabric block** — the shelf's skills as summaries and the memories as
   titles in the system prompt, refreshed after a compaction as a system update,
   cached for when the node is away. `docs/flowy-monitor.md` §5c.

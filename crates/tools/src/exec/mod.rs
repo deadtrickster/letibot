@@ -77,6 +77,7 @@ pub mod host;
 pub mod jobs;
 pub mod monitor;
 pub mod predicate;
+pub mod procs;
 pub mod scope;
 
 pub use confine::{

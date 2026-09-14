@@ -17,9 +17,16 @@
 //! # A monitor keys on a HANDLE or a CGROUP, never a pattern
 //!
 //! This is the rule the whole module is shaped around, and it is not a guard.
-//! [`Watch`] has four variants and **none of them can hold a string that is
-//! matched against a process**. `until pgrep -f X` is not refused here; it is
-//! unspellable, because there is no argument to put the `X` in.
+//! [`Watch`] has four built-in variants and **none of them can hold a string
+//! that is matched against a process**. `until pgrep -f X` is not refused
+//! here; it is unspellable, because there is no argument to put the `X` in.
+//!
+//! The `process` argument on the tool (2026-09-14) does not change that: the
+//! string is consumed **once, at declaration**, by [`super::procs::find`] — an
+//! in-process `/proc` scan that removes this daemon, its ancestors and its
+//! protected pids before matching, so it cannot find itself — and what the
+//! monitor holds from then on is [`super::procs::ProcessCondition`]: (pid,
+//! start time) handles. The poller never sees the string.
 //!
 //! The evidence is not an argument about taste. On this box a process check
 //! self-matched its own shell **seven times in one session** with the lesson in
@@ -40,6 +47,7 @@
 //! | a scope emptying | the cgroup |
 //! | a path appearing, vanishing or changing | the path |
 //! | a loopback TCP port becoming listenable, or stopping | the port number |
+//! | a process leaving | (pid, start time) — from a `pid`, or from a `process` string resolved once |
 //!
 //! **Refused: an arbitrary shell predicate.** That is a polling loop with extra
 //! steps, and `flowy wait`'s own help records what happens: three seats each

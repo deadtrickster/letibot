@@ -245,9 +245,16 @@ fn a_promote_request_from_the_head_moves_the_running_command() {
                 .unwrap()
                 .kill_job(&JobId(handle.clone()));
         }
-        other => panic!("a Ctrl+B must background the command, got {other:?}: {}", r.render()),
+        other => panic!(
+            "a Ctrl+B must background the command, got {other:?}: {}",
+            r.render()
+        ),
     }
-    assert!(r.render().contains("moved to the background"), "{}", r.render());
+    assert!(
+        r.render().contains("moved to the background"),
+        "{}",
+        r.render()
+    );
 }
 
 // ------------------------------------------------------- monitors, T24
@@ -345,13 +352,19 @@ fn a_monitor_dies_with_the_scope_that_owns_it() {
 }
 
 /// **The rule the whole design is shaped around**, asserted where a model would
-/// hit it: there is nowhere to ask for a condition that could match the shell
-/// asking.
+/// hit it: nothing a monitor is asked to watch can be the process asking.
+///
+/// It used to read "there is nowhere to ask for a process by name", and the
+/// `process` argument (2026-09-14) changes the mechanism, not the rule: the
+/// string is consumed ONCE by the in-process finder, which removes this daemon,
+/// its ancestors and its protected pids before matching, and the monitor holds
+/// (pid, start time) handles from then on. So the assertion is now the stronger
+/// one — ask for the test's own name, and it must not find itself.
 #[test]
 fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
     let mut h = runner!("monitor_no_pattern");
-    // Nothing to watch: the four conditions are the four, and the refusal carries
-    // the diagnosis rather than merely the rule.
+    // Nothing to watch: the refusal names the conditions and says the process
+    // one is never this daemon.
     let none = h.call("monitor", &serde_json::json!({"name": "x"}).to_string());
     assert!(
         matches!(none.outcome, ToolOutcome::Failed { .. }),
@@ -359,10 +372,33 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
         none.render()
     );
     assert!(
-        none.payload.contains("matches the process evaluating it"),
-        "the refusal must say WHY there is no such argument: {}",
+        none.payload.contains("never this daemon"),
+        "the refusal must say the process condition cannot be this daemon: {}",
         none.payload
     );
+
+    // The test binary's own path carries the crate's name, and so does the cargo
+    // that is its ancestor. A `process` watch for it must not find either.
+    let me = letibot_tools::exec::procs::self_and_ancestors();
+    let own = h.call(
+        "monitor",
+        &serde_json::json!({"name": "self", "process": "letibot_tools"}).to_string(),
+    );
+    if matches!(own.outcome, ToolOutcome::Ok) {
+        for pid in &me {
+            assert!(
+                !own.payload.contains(&format!("{pid}  ")),
+                "the monitor found this process or an ancestor ({pid}): {}",
+                own.payload
+            );
+        }
+        h.call(
+            "monitor",
+            &serde_json::json!({"name": "self", "action": "retire"}).to_string(),
+        );
+    } else {
+        assert!(own.payload.contains("never matched"), "{}", own.payload);
+    }
 
     // Two conditions is one monitor answering two questions, which answers
     // neither.
@@ -392,10 +428,60 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
             })
             .collect();
     assert!(!names.is_empty(), "the monitor tool is seated");
-    for banned in ["pattern", "match", "cmdline", "command", "regex", "host"] {
+    // `command` is a condition (run one, fire on its exit) and `process` is a
+    // string the finder consumes once; neither is a pattern the poller matches.
+    for banned in ["pattern", "match", "cmdline", "regex", "host"] {
         assert!(
             !names.iter().any(|n| n.contains(banned)),
             "`monitor` grew `{banned}`: {names:?}"
         );
     }
+}
+
+/// `pkill` through the seated runtime: the listing, a refusal for a pid the
+/// listing did not show, and a kill by pid. (The PROTECTED marking is asserted
+/// in the tool's own unit test against a declared list; the daemon declares
+/// the model server in harness.rs.)
+#[test]
+fn pkill_lists_and_kills_by_pid_only() {
+    use std::process::{Command, Stdio};
+    let mut h = runner!("pkill_tool");
+    h.rt.registry
+        .register(Box::new(letibot_tools::builtins::pkill::Pkill))
+        .unwrap();
+    let marker = format!("letibot-bg-pkill-{}", std::process::id());
+    let mut go = Command::new("sh")
+        .arg("-c")
+        .arg("sleep 30")
+        .arg("letibot-sh")
+        .arg(&marker)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let list = h.call("pkill", &serde_json::json!({"pattern": marker}).to_string());
+    assert!(
+        list.payload.contains("1 process(es) match"),
+        "{}",
+        list.payload
+    );
+    let kill = h.call(
+        "pkill",
+        &serde_json::json!({"pattern": marker, "action": "kill", "pids": [std::process::id(), go.id()]}).to_string(),
+    );
+    assert!(
+        kill.payload
+            .contains(&format!("{}: REFUSED — not among", std::process::id())),
+        "{}",
+        kill.payload
+    );
+    assert!(
+        kill.payload.contains(&format!("{}: TERM sent", go.id())),
+        "{}",
+        kill.payload
+    );
+    assert!(kill.payload.contains("all 1 gone"), "{}", kill.payload);
+    let _ = go.wait();
 }

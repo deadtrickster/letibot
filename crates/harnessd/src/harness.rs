@@ -1017,6 +1017,20 @@ impl<'a> Harness<'a> {
         } else {
             let described = backend.describe();
             let writable = backend.is_writable();
+            // **What this daemon manages, declared before any tool runs**: the
+            // model server it is talking to. `pkill` lists it as PROTECTED and
+            // refuses it by name; a `process` monitor never finds it. Outlives
+            // the turn — it is nobody's job.
+            if let Some(h) = backend.host_processes() {
+                h.protect_listener(
+                    cfg.endpoint.port,
+                    format!(
+                        "the model server this session talks to, on {}",
+                        cfg.endpoint.authority()
+                    ),
+                    true,
+                );
+            }
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(backend), described, writable, monitors)
         };
@@ -1105,6 +1119,7 @@ impl<'a> Harness<'a> {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobKill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::monitor::Monitor)))
+            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
         let mut registry = letibot_tools::external_tools(registry, &external)
             .map_err(|e| HarnessError::Setup(format!("registering the outside-world tools: {e}")))?;
@@ -2898,7 +2913,7 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                 r.tools.retain(|t| {
                     !matches!(
                         t.as_str(),
-                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor"
+                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor" | "pkill"
                     )
                 });
             }

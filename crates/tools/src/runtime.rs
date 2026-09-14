@@ -434,7 +434,7 @@ pub mod roles {
     /// daemon was started with `--bash`, exactly as it is for `coder`; `task` and
     /// `lsp` join this list as they land.
     pub fn leticode() -> Role {
-        Role::new(
+        let mut r = Role::new(
             "leticode",
             &[
                 "read",
@@ -457,8 +457,16 @@ pub mod roles {
                 "job_wait",
                 "job_kill",
                 "monitor",
+                // `pkill`: find by a string, kill by pid, never itself. Seated
+                // with the exec surface, because signalling a process is one.
+                "pkill",
             ],
-        )
+        );
+        // Seventeen: the opencode union, the room (`flowy`, seated by the daemon
+        // when it holds a seat) and `pkill`. The ceiling is a guard against a
+        // prompt nobody counted, and this is the count, counted.
+        r.max_tools = 17;
+        r
     }
 
     pub fn researcher() -> Role {

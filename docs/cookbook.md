@@ -135,3 +135,25 @@ task(prompt, role?, access?, where?)
 - A survey: `task(prompt: "…", role: "researcher", access: "read-only")`. In a
   VM it has no shell at all; the reads go over vsock at 0.5 s each.
 - Subagents have no flowy voice; they route through you. The room hears you.
+
+## 5. Processes: never `pkill -f` from a shell
+
+`pkill -f PATTERN` matches the shell running it, because the shell's own
+command line carries the pattern. It has killed running commands and the
+shells around them eight times on this fleet, and its author once more while
+writing this. In letibot:
+
+```
+pkill  pattern=X                       list: pid, age, command line — this daemon, its
+                                       ancestors and the model server are never listed
+                                       (PROTECTED), a job of this session says job_kill
+pkill  pattern=X action=kill pids=[…]  signal by pid (term default; int, hup, kill);
+                                       a pid not in the listing now is REFUSED
+monitor name=N process=X               watch every match found NOW leave (by pid and
+                                       start time); fires when all are gone
+monitor name=N pid=P                   one process, by handle
+```
+
+From a shell (Claude seats): `flowy waiter check` for the listener, `firecode
+list` for VMs, and for anything else read the pid from `ps -o pid,args` and
+`kill` the number — never the pattern.

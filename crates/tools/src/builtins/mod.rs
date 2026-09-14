@@ -43,6 +43,7 @@ pub mod lsp;
 pub mod monitor;
 pub mod outline;
 pub mod pattern;
+pub mod pkill;
 pub mod read;
 pub mod read_spill;
 pub mod retrieval;
