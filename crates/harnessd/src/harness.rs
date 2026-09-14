@@ -696,6 +696,9 @@ pub struct Harness<'a> {
     /// rather than one per round: constructing the decorator is what declares the
     /// encoder, and the call_id→name map inside it spans a turn.
     tool_sink: IntentSink<ToolLogSink>,
+    /// The cloud provider the turns go to, when the session has one. `None` is
+    /// the local server through the engine's own `/completion` path.
+    provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
 }
 
 /// What a resume actually rebuilt.
@@ -1575,6 +1578,21 @@ impl<'a> Harness<'a> {
             }
         }
 
+        // **The cloud provider, resolved before the harness exists.** A key that
+        // is missing refuses here, naming the variable and the file, rather than
+        // three seconds into the first turn as a 401 that names neither.
+        let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
+            None => None,
+            Some(pc) => {
+                let preset = letibot_provider::Preset::parse(&pc.name).map_err(HarnessError::Setup)?;
+                let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
+                    .map_err(|e| HarnessError::Setup(format!("--provider {}: {e}", pc.name)))?;
+                let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds);
+                p.thinking = pc.thinking;
+                p.sampling = provider_sampling(&cfg.sampling);
+                Some(Box::new(p))
+            }
+        };
         let h = Harness {
             wiring,
             cfg,
@@ -1599,6 +1617,7 @@ impl<'a> Harness<'a> {
             monitors,
             monitor_cursor,
             tool_sink,
+            provider,
         };
         if h.resumed.is_some() {
             h.republish();
@@ -2089,9 +2108,22 @@ impl<'a> Harness<'a> {
         for round in 0..self.cfg.max_tool_rounds {
             let mut sink = CapturingSink::new(self.hub.clone());
             let mut steering = self.steering();
-            let outcome = self
-                .engine
-                .run_turn_steered(&mut self.session, &mut sink, &mut steering);
+            let outcome = match &self.provider {
+                None => self
+                    .engine
+                    .run_turn_steered(&mut self.session, &mut sink, &mut steering),
+                // A cloud turn: the transcript as messages, the ledger as the
+                // record. Same events, same verdicts, same TurnOk.
+                Some(p) => self.engine.run_turn_messages(
+                    &mut self.session,
+                    &mut sink,
+                    &mut steering,
+                    p.as_ref(),
+                    &self.prefix.system,
+                    &self.prefix.tools_json,
+                    None,
+                ),
+            };
             // Before the match, deliberately: three of the four arms below leave
             // this function, and the one that matters most for §4.5 is the `Err(e)`
             // that propagates — a failure whose turn id is only recorded on the
@@ -2738,6 +2770,21 @@ fn steer_for_turn(
     } else {
         ledger.reconcile(turn_id, "").steering()
     }
+}
+
+/// The sampling the operator configured, as a provider's body fields. The local
+/// server's knobs (`top_k`, `seed`, llama.cpp's own names) are not the API's;
+/// only what the OpenAI shape carries goes through.
+fn provider_sampling(sampling: &serde_json::Value) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(obj) = sampling.as_object() {
+        for k in ["temperature", "top_p", "seed", "max_tokens", "presence_penalty", "frequency_penalty"] {
+            if let Some(v) = obj.get(k) {
+                out.insert(k.to_string(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(out)
 }
 
 /// The parent's ruleset plus a `deny` per tool of a denied class. The tools are

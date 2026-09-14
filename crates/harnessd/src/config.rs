@@ -184,6 +184,21 @@ pub struct FlowyConfig {
     pub new_reader: bool,
 }
 
+/// A cloud provider for the turns — D10's mode 3. `None` is the local server,
+/// which is the default and what every invocation got before this existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderConfig {
+    /// `deepseek` | `glm` | `grok`.
+    pub name: String,
+    /// The model id on the wire; the preset's default when `None`.
+    pub model: Option<String>,
+    /// `--api-key`, for a one-off. Otherwise the environment or
+    /// `~/.config/letibot/providers.toml`.
+    pub api_key: Option<String>,
+    /// Ask the provider to think out loud (`thinking` on GLM).
+    pub thinking: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
@@ -254,6 +269,8 @@ pub struct Config {
     /// firecode VM — a subagent's `where`. `Host` for every session the operator
     /// opened.
     pub placement: letibot_tools::builtins::task::Placement,
+    /// The cloud provider the turns go to, when not the local server.
+    pub provider: Option<ProviderConfig>,
     /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
     ///
     /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
@@ -501,6 +518,7 @@ impl Config {
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             placement: letibot_tools::builtins::task::Placement::Host,
+            provider: None,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             intent_prose: false,
@@ -797,6 +815,22 @@ impl Config {
                     self.downgrade.describe()
                 ),
             ));
+        }
+        match &self.provider {
+            None => {}
+            Some(p) => out.push(Disclosure::on(
+                "provider",
+                format!(
+                    "turns go to {} ({}), METERED: every token costs money, the cache figures \
+                     are the provider's coarse ones, and the structural prefix check does not \
+                     run (D10 — a skip is said, never counted as a pass). The token ledger is \
+                     kept as the local record with this session's own vocabulary and is never \
+                     sent. Cost per turn is reported only for models priced in \
+                     ~/.config/letibot/providers.toml; otherwise it is unpriced, not free",
+                    p.name,
+                    p.model.as_deref().unwrap_or("the preset's default model")
+                ),
+            )),
         }
         if self.placement == letibot_tools::builtins::task::Placement::Firecode {
             out.push(Disclosure::on(

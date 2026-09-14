@@ -131,6 +131,112 @@ pub trait Backend {
     fn name(&self) -> &str;
 }
 
+/// One piece of a streamed answer, as a `messages` API hands it over. The
+/// turn engine forwards these to its event sink the way it forwards a local
+/// server's token deltas, so a head draws a cloud turn and a local one alike.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delta {
+    Text(String),
+    /// `reasoning_content` (DeepSeek, GLM, Grok) — the thinking, kept apart from
+    /// the answer by the API rather than by a parser.
+    Reasoning(String),
+    /// A fragment of a tool call. The first fragment for an `index` carries the
+    /// id and the name; every fragment appends to the arguments.
+    ToolCall {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: String,
+    },
+}
+
+/// Why the answer stopped, in the API's own terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finish {
+    Stop,
+    Length,
+    ToolCalls,
+    /// The API said something this crate does not model; kept verbatim.
+    Other(String),
+}
+
+/// A finished answer: everything the deltas built, plus what it cost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Completion {
+    pub text: String,
+    pub reasoning: String,
+    pub tool_calls: Vec<letibot_transcript::ToolCall>,
+    pub finish: Finish,
+    pub cost: TurnCost,
+    /// The provider's `usage` object verbatim, for a metrics row somebody reads
+    /// later without this crate's model of it.
+    pub raw_usage: Option<String>,
+}
+
+/// Whether to keep streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFlow {
+    Continue,
+    /// Close the connection now — an urgent steering message, a guard.
+    Stop,
+}
+
+#[derive(Debug)]
+pub enum BackendError {
+    /// The provider could not be reached, or the connection died mid-answer.
+    Unreachable(String),
+    /// The provider answered and said no: a bad key, a bad model, a quota.
+    Refused { status: u16, body: String },
+    /// 2xx, but not the shape expected.
+    Malformed(String),
+    /// The caller asked to stop; nothing is recorded as a finished answer.
+    Aborted,
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendError::Unreachable(m) => write!(f, "provider unreachable: {m}"),
+            BackendError::Refused { status, body } => {
+                write!(f, "provider refused ({status}): {body}")
+            }
+            BackendError::Malformed(m) => write!(f, "provider answered something unexpected: {m}"),
+            BackendError::Aborted => write!(f, "the turn was aborted by its caller"),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
+/// A backend that takes the **transcript** and answers with a completion — a
+/// `messages` API. D10: realisation is the backend's job; the transcript
+/// crosses this seam, never a rendered prompt and never token ids.
+///
+/// The turn engine's `run_turn_messages` drives this and keeps its token
+/// ledger as the local **record** of the conversation (tokenised with the
+/// session's own vocabulary, which is an encoding for the store and the
+/// compaction arithmetic, and is never sent anywhere). The invariant suites
+/// skip loudly: `caps().skip_reason()` says the structural prefix check did
+/// not run.
+pub trait MessagesBackend: Send + Sync {
+    fn caps(&self) -> BackendCaps;
+
+    /// `deepseek`, `glm`, `grok` — the preset's name.
+    fn name(&self) -> &str;
+
+    /// The model id sent on the wire.
+    fn model(&self) -> &str;
+
+    /// One completion over the request, streaming deltas to `on_delta` as they
+    /// arrive. `StreamFlow::Stop` from the callback closes the connection and
+    /// the result is `Err(BackendError::Aborted)`.
+    fn complete(
+        &self,
+        req: &TurnRequest<'_>,
+        on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
+    ) -> Result<Completion, BackendError>;
+}
+
 impl BackendCaps {
     /// The shape of a llama.cpp server we run ourselves — local or rented, the
     /// operator's distinction being that rented compute is still billed by time.
@@ -194,8 +300,14 @@ mod tests {
     #[test]
     fn wall_clock_cost_carries_no_money_figure() {
         // zero dollars is a number somebody will sum into a total; absent is not
-        let c = TurnCost { meter: Meter::WallClock, prompt_tokens: 10, cached_tokens: 8,
-                           generated_tokens: 4, wall_ms: 120, micros_usd: None };
+        let c = TurnCost {
+            meter: Meter::WallClock,
+            prompt_tokens: 10,
+            cached_tokens: 8,
+            generated_tokens: 4,
+            wall_ms: 120,
+            micros_usd: None,
+        };
         assert!(c.micros_usd.is_none());
     }
 

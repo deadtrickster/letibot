@@ -75,7 +75,14 @@ its answer naming the sibling directory where its writes landed; a live test beh
 
 ---
 
-## R13 — cloud GLM, DeepSeek and Grok as turn backends — **OPEN, given 2026-09-14**
+## R13 — cloud GLM, DeepSeek and Grok as turn backends — **SETTLED 2026-09-14 (claude-lab2x1), one knob open**
+
+Done: `crates/provider`, `MessagesBackend` in `letibot-backend`,
+`TurnEngine::run_turn_messages`, `--provider/--api-key/--thinking`, the `provider`
+disclosure, cost in the footer; fake-provider tests and an end-to-end harness run
+(`docs/providers.md`). **Not verified live** — no key on lab2x1. Open, per the
+operator's note: an eager-compaction budget under a meter (compaction is manual
+today), and the providers' prompt caches are relied on through the stable prefix.
 
 *"2. i want cloud glm and deepseek and grok to work in letibot/code."* D10 reserved
 the seam (`crates/backend`: `TurnRequest` holds the transcript, `BackendCaps` states

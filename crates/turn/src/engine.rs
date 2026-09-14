@@ -855,6 +855,284 @@ impl TurnEngine<'_> {
     /// A head's deltas therefore split exactly where `items::produce` splits the
     /// committed rows, which is §13.2b's requirement that the live view and the
     /// stored view not disagree.
+    /// A turn over a **`messages` backend** — a cloud provider — instead of the
+    /// local `/completion`. D10's mode 3, on the seam it reserved.
+    ///
+    /// What is the same: the event stream a head draws (`TurnStarted`, `Delta`,
+    /// `ToolCallProposed`, `TranscriptAppended`, `TurnFinished`), the §5.7
+    /// length verdicts, the salvage budget, steering at the step boundary, the
+    /// `TurnOk` the harness loops on, and the token ledger as the **record** —
+    /// every produced item is appended through `append_items`, tokenised with
+    /// this session's vocabulary, so the store, the hash chain, resume and the
+    /// compaction arithmetic work unchanged. What is different, and said: the
+    /// prompt that reached the model was the transcript as messages, not those
+    /// tokens; `prefix_check` is `Skipped` with the backend's own reason; cost
+    /// is metered; cache figures are the provider's coarse ones.
+    ///
+    /// An urgent steering message closes the connection mid-stream and the
+    /// turn is `Guard`-shaped: nothing is committed, the next attempt re-sends
+    /// the same messages.
+    pub fn run_turn_messages(
+        &mut self,
+        session: &mut Session,
+        sink: &mut dyn EventSink,
+        steering: &mut dyn SteeringSource,
+        backend: &dyn letibot_backend::MessagesBackend,
+        system: &str,
+        tools_json: &[String],
+        max_output_tokens: Option<u32>,
+    ) -> Result<TurnOk, TurnFailure> {
+        use letibot_backend::{BackendError, Delta, Finish, StreamFlow, TurnRequest};
+
+        session.turn_seq += 1;
+        let turn_id = format!("{}#{}", session.transcript_id, session.turn_seq);
+        let started = Instant::now();
+        let model = format!("{}/{}", backend.name(), backend.model());
+        sink.emit(TurnEvent::TurnStarted {
+            turn_id: turn_id.clone(),
+            model: model.clone(),
+            ledger_head: session.ledger_head(),
+        });
+
+        let mut pending = Pending::new();
+        let req = TurnRequest {
+            system,
+            tools_json,
+            items: &session.items,
+            max_output_tokens,
+        };
+        let mut urgent: Option<String> = None;
+        let mut on_delta = |d: &Delta| -> StreamFlow {
+            match d {
+                Delta::Text(t) => sink.emit(TurnEvent::Delta {
+                    turn_id: turn_id.clone(),
+                    target: DeltaTarget::Text,
+                    text: t.clone(),
+                }),
+                Delta::Reasoning(t) => sink.emit(TurnEvent::Delta {
+                    turn_id: turn_id.clone(),
+                    target: DeltaTarget::Reasoning,
+                    text: t.clone(),
+                }),
+                Delta::ToolCall { .. } => {}
+            }
+            // §5.8's escape hatch, checked once per delta: an urgent message
+            // closes the connection; the rest queue for the boundary.
+            if let Some(u) = pending.absorb(steering) {
+                urgent = Some(u.text);
+                return StreamFlow::Stop;
+            }
+            StreamFlow::Continue
+        };
+        let done = match backend.complete(&req, &mut on_delta) {
+            Ok(d) => d,
+            Err(BackendError::Aborted) => {
+                let reason = urgent.unwrap_or_else(|| "aborted".into());
+                sink.emit(TurnEvent::TurnInterrupted {
+                    turn_id: turn_id.clone(),
+                    reason: "steering_urgent".into(),
+                    partial_kept: false,
+                });
+                sink.emit(TurnEvent::TurnFinished {
+                    turn_id: turn_id.clone(),
+                    finish_reason: FinishReason::Aborted,
+                    metrics: Box::new(self.messages_metrics(
+                        &turn_id,
+                        &model,
+                        session,
+                        None,
+                        started.elapsed().as_millis() as u64,
+                        FinishReason::Aborted,
+                        backend,
+                    )),
+                });
+                return Err(TurnFailure::Guard {
+                    turn_id,
+                    trip: crate::guards::Trip {
+                        code: "steering_urgent",
+                        detail: reason,
+                    },
+                });
+            }
+            Err(e) => {
+                return Err(TurnFailure::Http(HttpError::Malformed(e.to_string())));
+            }
+        };
+        let wall_ms = started.elapsed().as_millis() as u64;
+
+        for call in &done.tool_calls {
+            sink.emit(TurnEvent::ToolCallProposed {
+                turn_id: turn_id.clone(),
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                args_digest: args_digest(&call.arguments),
+                arguments: call.arguments.clone(),
+            });
+        }
+
+        let finish_reason = match done.finish {
+            Finish::Length => FinishReason::Length,
+            Finish::Stop | Finish::ToolCalls | Finish::Other(_) => FinishReason::Eos,
+        };
+        let verdict = length::classify(
+            finish_reason == FinishReason::Length,
+            TurnShape {
+                visible_text: &done.text,
+                reasoning_text: &done.reasoning,
+                tool_calls: &done.tool_calls,
+            },
+        );
+        if !verdict.may_record_as_success() {
+            let metrics = self.messages_metrics(
+                &turn_id,
+                &model,
+                session,
+                Some(&done),
+                wall_ms,
+                finish_reason,
+                backend,
+            );
+            sink.emit(TurnEvent::TurnFinished {
+                turn_id: turn_id.clone(),
+                finish_reason,
+                metrics: Box::new(metrics.clone()),
+            });
+            return Err(match verdict {
+                LengthVerdict::HardFail(reason) => {
+                    sink.emit(TurnEvent::Warning {
+                        code: "length_empty_turn",
+                        detail: format!(
+                            "finish_reason=length with {} — the turn produced nothing \
+                             recordable and is failed, not shortened",
+                            reason.as_str()
+                        ),
+                    });
+                    if !self.salvage.salvaged() {
+                        return Err(TurnFailure::SalvageExhausted {
+                            turn_id,
+                            streak: self.salvage.streak(),
+                        });
+                    }
+                    TurnFailure::EmptyLength {
+                        turn_id,
+                        reason,
+                        metrics: Box::new(metrics),
+                    }
+                }
+                LengthVerdict::ToolCallsTruncated { truncated } => {
+                    let notices = done
+                        .tool_calls
+                        .iter()
+                        .map(|c| length::batch_failed_notice(&c.name))
+                        .collect();
+                    if !self.salvage.salvaged() {
+                        return Err(TurnFailure::SalvageExhausted {
+                            turn_id,
+                            streak: self.salvage.streak(),
+                        });
+                    }
+                    TurnFailure::BatchTruncated {
+                        turn_id,
+                        truncated,
+                        notices,
+                        metrics: Box::new(metrics),
+                    }
+                }
+                other => unreachable!("{other:?} may be recorded as a success"),
+            });
+        }
+        self.salvage.cleared();
+
+        // The items, in the order the local dialects produce them: the thinking
+        // first, then the answer with its calls.
+        let mut produced = Vec::new();
+        if !done.reasoning.is_empty() {
+            produced.push(TranscriptItem::Reasoning {
+                text: done.reasoning.clone(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+            });
+        }
+        produced.push(TranscriptItem::Assistant {
+            text: done.text.clone(),
+            tool_calls: done.tool_calls.clone(),
+            truncated: matches!(verdict, LengthVerdict::TruncatedText),
+        });
+        session.append_items(self, &produced, sink)?;
+
+        let metrics = self.messages_metrics(
+            &turn_id,
+            &model,
+            session,
+            Some(&done),
+            wall_ms,
+            finish_reason,
+            backend,
+        );
+        sink.emit(TurnEvent::TurnFinished {
+            turn_id: turn_id.clone(),
+            finish_reason,
+            metrics: Box::new(metrics.clone()),
+        });
+
+        pending.absorb(steering);
+        let steering_items = pending.take_items();
+        if !steering_items.is_empty() {
+            session.append_items(self, &steering_items, sink)?;
+        }
+        Ok(TurnOk::new(turn_id, produced, metrics, verdict, false, steering_items))
+    }
+
+    /// Metrics for a messages turn: the provider's figures where it gave them,
+    /// zero where the field is a llama.cpp fact that has no cloud counterpart,
+    /// and a prefix check that says it did not run.
+    fn messages_metrics(
+        &self,
+        turn_id: &str,
+        model: &str,
+        session: &Session,
+        done: Option<&letibot_backend::Completion>,
+        wall_ms: u64,
+        finish_reason: FinishReason,
+        backend: &dyn letibot_backend::MessagesBackend,
+    ) -> TurnMetrics {
+        let cost = done.map(|d| d.cost).unwrap_or(letibot_backend::TurnCost {
+            meter: backend.caps().meter,
+            prompt_tokens: 0,
+            cached_tokens: 0,
+            generated_tokens: 0,
+            wall_ms,
+            micros_usd: None,
+        });
+        TurnMetrics {
+            turn_id: turn_id.to_string(),
+            model: model.to_string(),
+            dialect_template_sha: hex32(&self.spec.template_sha),
+            ledger_head_sent: session.ledger_head(),
+            prompt_tokens: cost.prompt_tokens,
+            cached_tokens: cost.cached_tokens,
+            predicted_tokens: cost.generated_tokens,
+            prompt_tokens_server: cost.prompt_tokens,
+            prompt_processed: cost.prompt_tokens.saturating_sub(cost.cached_tokens),
+            finish_reason,
+            prompt_ms: 0.0,
+            predicted_ms: wall_ms as f64,
+            draft_n: 0,
+            draft_n_accepted: 0,
+            id_slot: -1,
+            n_busy_slots: None,
+            prefix_check: PrefixCheck::Skipped {
+                reason: backend.caps().skip_reason("I1").unwrap_or_else(|| {
+                    "SKIPPED I1: a messages backend sends the transcript, not the ledger's \
+                     tokens, so there is no prefix to check. This did not run and it is not \
+                     a pass."
+                        .into()
+                }),
+            },
+            cost,
+            wall_ms,
+        }
+    }
+
     fn stream_turn(
         &self,
         turn_id: &str,

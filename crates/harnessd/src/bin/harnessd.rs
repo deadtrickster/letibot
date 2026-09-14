@@ -95,6 +95,16 @@ fn usage() -> String {
      \x20 --flowy-addr URL          the node, else $FLOWY_ADDR, else the seat's env\n\
      \x20                           file, else http://127.0.0.1:8787\n\
      \x20 --flowy-token-file PATH   the token, else the seat's file\n\
+     \x20 --provider NAME           send the turns to a cloud provider instead of the\n\
+     \x20                           local server: deepseek | glm | grok. --model names\n\
+     \x20                           the provider's model (default: the preset's).\n\
+     \x20                           The key: $DEEPSEEK_API_KEY / $ZHIPUAI_API_KEY /\n\
+     \x20                           $XAI_API_KEY, --api-key, or [NAME] key= in\n\
+     \x20                           ~/.config/letibot/providers.toml, which also\n\
+     \x20                           prices models. METERED; the prefix check skips\n\
+     \x20 --api-key KEY             the provider's key, for a one-off\n\
+     \x20 --thinking                ask the provider to think out loud where it has\n\
+     \x20                           a switch (GLM)\n\
      \x20 --flowy-new-reader        declare the inbox reader at the head of the log.\n\
      \x20                           Never implied: `no inbox reader` is also what a\n\
      \x20                           SWITCHED token says, and re-declaring there loses\n\
@@ -122,6 +132,9 @@ fn run() -> Result<i32, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut cfg = Config::for_this_box(cwd);
     let mut prompts: Vec<String> = Vec::new();
+    // `--model` under `--provider` names the provider's model, not the local
+    // alias; resolved after the flags, because either may come first.
+    let mut model_given: Option<String> = None;
 
     let mut query: Option<Query> = None;
     let mut tsv = false;
@@ -150,7 +163,11 @@ fn run() -> Result<i32, String> {
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
             "--session" => cfg.session_id = next()?,
             "--title" => cfg.title = next()?,
-            "--model" => cfg.model = next()?,
+            "--model" => {
+                let m = next()?;
+                model_given = Some(m.clone());
+                cfg.model = m;
+            }
             "--vocab" => cfg.vocab_gguf = PathBuf::from(next()?),
             "--effort" => cfg.effort = Some(next()?),
             // **The four flags that make anything reachable, and all four are
@@ -177,6 +194,15 @@ fn run() -> Result<i32, String> {
             "--bash" => cfg.allow_bash = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             "--intent-prose" => cfg.intent_prose = true,
+            "--provider" => {
+                cfg.provider.get_or_insert_with(Default::default).name = next()?;
+            }
+            "--api-key" => {
+                cfg.provider.get_or_insert_with(Default::default).api_key = Some(next()?);
+            }
+            "--thinking" => {
+                cfg.provider.get_or_insert_with(Default::default).thinking = true;
+            }
             "--flowy" => {
                 cfg.flowy.get_or_insert_with(Default::default);
             }
@@ -222,6 +248,13 @@ fn run() -> Result<i32, String> {
             }
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
+    }
+
+    if let Some(p) = cfg.provider.as_mut() {
+        if p.name.is_empty() {
+            return Err("--api-key / --thinking need --provider NAME (deepseek | glm | grok)".into());
+        }
+        p.model = model_given.clone();
     }
 
     // Before the vocabulary, before the socket, before the model. See the module
@@ -383,16 +416,32 @@ fn run() -> Result<i32, String> {
                 Ok(reply) => {
                     println!("{}", reply.text);
                     let keeps = reply.f_keep();
-                    eprintln!(
-                        "  [{} round(s), {} tool call(s), f_keep {}]",
-                        reply.rounds,
-                        reply.tool_calls,
-                        keeps
+                    // Under a metered provider there is no f_keep to read — the
+                    // cache figures are the provider's — so the footer says what it
+                    // does have: tokens and, when the model is priced, the cost.
+                    let tail = if keeps.is_empty() {
+                        let prompt: u64 = reply.metrics.iter().map(|m| m.prompt_tokens).sum();
+                        let cached: u64 = reply.metrics.iter().map(|m| m.cached_tokens).sum();
+                        let out: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
+                        let micros: Option<u64> = reply
+                            .metrics
                             .iter()
-                            .map(|k| format!("{k:.4}"))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
+                            .map(|m| m.cost.micros_usd)
+                            .try_fold(0u64, |acc, m| m.map(|m| acc + m));
+                        format!(
+                            "{prompt} prompt tokens ({cached} cached), {out} out, cost {}",
+                            match micros {
+                                Some(m) => format!("${:.6}", m as f64 / 1_000_000.0),
+                                None => "unpriced".into(),
+                            }
+                        )
+                    } else {
+                        format!(
+                            "f_keep {}",
+                            keeps.iter().map(|k| format!("{k:.4}")).collect::<Vec<_>>().join(" ")
+                        )
+                    };
+                    eprintln!("  [{} round(s), {} tool call(s), {tail}]", reply.rounds, reply.tool_calls);
                     if reply.truncated {
                         eprintln!("  ! the answer was cut short (finish_reason: length)");
                     }

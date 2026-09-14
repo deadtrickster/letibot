@@ -1,0 +1,24 @@
+[package]
+name = "letibot-provider"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The cloud providers: GLM (Zhipu), DeepSeek, Grok (xAI), through the one
+# OpenAI-shaped chat-completions API all three speak. This is the ONE crate in
+# the tree that pulls a TLS stack — the endpoints are https and there is no
+# LAN version of them — and it is why the provider is its own crate rather than
+# a module of `turn`: the engine stays a state machine with no runtime under it.
+[dependencies]
+letibot-backend.workspace = true
+letibot-transcript.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+# Blocking, rustls, streaming body reader. No async runtime.
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[dev-dependencies]
+# A fake provider for the tests: the same hand-rolled server shape the flowy
+# tests use, so a test needs no network and no key.
