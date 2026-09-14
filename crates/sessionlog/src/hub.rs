@@ -100,6 +100,8 @@ pub enum CommandKind {
     /// an opencode name…), persisted in the mode store. Serialized on the queue like
     /// everything else; unlike a prompt it does not start a turn. See `D13`.
     Mode { name: String },
+    /// A slash command for the daemon: `flowy …`, `models …`.
+    Slash { line: String },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
@@ -182,6 +184,7 @@ impl CommandKind {
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
+            CommandKind::Slash { .. } => "slash",
             CommandKind::Promote => "promote",
         }
     }
@@ -741,6 +744,7 @@ impl Hub {
                     format!("{} answered", reply.as_str())
                 }
                 (CommandKind::Mode { name }, _) => format!("mode `{name}` requested"),
+                (CommandKind::Slash { line }, _) => format!("/{line}"),
             };
 
             let verb = kind.verb();

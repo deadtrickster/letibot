@@ -122,6 +122,135 @@ pub fn resolve(
     })
 }
 
+/// The operator's standing choice, from `[default]` in the file: which
+/// provider and model answer when a daemon is started without `--provider`.
+/// `None` is the local server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultChoice {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+pub fn default_choice(file: Option<&Path>) -> Option<DefaultChoice> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let parsed = parse_file(&file).ok()?;
+    let d = parsed.sections.get("default")?;
+    let provider = d.get("provider")?.trim().to_string();
+    if provider.is_empty() || provider == "local" {
+        return None;
+    }
+    Some(DefaultChoice {
+        provider,
+        model: d
+            .get("model")
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty()),
+    })
+}
+
+/// Record the standing choice. `provider = "local"` records the local server.
+pub fn set_default(
+    file: Option<&Path>,
+    provider: &str,
+    model: Option<&str>,
+) -> Result<PathBuf, String> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let mut kv = std::collections::BTreeMap::new();
+    kv.insert("provider".to_string(), provider.to_string());
+    if let Some(m) = model {
+        kv.insert("model".to_string(), m.to_string());
+    }
+    write_section(&file, "default", kv)?;
+    Ok(file)
+}
+
+/// Record a provider's key under `[name]`, keeping everything else in the
+/// file. The file is created mode 0600.
+pub fn store_key(file: Option<&Path>, provider: &str, key: &str) -> Result<PathBuf, String> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let mut kv = std::collections::BTreeMap::new();
+    kv.insert("key".to_string(), key.trim().to_string());
+    write_section(&file, provider, kv)?;
+    Ok(file)
+}
+
+/// Replace (or add) one `[section]`'s given keys, re-emitting the rest of the
+/// file as it was read. Comments inside a rewritten section are lost; the
+/// other sections keep theirs, because the file is rewritten line by line.
+fn write_section(
+    file: &Path,
+    section: &str,
+    kv: std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let existing = if file.is_file() {
+        std::fs::read_to_string(file).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let mut out = String::new();
+    let mut in_target = false;
+    let mut seen_target = false;
+    let mut kept: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let header = format!("[{section}]");
+    for raw in existing.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            if in_target {
+                emit_section(&mut out, section, &kept, &kv);
+            }
+            in_target = line == header;
+            if in_target {
+                seen_target = true;
+                continue;
+            }
+        }
+        if in_target {
+            if let Some((k, v)) = line.split('#').next().unwrap_or("").split_once('=') {
+                let k = k.trim().to_string();
+                if !kv.contains_key(&k) {
+                    kept.insert(k, v.trim().to_string());
+                }
+            }
+            continue;
+        }
+        out.push_str(raw);
+        out.push('\n');
+    }
+    if in_target || !seen_target {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        emit_section(&mut out, section, &kept, &kv);
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = file.with_extension("toml.tmp");
+    std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, file).map_err(|e| e.to_string())
+}
+
+fn emit_section(
+    out: &mut String,
+    section: &str,
+    kept: &std::collections::BTreeMap<String, String>,
+    kv: &std::collections::BTreeMap<String, String>,
+) {
+    out.push_str(&format!("[{section}]\n"));
+    for (k, v) in kept {
+        out.push_str(&format!("{k} = {v}\n"));
+    }
+    for (k, v) in kv {
+        out.push_str(&format!("{k} = \"{v}\"\n"));
+    }
+    out.push('\n');
+}
+
 /// The file's shape, and all of it:
 ///
 /// ```toml

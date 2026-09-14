@@ -85,7 +85,11 @@ pub struct Sessions<'a> {
     /// The flowy seat this daemon holds, when it holds one. Daemon-level, on
     /// purpose: a seat is a persistent identity with one inbox reader, and a
     /// session is a temporary consumer of it — see `letibot_flowy`'s crate docs.
+    /// Set at start by `--flowy`, or later by `/flowy login` from a head.
     seat: Option<letibot_flowy::Seat>,
+    /// Each root session's `flowy` tool slot: the door is always seated, and the
+    /// slot is filled when a seat is attached — at open, or later.
+    slots: HashMap<String, letibot_flowy::tool::SeatSlot>,
     /// Each root session's condition on the seat, so a title change can rename
     /// the session's address (`@seat/title`).
     seated: HashMap<String, Arc<letibot_flowy::InboxCondition>>,
@@ -139,6 +143,7 @@ impl<'a> Sessions<'a> {
             open: HashMap::new(),
             armed: std::collections::HashSet::new(),
             seat,
+            slots: HashMap::new(),
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
         };
@@ -155,21 +160,32 @@ impl<'a> Sessions<'a> {
         self.seat.as_ref()
     }
 
-    /// The `flowy` tool for a session, and the condition behind it — or nothing,
-    /// for a daemon with no seat or a session that is not a root.
+    /// The `flowy` tool for a root session — always, as a door — and, when the
+    /// daemon holds a seat, the session's condition on it. A subagent gets
+    /// neither: it routes through its parent.
     fn seat_tool(
-        &self,
+        &mut self,
         session_id: &str,
     ) -> (
         Option<Box<dyn letibot_tools::runtime::Tool>>,
         Option<Arc<letibot_flowy::InboxCondition>>,
     ) {
-        let Some(seat) = &self.seat else {
-            return (None, None);
-        };
         if !is_root(&self.registry, session_id) {
             return (None, None);
         }
+        let (tool, slot) = letibot_flowy::Flowy::unattached();
+        self.slots.insert(session_id.to_string(), slot.clone());
+        let cond = self.seat.clone().map(|seat| self.attach_session(&seat, session_id, &slot));
+        (Some(Box::new(tool)), cond)
+    }
+
+    /// Attach one root session to the seat: its condition, its slot filled.
+    fn attach_session(
+        &mut self,
+        seat: &letibot_flowy::Seat,
+        session_id: &str,
+        slot: &letibot_flowy::tool::SeatSlot,
+    ) -> Arc<letibot_flowy::InboxCondition> {
         // The title is the session's short address on the fabric — `@seat/title`
         // beside `@seat/id` — so agents on one project can name each other.
         let title = self
@@ -180,9 +196,152 @@ impl<'a> Sessions<'a> {
             .map(|b| b.title.clone())
             .unwrap_or_default();
         let cond = seat.attach_as(session_id, &title, letibot_flowy::Attention::default());
-        let tool: Box<dyn letibot_tools::runtime::Tool> =
-            Box::new(letibot_flowy::Flowy::new(seat.clone(), cond.clone()));
-        (Some(tool), Some(cond))
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(letibot_flowy::tool::Attachment {
+            seat: seat.clone(),
+            cond: cond.clone(),
+        });
+        self.seated.insert(session_id.to_string(), cond.clone());
+        cond
+    }
+
+    /// One slash verb from a head, against this session.
+    pub fn slash(&mut self, session_id: &str, line: &str) -> crate::slash::SlashReply {
+        use crate::slash::{Slash, SlashReply};
+        match Slash::parse(line) {
+            Slash::Help(h) => SlashReply { lines: vec![h], ok: false },
+            Slash::FlowyStatus => crate::slash::flowy_status(self.seat.as_ref()),
+            Slash::FlowyLogout => match self.detach_seat() {
+                Some(name) => SlashReply { lines: vec![format!("released seat `{name}`; the room is no longer heard")], ok: true },
+                None => SlashReply { lines: vec!["no seat was attached".into()], ok: false },
+            },
+            Slash::FlowyLogin { seat, addr, token, token_file, new_reader } => {
+                let (creds, mut lines) = match crate::slash::flowy_login_credentials(
+                    seat.as_deref(),
+                    addr.as_deref(),
+                    token.as_deref(),
+                    token_file.as_ref(),
+                ) {
+                    Ok(x) => x,
+                    Err(lines) => return SlashReply { lines, ok: false },
+                };
+                lines.push(format!("credentials: {}", creds.describe()));
+                let seat = match letibot_flowy::Seat::open(creds, None, None) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        lines.push(format!("{e}"));
+                        return SlashReply { lines, ok: false };
+                    }
+                };
+                if new_reader {
+                    match seat.declare_reader() {
+                        Ok(r) => lines.push(format!("declared reader `{}` at cursor {}", r.reader, r.cursor)),
+                        Err(e) => {
+                            lines.push(format!("declaring the reader: {e}"));
+                            return SlashReply { lines, ok: false };
+                        }
+                    }
+                } else {
+                    match seat.reader() {
+                        Ok(Some(r)) => lines.push(format!("reader `{}` at cursor {}", r.reader, r.cursor)),
+                        Ok(None) => {
+                            lines.push(format!(
+                                "reader `{}` is NOT DECLARED on the node. If this seat has never listened, \
+                                 `/flowy login {} --new-reader`. If it has, its token was SWITCHED and the old \
+                                 identity still holds every message since — read that first.",
+                                seat.name(),
+                                seat.name()
+                            ));
+                            return SlashReply { lines, ok: false };
+                        }
+                        Err(e) => lines.push(format!("node not answering yet ({e}); the listener will keep trying")),
+                    }
+                }
+                let _ = session_id;
+                lines.extend(self.attach_seat(seat));
+                lines.push("attached. `/flowy status` for the seat; the `flowy` tool speaks as it.".into());
+                SlashReply { lines, ok: true }
+            }
+            Slash::Models => {
+                let current = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.provider_line())
+                    .unwrap_or_else(|| "(session not open)".into());
+                SlashReply { lines: crate::slash::models_listing(&current), ok: true }
+            }
+            Slash::ModelsSet { provider, model, key } => {
+                let (choice, mut lines) =
+                    match crate::slash::models_choice(&provider, model.as_deref(), key.as_deref(), None) {
+                        Ok(x) => x,
+                        Err(lines) => return SlashReply { lines, ok: false },
+                    };
+                let Some(h) = self.open.get_mut(session_id) else {
+                    lines.push(format!("session {session_id} is not open"));
+                    return SlashReply { lines, ok: false };
+                };
+                match h.set_provider(choice) {
+                    Ok(line) => {
+                        lines.push(line);
+                        SlashReply { lines, ok: true }
+                    }
+                    Err(e) => {
+                        lines.push(e.to_string());
+                        SlashReply { lines, ok: false }
+                    }
+                }
+            }
+        }
+    }
+
+    /// **A seat arrives while sessions are open** — `/flowy login` from a head.
+    /// Every open root session is attached: its slot filled, its `flowy` monitor
+    /// declared, its wake armed, the shelf installed, the fabric block appended
+    /// as a system update. Returns one line per session, for the head.
+    pub fn attach_seat(&mut self, seat: letibot_flowy::Seat) -> Vec<String> {
+        let mut report = Vec::new();
+        if let Some(old) = self.seat.replace(seat.clone()) {
+            old.stop();
+            report.push(format!("released the previous seat `{}`", old.name()));
+        }
+        seat.start();
+        self.parts
+            .skills
+            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(seat.clone())));
+        let ids: Vec<String> = self
+            .open
+            .keys()
+            .filter(|id| is_root(&self.registry, id))
+            .cloned()
+            .collect();
+        for id in ids {
+            let Some(slot) = self.slots.get(&id).cloned() else {
+                continue;
+            };
+            let cond = self.attach_session(&seat, &id, &slot);
+            self.declare_flowy_monitor(&id, Some(cond));
+            match self.refresh_fabric(&id) {
+                Ok(true) => report.push(format!("{id}: attached; the fabric block went in as a system update")),
+                Ok(false) => report.push(format!("{id}: attached")),
+                Err(e) => report.push(format!("{id}: attached; the fabric block could not be read: {e}")),
+            }
+        }
+        report
+    }
+
+    /// `/flowy logout`: stop the seat, empty every slot, retire the monitors.
+    pub fn detach_seat(&mut self) -> Option<String> {
+        let seat = self.seat.take()?;
+        seat.stop();
+        for slot in self.slots.values() {
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        self.seated.clear();
+        for h in self.open.values() {
+            if let Some(m) = h.monitors() {
+                m.retire("flowy", "the seat was released");
+            }
+        }
+        Some(seat.name().to_string())
     }
 
     /// The fabric block into a root session's system prompt, and its provenance
@@ -277,7 +436,6 @@ impl<'a> Sessions<'a> {
         let (Some(cond), Some(seat)) = (cond, &self.seat) else {
             return;
         };
-        self.seated.insert(session_id.to_string(), cond.clone());
         let Some(h) = self.open.get(session_id) else {
             return;
         };
@@ -757,6 +915,21 @@ impl<'a> Sessions<'a> {
                     });
                 }
                 Outcome::Ignored
+            }
+            CommandKind::Slash { line } => {
+                let line = line.clone();
+                let reply = self.slash(session_id, &line);
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: if reply.ok { "slash".into() } else { "slash_refused".into() },
+                        detail: format!("/{line}\n{}", reply.lines.join("\n")),
+                    });
+                }
+                if reply.ok {
+                    Outcome::Ignored
+                } else {
+                    Outcome::Failed(format!("/{line} was refused"))
+                }
             }
             CommandKind::Mode { name } => {
                 let mode = match letibot_tools::mode::Mode::parse(name) {

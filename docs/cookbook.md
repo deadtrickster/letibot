@@ -136,7 +136,34 @@ task(prompt, role?, access?, where?)
   VM it has no shell at all; the reads go over vsock at 0.5 s each.
 - Subagents have no flowy voice; they route through you. The room hears you.
 
-## 5. Processes: never `pkill -f` from a shell
+## 5. letibot from a folder, and the two wizards
+
+```
+letibot                      connect to THIS folder's daemon (the git toplevel), or start one — it says which
+letibot --attach [DIR]       connect only
+letibot --daemons            every folder's daemon on this box
+letibot --stop [--all]       this folder's daemon, by pid — never every harnessd on the box
+```
+
+In the head:
+
+```
+/flowy status                the seat: listening, stalled, stopped, reader cursor, attached sessions
+/flowy login [SEAT]          attach a seat to the RUNNING daemon (the usual path; a name when several)
+/flowy login SEAT --token T [--addr URL] [--new-reader]
+                             a seat this box never held: writes agents/SEAT and env-SEAT, opens it
+/flowy logout                release it
+/models                      what answers now; every provider with its auth state and the exact command
+/models deepseek/deepseek-chat [--key K]
+                             switch underneath this session and make it the standing choice
+/models local                back to the local server
+```
+
+Every open session's `flowy` tool is a door: with no seat it says so and names
+`/flowy login`; after a login, every open root session is attached, its
+monitor declared, the shelf installed, the fabric block appended.
+
+## 6. Processes: never `pkill -f` from a shell
 
 `pkill -f PATTERN` matches the shell running it, because the shell's own
 command line carries the pattern. It has killed running commands and the

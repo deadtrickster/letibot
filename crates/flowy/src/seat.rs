@@ -939,27 +939,3 @@ mod tests {
     }
 }
 
-/// A seat against nowhere, for tests of things that do not poll.
-#[cfg(test)]
-pub(crate) fn test_seat() -> Seat {
-    let d = std::env::temp_dir().join(format!(
-        "letibot-seat-{}-{:?}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    let creds = Credentials {
-        addr: "http://127.0.0.1:1".into(),
-        endpoint: crate::creds::parse_addr("http://127.0.0.1:1").unwrap(),
-        agent: "test-seat".into(),
-        token: "t".into(),
-        token_file: None,
-        addr_from: crate::creds::Source::Explicit,
-        agent_from: crate::creds::Source::Explicit,
-        token_from: crate::creds::Source::Explicit,
-    };
-    Seat::open(creds, Some(&d), Some(&d)).unwrap()
-}

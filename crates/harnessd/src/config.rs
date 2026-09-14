@@ -862,11 +862,17 @@ impl Config {
         // stalled, stopped — is printed by the daemon from the seat, not from here,
         // because a config cannot know whether a listener is actually attached.
         match (&self.flowy, wiring.seated.iter().any(|t| t == "flowy")) {
-            (None, _) => out.push(Disclosure::off(
+            (None, true) => out.push(Disclosure::off(
+                "flowy",
+                "NO SEAT",
+                "the `flowy` tool is seated as a door and nothing is behind it: no room is \
+                 heard, nothing is said. `/flowy login` in the head attaches a seat to the \
+                 running daemon; --flowy at start does the same.",
+            )),
+            (None, false) => out.push(Disclosure::off(
                 "flowy",
                 "OFF",
-                "no --flowy, so this session hears no room and speaks in none. Nothing \
-                 said on the fabric reaches it, and it cannot be addressed.",
+                "no seat and no `flowy` tool: a subagent, or a role with no spare seat.",
             )),
             (Some(_), true) => out.push(Disclosure::on(
                 "flowy",

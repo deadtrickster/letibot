@@ -154,6 +154,9 @@ pub fn tick(
             Action::Mode { name } => {
                 client.set_mode(app.seq, &name)?;
             }
+            Action::Slash { line } => {
+                client.slash(app.seq, &line)?;
+            }
             Action::Quit => {
                 let _ = client.detach();
             }

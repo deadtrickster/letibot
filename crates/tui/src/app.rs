@@ -112,6 +112,8 @@ pub enum Action {
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     Mode { name: String },
+    /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
+    Slash { line: String },
     Quit,
 }
 
@@ -2227,6 +2229,19 @@ impl App {
                 Some(Action::Compact)
             }
             other => {
+                // The daemon's verbs. The head does not know them and does not
+                // need to: the line goes over as typed and the answer comes back
+                // on the session log.
+                let verb = other.split_whitespace().next().unwrap_or("");
+                if matches!(verb, "flowy" | "models" | "model" | "login") {
+                    if self.session_id.is_empty() {
+                        self.say("not attached to a session yet");
+                        return None;
+                    }
+                    return Some(Action::Slash {
+                        line: other.trim().to_string(),
+                    });
+                }
                 self.say(&format!("unknown command /{other} — try /help"));
                 None
             }
@@ -4112,6 +4127,8 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
         ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, allow-all"),
+        ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
+        ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];

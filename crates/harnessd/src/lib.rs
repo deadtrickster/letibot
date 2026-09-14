@@ -86,6 +86,7 @@
 //! view carry the same bytes, on channels that agree.
 
 pub mod answers;
+pub mod slash;
 pub mod config;
 pub mod daemon;
 pub mod dialect;

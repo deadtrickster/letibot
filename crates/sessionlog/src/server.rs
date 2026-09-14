@@ -505,6 +505,19 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::Slash {
+                client_request_id,
+                expected_seq,
+                line,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::Slash { line },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Answer {
                 client_request_id,
                 req_id,

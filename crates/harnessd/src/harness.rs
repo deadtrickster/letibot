@@ -1596,17 +1596,21 @@ impl<'a> Harness<'a> {
         // **The cloud provider, resolved before the harness exists.** A key that
         // is missing refuses here, naming the variable and the file, rather than
         // three seconds into the first turn as a 401 that names neither.
+        // Explicit `--provider` first; else the operator's standing choice in
+        // providers.toml (`/models … ` writes it); else the local server.
+        if cfg.provider.is_none()
+            && let Some(d) = letibot_provider::keys::default_choice(None)
+        {
+            cfg.provider = Some(crate::config::ProviderConfig {
+                name: d.provider,
+                model: d.model,
+                api_key: None,
+                thinking: false,
+            });
+        }
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => {
-                let preset = letibot_provider::Preset::parse(&pc.name).map_err(HarnessError::Setup)?;
-                let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
-                    .map_err(|e| HarnessError::Setup(format!("--provider {}: {e}", pc.name)))?;
-                let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds);
-                p.thinking = pc.thinking;
-                p.sampling = provider_sampling(&cfg.sampling);
-                Some(Box::new(p))
-            }
+            Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
         };
         let h = Harness {
             wiring,
@@ -1784,6 +1788,48 @@ impl<'a> Harness<'a> {
     /// The daemon needs them to arm the wake; nothing else does.
     pub fn monitors(&self) -> Option<&Arc<Monitors>> {
         self.monitors.as_ref()
+    }
+
+    /// **Switch what answers this session's turns**, underneath the conversation.
+    /// `None` is the local server. The transcript, the ledger and the tools are
+    /// untouched: the next turn simply goes elsewhere. Returns a line saying what
+    /// answers now; a provider whose key cannot be found is refused and nothing
+    /// changes.
+    pub fn set_provider(
+        &mut self,
+        choice: Option<crate::config::ProviderConfig>,
+    ) -> Result<String, HarnessError> {
+        match choice {
+            None => {
+                self.provider = None;
+                self.cfg.provider = None;
+                Ok(format!(
+                    "turns go to the local server at {} ({}) from the next one on",
+                    self.cfg.endpoint.authority(),
+                    self.cfg.model
+                ))
+            }
+            Some(pc) => {
+                let p = build_provider(&pc, &self.cfg.sampling).map_err(HarnessError::Setup)?;
+                let line = format!(
+                    "turns go to {}/{} from the next one on — METERED; the prefix check is \
+                     skipped, the ledger stays the record",
+                    p.name(),
+                    p.model()
+                );
+                self.provider = Some(p);
+                self.cfg.provider = Some(pc);
+                Ok(line)
+            }
+        }
+    }
+
+    /// What answers this session's turns right now, for `/models`.
+    pub fn provider_line(&self) -> String {
+        match &self.provider {
+            None => format!("local — {} at {}", self.cfg.model, self.cfg.endpoint.authority()),
+            Some(p) => format!("{}/{} (metered)", p.name(), p.model()),
+        }
     }
 
     /// The session is over: let the backend release what it holds and say where
@@ -2787,6 +2833,21 @@ fn steer_for_turn(
     }
 }
 
+/// A provider backend from its config: the preset, the key (a missing one is a
+/// refusal naming the variable and the file), the model, the switches.
+pub fn build_provider(
+    pc: &crate::config::ProviderConfig,
+    sampling: &serde_json::Value,
+) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
+    let preset = letibot_provider::Preset::parse(&pc.name)?;
+    let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
+        .map_err(|e| format!("provider {}: {e}", pc.name))?;
+    let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds);
+    p.thinking = pc.thinking;
+    p.sampling = provider_sampling(sampling);
+    Ok(Box::new(p))
+}
+
 /// The sampling the operator configured, as a provider's body fields. The local
 /// server's knobs (`top_k`, `seed`, llama.cpp's own names) are not the API's;
 /// only what the OpenAI shape carries goes through.
@@ -2869,14 +2930,14 @@ fn role_for(cfg: &Config) -> Role {
 /// session's to record.
 fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     let mut r = base_role_for_seat(seat, cfg);
-    // **The room, when the daemon holds a seat.** The `flowy` tool is registered
-    // by `Sessions` for a root session of a daemon started with `--flowy`, and the
-    // role names it under exactly the same condition — `Registry::resolve_role`
-    // refuses a role naming a tool the session does not have, and a role that
-    // silently omitted it would be a session that can hear the room and not
-    // answer. A subagent hears through its parent. The runner has no spare seat
-    // (`m2_runner` is nine and says so).
-    if cfg.flowy.is_some() && cfg.parent_session_id.is_none() && seat != Seat::Runner {
+    // **The room.** The `flowy` tool is registered by `Sessions` for every root
+    // session, and the role names it under exactly the same condition —
+    // `Registry::resolve_role` refuses a role naming a tool the session does not
+    // have. The runner has no spare seat (`m2_runner` is nine and says so).
+    // Always a door for a root session, seat or no seat: without one the tool
+    // says so and names `/flowy login`. That is what lets a seat arrive while
+    // the session is open. A subagent hears through its parent.
+    if cfg.parent_session_id.is_none() && seat != Seat::Runner {
         r.tools.push("flowy".into());
     }
     r
@@ -3036,12 +3097,13 @@ mod tests {
     }
 
     #[test]
-    fn flowy_is_seated_for_a_root_session_of_a_seated_daemon_and_nowhere_else() {
+    fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
         let mut cfg = Config::for_this_box(std::env::temp_dir());
         cfg.seat = Seat::Leticode;
         cfg.allow_bash = true;
+        // Seat or no seat: the door is there, so `/flowy login` can fill it.
         let without = role_for(&cfg);
-        assert!(!without.tools.iter().any(|t| t == "flowy"));
+        assert!(without.tools.iter().any(|t| t == "flowy"));
 
         cfg.flowy = Some(crate::config::FlowyConfig::default());
         let root = role_for(&cfg);

@@ -30,16 +30,47 @@ use crate::render;
 use crate::seat::Seat;
 use crate::subs::Subscription;
 
+/// A session's attachment to a seat: the seat, and this session's condition
+/// on it. Behind a slot, so a session opened before a seat existed gets one
+/// when `/flowy login` attaches it — the tool is always a door; whether it is
+/// open is state.
+pub struct Attachment {
+    pub seat: Seat,
+    pub cond: Arc<InboxCondition>,
+}
+
+pub type SeatSlot = Arc<std::sync::Mutex<Option<Attachment>>>;
+
 pub struct Flowy {
-    seat: Seat,
-    cond: Arc<InboxCondition>,
+    slot: SeatSlot,
 }
 
 impl Flowy {
+    /// Attached from the start.
     pub fn new(seat: Seat, cond: Arc<InboxCondition>) -> Flowy {
-        Flowy { seat, cond }
+        Flowy {
+            slot: Arc::new(std::sync::Mutex::new(Some(Attachment { seat, cond }))),
+        }
     }
 
+    /// A door with nothing behind it yet; the slot is how the daemon fills it.
+    pub fn unattached() -> (Flowy, SeatSlot) {
+        let slot: SeatSlot = Arc::new(std::sync::Mutex::new(None));
+        (Flowy { slot: slot.clone() }, slot)
+    }
+
+    pub fn slot(&self) -> SeatSlot {
+        self.slot.clone()
+    }
+}
+
+/// The attached pair, borrowed for one call.
+struct SeatView<'a> {
+    seat: &'a Seat,
+    cond: &'a Arc<InboxCondition>,
+}
+
+impl SeatView<'_> {
     fn status(&self) -> Invocation {
         let st = self.seat.state();
         let stats = self.seat.stats();
@@ -373,15 +404,29 @@ impl Tool for Flowy {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("status");
+        let guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(att) = guard.as_ref() else {
+            return Invocation::not_run(
+                "this daemon holds no flowy seat",
+                "nothing on the fabric is reachable from here: no room is heard, nothing can be \
+                 said, the shelf is not readable. The operator attaches a seat from the head \
+                 with `/flowy login` (or starts the daemon with --flowy); `/flowy status` says \
+                 what is there. This is not a claim that the fabric is empty.",
+            );
+        };
+        let view = SeatView {
+            seat: &att.seat,
+            cond: &att.cond,
+        };
         match action {
-            "status" => self.status(),
-            "attention" => self.attention(args),
-            "subscribe" | "watch" => self.subscribe(args, true),
-            "unsubscribe" | "unwatch" => self.subscribe(args, false),
-            "say" => self.say(args, false),
-            "dm" => self.say(args, true),
-            "read" => self.read(args),
-            "replay" => self.replay(args),
+            "status" => view.status(),
+            "attention" => view.attention(args),
+            "subscribe" | "watch" => view.subscribe(args, true),
+            "unsubscribe" | "unwatch" => view.subscribe(args, false),
+            "say" => view.say(args, false),
+            "dm" => view.say(args, true),
+            "read" => view.read(args),
+            "replay" => view.replay(args),
             other => Invocation::failed(
                 format!("`{other}` is not a flowy action"),
                 "there are eight: `status`, `attention`, `subscribe`, `unsubscribe`, `say`, \
@@ -399,13 +444,7 @@ mod tests {
 
     #[test]
     fn the_tool_has_no_wait_and_no_pattern() {
-        let names = Flowy {
-            seat: crate::seat::test_seat(),
-            cond: InboxCondition::new("s", "t", Default::default(), Default::default()),
-        }
-        .schema()
-        .param_names()
-        .join(",");
+        let names = Flowy::unattached().0.schema().param_names().join(",");
         for banned in ["wait", "pattern", "match", "cmdline", "command", "poll"] {
             assert!(
                 !names.split(',').any(|n| n == banned),

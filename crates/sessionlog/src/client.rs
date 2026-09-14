@@ -183,6 +183,17 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// A slash command for the daemon, as typed minus the `/`.
+    pub fn slash(&mut self, expected_seq: u64, line: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::Slash {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            line: line.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();

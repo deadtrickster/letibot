@@ -147,7 +147,7 @@ use crate::view::Snapshot;
 /// would fail to parse it — the same mid-session deserialization failure, and the
 /// same ATTACH-time refusal. No new event: the promotion is the `bash` tool's own
 /// `Backgrounded` result, attributed to the operator.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -254,6 +254,17 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         name: String,
+    },
+    /// A slash command the head does not handle itself, handed to the daemon as
+    /// the line the operator typed, without the leading `/`: `flowy login
+    /// lab2x1`, `models deepseek/deepseek-chat`. One frame for every such verb,
+    /// because each one is a daemon act with feedback on the session log, and a
+    /// frame per verb would have every head learn every verb. Added at
+    /// `PROTOCOL_VERSION` 11.
+    Slash {
+        client_request_id: String,
+        expected_seq: u64,
+        line: String,
     },
     /// Answer an open **permission**: grant or deny, by option id.
     ///

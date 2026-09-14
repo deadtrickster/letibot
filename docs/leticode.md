@@ -42,6 +42,14 @@ serenedash-style dashboard over the pieces that are new.
   lists by pattern and kills by (pid, start time) only; `monitor process=` /
   `pid=` resolve to handles once and watch those. The daemon declares its model
   server protected. leticode is 17 tools with it.
+- **One daemon per folder; `/flowy` and `/models`** — `scripts/letibot`
+  connects-or-starts per git toplevel (`--attach`, `--daemons`, `--stop` by pid).
+  `ClientFrame::Slash` (protocol 11) carries `/flowy status|login|logout` and
+  `/models …` to the daemon; `crates/harnessd/src/slash.rs` answers on the
+  session log, naming the next command when something is missing. A seat can
+  attach to a running daemon (the `flowy` tool is always a door); `/models`
+  switches the provider underneath the session and records the standing choice
+  in `~/.config/letibot/providers.toml`, which a new daemon starts on.
 - **The fabric block** — the shelf's skills as summaries and the memories as
   titles in the system prompt, refreshed after a compaction as a system update,
   cached for when the node is away. `docs/flowy-monitor.md` §5c.
