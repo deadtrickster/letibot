@@ -220,6 +220,29 @@ impl FirecodeBackend {
         std::fs::create_dir_all(&spec.cache).map_err(|e| BackendError::Io(e.to_string()))?;
         copy_tree(&spec.source, &project, &spec.exclude)?;
 
+        // Layers are attached to a PATH, and the copy has a path of its own. The
+        // source's toolchain layers are what the guest needs to build this tree
+        // — measured 2026-09-14: two models in copies of a repository whose guest
+        // lacked llama.cpp and the sqlite dev symlink each spent ten minutes
+        // stubbing them. A source with no layers is an answer, not a failure.
+        let inherit = std::process::Command::new(&bin)
+            .arg("layer")
+            .arg("inherit")
+            .arg(&spec.source)
+            .arg("--project")
+            .arg(&project)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
+        if !inherit.status.success() {
+            let _ = std::fs::remove_dir_all(&project);
+            return Err(BackendError::Io(format!(
+                "firecode layer inherit refused ({}): {}",
+                inherit.status,
+                String::from_utf8_lossy(&inherit.stderr).trim()
+            )));
+        }
+
         let up = std::process::Command::new(&bin)
             .arg("up")
             .arg("--project")

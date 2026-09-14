@@ -226,6 +226,30 @@ impl Seats {
     };
 }
 
+/// **Who bears the consequence of an action** — the operator's box, or a boundary
+/// built so that nothing crosses it.
+///
+/// The always-ask list (privilege escalation, deletion outside the project, a host
+/// never seen before) and the flow rules (a secret leaving the boundary) exist
+/// because on the operator's own box those actions reach the operator, who cannot
+/// consent in-session. Inside a firecode VM they reach a copy the VM was booted
+/// on and a guest whose root is the guest's: `sudo` there is `sudo` in a throwaway,
+/// a new host is the guest's network, and nothing of the host is behind either.
+/// So `Structural` admits the always-ask list, and it is the coordinate that makes
+/// `allow-all` the thing its name says — the operator's rule, 2026-09-14: *"allow-all
+/// should be the true allow-all."* Every other point is `Operator`, where the list
+/// reaches a person at every one of them, unchanged. The flow rules — a secret
+/// leaving the boundary — are layer A's and are refused before any point is asked:
+/// a credential in the copy opens the same hosts it opens from here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    /// The operator's own box: the always-ask list and the flow rules reach them.
+    Operator,
+    /// A boundary that makes the action structural: nothing here reaches the
+    /// operator, so nothing asks.
+    Structural,
+}
+
 /// **A named coordinate.**
 ///
 /// The four constants below are the points the operator named. Others are legal —
@@ -251,6 +275,9 @@ pub struct Mode {
     pub grants: GrantScope,
     /// Axis 4.
     pub decider: Decider,
+    /// Axis 5: who bears an action's consequence — and so whether the always-ask
+    /// list and the flow rules still reach a person from this point.
+    pub boundary: Boundary,
     /// What must be true before this point can be selected.
     pub requires: &'static [Prereq],
     /// One line for the banner, in the operator's terms rather than the axes'.
@@ -268,6 +295,7 @@ impl Mode {
         network: Disposition::Absent,
         grants: GrantScope::Once,
         decider: Decider::None,
+        boundary: Boundary::Operator,
         requires: &[],
         summary: "reads only. No write, no command, nothing that leaves the box — the \
                   tools are absent rather than refused, so nothing is claimed that \
@@ -289,6 +317,7 @@ impl Mode {
         network: Disposition::Ask,
         grants: GrantScope::Once,
         decider: Decider::Human,
+        boundary: Boundary::Operator,
         requires: &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
         summary: "write and exec are seated and every one of them asks you, every time. \
                   An answer settles that call and nothing else.",
@@ -309,6 +338,7 @@ impl Mode {
         network: Disposition::Ask,
         grants: GrantScope::Session,
         decider: Decider::Human,
+        boundary: Boundary::Operator,
         requires: &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
         summary: "writes go through without asking. Commands and anything that leaves \
                   the box still ask, and so does the always-ask list — privilege \
@@ -333,6 +363,7 @@ impl Mode {
         network: Disposition::Ask,
         grants: GrantScope::Session,
         decider: Decider::Model,
+        boundary: Boundary::Operator,
         requires: &[
             Prereq::WritableBackend,
             Prereq::ReachableAdjudicator,
@@ -359,10 +390,12 @@ impl Mode {
         network: Disposition::Admit,
         grants: GrantScope::Session,
         decider: Decider::None,
+        boundary: Boundary::Structural,
         requires: &[Prereq::WritableBackend, Prereq::Confinement],
-        summary: "write, exec and network all go through without asking. Only sane \
-                  inside a boundary (a firecode VM); the confinement prerequisite is \
-                  what refuses this point on a bare host.",
+        summary: "write, exec and network all go through without asking, the always-ask \
+                  list included: the VM is the boundary and nothing inside it reaches \
+                  this box. Only a secret leaving the boundary is still refused. The \
+                  confinement prerequisite is what refuses this point on a bare host.",
     };
 
     /// The named points, in widening order. The order is the one a banner lists them
@@ -456,8 +489,14 @@ impl Mode {
     pub fn admits_unasked(&self, tier: &Tier, access: Access) -> bool {
         match tier {
             Tier::Auto | Tier::MayApprove => self.disposition(access) == Disposition::Admit,
-            // Not negotiable by a point, in either direction, ever.
-            Tier::AlwaysAsk { .. } | Tier::Inexpressible { .. } => false,
+            // Not negotiable by a point on the operator's box, in either direction.
+            // Inside a structural boundary there is nobody the list protects — see
+            // [`Boundary`].
+            Tier::AlwaysAsk { .. } => self.boundary == Boundary::Structural,
+            // Layer A's own tier — a secret disclosed across the boundary — is
+            // refused by the gate before any point is consulted, and a point cannot
+            // reach it. A credential in the copy is still a credential.
+            Tier::Inexpressible { .. } => false,
         }
     }
 
@@ -578,11 +617,13 @@ pub const UNSEEN_PROJECT: Mode = Mode::ALWAYS_ASK;
 mod tests {
     use super::*;
 
-    /// The two tiers a point may not move, at every point including automode. This is
-    /// the property the whole design rests on, so it is checked against the full cross
-    /// product rather than against the case somebody remembered.
+    /// The two tiers a point on the operator's box may not move, at every such point
+    /// including automode. This is the property the design rests on, so it is checked
+    /// against the full cross product rather than against the case somebody
+    /// remembered. `allow-all` is the one point that is not on the operator's box —
+    /// its prerequisite is a confinement — and it is checked the other way below.
     #[test]
-    fn no_point_moves_always_ask_or_inexpressible() {
+    fn no_point_on_the_operators_box_moves_always_ask_or_inexpressible() {
         let ask = Tier::AlwaysAsk {
             rule: "privilege_escalation",
             why: "test".into(),
@@ -591,7 +632,8 @@ mod tests {
             rule: crate::adjudicate::FlowRule::SecretToTranscript,
             evidence: "test".into(),
         };
-        for m in Mode::NAMED {
+        for m in Mode::NAMED.iter().filter(|m| m.boundary == Boundary::Operator) {
+            assert_ne!(m.name, "allow-all");
             for access in [Access::Read, Access::Write, Access::Exec, Access::Network] {
                 assert!(
                     !m.admits_unasked(&ask, access),
@@ -605,6 +647,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The operator's rule, 2026-09-14: *"allow-all should be the true allow-all."*
+    /// Measured before it: inside a VM, `sudo -n true` and `git clone github.com`
+    /// each raised a decision nobody was attached to answer. The point requires a
+    /// confinement, and inside one nothing on the list reaches the operator.
+    #[test]
+    fn allow_all_inside_a_boundary_admits_the_always_ask_list() {
+        let ask = Tier::AlwaysAsk {
+            rule: "privilege_escalation",
+            why: "test".into(),
+        };
+        let never = Tier::Inexpressible {
+            rule: crate::adjudicate::FlowRule::SecretToTranscript,
+            evidence: "test".into(),
+        };
+        assert_eq!(Mode::ALLOW_ALL.boundary, Boundary::Structural);
+        assert!(Mode::ALLOW_ALL.requires.contains(&Prereq::Confinement));
+        for access in [Access::Write, Access::Exec, Access::Network] {
+            assert!(Mode::ALLOW_ALL.admits_unasked(&ask, access), "{access:?}");
+            // A secret across the boundary is layer A's refusal, before any point.
+            assert!(!Mode::ALLOW_ALL.admits_unasked(&never, access), "{access:?}");
+        }
+        // The same coordinate on the operator's box is not allow-all, whatever it
+        // is called: the boundary axis is what admits, not the name.
+        let on_host = Mode {
+            boundary: Boundary::Operator,
+            ..Mode::ALLOW_ALL
+        };
+        assert!(!on_host.admits_unasked(&ask, Access::Exec));
     }
 
     /// Clause 4 the other way round: a read never prompts, at any point, and a point

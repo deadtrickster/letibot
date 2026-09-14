@@ -170,11 +170,20 @@ That is a `firecode.layer` for this project waiting to be written (llama.cpp
 fork, `libsqlite3-dev`, the Rust toolchain), and until it exists every Rust run
 in a VM pays ten minutes to rediscover it.
 
-The always-ask list still reaches you at allow-all: DeepSeek's `git clone
+**allow-all is the true allow-all** (the operator's rule, 2026-09-14). Before
+it, the always-ask list still reached you inside the VM: DeepSeek's `git clone
 github.com` and `curl static.crates.io` (a host never seen before) and GLM's
-`sudo -n true` (privilege escalation) each raised a decision, and a one-shot
-with nobody attached refuses them. Both models routed around cleanly (cargo's
-own fetches were not asked). Whether a VM should shorten that list is open.
+`sudo -n true` (privilege escalation) each raised a decision nobody was
+attached to answer. Now `Mode::ALLOW_ALL` sits on a *structural* boundary and
+admits the list — `sudo -n id -u` inside a VM answers `0`, no ask. Two things
+still refuse there, on purpose: a secret leaving the boundary (layer A's flow
+rule; a credential in the copy opens the same hosts), and a command whose
+meaning does not resolve (`echo rc=$?` — give a literal).
+
+**Layers reach the copy.** firecode attaches layers to a path, and a copy has a
+path of its own; letibot runs `firecode layer inherit SOURCE --project COPY`
+before `up`, so a toolchain layer on the project (`firecode layer add IMAGE`)
+is in every child's guest. No docker on lab2x1 yet, so no layer is built here.
 
 Two one-shots side by side need their own sockets — the launcher gives each
 `$XDG_RUNTIME_DIR/letibot/oneshot-<pid>.sock`; before that the second one

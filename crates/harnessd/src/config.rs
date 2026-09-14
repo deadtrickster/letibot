@@ -638,11 +638,20 @@ impl Config {
         out.push(Disclosure {
             subject: "mode".into(),
             state: String::new(),
-            detail: format!(
-                "{}. Nothing at any mode reaches an inexpressible action, and the \
-                 always-ask list reaches you at every one of them.",
-                self.mode.describe()
-            ),
+            detail: if self.mode.boundary == letibot_tools::mode::Boundary::Structural {
+                format!(
+                    "{}. The always-ask list does not ask here: the boundary is \
+                     structural and nothing inside it reaches this box. A secret \
+                     leaving the boundary is still refused.",
+                    self.mode.describe()
+                )
+            } else {
+                format!(
+                    "{}. Nothing at this mode reaches an inexpressible action, and the \
+                     always-ask list reaches you at every one of them.",
+                    self.mode.describe()
+                )
+            },
             active: true,
         });
         // **The seat, read from the resolved registry rather than from `--role`.**
