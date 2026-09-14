@@ -269,6 +269,10 @@ pub struct Config {
     /// firecode VM — a subagent's `where`. `Host` for every session the operator
     /// opened.
     pub placement: letibot_tools::builtins::task::Placement,
+    /// Extra arguments for `firecode up` when the placement is a VM — the
+    /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
+    /// VM under this session.
+    pub vm_args: Vec<String>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
     /// What the fabric block in the system prompt is, said by whoever composed
@@ -522,6 +526,7 @@ impl Config {
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             placement: letibot_tools::builtins::task::Placement::Host,
+            vm_args: Vec::new(),
             provider: None,
             fabric: None,
             allow_bash: false,

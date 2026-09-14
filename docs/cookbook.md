@@ -144,6 +144,42 @@ task(prompt, role?, access?, where?)
   DeepSeek said so rather than inventing a result line — that is the seat
   working. `--bash` at start is what grants a shell; `/models` does not.
 
+## 4a. A whole session in a VM
+
+```
+letibot --vm [--vm-arg ARG …]        this session's tools run in a firecode VM on a COPY
+leticode --vm --bash …               of the workspace; allow-all inside; writes land in a
+                                     sibling under ~/.cache/letibot/firecode when it ends
+  --vm-arg --mem --vm-arg 16384 --vm-arg --vcpu --vm-arg 12
+  --vm-arg --add-dir --vm-arg /home/dead/.rustup     a toolchain the guest lacks, read-only
+```
+
+Measured 2026-09-14, the same task to two models, each in its own VM with a
+shell, unattended: add one unit test to `read.rs` and run `cargo test`.
+
+| | rounds / calls | wall | cost | result |
+|---|---|---|---|---|
+| DeepSeek (`--provider deepseek`) | 44 / 62 | 10 min | $0.075 (1.99 M prompt, 97 % cached) | test written, `9 passed` inside the VM, tree landed |
+| GLM-5.3-Flash local (`--glm`) | 63 / 72 | 35 min | local | same test, `9 passed`, tree landed |
+
+What both hit, and it is the guest image, not the models: **the guest has no
+llama.cpp checkout and no `libsqlite3.so` dev symlink**, so `letibot-tokencore`'s
+build script fails. Both built a link-only stub `libllama.so` and a header tree
+outside the repo and pointed `LETIBOT_LLAMA_DIR` / `LETIBOT_LLAMA_LIB` at it.
+That is a `firecode.layer` for this project waiting to be written (llama.cpp
+fork, `libsqlite3-dev`, the Rust toolchain), and until it exists every Rust run
+in a VM pays ten minutes to rediscover it.
+
+The always-ask list still reaches you at allow-all: DeepSeek's `git clone
+github.com` and `curl static.crates.io` (a host never seen before) and GLM's
+`sudo -n true` (privilege escalation) each raised a decision, and a one-shot
+with nobody attached refuses them. Both models routed around cleanly (cargo's
+own fetches were not asked). Whether a VM should shorten that list is open.
+
+Two one-shots side by side need their own sockets — the launcher gives each
+`$XDG_RUNTIME_DIR/letibot/oneshot-<pid>.sock`; before that the second one
+said `already served by a live daemon` and exited without running its prompt.
+
 ## 4b. Paths in a leticode session
 
 The backend is rooted at `/` (opencode parity: `read` reaches the whole host

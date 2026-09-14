@@ -378,4 +378,30 @@ mod tests {
             "the byte cap should stop well inside the line cap, got {shown}"
         );
     }
+
+    /// A file past `FILE_CEILING * 16` is refused by its size, before it is opened.
+    ///
+    /// The defect this guards is the one the ceiling was added for: the whole file
+    /// is read before a window of it is shown, so a model shard or a database would
+    /// be read whole first. The file is created SPARSE — `set_len` gives it the size
+    /// without the bytes — so the test costs a metadata call rather than 256 MiB of
+    /// writes, and the refusal has to name the size and point at `bash`.
+    #[test]
+    fn a_file_over_the_ceiling_is_refused_by_size_before_it_is_opened() {
+        let mut h = harness();
+        let big = std::fs::File::create(h.root().join("shard.bin")).expect("sparse file");
+        big.set_len(crate::builtins::grep::FILE_CEILING * 16 + 1)
+            .expect("set_len");
+        drop(big);
+
+        let r = h.call("read", r#"{"path":"shard.bin"}"#);
+        assert!(!r.is_grounded(), "{}", r.render());
+        match &r.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => {
+                assert!(reason.contains("256 MiB"), "{reason}");
+            }
+            other => panic!("a file over the ceiling must be refused: {other:?}"),
+        }
+        assert!(r.payload.contains("head -c"), "{}", r.payload);
+    }
 }

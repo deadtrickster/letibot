@@ -109,6 +109,13 @@ fn usage() -> String {
      \x20                           Never implied: `no inbox reader` is also what a\n\
      \x20                           SWITCHED token says, and re-declaring there loses\n\
      \x20                           every message since the switch\n\
+     \x20 --where host|firecode     where this session's tools run. firecode boots a\n\
+     \x20                           VM on a COPY of the workspace; the VM is the\n\
+     \x20                           boundary, the mode inside is allow-all, and the\n\
+     \x20                           writes land in a sibling directory when it ends\n\
+     \x20 --vm-arg ARG              passed to `firecode up` verbatim, repeatable:\n\
+     \x20                           --vm-arg --mem --vm-arg 8192 --vm-arg --add-dir\n\
+     \x20                           --vm-arg ~/.rustup (a toolchain the guest lacks)\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -215,6 +222,18 @@ fn run() -> Result<i32, String> {
             "--flowy-new-reader" => {
                 cfg.flowy.get_or_insert_with(Default::default).new_reader = true;
             }
+            // Where THIS session's tools run. `firecode` boots a VM on a copy of
+            // the workspace, the VM is the boundary and the mode inside is
+            // allow-all — the same placement a subagent gets from `where`.
+            "--where" => {
+                cfg.placement = match next()?.as_str() {
+                    "host" => letibot_tools::builtins::task::Placement::Host,
+                    "firecode" | "vm" => letibot_tools::builtins::task::Placement::Firecode,
+                    other => return Err(format!("--where {other}: host or firecode")),
+                }
+            }
+            // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
+            "--vm-arg" => cfg.vm_args.push(next()?),
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?

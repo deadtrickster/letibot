@@ -159,6 +159,11 @@ pub struct FirecodeSpec {
     pub name: String,
     /// Paths (relative to `source`) not to copy: build output, other worktrees.
     pub exclude: Vec<String>,
+    /// Handed to `firecode up` after `--project`: `--mem`, `--vcpu`, `--add-dir`
+    /// for a toolchain the guest image lacks, `--host-port` for a server on the
+    /// host's loopback. The operator's, verbatim — this backend does not know
+    /// firecode's option table and does not pretend to.
+    pub up_args: Vec<String>,
     /// `write` refused (a read-only downgrade).
     pub writable: bool,
     /// `processes()` present (an exec downgrade removes it).
@@ -192,6 +197,7 @@ impl FirecodeSpec {
                 // guest could not see.
                 ".git/worktrees".into(),
             ],
+            up_args: Vec::new(),
             writable: true,
             exec: true,
         }
@@ -218,6 +224,7 @@ impl FirecodeBackend {
             .arg("up")
             .arg("--project")
             .arg(&project)
+            .args(&spec.up_args)
             .stdin(Stdio::null())
             .output()
             .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;

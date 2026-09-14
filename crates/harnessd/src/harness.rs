@@ -1020,6 +1020,7 @@ impl<'a> Harness<'a> {
             let mut spec = letibot_tools::firecode::FirecodeSpec::new(&cfg.workspace, &cfg.session_id);
             spec.writable = may_write;
             spec.exec = may_exec;
+            spec.up_args = cfg.vm_args.clone();
             let fc = letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
                 HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
             })?;

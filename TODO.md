@@ -125,6 +125,16 @@ tests (5/5 pass) and, having no shell, said it could not run them rather than
 inventing a result line. DeepSeek, live, did the same on `grep.rs` for ≈ $0.02
 (`docs/providers.md` "Verified").
 
+**Then, the same afternoon: both models in a VM each.** `--where firecode` /
+`letibot --vm` place a ROOT session in a VM (the placement a subagent already
+had), `--vm-arg` hands `firecode up` its options, one-shots get their own
+socket. DeepSeek and local GLM each wrote the `read` ceiling test and ran
+`cargo test` inside — 10 min / $0.075 and 35 min respectively — after both
+discovered the guest lacks llama.cpp and the sqlite dev symlink and stubbed them
+outside the tree. `docs/cookbook.md` §4a. **Open:** a `firecode.layer` for this
+project (toolchain, llama.cpp fork, `libsqlite3-dev`); whether allow-all inside
+a VM should shorten the always-ask list (new host, sudo) that stopped both.
+
 **Open, small.** `Mode::ALLOW_ALL` on a bare host is refused by its confinement
 prerequisite and the project store overrides `--mode` — both by design — but a
 one-shot with no adjudicator then has a `bash` that fails closed on every call.

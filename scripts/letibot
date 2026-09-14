@@ -99,6 +99,12 @@ already up, then attaches the TUI head to it.
   letibot --writes            approve a class once, for the session (default)
   letibot --mode N            read-only | always-ask | writes-allowed | automode | allow-all
   letibot --bash              seat the shell, and grant the toolchain
+  letibot --vm                run the session's tools in a firecode VM on a COPY of
+                              the workspace: the VM is the boundary, allow-all inside,
+                              writes land in a sibling directory when it ends
+  letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
+  letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered
+  letibot --model M           the provider's model (default: the preset's)
   LETIBOT_MODE=writes-allowed letibot        the same, by env
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
@@ -118,11 +124,18 @@ for a in "$@"; do
     *) break ;;  # the prompt starts here; nothing after it is a flag
   esac
 done
+skip=0
 for a in "$@"; do
+  # The value after a value-taking flag is not a flag, whatever it looks like:
+  # `--vm-arg --mem` hands `--mem` to firecode.
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    --vm-arg|--provider|--model|--mode|--session|-s|--rename|--delete) skip=1 ;;
+  esac
   case "$a" in
     --help|-h|help|--read-only|--writes|--bash|--ask|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
-    --rename|--delete|--mode|--force) ;;
+    --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
     *) break ;;
@@ -264,6 +277,9 @@ fi
 # one-shot prompt: harnessd ran in the foreground with `--prompt --bash`, the
 # vocabulary loaded, and GLM answered a prompt that said "--bash". Measured
 # 2026-09-14, from the operator's own leticode --glm --bash.
+EXTRA_ARGS=()
+MODEL_OVERRIDE=""
+PROVIDER_SET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --read-only)
@@ -277,6 +293,19 @@ while [ $# -gt 0 ]; do
     --mode)
       [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, allow-all)"
       MODE="$2"; shift 2 ;;
+    # A VM placement, and what to tell firecode. Forwarded verbatim; harnessd
+    # owns the meaning (see `harnessd --help`).
+    --vm)
+      EXTRA_ARGS+=(--where firecode); shift ;;
+    --vm-arg)
+      [ $# -ge 2 ] || die "--vm-arg ARG"
+      EXTRA_ARGS+=(--vm-arg "$2"); shift 2 ;;
+    --provider)
+      [ $# -ge 2 ] || die "--provider NAME   (deepseek, glm, grok)"
+      EXTRA_ARGS+=(--provider "$2"); PROVIDER_SET=1; shift 2 ;;
+    --model)
+      [ $# -ge 2 ] || die "--model NAME"
+      MODEL_OVERRIDE="$2"; shift 2 ;;
     # Explicit model overrides. Each names one of the three singleton servers;
     # they do not START it -- `model glm` / `systemctl --user start glm` does.
     --glm)
@@ -294,6 +323,17 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+
+# The model flag: an override names it; a provider without one takes the
+# preset's default (passing the LOCAL alias to a cloud provider was measured as
+# a 400 naming the models the provider does have); otherwise the local alias.
+if [ -n "$MODEL_OVERRIDE" ]; then
+  MODEL_ARGS=(--model "$MODEL_OVERRIDE")
+elif [ -n "$PROVIDER_SET" ]; then
+  MODEL_ARGS=()
+else
+  MODEL_ARGS=(--model "$MODEL")
+fi
 
 # `--bash` implies the grants; without a shell there is nothing to grant them to.
 EXEC_ARGS=()
@@ -549,11 +589,16 @@ fi
 
 mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 
-# One-shot: no daemon, no socket, no TUI. Useful in scripts and for a quick question.
+# One-shot: no daemon, no TUI. Useful in scripts and for a quick question. The
+# socket is its own, so two one-shots side by side do not fight over the
+# folder's (measured: the second said "already served by a live daemon" and
+# exited before its prompt ran).
 if [ $# -gt 0 ]; then
-  exec "$BIN/harnessd" --dialect "$DIALECT" --model "$MODEL" --endpoint "$ENDPOINT" \
+  ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
+  exec "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
+       --socket "$ONESHOT_SOCK" \
        --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
-       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" \
+       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
        ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
 
@@ -564,9 +609,9 @@ if ! up; then
   # The daemon opens its first session eagerly, so passing `--session ID` here is
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
-  setsid "$BIN/harnessd" --dialect "$DIALECT" --model "$MODEL" --endpoint "$ENDPOINT" \
+  setsid "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
-      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" \
+      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
       ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
       >>"$LOG" 2>&1 </dev/null &
   DPID=$!
