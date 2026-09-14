@@ -167,8 +167,9 @@ pub enum Key {
     CtrlP,
     /// Open or close the subagent tree: the subagents this session spawned.
     CtrlG,
-    /// Move the running command to the background (Claude Code's Ctrl+B).
-    CtrlB,
+    /// Move the running command to the background (Ctrl+O, like Claude Code's
+    /// Ctrl+B — B is the readline left-arrow here).
+    CtrlO,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -219,7 +220,7 @@ impl Key {
             | Key::CtrlS
             | Key::CtrlP
             | Key::CtrlG
-            | Key::CtrlB
+            | Key::CtrlO
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -1701,9 +1702,9 @@ impl App {
                 self.redraw = true;
                 return None;
             }
-            // Ctrl+B: move the running command to the background. Meaningless when
+            // Ctrl+O: move the running command to the background. Meaningless when
             // nothing is running, so a bare press says so rather than asking.
-            Key::CtrlB => {
+            Key::CtrlO => {
                 if self.turn_running() {
                     self.say("moving the running command to the background");
                     return Some(Action::Promote);
