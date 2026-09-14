@@ -42,6 +42,66 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R12 — the firecode backend for subagents, and the cookbook — **IN PROGRESS 2026-09-14 (claude-lab2x1)**
+
+**Given by the operator 2026-09-14**, leaving for the day: *"1. firecode + cookbook"*.
+Design and measured numbers in `docs/subagents.md` §3. The `task` tool's `where:
+firecode` is a declared seam that refuses by name (`4f3d1d7`); this fills it.
+
+**Where.** `crates/tools/src/firecode.rs` (`FirecodeBackend: ExecBackend`, a
+`FirecodeConfinement` wrapping every job as `firecode in`), and `harness.rs`
+placement: `Placement::Firecode` opens that backend for the child, `backend_confined
+= true`, mode allow-all inside. The child works on a **copy** of the parent's
+workspace under `~/.cache/letibot/firecode/` (firecode's shared-tree guard refuses a
+main checkout with worktrees and uncommitted tracked changes — exactly when a parent
+spawns; and `/tmp` scratch evaporates). Cold boots only: checkpoint/restore is not
+dependable on the host yet (claude-host-lab's note `01M2FR5A1VAJJ13M7S2XRRZK33`). The
+operator's direction for startup: **hierarchical image caches**, so a boot is
+milliseconds — firecode's side of the seam; recorded in the cookbook, not built here.
+
+**Done when.** A `task(where: "firecode")` from a leticode session boots a VM, runs
+its tools inside it (read/write/list/run over vsock), ends with `down`, and returns
+its answer naming the sibling directory where its writes landed; a live test behind
+`FIRECODE_LIVE=1` holds it; `docs/cookbook.md` exists, is filed on the fabric as
+`kind=skill`, and covers firecode, flowy, subagents.
+
+---
+
+## R13 — cloud GLM, DeepSeek and Grok as turn backends — **OPEN, given 2026-09-14**
+
+*"2. i want cloud glm and deepseek and grok to work in letibot/code."* D10 reserved
+the seam (`crates/backend`: `TurnRequest` holds the transcript, `BackendCaps` states
+facts, `Meter::Money`, `PrefixGuarantee::None`). All three speak an OpenAI-compatible
+chat-completions API with tool calling; one `messages` backend with three endpoint
+presets. Keys from the environment (`ZHIPU_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`)
+or `~/.config/letibot/providers.toml`. D10's rule holds: the invariant suites skip
+loudly under a provider — `skip_reason()` says the prefix check did not run.
+
+**Done when.** `harnessd --provider deepseek --model deepseek-chat` (and `glm`,
+`grok`) runs a turn with tool calls through the same engine; a fake-server test
+covers the message conversion, streaming and tool-call parsing; live tests behind the
+key being set; cost reported as `TurnCost.micros_usd`.
+
+---
+
+## R14 — inject the fabric's skills and memories into the session — **OPEN, given 2026-09-14**
+
+*"3. I want flowy skills, memories etc to be injected. how? skills are summaries of
+full pages, memories are titles."* At session open (and after a compaction), when
+the daemon holds a seat: the shelf's skills as one line each (title + first
+paragraph as the summary), memories as titles, into a `fabric` block of the system
+prompt, so the model knows what exists and loads a body through `skill` /
+`flowy get` when it needs it. **Offline mode** (`docs/tool-design-brief.md` §3b,
+`docs/closed-loop.md` §5): a node that is away is a declared state, the block is
+served from the last cached copy on disk and says its age; no seat, no block, said
+so in the disclosure.
+
+**Done when.** A session's system prompt carries the block; a compaction refreshes
+it; a stalled seat serves the cached block labelled with its age; a session with no
+seat has no block and the disclosure says `fabric: OFF`.
+
+---
+
 ## R7 — A turn that ends inside its own reasoning is reported as success — **SETTLED 2026-09-13, see TODO-settled.md (R7) — a6b970e**
 
 ---
