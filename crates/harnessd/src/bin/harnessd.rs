@@ -232,6 +232,9 @@ fn run() -> Result<i32, String> {
             // Replay the operator-answered corpus against the guard and print
             // what it earns. `--calibrate-write` also records it where the
             // daemon reads it at startup. See `letibot_harnessd::calibrate`.
+            // Re-render any stable prefix stored with no tokens, so a transcript
+            // hanging off one can be resumed again. See `Query::RepairPrefixes`.
+            "--repair-prefixes" => query = Some(Query::RepairPrefixes),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
@@ -739,6 +742,7 @@ enum Query {
     Rename(String, String),
     Delete(String),
     Calibrate { write: bool },
+    RepairPrefixes,
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -756,6 +760,73 @@ fn run_query(
         .map_err(|e| format!("opening {}: {e}", path.display()))?;
 
     match q {
+        // **Re-render a prefix that was stored without its tokens.**
+        //
+        // A `/reseat` fork wrote its new prefix row with an empty token list and a
+        // zero `h_init`, so every transcript opened on it verifies as a broken
+        // chain at row 0 and refuses to resume — with the conversation's items all
+        // present and correct behind it, because the LIVE session rendered the
+        // prefix properly and only the store row was wrong.
+        //
+        // The row is content-addressed by its system text and tool schemas, so the
+        // tokens can be recomputed exactly: render them again through this
+        // daemon's own renderer and fill the row in. A row that already has tokens
+        // is never touched.
+        Query::RepairPrefixes => {
+            let empty: Vec<(String, String, String, String)> = store
+                .connection()
+                .prepare("SELECT id, system, tools_json, dialect_sha FROM stable_prefix WHERE n_tokens = 0")
+                .and_then(|mut st| {
+                    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                        .and_then(|rows| rows.collect())
+                })
+                .map_err(|e| e.to_string())?;
+            if empty.is_empty() {
+                println!("every stored prefix has its tokens; nothing to repair.");
+                return Ok(0);
+            }
+            let parts = Parts::load(cfg).map_err(|e| e.to_string())?;
+            let engine = letibot_harnessd::harness::engine_for(&parts, cfg)
+                .map_err(|e| e.to_string())?;
+            let mut fixed = 0;
+            for (id, system, tools_json, dialect_sha) in empty {
+                let tools: Vec<String> =
+                    serde_json::from_str(&tools_json).map_err(|e| e.to_string())?;
+                let prefix = letibot_dialect::StablePrefix {
+                    system,
+                    tools_json: tools,
+                };
+                let opened = engine
+                    .open(&format!("repair-{id}"), &prefix)
+                    .map_err(|e| format!("re-rendering {id}: {e}"))?;
+                let rec = letibot_tokencore::store::StablePrefixRecord {
+                    // The id hashes this too, so the stored one is what makes the
+                    // recomputed row the SAME row rather than a new prefix.
+                    dialect_sha,
+                    system: prefix.system.clone(),
+                    tools_json: prefix.tools_json.clone(),
+                    tokens: opened.ledger.prefix_tokens().to_vec(),
+                    h_init: opened.ledger.h_init(),
+                    vocab_source: cfg.vocab_gguf.display().to_string(),
+                };
+                // Content-addressed: the id is the hash of the system text and the
+                // schemas, so this is the same row and the write fills it in.
+                let wrote = store.put_stable_prefix(&rec).map_err(|e| e.to_string())?;
+                if wrote != id {
+                    println!(
+                        "  {id}: re-rendered to a DIFFERENT prefix ({wrote}) — not the \
+                         same prompt, so the row was left alone"
+                    );
+                    continue;
+                }
+                println!("  {id}: {} tokens", rec.tokens.len());
+                fixed += 1;
+            }
+            println!(
+                "repaired {fixed} prefix row(s); the transcripts on them resume again."
+            );
+            Ok(0)
+        }
         Query::Calibrate { write } => {
             // The store connection above is dropped by the replay opening its own;
             // two handles on one WAL database is the store's declared shape.

@@ -120,6 +120,7 @@ impl Todo {
             payload: format!("{e}{}{}", self.board_summary(), self.backing()),
             notes: vec![],
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -129,6 +130,7 @@ impl Todo {
             payload: format!("{e}{}{}", self.board_summary(), self.backing()),
             notes: vec![],
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 

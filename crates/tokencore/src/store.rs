@@ -802,6 +802,32 @@ impl Store {
                 now_ms(),
             ],
         )?;
+        // **A row written with no tokens is repairable, and only that row is.**
+        //
+        // `INSERT OR IGNORE` is right for a content-addressed table: the id is the
+        // hash of the system text and the tool schemas, so a second write of the
+        // same id is the same prefix and there is nothing to change. It was NOT
+        // right for one case, and that case happened: a caller that wrote the row
+        // with an empty token list and a zero `h_init` produced a prefix a resume
+        // verifies as a broken chain at row 0, and `IGNORE` meant no later, correct
+        // write could ever fix it.
+        //
+        // So an existing row with `n_tokens = 0` is filled in. Nothing else is ever
+        // overwritten: an id whose row already has tokens describes a prefix that
+        // has been spoken, and rewriting that would change the history of every
+        // transcript hanging off it.
+        if !rec.tokens.is_empty() {
+            self.conn.execute(
+                "UPDATE stable_prefix SET n_tokens = ?2, tokens = ?3, h_init = ?4
+                   WHERE id = ?1 AND n_tokens = 0",
+                params![
+                    id,
+                    rec.tokens.len() as i64,
+                    tokens_to_blob(&rec.tokens),
+                    rec.h_init.as_slice(),
+                ],
+            )?;
+        }
         Ok(id)
     }
 

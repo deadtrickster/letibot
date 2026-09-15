@@ -27,6 +27,18 @@ use crate::result::ToolResult;
 use crate::schema::{Access, ToolSchema, lint_description};
 use crate::spill::{SpillContext, Spiller};
 
+/// What came back from asking whether a path may enter the session's view.
+///
+/// Three outcomes and not two: a refusal is somebody saying no, and `NotAsked` is
+/// nobody having been asked — the same distinction `not_run` draws against
+/// `denied` one layer up, and for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewGrant {
+    Granted { writable: bool },
+    Refused(String),
+    NotAsked,
+}
+
 /// What a tool hands back. The outcome is the tool's decision and the runtime
 /// never widens it.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +55,15 @@ pub struct Invocation {
     /// [`crate::edit::FileEdit`] for what the head does with it and for why it is
     /// here rather than in a [`crate::events::ToolEvent`].
     pub edit: Option<crate::edit::FileEdit>,
+    /// **Paths this call could not see because they are outside the session's
+    /// filesystem view.** Read off the boundary, not guessed from the output.
+    ///
+    /// Empty for every call that saw everything it named, and for every backend
+    /// with no view at all. Non-empty is a dead end the runtime can do something
+    /// about: it raises a grant decision, and until this existed the only thing the
+    /// system could do was print a note telling the model that "whoever opened the
+    /// session" would have to grant it — with nothing able to ask that person.
+    pub needs_in_view: Vec<std::path::PathBuf>,
 }
 
 impl Invocation {
@@ -52,6 +73,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -64,6 +86,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -75,6 +98,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -87,6 +111,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -104,6 +129,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -132,6 +158,7 @@ impl Invocation {
             payload: payload.into(),
             notes: Vec::new(),
             edit: None,
+            needs_in_view: Vec::new(),
         }
     }
 
@@ -303,6 +330,18 @@ impl GateCall<'_> {
 /// the bound down, and every implementation in the tree already satisfies it.
 pub trait Gate: Send + Sync {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision;
+
+    /// **May this session see `path`?** Asked when a call named something the
+    /// boundary hid, so the operator gets the question instead of the model
+    /// getting a dead end.
+    ///
+    /// The default is [`ViewGrant::NotAsked`], which is the honest answer for a
+    /// gate with nobody behind it: not a refusal (nobody decided) and not silence
+    /// (the caller knows it was never put to anyone). A gate that CAN reach a
+    /// person overrides this.
+    fn grant_view(&mut self, _path: &std::path::Path, _tool: &str) -> ViewGrant {
+        ViewGrant::NotAsked
+    }
 
     /// Who is adjudicating, for the daemon's startup disclosure.
     ///
@@ -1105,6 +1144,59 @@ impl ToolRuntime {
             };
             tool.invoke(&mut ctx, &args)
         };
+
+        // **A path the boundary hid is a question, not a dead end.**
+        //
+        // Until this existed, a command that named something outside the session's
+        // view got an `ENOENT` and a note saying the path "has to be granted into
+        // the view by whoever opened the session" — with nothing in the system able
+        // to ask that person. So the model's only move was to hand the operator
+        // shell commands to run themselves, which is the route-around this tree
+        // refuses everywhere else. The operator's report was exactly that: *"i
+        // asked to do the symlink and it didnt even fallback to asking me"*.
+        //
+        // The decision is the gate's, so it lands in the corpus beside every other
+        // one, and the options are the operator's own words: read-only, writable,
+        // or no. An approval re-probes the boundary — see
+        // `HostBackend::grant_into_view` — so the NEXT call sees the path; this one
+        // is not retried, because its output is already written and re-running a
+        // command on the model's behalf is a decision nobody made.
+        let mut invocation = invocation;
+        if !invocation.needs_in_view.is_empty() {
+            let asked: Vec<std::path::PathBuf> =
+                std::mem::take(&mut invocation.needs_in_view);
+            for path in asked {
+                match self.gate.grant_view(&path, &schema.name) {
+                    ViewGrant::Refused(why) => {
+                        invocation.notes.push(format!(
+                            "`{}` was NOT granted into this session's view: {why}",
+                            path.display()
+                        ));
+                    }
+                    ViewGrant::NotAsked => {}
+                    ViewGrant::Granted { writable } => {
+                        match self.backend.grant_into_view(
+                            &path,
+                            writable,
+                            &format!("granted mid-session for `{}`", schema.name),
+                        ) {
+                            Ok(view) => invocation.notes.push(format!(
+                                "`{}` is now in this session's view{}, by your answer. \
+                                 The command above already ran without it — run it again \
+                                 and it will see the path. The view is now: {view}",
+                                path.display(),
+                                if writable { ", writable" } else { ", read-only" },
+                            )),
+                            Err(e) => invocation.notes.push(format!(
+                                "`{}` was approved but could not be bound into the view, \
+                                 so nothing changed: {e}",
+                                path.display()
+                            )),
+                        }
+                    }
+                }
+            }
+        }
 
         // Clause 5, on every payload and not only the ones somebody remembered.
         //

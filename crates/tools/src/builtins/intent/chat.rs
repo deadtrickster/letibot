@@ -280,6 +280,7 @@ impl Tool for Say {
                 payload: e.to_string(),
                 notes: vec![],
                 edit: None,
+                needs_in_view: Vec::new(),
             },
         }
     }

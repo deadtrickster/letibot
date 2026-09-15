@@ -179,8 +179,7 @@ fn a_bash_call_on_a_refusing_boundary_says_nothing_ran_and_is_not_a_denial() {
 fn describe_reports_the_boundary_that_was_measured_and_not_the_one_requested() {
     let h = confined!("describe_reports_measured");
     let host = h.processes.as_ref().expect("a confined harness has a host");
-    let c = ProcessHost::confinement(host.as_ref()).expect("a confined host has a confinement");
-    let b = c.boundary().expect("a measured boundary");
+    let b = host.boundary().expect("a measured boundary");
 
     // Every namespace's state carries the INODE read back from inside, which is
     // the evidence. A hard-coded `confined` has no inode to show.
@@ -202,12 +201,12 @@ fn describe_reports_the_boundary_that_was_measured_and_not_the_one_requested() {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         if let Some(NsState::Entered { inode }) = b.ns.get(&n) {
-            assert_ne!(inode, &mine, "{n} inside must differ from the harness's");
+            assert_ne!(inode, &mine.as_str(), "{n} inside must differ from the harness's");
         }
     }
 
     // The disclosure names the mechanism with its version, not a category.
-    let d = c.describe();
+    let d = host.confinement_describe();
     assert!(d.contains("bubblewrap"), "{d}");
     assert!(d.contains("entered ("), "{d}");
 }
@@ -528,9 +527,9 @@ fn egress_is_denied_by_default_and_the_disclosure_says_so() {
     // `web_fetch` is a seam only if an unconfined `curl` is not an alternative.
     let mut h = confined!("egress_is_denied_by_default");
     let host = h.processes.as_ref().expect("host").clone();
-    let c = ProcessHost::confinement(host.as_ref()).expect("confinement");
-    assert!(c.describe().contains("DENIED"), "{}", c.describe());
-    assert_eq!(c.boundary().map(|b| b.egress.clone()), Some(Egress::Denied));
+    let d = host.confinement_describe();
+    assert!(d.contains("DENIED"), "{d}");
+    assert_eq!(host.boundary().map(|b| b.egress), Some(Egress::Denied));
 
     // There are no interfaces at all, which is a stronger statement than "the
     // connect failed" and does not depend on anything being reachable from this
@@ -597,8 +596,7 @@ fn a_child_cannot_unshare_its_way_back_out_of_the_boundary() {
     // and network namespaces are decoration unless this is closed.
     let mut h = confined!("a_child_cannot_unshare_its_way_out");
     let host = h.processes.as_ref().expect("host").clone();
-    let c = ProcessHost::confinement(host.as_ref()).expect("confinement");
-    let b = c.boundary().expect("measured");
+    let b = host.boundary().expect("measured");
 
     // First the measurement the substrate took at probe time: no seal may be open,
     // or the probe would have refused to hand back a boundary at all.
@@ -610,9 +608,9 @@ fn a_child_cannot_unshare_its_way_back_out_of_the_boundary() {
         other => panic!("a boundary with an open seal must never be handed back: {other:?}"),
     }
     assert!(
-        c.describe().contains("seal nested-namespaces"),
+        host.confinement_describe().contains("seal nested-namespaces"),
         "the disclosure must state the seal: {}",
-        c.describe()
+        host.confinement_describe()
     );
 
     // Then the escape itself, tried through the tool the model would use.
@@ -639,8 +637,7 @@ fn no_new_privs_is_read_from_the_kernel_rather_than_assumed_from_the_flag() {
     // helper's documented behaviour is the helper's word.
     let h = confined!("no_new_privs_is_read");
     let host = h.processes.as_ref().expect("host").clone();
-    let c = ProcessHost::confinement(host.as_ref()).expect("confinement");
-    let b = c.boundary().expect("measured");
+    let b = host.boundary().expect("measured");
     match b.seals.get(&SealKind::NoNewPrivs) {
         Some(Seal::Held { how }) => assert!(how.contains("NoNewPrivs: 1"), "{how}"),
         Some(Seal::Unverified { why }) => eprintln!("no-new-privs unverified here: {why}"),

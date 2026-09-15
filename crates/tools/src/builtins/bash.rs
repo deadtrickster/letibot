@@ -330,13 +330,15 @@ impl Tool for Bash {
         // exits with a code indistinguishable from a command's, and rendering it as
         // `[exit 1] the command ran and exited non-zero` tells the model something
         // false about what happened.
-        let mut launcher_failed = None;
-        if let Some(c) = host.confinement() {
-            for n in c.absence_notes(&full) {
-                notes.push(n);
-            }
-            launcher_failed = c.launcher_failure(&full);
+        // The boundary's own reading of what this command could not see: the
+        // sentences for the model, and the same finding as PATHS for the runtime,
+        // which is the layer that can do something about it — see
+        // `ToolRuntime::invoke`'s grant request.
+        for n in host.absence_notes(&full) {
+            notes.push(n);
         }
+        let outside = host.outside_paths(&full);
+        let launcher_failed = host.launcher_failure(&full);
 
         // **A person moved it mid-flight** (Ctrl+B). The outcome is `Backgrounded`
         // with the operator named, not a deadline kill — the command is still
@@ -453,6 +455,10 @@ impl Tool for Bash {
         for n in notes {
             inv = inv.with_note(n);
         }
+        // Carried to the runtime, which is the layer that holds the gate and can
+        // therefore ASK about widening the view. The tool only reports what the
+        // boundary told it.
+        inv.needs_in_view = outside;
         inv
     }
 }

@@ -395,6 +395,7 @@ impl Tool for AskUserQuestion {
                     payload: body,
                     notes: vec![],
                     edit: None,
+                    needs_in_view: Vec::new(),
                 }
             }
             Ok((a, by)) => accept(&q, a, by),
@@ -417,6 +418,7 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
         payload: format!("question: {}\n{e}", q.text),
         notes: vec![],
         edit: None,
+        needs_in_view: Vec::new(),
     };
     if by.trim().is_empty() {
         return refuse(AskError::Anonymous);

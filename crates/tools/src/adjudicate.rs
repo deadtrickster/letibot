@@ -453,6 +453,34 @@ impl OptionKind {
 /// operator is not shown a button whose effect the gate would then decline to honour,
 /// and an adjudicator cannot select one. A safety property with one mechanism ships
 /// broken the first time somebody refactors the mechanism.
+/// **The ladder for a path the boundary hid.** Three answers, because the choice
+/// an operator actually has is not allow/deny: a path can come in readable, which
+/// is enough to look at something, or writable, which is what creating a symlink
+/// takes. Offering one button for both would make them pick the wider one to get
+/// anything done.
+///
+/// Read-only is first, and is the one Enter lands on: it is the narrower of the
+/// two admissions and the common case.
+pub fn view_grant_options() -> Vec<DecisionOption> {
+    vec![
+        DecisionOption {
+            id: "grant_ro".into(),
+            label: "Let this session READ it (for the rest of the session)".into(),
+            kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "grant_rw".into(),
+            label: "Let this session READ AND WRITE it (for the rest of the session)".into(),
+            kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "deny".into(),
+            label: "No — leave it outside the view".into(),
+            kind: OptionKind::Deny,
+        },
+    ]
+}
+
 pub fn always_ask_options() -> Vec<DecisionOption> {
     vec![
         DecisionOption {
@@ -2105,6 +2133,73 @@ impl AdjudicatedGate {
 }
 
 impl Gate for AdjudicatedGate {
+    /// **The question the boundary could not ask.**
+    ///
+    /// A real adjudication, so it lands in the corpus beside every other decision
+    /// and an operator can see later what they let in and when. It is NOT a tool
+    /// call — no baseline, no tier, no intents — because nothing is being run: the
+    /// subject is a path and the answer widens a view. That is why it builds the
+    /// request here rather than going through `request_for`, which reads a
+    /// `GateCall` that does not exist.
+    ///
+    /// `NotAsked` when there is nobody to ask, which is a session with no
+    /// adjudicator attached. Not a refusal: nobody decided, and a caller that
+    /// rendered "no" would be reporting a decision that was never made.
+    fn grant_view(&mut self, path: &std::path::Path, tool: &str) -> crate::runtime::ViewGrant {
+        use crate::runtime::ViewGrant;
+        if self.adjudicator.describe().starts_with("none") {
+            return ViewGrant::NotAsked;
+        }
+        let req = AdjudicationRequest {
+            id: self.next_id(),
+            session_id: self.session_id.clone(),
+            turn_id: String::new(),
+            call_id: String::new(),
+            agent: self.agent.clone(),
+            tool: tool.to_string(),
+            target: path.display().to_string(),
+            class: ActionClass::host(Access::Read, false, false),
+            prior: Vec::new(),
+            advice: None,
+            summary: format!(
+                "`{tool}` named `{}`, which is outside this session's filesystem view",
+                path.display()
+            ),
+            arguments: serde_json::json!({ "path": path.display().to_string() }),
+            arguments_digest: String::new(),
+            boundary_facts: vec![
+                format!(
+                    "the command saw `{}` as absent — that was the boundary, not an                      answer about whether anything is there",
+                    path.display()
+                ),
+                "granting it binds the real host path into this session's mount                  namespace for the rest of the session, and a readable path is                  readable INTO THE TRANSCRIPT"
+                    .to_string(),
+                "the command that hit this has already run; granting does not re-run                  it".to_string(),
+            ],
+            kind: RequestKind::Permission,
+            options: view_grant_options(),
+            on_timeout: OnTimeout::Deny,
+            tier: Tier::MayApprove,
+            resolved: true,
+            baseline: format!("a path outside the view: {}", path.display()),
+            trail: crate::authorise::AuthorisationTrail::default(),
+        };
+        let d = self.adjudicator.decide(&req);
+        match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
+                ViewGrant::Granted { writable: false }
+            }
+            DecisionOutcome::Selected { option_id } if option_id == "grant_rw" => {
+                ViewGrant::Granted { writable: true }
+            }
+            DecisionOutcome::Selected { .. } => ViewGrant::Refused(d.basis.clone()),
+            // A deadline is not an answer, and neither is an adjudicator that could
+            // not be reached. Both are "nobody decided", which is what the caller
+            // has to be told so it does not report a refusal.
+            _ => ViewGrant::NotAsked,
+        }
+    }
+
     fn describe(&self) -> String {
         match (self.supervise, &self.advisor) {
             (true, Some(a)) => format!("{} — supervised by {}", self.adjudicator.describe(), a.describe()),

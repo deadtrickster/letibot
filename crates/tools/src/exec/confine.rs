@@ -767,6 +767,39 @@ impl Boundary {
     /// Bounded, per `docs/tool-design-brief.md` §5 — *cap the corrective body the
     /// way you cap a success body* — because a miss path that can be large is a
     /// miss path that produces more output than a hit.
+    /// **The paths this command could not see**, as paths rather than as prose.
+    ///
+    /// `absence_notes` says the same thing in a sentence for the model; this is the
+    /// same finding for a caller that can act on it. The note used to end *"it has
+    /// to be granted into the view by whoever opened the session; asking again will
+    /// not change it"* — true, and a dead end: nothing could ask that person. Now
+    /// the runtime takes these and raises a grant decision, so the operator is
+    /// asked instead of the model being left to hand them shell commands.
+    pub fn outside_paths(&self, output: &str) -> Vec<PathBuf> {
+        let mut outside: Vec<PathBuf> = Vec::new();
+        for line in output.lines() {
+            if !(line.contains("No such file or directory")
+                || line.contains("ENOENT")
+                || line.contains("not found")
+                || line.contains("cannot find"))
+            {
+                continue;
+            }
+            for tok in absolute_paths(line) {
+                if matches!(self.view.classify(&tok), Presence::Outside)
+                    && !outside.contains(&tok)
+                {
+                    outside.push(tok);
+                }
+            }
+            if outside.len() >= MAX_ABSENCE_PATHS {
+                break;
+            }
+        }
+        outside.truncate(MAX_ABSENCE_PATHS);
+        outside
+    }
+
     pub fn absence_notes(&self, output: &str) -> Vec<String> {
         let mut outside: Vec<PathBuf> = Vec::new();
         let mut replaced: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -807,9 +840,9 @@ impl Boundary {
                  whether anything is there: this session's view is {}. Nothing \
                  outside it can be reached by another spelling of the path, and a \
                  path list is not what is stopping it — the mount namespace does not \
-                 contain it. If the work genuinely needs a path outside the view, it \
-                 has to be granted into the view by whoever opened the session; \
-                 asking again will not change it.",
+                 contain it. If the work genuinely needs a path outside the view, the \
+                 operator is being asked to grant it in — re-running before they \
+                 answer will not change it.",
                 if outside.len() == 1 { "is" } else { "are" },
                 if outside.len() == 1 { "it" } else { "them" },
                 self.view.summary().lines().next().unwrap_or("the project"),
@@ -904,6 +937,13 @@ pub trait Confinement: Send + Sync {
 
     /// Rule 4's notes for one command's output.
     fn absence_notes(&self, _output: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Rule 4's same finding as PATHS, for a caller that can act on it rather than
+    /// only report it — the runtime raises a grant decision from these. Empty
+    /// where there is no view, because "outside" is meaningless then.
+    fn outside_paths(&self, _output: &str) -> Vec<PathBuf> {
         Vec::new()
     }
 
@@ -1251,6 +1291,10 @@ impl Confinement for Bwrap {
 
     fn absence_notes(&self, output: &str) -> Vec<String> {
         self.boundary.absence_notes(output)
+    }
+
+    fn outside_paths(&self, output: &str) -> Vec<PathBuf> {
+        self.boundary.outside_paths(output)
     }
 
     /// bubblewrap's own diagnostics are prefixed `bwrap: `. That is the only

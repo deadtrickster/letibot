@@ -100,6 +100,23 @@ pub trait ExecBackend: Send + Sync {
     /// `run(cmd, cwd, env) -> (stdout, stderr, exit)`.
     fn run(&self, cmd: &Command) -> Result<Output, BackendError>;
 
+    /// **Bind a path into this session's view**, after somebody decided it may be.
+    ///
+    /// Refusing is the right answer for a backend with no view — an unconfined
+    /// session can already reach the path, and a VM's view is the VM's — and it is
+    /// a refusal rather than a silent success so that a caller never reports a
+    /// grant nobody made. Returns the view as it now stands.
+    fn grant_into_view(
+        &self,
+        _path: &Path,
+        _writable: bool,
+        _why: &str,
+    ) -> Result<String, BackendError> {
+        Err(BackendError::Io(
+            "this backend has no project-scoped view to widen".into(),
+        ))
+    }
+
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
     /// Replace a file's contents.
@@ -408,6 +425,54 @@ impl HostBackend {
         })
     }
 
+    /// **Bind a path into this session's view, now**, and re-probe so the boundary
+    /// that is described is the boundary that runs.
+    ///
+    /// The argv a confined command is wrapped in is built ONCE, at probe time,
+    /// precisely so that what was measured is what runs — so widening the view is
+    /// not an edit to a live namespace. It is a new `ViewSpec`, a new probe, and
+    /// the result taking the old one's place. Commands already running keep the
+    /// namespace they started in; the next one gets this.
+    ///
+    /// Refuses on a backend with no view, rather than reporting a grant it did not
+    /// make: an unconfined session can already reach the path, and a VM's view is
+    /// the VM's.
+    fn grant_into_view_impl(
+        &self,
+        path: &Path,
+        writable: bool,
+        why: &str,
+    ) -> Result<String, BackendError> {
+        let Some(host) = self.processes.as_ref() else {
+            return Err(BackendError::Io(
+                "this backend starts no processes, so it has no view to grant into".into(),
+            ));
+        };
+        let Some(view) = host.current_view() else {
+            return Err(BackendError::Io(
+                "this session has no project-scoped view, so there is nothing to widen:                  what a command here can reach is already what this user can reach"
+                    .into(),
+            ));
+        };
+        let g = if writable {
+            crate::exec::confine::Grant::ReadWrite {
+                path: path.to_path_buf(),
+                why: why.to_string(),
+            }
+        } else {
+            crate::exec::confine::Grant::ReadOnly {
+                path: path.to_path_buf(),
+                why: why.to_string(),
+            }
+        };
+        let widened = view.granting(g);
+        let confine = crate::exec::Bwrap::probe(widened, crate::exec::confine::Egress::Denied)
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let described = crate::exec::Confinement::describe(&confine);
+        host.replace_confinement(Box::new(confine));
+        Ok(described)
+    }
+
     /// The process host, concretely, for a caller that needs to end a scope or
     /// read the reap log — neither of which is a tool call.
     pub fn host_processes(&self) -> Option<&std::sync::Arc<crate::exec::HostProcesses>> {
@@ -504,6 +569,15 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
+    fn grant_into_view(
+        &self,
+        path: &Path,
+        writable: bool,
+        why: &str,
+    ) -> Result<String, BackendError> {
+        self.grant_into_view_impl(path, writable, why)
+    }
+
     /// Runs only on a backend built by [`HostBackend::executable`], and even there
     /// it runs **through the job machinery** rather than beside it.
     ///
@@ -747,8 +821,8 @@ impl ExecBackend for HostBackend {
     fn describe(&self) -> String {
         let mode = match (self.writable, self.processes.as_ref()) {
             (_, Some(p)) => {
-                let view = match crate::exec::ProcessHost::confinement(p.as_ref()) {
-                    Some(c) => c.describe(),
+                let view = match crate::exec::ProcessHost::confinement_summary(p.as_ref()) {
+                    Some(c) => c,
                     None => "no confinement seam on this process host, so what a \
                              command can see is unknown — and an unknown boundary is \
                              not a boundary"

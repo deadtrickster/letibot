@@ -805,6 +805,24 @@ pub struct ReseatReport {
     pub lost: Vec<String>,
 }
 
+/// **A renderer over this box's vocabulary, with no session behind it.**
+///
+/// For a caller that needs to turn a prompt into tokens and nothing else — the
+/// prefix repair does exactly that. Built the same way `open` builds its engine,
+/// so what it renders is what a session would.
+pub fn engine_for<'a>(parts: &'a Parts, cfg: &Config) -> Result<TurnEngine<'a>, HarnessError> {
+    TurnEngine::new(
+        &parts.vocab,
+        parts.wiring.renderer.as_ref(),
+        parts.wiring.parser.as_ref(),
+        cfg.endpoint.clone(),
+        letibot_backend::BackendCaps::OWN_SERVER,
+        cfg.model.clone(),
+        cfg.sampling.clone(),
+    )
+    .map_err(|e| HarnessError::Setup(format!("the dialect does not fit this vocabulary: {e}")))
+}
+
 /// The tool names in a rendered schema list.
 ///
 /// Both shapes one is rendered in — OpenAI's `{function:{name}}` and the bare
@@ -2464,18 +2482,30 @@ impl<'a> Harness<'a> {
                     .into(),
             ));
         };
-        // The new prefix is recorded before the summary turn runs: a fork that
-        // summarised and then could not write its prompt would leave a transcript
-        // pointing at a prefix that does not exist, which is the one state a resume
-        // cannot rebuild.
+        // **The prefix record carries its TOKENS and their hash**, because that is
+        // what a resume rebuilds the chain from. Writing it with an empty token
+        // list and a zero `h_init` produced a fork that verified as broken on the
+        // way back in — `hash chain broken at row 0 (<stable_prefix>)` — which is
+        // exactly the state the chain check exists to catch, and it was this code
+        // that created it. Caught by `restore.rs`, which walks the real store.
+        //
+        // Rendered and tokenized the same way `open` does it, through the engine,
+        // so the bytes recorded here are the bytes the fork will speak. `h_init` is
+        // `hash_tokens(prefix)` and depends on nothing else, so it can be computed
+        // before the fork's id exists.
+        let measured = self
+            .engine
+            .open(&format!("{}#reseat-probe", self.cfg.session_id), &next)
+            .map_err(|e| HarnessError::Setup(format!("rendering the new prompt: {e}")))?;
         let rec = StablePrefixRecord {
             dialect_sha: hex32(&self.render.spec().template_sha),
             system: next.system.clone(),
             tools_json: next.tools_json.clone(),
-            tokens: Vec::new(),
-            h_init: [0u8; 32],
+            tokens: measured.ledger.prefix_tokens().to_vec(),
+            h_init: measured.ledger.h_init(),
             vocab_source: self.cfg.vocab_gguf.display().to_string(),
         };
+        drop(measured);
         let next_id = store
             .put_stable_prefix(&rec)
             .map_err(|e| HarnessError::Store(e.to_string()))?;

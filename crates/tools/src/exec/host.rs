@@ -323,7 +323,29 @@ pub trait ProcessHost: Send + Sync {
     /// [`super::confine::NoConfinement`], where one was asked for and is missing.
     /// A caller that renders `None` as "not confined" would be asserting a
     /// property of a host it did not read.
-    fn confinement(&self) -> Option<&dyn Confinement> {
+    fn confinement_summary(&self) -> Option<String> {
+        None
+    }
+
+    /// **What a command could not see, read off the boundary.** Three views of one
+    /// finding: the sentences the model is given, the same paths for a caller that
+    /// can act on them, and whether the launcher itself failed.
+    ///
+    /// On the trait rather than reached through a borrowed `&dyn Confinement`,
+    /// because the confinement is behind a lock — a grant replaces it — and a
+    /// borrow cannot outlive the guard. Defaults are empty: a host with no
+    /// boundary has nothing to say about absence, which is a different fact from
+    /// saying nothing was absent, and `confinement_summary` is where that
+    /// distinction is carried.
+    fn absence_notes(&self, _output: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn outside_paths(&self, _output: &str) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    fn launcher_failure(&self, _output: &str) -> Option<String> {
         None
     }
 }
@@ -340,7 +362,12 @@ pub struct HostProcesses {
     /// refuses) and [`Unconfined`] (not asked for, and loud about it). Making it a
     /// `Box<dyn Confinement>` means the second cannot be spelled as the third by
     /// leaving something out.
-    confine: Box<dyn Confinement>,
+    ///
+    /// **Behind a lock because a grant replaces it.** A boundary's argv is built
+    /// once, at probe time, so that what was measured is what runs — so widening
+    /// the view is not an edit to a live namespace, it is a re-probe producing a
+    /// new `Confinement` that takes this slot.
+    confine: std::sync::RwLock<Box<dyn Confinement>>,
     root: PathBuf,
     /// The turn and session scopes, opened lazily and reused.
     session: Mutex<Option<ScopeId>>,
@@ -398,7 +425,7 @@ impl std::fmt::Debug for HostProcesses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostProcesses")
             .field("scopes", &self.tree.describe())
-            .field("confinement", &self.confine.describe())
+            .field("confinement", &self.confinement_describe())
             .field("jobs", &self.jobs.lock().map(|j| j.len()).unwrap_or(0))
             .finish()
     }
@@ -436,12 +463,12 @@ impl HostProcesses {
             tree,
             // **Not asked for**, and named as such rather than left absent, so a
             // reader of `describe()` cannot mistake silence for a boundary.
-            confine: Box::new(Unconfined::because(
+            confine: std::sync::RwLock::new(Box::new(Unconfined::because(
                 "this host was built by `HostProcesses::with_tree` / \
                  `HostBackend::executable`, which ask for a lifetime mechanism and \
                  no boundary. `HostBackend::confined` is the one that adds the \
                  namespaces.",
-            )),
+            ))),
             root: root.into(),
             session: Mutex::new(None),
             turn: Mutex::new(None),
@@ -464,9 +491,46 @@ impl HostProcesses {
     }
 
     pub fn with_confinement(mut self, confine: Box<dyn Confinement>) -> Self {
-        self.confine = confine;
+        self.confine = std::sync::RwLock::new(confine);
         self
     }
+
+    /// **Widen this session's view, by re-probing.** The confinement handed in was
+    /// measured the same way the first one was, and only then does it take the
+    /// slot: a boundary that was described but not measured is the banner defect
+    /// this module exists to refuse.
+    ///
+    /// The caller builds it. This layer is a mechanism and must not learn to choose
+    /// what to bind, which is a decision.
+    pub fn replace_confinement(&self, confine: Box<dyn Confinement>) {
+        *self.confine.write().expect("confinement") = confine;
+    }
+
+    /// The view as it stands, for a caller building a wider one from it. `None`
+    /// where there is no view to widen.
+    pub fn current_view(&self) -> Option<crate::exec::confine::ViewSpec> {
+        self.confine
+            .read()
+            .expect("confinement")
+            .boundary()
+            .map(|b| b.view.clone())
+    }
+
+    /// The measured boundary, cloned out from under the lock.
+    ///
+    /// By value rather than by reference for the reason the whole field moved
+    /// behind a lock: a grant replaces the confinement, so a borrow of the one
+    /// inside it cannot outlive the guard.
+    pub fn boundary(&self) -> Option<crate::exec::confine::Boundary> {
+        self.confine.read().expect("confinement").boundary().cloned()
+    }
+
+    /// What the boundary is, in its own words.
+    pub fn confinement_describe(&self) -> String {
+        self.confine.read().expect("confinement").describe()
+    }
+
+
 
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
         self.capture_bytes = bytes;
@@ -640,7 +704,7 @@ impl ProcessHost for HostProcesses {
         format!(
             "host processes; lifetime: {}; view: {}",
             self.tree.describe(),
-            self.confine.describe()
+            self.confinement_describe()
         )
     }
 
@@ -698,7 +762,8 @@ impl ProcessHost for HostProcesses {
         // that asks for confinement and has none refuses here, and refusing after
         // the `mkdir` would leave an empty scope directory that a later listing
         // reads as somebody's work.
-        let wrap = match self.confine.wrap(&ConfinePlan {
+        let confined = self.confine.read().expect("confinement");
+        let wrap = match confined.wrap(&ConfinePlan {
             cwd: &cwd,
             env: &req.env,
         }) {
@@ -1137,8 +1202,20 @@ impl ProcessHost for HostProcesses {
         self.protected.lock().expect("protected").clone()
     }
 
-    fn confinement(&self) -> Option<&dyn Confinement> {
-        Some(self.confine.as_ref())
+    fn confinement_summary(&self) -> Option<String> {
+        Some(self.confinement_describe())
+    }
+
+    fn absence_notes(&self, output: &str) -> Vec<String> {
+        self.confine.read().expect("confinement").absence_notes(output)
+    }
+
+    fn outside_paths(&self, output: &str) -> Vec<std::path::PathBuf> {
+        self.confine.read().expect("confinement").outside_paths(output)
+    }
+
+    fn launcher_failure(&self, output: &str) -> Option<String> {
+        self.confine.read().expect("confinement").launcher_failure(output)
     }
 }
 
