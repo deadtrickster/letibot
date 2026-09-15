@@ -125,10 +125,20 @@ against it. This fills it.
   goes out as Brave's operator, 401/429/transport each say which they are, an
   empty result is empty rather than invented).
 
-**Open: never run against the real API.** No key on this box yet — every test is
-against a fake, and the daemon was only proved to *attach* and *seat*. The first
-live search is the operator's, with the key; what could still be wrong is
-Brave's actual field names, which were written from its documented shape.
+**Verified live 2026-09-15.** The operator's key landed and
+`crates/websearch/tests/brave_live.rs` (BRAVE_LIVE=1) ran a real query:
+`Brave Search, key from ~/.config/letibot/providers.toml`, 3 hits of 3
+considered, titles/URLs/snippets all parsed, no `<strong>` reaching the model.
+The field names written from the documented shape are the ones Brave sends, so
+the remaining unknown named here is closed.
+
+Two notes from doing it. The key was pasted onto the commented placeholder line
+and stayed a comment, which reads as "no key" — correctly, and the refusal named
+all three places, but the operator's belief was that it was set; the placeholder
+being *inside* the section is what made that easy. And the end-to-end through a
+local-model session could not be run: `ggml-cuda.cu:108` on model load, the
+standing CUDA fragility, not anything to do with search. `--provider deepseek
+--web-search brave` is the path that avoids the local GPU.
 
 ---
 
