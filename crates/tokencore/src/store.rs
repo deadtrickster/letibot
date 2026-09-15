@@ -1377,12 +1377,21 @@ impl Store {
         Ok(CorpusCounts {
             total: one("SELECT COUNT(*) FROM adjudication")?,
             decided_by_operator: one("SELECT COUNT(*) FROM adjudication WHERE asked = 1")?,
-            // `verdict` is NULL only where nothing answered at all; a short-circuit
-            // that never reached an oracle writes the row with no `model_verdict`,
-            // so this counts rows an oracle actually spoke on.
+            // **`verdict_by`, not `model_verdict`.**
+            //
+            // That predicate was a tautology and this banner said so out loud:
+            // "60 decisions recorded: 3 you answered yourself, 60 measured against
+            // a model" on a box where `verdict_by LIKE 'model%'` matched ZERO rows.
+            // `AdjudicationRow::corpus` fills `model_verdict` from whatever DECIDED
+            // when there is no advice, so it is always `Some` and the count was the
+            // total wearing another name.
+            //
+            // The thing being counted is "an oracle spoke", and the only column
+            // that says so is who answered. Same defect as the `labelled` count one
+            // column over, which is worth the paragraph: a count is not measuring
+            // what its NAME says, it is measuring what its PREDICATE says.
             measured: one(
-                "SELECT COUNT(*) FROM adjudication
-                  WHERE model_verdict IS NOT NULL AND verdict_by IS NOT NULL",
+                "SELECT COUNT(*) FROM adjudication WHERE verdict_by LIKE 'model%'",
             )?,
             disagreements: one(
                 "SELECT COUNT(*) FROM adjudication
@@ -1994,17 +2003,30 @@ mod corpus_tests {
         add("s1", true, Some("admit by model:test"), Some("upheld"));
         // supervised: both, and they did not.
         add("s2", true, Some("admit by model:test"), Some("revoked"));
+        // **The row that caught the tautology**: a mode admitted it, nothing was
+        // asked, and `model_verdict` is still Some because `corpus()` fills it from
+        // whatever decided. It must NOT count as measured.
+        s.record_adjudication(&NewAdjudication {
+            asked: false,
+            model_verdict: Some("selected by gate:mode: the mode admits writes".into()),
+            verdict_by: Some("gate:mode".into()),
+            ..a_decision("m2", &sid)
+        })
+        .expect("record");
         // a rule settled it, nobody asked and no model was reachable.
         add("r1", false, None, None);
 
         let c = s.corpus_counts().expect("counts");
-        assert_eq!(c.total, 6);
+        assert_eq!(c.total, 7);
         assert_eq!(c.decided_by_operator, 4, "a1 a2 s1 s2 — every call a person answered");
-        assert_eq!(c.measured, 3, "m1 s1 s2 — every call an oracle spoke on");
+        assert_eq!(
+            c.measured, 3,
+            "m1 s1 s2 only — NOT m2, whose model_verdict was written by the gate"
+        );
         assert_eq!(c.disagreements, 1, "s2 alone; an upheld is agreement");
         // The two always-ask rows are in neither `measured` nor `disagreements` and
         // are still the primary dataset: input → the operator's decision.
-        assert_eq!(c.total - c.decided_by_operator, 2, "m1 and r1: nobody was asked");
+        assert_eq!(c.total - c.decided_by_operator, 3, "m1, m2 and r1: nobody was asked");
     }
 
     /// A store written before this table existed is carried forward, not rebuilt.
