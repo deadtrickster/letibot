@@ -59,6 +59,25 @@ SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
 LOG="${LETIBOT_LOG:-$HOME/logs/harnessd.log}"
+
+# THE DAEMON NEEDS NO GPU AND WAS TAKING 1.1 GB OF IT.
+#
+# harnessd links libllama for one reason: the TOKENIZER, to count tokens and
+# build prompts from `--vocab <gguf>`. That shared object pulls in
+# libggml-cuda / libcudart / libcublas, and ggml registers every available
+# backend when the library LOADS -- so a CUDA context is opened on each card at
+# process start, before anything asks for one.
+#
+# Measured on this box: a fresh daemon holds 1100 MiB across the two cards and
+# runs not one op on them. Inference is the model server's, over HTTP. With two
+# daemons up that was 2.2 GB of a card that had 1.9 GB free.
+#
+#   GPUs visible              1100 MiB
+#   CUDA_VISIBLE_DEVICES=""      0 MiB, daemon alive and serving
+#
+# Set for harnessd ONLY, not exported: a later child of this script that does
+# want a GPU must not inherit a blindfold from a line about the tokenizer.
+NOGPU=(env CUDA_VISIBLE_DEVICES=)
 ENDPOINT="${LETIBOT_ENDPOINT:-127.0.0.1:8080}"
 
 die() { echo "letibot: $*" >&2; exit 1; }
@@ -474,13 +493,13 @@ daemon_line() {
 # box whose model server is down -- which is exactly when you want to look.
 case "${1:-}" in
   --sessions|--list)
-    exec "$BIN/harnessd" --store "$STORE" --list-sessions ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions ;;
   --rename)
     [ $# -ge 2 ] || die "--rename ID [TITLE]  (an empty title clears the name)"
-    exec "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;
   --delete)
     [ $# -ge 2 ] || die "--delete ID"
-    exec "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
   --daemons)
     # Every folder's daemon: the records, each checked against a live listener.
     found=0
@@ -586,7 +605,7 @@ case "${1:-}" in
     # its title, its row count and its workspace there. Continuing the wrong
     # conversation is not a keystroke you can take back -- the next thing you type
     # lands in it -- so the pick is announced before the head opens over it.
-    if ! SESSION="$("$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
+    if ! SESSION="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
       echo "letibot: no session with anything in it under $WORKSPACE." >&2
       echo '         "letibot --sessions" lists what is on disk; plain "letibot" starts a new one.' >&2
       exit 1
@@ -602,6 +621,7 @@ case "${1:-}" in
 esac
 
 [ -x "$BIN/harnessd" ] || die "no harnessd at $BIN — run: cargo build --release"
+
 curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
   || die "nothing serving on $ENDPOINT. Start the model first (systemctl --user start qwen-flash-next)."
 
@@ -660,7 +680,7 @@ mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
-  exec "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
+  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
        --socket "$ONESHOT_SOCK" \
        --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
@@ -692,7 +712,7 @@ if ! up; then
   # The daemon opens its first session eagerly, so passing `--session ID` here is
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
-  setsid "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
+  setsid "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
