@@ -90,6 +90,14 @@ pub fn tick(
     let screen = app.screen(size.0, size.1);
     draw(&screen, app.cursor());
 
+    // **Answer with what was actually drawn.** A tool asked what the operator is
+    // looking at; this is the only place in the system that knows, because it is
+    // the place that put the bytes on the terminal — at this head's real size,
+    // with its scroll position, its theme and its folds.
+    for req_id in app.take_screen_requests() {
+        let _ = client.screen(&req_id, size.0, size.1, screen.clone());
+    }
+
     // 3. Ack — after the frame is out.
     if last_seq > 0 {
         client.ack(Ack {

@@ -458,6 +458,9 @@ pub struct App {
     /// dot per character while this is `Some`.
     secret: Option<SecretAsk>,
     secret_buf: String,
+    /// Screen requests this head has not answered yet. Answered by the DRIVER,
+    /// after the frame is built, with the rows it actually drew.
+    screen_requests: Vec<String>,
     /// Which option of `open[0]` is highlighted.
     ///
     /// A permission prompt used to be answered by TYPING an option id or its first
@@ -717,6 +720,7 @@ impl App {
             open: Vec::new(),
             secret: None,
             secret_buf: String::new(),
+            screen_requests: Vec::new(),
             sel: 0,
             notes: Vec::new(),
             heads: 0,
@@ -1534,6 +1538,17 @@ impl App {
             // no way to say "seen". A warning is an event with a place in the
             // conversation, and putting it there is what makes it scroll away like
             // one — and still be there when you scroll back.
+            SessionEvent::ScreenRequested { req_id } => {
+                // Queued, not answered here: the answer is the rows this head
+                // DRAWS, and they do not exist until the frame is built. The
+                // driver takes these after `screen()` and sends exactly what it
+                // put on the terminal — anything rendered here instead would be
+                // a second rendering, which is the reconstruction this whole
+                // frame exists to avoid.
+                self.screen_requests.push(req_id);
+                self.redraw = true;
+                Disposition::Control
+            }
             SessionEvent::SecretRequested {
                 req_id,
                 prompt,
@@ -2059,6 +2074,11 @@ impl App {
     /// was not looking.
     fn composer_cols(&self) -> usize {
         self.cfg.width.saturating_sub(4).max(8)
+    }
+
+    /// Screen requests to answer with the frame just drawn. Drains.
+    pub fn take_screen_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.screen_requests)
     }
 
     /// What the composer holds, for a test and for a head that wants to prefill it.

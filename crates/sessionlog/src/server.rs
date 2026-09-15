@@ -300,6 +300,17 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     });
                 }
             }
+            Ok(ClientFrame::Screen {
+                req_id,
+                cols,
+                rows_n,
+                rows,
+            }) => {
+                // Not a command: it answers a request already in flight, and
+                // queueing it behind a running turn would guarantee it arrives
+                // after the tool call that asked has given up.
+                seat.hub.give_screen(&req_id, cols, rows_n, rows);
+            }
             Ok(ClientFrame::ListSessions) => {
                 let f = ServerFrame::Sessions {
                     sessions: registry.list(),

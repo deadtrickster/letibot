@@ -147,7 +147,7 @@ use crate::view::Snapshot;
 /// would fail to parse it — the same mid-session deserialization failure, and the
 /// same ATTACH-time refusal. No new event: the promotion is the `bash` tool's own
 /// `Backgrounded` result, attributed to the operator.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -282,6 +282,23 @@ pub enum ClientFrame {
     Secret {
         req_id: String,
         secret: Option<String>,
+    },
+    /// **A head's own screen, as it drew it.** The answer to
+    /// [`crate::event::SessionEvent::ScreenRequested`]: the exact rows this head
+    /// last rendered, ANSI and all, at its real terminal size.
+    ///
+    /// Only a head can answer this. The daemon holds the log and the view; it has
+    /// never seen a rendered cell, and what a person is looking at depends on
+    /// their width, their scroll position, their theme and which folds they have
+    /// open. A daemon-side re-render would be a reconstruction, and calling one
+    /// "your screen" is the kind of claim this tree refuses everywhere else.
+    /// Added at `PROTOCOL_VERSION` 13.
+    Screen {
+        req_id: String,
+        cols: usize,
+        rows_n: usize,
+        /// One string per row, escape codes included.
+        rows: Vec<String>,
     },
     /// Answer an open **permission**: grant or deny, by option id.
     ///

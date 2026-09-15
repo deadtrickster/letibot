@@ -194,6 +194,23 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// This head's rendered rows, answering a `ScreenRequested`.
+    pub fn screen(
+        &mut self,
+        req_id: &str,
+        cols: usize,
+        rows_n: usize,
+        rows: Vec<String>,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Screen {
+            req_id: req_id.to_string(),
+            cols,
+            rows_n,
+            rows,
+        })?;
+        Ok(())
+    }
+
     /// A head's answer to a `SecretRequested`: the password, or `None` to refuse.
     /// Not a command — no request id comes back, nothing is announced.
     pub fn secret(&mut self, req_id: &str, secret: Option<String>) -> Result<(), ClientError> {

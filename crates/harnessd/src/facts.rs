@@ -85,4 +85,33 @@ impl HarnessFacts for DaemonFacts {
             .map(|h| (h.kind, h.identity))
             .collect()
     }
+
+    fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
+        // Ask nobody when nobody is there. Without this the tool would sit out
+        // the whole deadline on every one-shot run to learn what `heads` already
+        // knows, and a model that waited two seconds for silence tends to read
+        // the silence as a slow screen rather than as no screen.
+        if self.hub.snapshot().heads.is_empty() {
+            return None;
+        }
+        let (req_id, rx) = self.hub.request_screen();
+        match rx.recv_timeout(SCREEN_DEADLINE) {
+            Ok(screen) => Some(screen),
+            Err(_) => {
+                // Forget it under the lock before returning, so a head that draws
+                // late finds nothing waiting instead of parking a row nobody will
+                // ever read.
+                self.hub.abandon_screen(&req_id);
+                None
+            }
+        }
+    }
 }
+
+/// How long a head gets to draw itself and answer.
+///
+/// A head redraws on the event that carries the request, so the honest cost is
+/// one round trip over a Unix socket plus one frame — milliseconds. The two
+/// seconds are for a head that is wedged, not for a head that is working, and
+/// the tool call blocks a turn for exactly this long when one is.
+const SCREEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);

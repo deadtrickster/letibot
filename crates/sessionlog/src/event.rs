@@ -578,6 +578,11 @@ pub enum SessionEvent {
     },
     /// §18's post-flight assertions land here, and so do §8.5's guards.
     Warning { code: String, detail: String },
+    /// **A tool asked what the operator is looking at.** Every attached head that
+    /// can render should answer with [`crate::protocol::ClientFrame::Screen`];
+    /// the first answer wins and the rest are ignored. Carries nothing but the
+    /// id — the request is "draw yourself", and the head decides its own size.
+    ScreenRequested { req_id: String },
     /// `sudo` inside a session's command wants a password. The head shows the
     /// command and sudo's prompt, takes the password in a masked field, and
     /// answers with [`crate::protocol::ClientFrame::Secret`]. The event carries
@@ -766,6 +771,7 @@ impl SessionEvent {
             SessionEvent::SessionRenamed { .. } => "SessionRenamed",
             SessionEvent::TodosUpdated { .. } => "TodosUpdated",
             SessionEvent::Warning { .. } => "Warning",
+            SessionEvent::ScreenRequested { .. } => "ScreenRequested",
             SessionEvent::SecretRequested { .. } => "SecretRequested",
             SessionEvent::SecretSettled { .. } => "SecretSettled",
             SessionEvent::Explain { .. } => "Explain",

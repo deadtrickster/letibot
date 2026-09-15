@@ -65,6 +65,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // its deadline; replayed, it would show a masked field for a sudo that
         // has long since failed. Its settlement is a record and stays.
         SessionEvent::SecretRequested { .. } => true,
+        // Replayed, this would ask a head to draw itself for a tool call that
+        // finished long ago.
+        SessionEvent::ScreenRequested { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.

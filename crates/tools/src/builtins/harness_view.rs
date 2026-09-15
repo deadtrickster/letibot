@@ -52,6 +52,15 @@ pub trait HarnessFacts: Send + Sync {
     fn turn(&self) -> Option<(bool, usize, String)>;
     /// `(kind, identity)` per attached head.
     fn heads(&self) -> Vec<(String, String)>;
+    /// **What a head has on screen right now**, as `(cols, rows, lines)`, escape
+    /// codes included — or `None` when no head answered in time.
+    ///
+    /// Asked of the heads rather than rendered here, because only the process
+    /// that drew the bytes knows the width, the scroll position, the theme and
+    /// which folds are open. A daemon-side re-render would be a reconstruction,
+    /// and the operator's whole point was that a reconstruction is not what he is
+    /// looking at.
+    fn screen(&self) -> Option<(usize, usize, Vec<String>)>;
 }
 
 pub struct HarnessView {
@@ -74,15 +83,16 @@ impl Tool for HarnessView {
              startup disclosures — mode, role, seated tools, backend, adjudicator, and \
              what each one means), `warnings` (the `!` lines on this session's log, \
              which is what the operator sees in their terminal), `turn` (is a turn \
-             running, how many rounds, which model), `heads` (who is attached). Use it \
-             instead of asking the operator to describe their screen. It reports; it \
+             running, how many rounds, which model), `heads` (who is attached), `screen` (WHAT THE OPERATOR IS LOOKING AT — the \
+             rows a head has drawn, colour codes and all, at its real terminal size). \
+             Use it instead of asking the operator to describe their screen. It reports; it \
              cannot change anything.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "what": {
                         "type": "string",
-                        "enum": ["status", "warnings", "turn", "heads"],
+                        "enum": ["status", "warnings", "turn", "heads", "screen"],
                         "description": "Which facts to report. Defaults to `status`."
                     },
                     "limit": {"type": "integer", "description": "For `warnings`: how many, newest last."}
@@ -175,9 +185,32 @@ impl Tool for HarnessView {
                 }
                 Invocation::ok(out)
             }
+            "screen" => match self.facts.screen() {
+                Some((cols, rows_n, lines)) => {
+                    let mut out = format!(
+                        "the operator's terminal, {cols}x{rows_n}, exactly as a head drew \
+                         it. Escape codes are included — this is the rendering, not a \
+                         description of it:\n\n"
+                    );
+                    for l in lines {
+                        out.push_str(&l);
+                        out.push('\n');
+                    }
+                    Invocation::ok(out)
+                }
+                // Not "the screen is empty". Nobody drew.
+                None => Invocation::failed(
+                    "no head drew a screen",
+                    "either nothing is attached — a one-shot or a daemon nobody has \
+                     opened a window on — or no head answered in time. Nothing is on \
+                     your screen that this could show, and `harness what=heads` says \
+                     which of the two it is.",
+                ),
+            },
             other => Invocation::failed(
                 format!("`harness` has no `{other}`"),
-                "the four are `status`, `warnings`, `turn` and `heads`. Nothing was read.",
+                "the five are `status`, `warnings`, `turn`, `heads` and `screen`. \
+                 Nothing was read.",
             ),
         }
     }
@@ -207,6 +240,9 @@ mod tests {
         fn heads(&self) -> Vec<(String, String)> {
             vec![("tui".into(), "dead".into())]
         }
+        fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
+            Some((80, 2, vec!["\u{1b}[32mgreen\u{1b}[0m".into(), "plain".into()]))
+        }
     }
 
     struct Empty;
@@ -222,6 +258,9 @@ mod tests {
         }
         fn heads(&self) -> Vec<(String, String)> {
             Vec::new()
+        }
+        fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
+            None
         }
     }
 
@@ -242,11 +281,12 @@ mod tests {
         )
     }
 
-    /// The four views, and the distinction that matters in each: a warning's AGE
+    /// The five views, and the distinction that matters in each: a warning's AGE
     /// rather than a timestamp (a session's clock is hours stale by the time it
-    /// reads this), and an empty log reported as empty rather than as "fine".
+    /// reads this), an empty log reported as empty rather than as "fine", and a
+    /// screen handed back as BYTES rather than as a description of itself.
     #[test]
-    fn the_four_views_report_what_the_operator_sees() {
+    fn the_five_views_report_what_the_operator_sees() {
         let f: Arc<dyn HarnessFacts> = Arc::new(Fake);
 
         let status = ask(f.clone(), r#"{"what":"status"}"#);
@@ -268,6 +308,18 @@ mod tests {
         let h = ask(f.clone(), r#"{"what":"heads"}"#);
         assert!(h.payload.contains("tui: dead"), "{}", h.payload);
 
+        // The rows verbatim, escape codes and all. A view that rendered the text
+        // and dropped the SGR would pass a test that looked for the words, and
+        // the words are not what was asked for — the colour is.
+        let s = ask(f.clone(), r#"{"what":"screen"}"#);
+        assert!(s.payload.contains("80x2"), "the head's size: {}", s.payload);
+        assert!(
+            s.payload.contains("\u{1b}[32mgreen\u{1b}[0m"),
+            "the SGR reached the model: {:?}",
+            s.payload
+        );
+        assert!(s.payload.contains("plain"), "{}", s.payload);
+
         // `Access::Read`, so it never reaches the gate (clause 4): asking what you
         // are running inside must not need permission, and a session with no
         // adjudicator must still be able to discover that it has none.
@@ -277,6 +329,30 @@ mod tests {
     /// **Empty is reported as empty, never as fine.** A model told "no warnings"
     /// must not read it as "nothing is wrong" — the same rule `grep` follows when
     /// it has opened zero files.
+    /// **No head is not an empty screen.** The two look identical from the
+    /// daemon — zero rows either way — and only one of them means the operator is
+    /// staring at a blank terminal. A model told "the screen is empty" would go
+    /// on to explain a blank screen that nobody has.
+    #[test]
+    fn no_head_is_never_reported_as_a_blank_screen() {
+        let s = ask(Arc::new(Empty), r#"{"what":"screen"}"#);
+        assert!(
+            !matches!(s.outcome, letibot_transcript::ToolOutcome::Ok),
+            "an absent head answered as a screen: {}",
+            s.payload
+        );
+        let said = s.payload.to_lowercase();
+        assert!(said.contains("no head"), "{}", s.payload);
+        assert!(
+            !said.contains("empty screen") && !said.contains("blank"),
+            "the absence was dressed up as a screen: {}",
+            s.payload
+        );
+        // And it says how to tell the two apart rather than leaving the model to
+        // guess which one it hit.
+        assert!(said.contains("heads"), "{}", s.payload);
+    }
+
     #[test]
     fn nothing_recorded_is_said_as_nothing_recorded() {
         let e: Arc<dyn HarnessFacts> = Arc::new(Empty);

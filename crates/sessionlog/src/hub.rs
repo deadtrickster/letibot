@@ -241,6 +241,10 @@ struct Inner {
     /// the log, not the view, not a `CommandIssued`.
     secrets: HashMap<String, std::sync::mpsc::SyncSender<Option<String>>>,
     next_secret: u64,
+    /// Open screen requests: `req_id` → the tool call waiting for a head to draw
+    /// itself. First answer wins; later ones find nothing and are dropped.
+    screens: HashMap<String, std::sync::mpsc::SyncSender<(usize, usize, Vec<String>)>>,
+    next_screen: u64,
 }
 
 /// What a session looks like from outside it: enough for a picker, and cheap
@@ -311,6 +315,8 @@ impl Hub {
                 answers: None,
                 secrets: HashMap::new(),
                 next_secret: 0,
+                screens: HashMap::new(),
+                next_screen: 0,
             }),
             cv: Condvar::new(),
             promote: Arc::new(Mutex::new(None)),
@@ -413,6 +419,44 @@ impl Hub {
             by: by.to_string(),
         });
         delivered
+    }
+
+    /// **Ask every attached head to draw itself.** Returns the receiver the caller
+    /// waits on; the first head to answer wins.
+    ///
+    /// The daemon cannot answer this itself at any fidelity worth having: it holds
+    /// the log and the view, never a rendered cell, and what a person sees depends
+    /// on their width, scroll, theme and folds.
+    pub fn request_screen(
+        &self,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<(usize, usize, Vec<String>)>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let req_id = {
+            let mut g = self.lock();
+            g.next_screen += 1;
+            let id = format!("screen-{}-{}", g.log.session_id(), g.next_screen);
+            g.screens.insert(id.clone(), tx);
+            id
+        };
+        self.publish(SessionEvent::ScreenRequested {
+            req_id: req_id.clone(),
+        });
+        (req_id, rx)
+    }
+
+    /// A head answered. `false` when nothing was waiting — the request timed out,
+    /// or another head was faster, and neither is an error.
+    pub fn give_screen(&self, req_id: &str, cols: usize, rows_n: usize, rows: Vec<String>) -> bool {
+        let tx = self.lock().screens.remove(req_id);
+        tx.is_some_and(|tx| tx.try_send((cols, rows_n, rows)).is_ok())
+    }
+
+    /// Nobody drew in time; forget it so a late answer finds nothing.
+    pub fn abandon_screen(&self, req_id: &str) {
+        self.lock().screens.remove(req_id);
     }
 
     /// The helper gave up (deadline, or its connection closed): forget the request.
