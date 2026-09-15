@@ -219,6 +219,22 @@ impl AuthorisationOracle for HttpOracle {
             Verdict::Deny => OracleAnswer::NotAuthorised {
                 why: format!("{} found nothing in the trail that asks for this", self.id),
             },
+            // **UNSURE is an answer, and it is one this seam offers.** The prompt's
+            // own suffix lists ALLOW / DENY / UNSURE, so a model that says `UNSURE`
+            // has answered the question asked of it — and this reported that as "no
+            // verdict this seam could read", which reads as a parse failure and put
+            // one in the corpus. The two really are different and both happen, so
+            // they are told apart rather than collapsed: a verdict the parser
+            // recognised as UNSURE, and bytes it could make nothing of.
+            Verdict::Unsure if raw.trim().eq_ignore_ascii_case("UNSURE") => {
+                OracleAnswer::Unsure {
+                    why: format!(
+                        "{} answered UNSURE: it could not tell whether this follows \
+                         from what the operator asked for",
+                        self.id
+                    ),
+                }
+            }
             Verdict::Unsure => OracleAnswer::Unsure {
                 why: format!("{} gave no verdict this seam could read: {:?}", self.id, raw.trim()),
             },

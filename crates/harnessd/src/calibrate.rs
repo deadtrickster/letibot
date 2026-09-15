@@ -42,9 +42,9 @@
 //!
 //! It does not widen anything by itself. It prints what the evidence supports and
 //! writes it, on `--write`, to a file the daemon reads and the operator can delete.
-//! The scope that comes from that file is labelled EARNED and carries the numbers;
-//! the one in `providers.toml` is labelled DECLARED and says no corpus was replayed.
-//! Those are different claims and the banner makes exactly one of them.
+//! The banner then says where the guard's authority came from in one sentence —
+//! these numbers, the `[gatekeeper]` lines, or both — rather than in a vocabulary
+//! of its own.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -73,6 +73,11 @@ pub struct Replayed {
     /// The guard's own words, for the row the operator reads.
     pub guard_said: String,
     pub ms: u64,
+    /// The bytes the guard was actually given for this row. Captured from the
+    /// adjudicator rather than read from the corpus: the store's `shown` column
+    /// holds whatever adjudicator ANSWERED, and for a row the operator answered
+    /// that is the head's brief, not the oracle's.
+    pub brief: Option<String>,
 }
 
 impl Replayed {
@@ -167,7 +172,7 @@ impl Report {
             return None;
         }
         let replayed = self.rows.len();
-        let false_allows: usize = self.per_intent.values().map(|t| t.false_allows).sum();
+        let false_allows = self.rows.iter().filter(|r| r.is_false_allow()).count();
         let saved = self.rows.iter().filter(|r| r.is_saved_prompt()).count();
         Some(OracleScope::earned(
             intents.into_iter().collect(),
@@ -189,12 +194,83 @@ impl Report {
 /// its scope, so replaying under the current one would measure only what it is
 /// already allowed to answer and could never widen anything. Nothing admits during
 /// a replay — no gate runs, no tool is called, and the answers go into a table.
+/// One configuration of the guard's brief, so two of them differ in exactly one
+/// thing and the difference is attributable.
+#[derive(Debug, Clone, Copy)]
+pub struct Arm {
+    pub name: &'static str,
+    pub variant: letibot_tools::authorise::BriefVariant,
+    /// Whether the operator's own earlier answers are shown.
+    pub examples: bool,
+    /// Whether the agent's statement of what it is doing is shown.
+    pub claim: bool,
+}
+
+/// The three that matter: what shipped, the reworded question alone, and the
+/// reworded question with the operator's answers beside it. Ordered so each row
+/// adds one thing to the row above it.
+pub const ARMS: &[Arm] = &[
+    Arm {
+        name: "asked-for-it, no examples (what shipped)",
+        variant: letibot_tools::authorise::BriefVariant::AskedForIt,
+        examples: false,
+        claim: false,
+    },
+    Arm {
+        name: "follows-from, no examples",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: false,
+        claim: false,
+    },
+    Arm {
+        name: "follows-from + the operator's own answers",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: true,
+        claim: false,
+    },
+    Arm {
+        name: "+ what the agent says it is doing",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: true,
+        claim: true,
+    },
+];
+
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
+    replay_arm(cfg, store, limit, ARMS[3])
+}
+
+/// **The rows to replay, taken once.**
+///
+/// `--compare` runs several arms over "the same" calls, and the store is being
+/// written by a live daemon while it does: reading per arm gave each one a
+/// different row set, so the arms differed by a few calls as well as by the change
+/// under test. Measured — the row totals came out 26, 28, 34, 37 — which is not a
+/// comparison of anything. Snapshot first, then vary one thing.
+pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
     let rows = db
         .corpus(false, 100_000)
         .map_err(|e| format!("reading the corpus: {e}"))?;
-    let answered: Vec<StoredAdjudication> = rows.into_iter().filter(|r| r.asked).take(limit).collect();
+    Ok(rows.into_iter().filter(|r| r.asked).take(limit).collect())
+}
+
+pub fn replay_arm(
+    cfg: &Config,
+    store: &Path,
+    limit: usize,
+    arm: Arm,
+) -> Result<Report, String> {
+    replay_rows(cfg, store, rows_to_replay(store, limit)?, arm)
+}
+
+pub fn replay_rows(
+    cfg: &Config,
+    store: &Path,
+    answered: Vec<StoredAdjudication>,
+    arm: Arm,
+) -> Result<Report, String> {
+    let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
 
     let mut oracle_cfg = cfg.clone();
     oracle_cfg.oracle_scope = Some(OracleScope::declared(
@@ -217,6 +293,10 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         store: store.display().to_string(),
     };
 
+    // Oldest first, so each row is measured against the answers that preceded it.
+    let mut answered: Vec<StoredAdjudication> = answered;
+    answered.reverse();
+    let mut answered_before: Vec<letibot_tools::authorise::DecisionExample> = Vec::new();
     for row in answered {
         let Some(acc) = access.get(row.tool.as_str()).copied() else {
             report.skipped.push((
@@ -260,11 +340,32 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         };
         let mode = letibot_tools::mode::Mode::parse(&row.mode).unwrap_or(cfg.mode);
 
-        let mut gate = AdjudicatedGate::closed().with_mode(mode).with_trail_source({
-            let trail = trail.clone();
-            move |_call: &GateCall<'_>| trail.clone()
-        });
-        let req = gate.request_for(&GateCall {
+        // **The surroundings a real session declares.** Without them the shell is
+        // `ShellTrust::Unknown`, under which a bare command name does not resolve —
+        // and an unresolved action short-circuits before the oracle, so the guard
+        // is never asked and the replay measures nothing at all. Measured: 26 of 28
+        // rows came back "the action did not resolve … No oracle was consulted",
+        // which is why no change to the guard's prompt moved a single verdict.
+        //
+        // Built from the same function `Harness::open` uses, so the replay asks the
+        // question a live session asks rather than a stricter one.
+        // Pinned outright, rather than derived from THIS invocation's seat: the
+        // `--calibrate` process has no exec backend of its own, so
+        // `surroundings_for` would call the shell `Unknown` and every command would
+        // fail to resolve again. The claim being made is about the session the row
+        // came FROM, which did spawn through `HostProcesses` — every one of these
+        // commands actually ran there.
+        let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
+            "replaying a command that already ran in a session whose exec backend              spawns /bin/sh -c with the environment cleared and PATH fixed at seat              time",
+        );
+        let mut gate = AdjudicatedGate::closed()
+            .with_mode(mode)
+            .with_surroundings(sur)
+            .with_trail_source({
+                let trail = trail.clone();
+                move |_call: &GateCall<'_>| trail.clone()
+            });
+        let mut req = gate.request_for(&GateCall {
             name: &row.tool,
             access: acc,
             args: &args,
@@ -273,11 +374,49 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
             workspace: &workspace,
             target_exists: None,
         });
+        // **The examples the guard would have had AT THIS POINT**, and not one
+        // answer later.
+        //
+        // A live gate builds these from its own audit log; a replay opens a fresh
+        // gate per row, so without this the brief carries none and the measurement
+        // is blind to exactly the thing in-context examples are supposed to change.
+        // Feeding it every answer in the corpus would be worse than blind — it
+        // would show the guard answers the operator had not given yet, and a
+        // calibration fitted on the future measures nothing.
+        req.examples = answered_before.clone();
+        answered_before.insert(
+            0,
+            letibot_tools::authorise::DecisionExample {
+                action: req.baseline.clone(),
+                verdict: if row.effect == "admit" { "allowed" } else { "refused" },
+                turns_ago: None,
+            },
+        );
+        answered_before.truncate(6);
 
+        // **The arm being measured.** One row, one question wording, one decision
+        // about whether the operator's own answers are in front of the guard — so a
+        // difference in the table below belongs to exactly one change.
+        req.brief_variant = arm.variant;
+        if !arm.examples {
+            req.examples.clear();
+        }
+        // **The agent's own sentence for the round this call came from.** Recovered
+        // from the transcript rather than the corpus, which does not store it: the
+        // assistant item immediately before this decision is the prose a model puts
+        // in front of its tool calls, and that is the sentence the live gate now
+        // carries. Reconstructed per row so the replay asks the question the live
+        // session asks.
+        req.agent_claim = if arm.claim {
+            claim_before(&db, &row.session_id, row.decided_ms)
+        } else {
+            None
+        };
         let started = std::time::Instant::now();
         let _ = adjudicator.decide(&req);
         let advice = adjudicator.last_advice();
         let ms = started.elapsed().as_millis() as u64;
+        let brief = adjudicator.last_brief();
         let guard_allowed = advice.as_ref().is_some_and(|a| a.consulted && a.would == "admit");
         let guard_said = advice
             .as_ref()
@@ -294,6 +433,7 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
             guard_allowed,
             guard_said,
             ms,
+            brief,
         };
         for i in &intents {
             let t = report.per_intent.entry(i.as_str()).or_default();
@@ -311,6 +451,31 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         report.rows.push(r);
     }
     Ok(report)
+}
+
+/// The agent's own prose for the round a decision came from.
+///
+/// The corpus does not store it — the brief the oracle saw is not kept for rows a
+/// human answered — so it is read back out of the transcript: the newest assistant
+/// item written before the decision. Bounded like an utterance, for the same
+/// reason.
+fn claim_before(db: &Store, session_id: &str, before_ms: i64) -> Option<String> {
+    let text: Option<String> = db
+        .connection()
+        .query_row(
+            "SELECT item_json FROM transcript_item
+              WHERE transcript_id LIKE ?1 AND kind = 'assistant' AND created_at <= ?2
+              ORDER BY created_at DESC LIMIT 1",
+            [format!("{session_id}%"), before_ms.to_string()],
+            |r| r.get(0),
+        )
+        .ok();
+    let v: serde_json::Value = serde_json::from_str(&text?).ok()?;
+    let t = v.get("text")?.as_str()?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(t.chars().take(600).collect())
 }
 
 /// Layer A's reading of this call, the same way the gate takes it.
@@ -376,7 +541,10 @@ impl Report {
         let _ = writeln!(o, "corpus replay against {}", self.oracle);
         let _ = writeln!(o, "  store: {}", self.store);
         let replayed = self.rows.len();
-        let false_allows: usize = self.per_intent.values().map(|t| t.false_allows).sum();
+        // **Rows, not intents.** Summing the per-intent column counts a call once
+        // per intent it carries, so three bad calls read as six — which is what the
+        // headline said before anybody compared it against the arms table.
+        let false_allows = self.rows.iter().filter(|r| r.is_false_allow()).count();
         let saved = self.rows.iter().filter(|r| r.is_saved_prompt()).count();
         let _ = writeln!(
             o,
@@ -411,6 +579,25 @@ impl Report {
             let _ = writeln!(o, "  {} row(s) could not be replayed:", self.skipped.len());
             for (id, why) in &self.skipped {
                 let _ = writeln!(o, "    {id}: {why}");
+            }
+            o.push('\n');
+        }
+        // **Why it declined**, for the rows where the operator said yes and the
+        // guard would not. Those are the prompts a wider scope does NOT remove, so
+        // a report that only counted them would leave the reader guessing at the
+        // one thing they can act on.
+        let mut declined: Vec<&Replayed> = self
+            .rows
+            .iter()
+            .filter(|r| !r.guard_allowed && r.operator_admitted)
+            .collect();
+        declined.truncate(4);
+        if !declined.is_empty() {
+            let _ = writeln!(o, "  why it would still have asked you (first {}):", declined.len());
+            for r in declined {
+                let why = r.guard_said.splitn(2, ' ').nth(1).unwrap_or(&r.guard_said);
+                let why: String = why.chars().take(150).collect();
+                let _ = writeln!(o, "    {} — {}", r.tool, why.trim());
             }
             o.push('\n');
         }
@@ -473,9 +660,9 @@ pub fn read_calibration(cfg: &Config) -> Option<OracleScope> {
         return None;
     }
     let max_scope = EffectScope::parse(&on.max_scope)?;
-    // EARNED, and carrying the evidence it was written with — the replay's own
-    // numbers. This is the one path that produces an earned scope; everything else
-    // is the floor or a declaration.
+    // Carries the evidence it was written with — the replay's own numbers, which
+    // is what the banner shows when somebody asks why the guard may answer about
+    // this much.
     Some(OracleScope::earned(intents, max_scope, on.evidence))
 }
 
@@ -493,6 +680,7 @@ mod tests {
             guard_allowed: guard,
             guard_said: String::new(),
             ms: 1,
+            brief: None,
         }
     }
 

@@ -235,6 +235,13 @@ fn run() -> Result<i32, String> {
             // Re-render any stable prefix stored with no tokens, so a transcript
             // hanging off one can be resumed again. See `Query::RepairPrefixes`.
             "--repair-prefixes" => query = Some(Query::RepairPrefixes),
+            // Run every arm over the same rows and print them side by side. A
+            // prompt change to this seam is a hypothesis until this says otherwise.
+            "--compare" => query = Some(Query::Compare),
+            // Print the bytes the guard is actually handed for a call it could not
+            // answer. "Look at what it is shown" — the only way to tell a prompt
+            // problem from a evidence problem.
+            "--show-brief" => query = Some(Query::ShowBrief),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
@@ -404,15 +411,36 @@ fn run() -> Result<i32, String> {
         return run_query(&cfg, q, scope.as_deref(), tsv);
     }
 
-    // **A measurement beats a grant.** `[gatekeeper]` above is what the operator
-    // DECLARED; this is what a corpus replay EARNED, written beside the store by
-    // `--calibrate-write`. When both exist the earned one wins — it is the same
-    // authority with numbers behind it instead of a promise — and the banner says
-    // EARNED, carrying those numbers. Read here, after `--store` is known, and
+    // **What a corpus replay measured**, written beside the store by
+    // `--calibrate-write`. Read here, after `--store` is known, and
     // absent/malformed is silently the declared scope, the same fail-open a
     // startup read must have.
     if let Some(earned) = letibot_harnessd::calibrate::read_calibration(&cfg) {
-        cfg.oracle_scope = Some(earned);
+        // **A measurement ADDS to a declaration; it never shrinks one.**
+        //
+        // Replacing outright was wrong, and the way it was wrong is the way that
+        // matters: a replay recommends only what it has rows for, so on this box it
+        // earned five intents and a reach of `host_project` — while the operator
+        // had set `host_other` in providers.toml, which is what their work outside the project
+        // needs. Taking the earned scope whole would have widened the intents and
+        // silently revoked the reach, in the name of evidence that never said
+        // anything about it.
+        //
+        // Both halves are the operator's own authority: one they typed, one
+        // measured from calls they answered themselves. Neither gets to quietly
+        // undo the other, so the intents are the union and the reach is the further
+        // of the two, and the evidence says it is both.
+        cfg.oracle_scope = Some(match cfg.oracle_scope.take() {
+            None => earned,
+            Some(declared) => letibot_tools::authorise::OracleScope::earned(
+                declared.intents.union(&earned.intents).copied().collect(),
+                declared.max_scope.max(earned.max_scope),
+                format!(
+                    "{} — combined with what the operator declared in providers.toml,                      which a measurement adds to and never shrinks",
+                    earned.evidence
+                ),
+            ),
+        });
     }
 
     let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
@@ -743,6 +771,8 @@ enum Query {
     Delete(String),
     Calibrate { write: bool },
     RepairPrefixes,
+    Compare,
+    ShowBrief,
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -827,6 +857,58 @@ fn run_query(
             );
             Ok(0)
         }
+        Query::ShowBrief => {
+            drop(store);
+            let r = letibot_harnessd::calibrate::replay(cfg, path, 10_000)?;
+            let pick = r
+                .rows
+                .iter()
+                .find(|x| !x.guard_allowed && x.operator_admitted && x.brief.is_some())
+                .or_else(|| r.rows.iter().find(|x| x.brief.is_some()));
+            match pick {
+                Some(row) => {
+                    println!(
+                        "a call YOU allowed and the guard would not, and everything it \
+                         had to go on:\n\n  verdict: {}\n\n{}",
+                        row.guard_said,
+                        row.brief.as_deref().unwrap_or("")
+                    );
+                }
+                None => println!("no row was replayed with a brief to show."),
+            }
+            Ok(0)
+        }
+        Query::Compare => {
+            drop(store);
+            println!(
+                "replaying the same operator-answered calls under each brief, so a \
+                 difference belongs to one change.\n"
+            );
+            println!(
+                "  {:<46} {:>7} {:>7} {:>13}",
+                "arm", "agreed", "asks", "FALSE ALLOWS"
+            );
+            // One snapshot, every arm. The store is live.
+            let rows = letibot_harnessd::calibrate::rows_to_replay(path, 10_000)?;
+            for arm in letibot_harnessd::calibrate::ARMS {
+                let r = letibot_harnessd::calibrate::replay_rows(cfg, path, rows.clone(), *arm)?;
+                let agreed = r.rows.iter().filter(|x| x.is_saved_prompt()).count();
+                let bad = r.rows.iter().filter(|x| x.is_false_allow()).count();
+                let asks = r
+                    .rows
+                    .iter()
+                    .filter(|x| !x.guard_allowed && x.operator_admitted)
+                    .count();
+                println!("  {:<46} {agreed:>7} {asks:>7} {bad:>13}", arm.name);
+            }
+            println!(
+                "\nagreed: prompts this arm would have saved you. asks: times it would \
+                 still have come to you. FALSE ALLOWS: times it would have admitted \
+                 what you refused — the only column that is a fault, and the one a \
+                 wording change must not raise."
+            );
+            Ok(0)
+        }
         Query::Calibrate { write } => {
             // The store connection above is dropped by the replay opening its own;
             // two handles on one WAL database is the store's declared shape.
@@ -837,10 +919,11 @@ fn run_query(
                 (true, Some(scope)) => {
                     let file = letibot_harnessd::calibrate::write_calibration(cfg, &scope)?;
                     println!(
-                        "\nrecorded in {} — the guard opens with this scope from the \
-                         next daemon start, labelled EARNED with the numbers above. \
-                         Delete the file to go back to the built-in floor, or to \
-                         whatever `[gatekeeper]` in providers.toml declares.",
+                        "\nrecorded in {} — from the next daemon start the guard may \
+                         answer about this much, and the banner cites the numbers \
+                         above when it says why. Delete the file to undo it; whatever \
+                         `[gatekeeper]` sets in providers.toml still applies either \
+                         way, and this only ever adds to it.",
                         file.display()
                     );
                 }

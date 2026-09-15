@@ -531,6 +531,9 @@ mod tests {
             baseline: "writes one file inside the project".into(),
             trail: Default::default(),
             prior: Vec::new(),
+            examples: Vec::new(),
+            brief_variant: letibot_tools::authorise::BriefVariant::Follows,
+            agent_claim: None,
             advice: None,
         }
     }
