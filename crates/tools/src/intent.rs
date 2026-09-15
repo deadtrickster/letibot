@@ -1371,9 +1371,26 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         }
         "sudo" | "doas" | "su" | "pkexec" | "runuser" => vec![PrivilegeEscalation],
         "export" | "unset" | "declare" | "typeset" | "readonly" | "local" | "set" | "source"
-        | "." | "alias" | "unalias" | "cd" | "umask" | "ulimit" | "exec" => {
+        | "." | "alias" | "unalias" | "umask" | "ulimit" | "exec" => {
             vec![EnvironmentMutation]
         }
+        // **`cd` is navigation, not mutation.**
+        //
+        // It sat in the row above, and the consequence was out of all proportion:
+        // `cd PROJECT && git diff` — the most ordinary shape a shell command has —
+        // carried `environment_mutation`, which is outside the built-in scope, so
+        // no oracle could answer about it and every such call went to the operator.
+        // Measured on `cd /home/dead/Projects/letibot && git diff --stat && …`.
+        //
+        // What the label was standing in for is already carried twice over. Each
+        // `bash` call is its own process, so a `cd` changes nothing that outlives
+        // it — unlike `export`, `alias` or `source`, which are why that row exists.
+        // And the directory it names is classified like any other path: `cd /etc &&
+        // rm -f x` still reports `system_config` among its regions, and the `rm`
+        // still resolves to `host_other` — identically to `rm -f x` with no `cd` in
+        // front of it, because a relative path is read conservatively either way.
+        // Measured before changing this, rather than assumed.
+        "cd" | "pushd" | "popd" | "dirs" => vec![Inspect],
         "eval" | "bash" | "sh" | "zsh" | "dash" | "ksh" | "python" | "python3" | "perl"
         | "ruby" | "node" | "deno" | "bun" | "php" | "lua" | "Rscript" | "xargs" | "watch"
         | "env" | "timeout" | "nice" | "ionice" | "stdbuf" | "setsid" | "time" | "command"
@@ -2792,6 +2809,47 @@ mod tests {
         // Reading one config key is a read; setting one is not.
         assert!(!b("git config user.email").intents.contains(&Intent::WriteFile));
         assert!(b("git config user.email me@example.com").intents.contains(&Intent::WriteFile));
+    }
+
+    /// **`cd PROJECT && …` is the ordinary shape of a shell command.**
+    ///
+    /// `cd` carried `environment_mutation`, which is outside every oracle's
+    /// built-in scope, so the guard could not answer about any compound command
+    /// that opened with one — and that is most of them. Measured on the operator's
+    /// own screen: `cd /home/dead/Projects/letibot && git diff --stat && …` went to
+    /// them with a 0 ms verdict and `[environment_mutation]` as the reason.
+    #[test]
+    fn a_leading_cd_does_not_put_a_command_outside_every_oracles_reach() {
+        let x = b("cd /home/dead/Projects/letibot && git diff --stat");
+        assert!(
+            !x.intents.contains(&Intent::EnvironmentMutation),
+            "{:?}",
+            x.intents
+        );
+
+        // The things that row exists for are untouched: they outlive the command.
+        for cmd in ["export TOKEN=abc", "source ~/.bashrc", "alias ls='rm -rf'"] {
+            assert!(
+                b(cmd).intents.contains(&Intent::EnvironmentMutation),
+                "{cmd} stopped being an environment mutation"
+            );
+        }
+
+        // And nothing was lost: what the label stood in for is carried by the
+        // regions, which read the `cd`'s own target — and the relative path after
+        // it is still read conservatively, exactly as it is with no `cd` at all.
+        let risky = b("cd /etc && rm -f x");
+        assert!(risky.intents.contains(&Intent::Destroy), "{:?}", risky.intents);
+        assert!(
+            risky.regions.contains(&Region::SystemConfig),
+            "the directory it moved to is still classified: {:?}",
+            risky.regions
+        );
+        assert_eq!(
+            b("rm -f x").scoped.first().map(|s| s.region.clone()),
+            risky.scoped.first().map(|s| s.region.clone()),
+            "a relative target reads the same with and without the `cd`"
+        );
     }
 
     #[test]
