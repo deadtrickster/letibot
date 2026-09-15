@@ -62,8 +62,8 @@ fn store_copy(tag: &str) -> Option<(TempDir, std::path::PathBuf)> {
     Some((dir, dst))
 }
 
-/// The session in the copied store with the most rows **that this test's dialect
-/// could actually resume**, and how many.
+/// The session in the copied store with the most rows **that this build could
+/// actually resume**, and how many.
 ///
 /// The filter is not tidiness. A session's tokens came out of one renderer, and
 /// `Harness::open` refuses to append another's bytes to them — correctly, and by
@@ -72,32 +72,65 @@ fn store_copy(tag: &str) -> Option<(TempDir, std::path::PathBuf)> {
 /// the run fails on the guard rather than on resume, and the failure names a
 /// dialect mismatch that is the test's own doing.
 ///
-/// Selecting by model here keeps the vocabulary right too — `Config::for_this_box`
+/// Selecting by model keeps the vocabulary right too — `Config::for_this_box`
 /// names the qwen GGUF, and a GLM session resumed against it would be the same
 /// defect one layer down.
-fn biggest(path: &std::path::Path) -> (String, u32, String) {
+///
+/// **And the model id is not enough.** What `Harness::open` compares is the
+/// TEMPLATE hash, and a template is edited from time to time — so the operator's
+/// store holds qwen sessions this binary renders differently, and the biggest one
+/// was exactly that (measured 2026-09-15: the run failed on the template guard,
+/// naming a mismatch the selector had chosen). The guard was right; the fixture
+/// was stale. So the sha this build produces is passed in and candidates are
+/// checked against what their own stable prefix was recorded under.
+fn biggest(path: &std::path::Path, renders: &str) -> (String, u32, String) {
     let store = Store::open(path).expect("opening the copy");
     let all = store.list_sessions().expect("listing");
     let total = all.len();
-    let s = all
+    let named: Vec<_> = all
         .into_iter()
         .filter(|s| Dialect::parse(&s.model_id) == Some(WANTED))
-        .max_by_key(|s| s.items)
-        .unwrap_or_else(|| {
-            panic!(
-                "none of the {total} stored session(s) was recorded under `{}`, so there \
-                 is nothing this test can resume. That is a fact about the store and not \
-                 a pass: run a session on that model, or set LETIBOT_STORE to a store \
-                 that has one.",
-                WANTED.name()
-            )
-        });
+        .collect();
+    let named_count = named.len();
+    let mut same_template: Vec<_> = named
+        .into_iter()
+        .filter(|s| recorded_under(&store, s).as_deref() == Some(renders))
+        .collect();
+    same_template.sort_by_key(|s| std::cmp::Reverse(s.items));
+    let s = same_template.into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "of the {total} stored session(s), {named_count} were recorded under `{}` \
+             and none of those under the template this build renders ({renders}). That \
+             is a fact about the store and not a pass: run a session on this build, or \
+             set LETIBOT_STORE to a store that has one.",
+            WANTED.name()
+        )
+    });
     assert!(
         s.items > 0,
         "every stored `{}` session is empty, so this measured nothing",
         WANTED.name()
     );
     (s.id, s.items, s.workspace_root)
+}
+
+/// The template hash a stored session's tokens were produced under, or `None`
+/// when it has no transcript to have been produced under one.
+fn recorded_under(store: &Store, s: &letibot_tokencore::store::StoredSession) -> Option<String> {
+    let t = store.load_transcript(s.transcript_id.as_ref()?).ok()?;
+    let meta = store.stable_prefix_meta(&t.stable_prefix_id).ok()??;
+    Some(meta.dialect_sha)
+}
+
+/// The hash this build renders `WANTED` with, spelled the way the store holds it.
+fn renders_template(parts: &Parts) -> String {
+    parts
+        .wiring
+        .spec()
+        .template_sha
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The dialect this file configures, named once so the selector and the config
@@ -109,10 +142,16 @@ const WANTED: Dialect = Dialect::Qwen;
 ///
 /// A resumed session takes its workspace from the STORE, so on this box that is
 /// `~/Projects/letibot` — which has a row in the operator's real
-/// `~/.config/letibot/modes.tsv` saying `writes allowed`. `Harness::open` then
-/// applies it, the resumed session's seat turns out to have no write tools, and
-/// the mode's prerequisite refuses: "missing: writable backend". That refusal is
-/// correct and has nothing to do with resume.
+/// `~/.config/letibot/modes.tsv`. `Harness::open` applies it, and the test is then
+/// measuring resume against whatever this laptop is configured for.
+///
+/// (This used to say the refusal it produced — "missing: writable backend" — was
+/// correct and nothing to do with resume. It was a REAL defect in resume: the
+/// stored role reached the tool registry and not the backend, so a resumed
+/// `leticode` session seated `write` against a read-only view. Fixed in
+/// `Harness::open`, where the seat is now taken from the store beside the
+/// workspace. The lesson kept: a red test explained in a comment is a hypothesis,
+/// and this one was wrong for a week.)
 ///
 /// These two tests are about the resume path, so they supply an empty store and
 /// let the mode be the daemon's. Same discipline as `wired.rs`: state the
@@ -144,7 +183,12 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
              produced. Set LETIBOT_STORE, or run this on the box that has one."
         );
     };
-    let (session_id, items, workspace) = biggest(&path);
+    // Loaded before the pick, because which session this build can resume depends
+    // on the template it renders — and that is a property of the loaded wiring, not
+    // of a name. The session id in this first config is a placeholder; `Parts::load`
+    // reads the vocabulary and the dialect and nothing else.
+    let probe = Parts::load(&config(&path, "", "/tmp")).expect("the vocabulary must load");
+    let (session_id, items, workspace) = biggest(&path, &renders_template(&probe));
 
     // Deliberately NOT the session's own workspace: the daemon is started somewhere
     // else, which is the normal case for `--continue` and the one that used to seat
@@ -213,7 +257,8 @@ fn a_session_recorded_under_another_dialect_is_refused_by_name() {
     let Some((_dir, path)) = store_copy("harnessd-dialect") else {
         panic!("no store; see the other test in this file for why this is not skipped");
     };
-    let (session_id, _, workspace) = biggest(&path);
+    let probe = Parts::load(&config(&path, "", "/tmp")).expect("the vocabulary must load");
+    let (session_id, _, workspace) = biggest(&path, &renders_template(&probe));
 
     {
         // `stable_prefix` carries no append-only trigger — it is content-addressed

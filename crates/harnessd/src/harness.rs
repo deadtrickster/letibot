@@ -900,6 +900,46 @@ impl<'a> Harness<'a> {
             if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
                 cfg.title = t.clone();
             }
+            // **The seat comes from the session too, and it has to land HERE.**
+            //
+            // The role was already read from the store — 400 lines down, where the
+            // registry is resolved — and that was half the job. `cfg.seat` decides
+            // which backend gets built (writable, confined, or the read-only
+            // default) and whether the session is unconfined, and both of those
+            // happen BEFORE that point. So a `leticode` session resumed by a daemon
+            // started at the default role seated `write` and `edit` against a
+            // READ-ONLY backend: at a mode that requires a writable one the session
+            // refused to open at all, and at one that does not it would have opened
+            // with tools that fail on their first call.
+            //
+            // Measured on the operator's own store, 2026-09-15: two resume tests
+            // red with "missing: writable backend" for a session whose stored role
+            // is `leticode`. The role column exists precisely so a resume does not
+            // re-seat a conversation; reading it after the backend is built honours
+            // half of that and is worse than not reading it, because the tools and
+            // the backend then disagree.
+            //
+            // Unparseable is an ERROR, same rule as at the registry: falling back to
+            // the daemon's role would re-seat the conversation silently.
+            if let Some(name) = st.role.as_ref().filter(|r| !r.is_empty()) {
+                let seat = Seat::parse(name).map_err(|e| {
+                    HarnessError::Setup(format!(
+                        "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
+                        cfg.session_id
+                    ))
+                })?;
+                if seat != cfg.seat {
+                    notes.push(format!(
+                        "the role is `{}` — this session's own, from the store — not \
+                         `{}`, which is what this daemon was started with. The tools \
+                         AND the backend follow the session's role, or they would \
+                         disagree about what it may write.",
+                        seat.as_str(),
+                        cfg.seat.as_str()
+                    ));
+                    cfg.seat = seat;
+                }
+            }
         }
 
         // **The mode is a session property, resolved after the workspace is final.**
@@ -1288,18 +1328,11 @@ impl<'a> Harness<'a> {
         // An unparseable stored name is an ERROR and not a fallback. Falling back to
         // the daemon's role would re-seat the conversation silently, which is the
         // exact failure this column exists to remove.
-        let role = match stored.as_ref().and_then(|st| st.role.clone()) {
-            Some(name) => {
-                let seat = Seat::parse(&name).map_err(|e| {
-                    HarnessError::Setup(format!(
-                        "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
-                        cfg.session_id
-                    ))
-                })?;
-                role_for_seat(seat, &cfg)
-            }
-            None => role_for(&cfg),
-        };
+        // `cfg.seat` already IS the session's role: it was taken from the store at
+        // the top of this function, where it still had time to reach the backend.
+        // One read, one seat — the two used to be resolved separately and could
+        // disagree.
+        let role = role_for(&cfg);
         let registry = registry
             .resolve_role(&role)
             .map_err(|e| {
