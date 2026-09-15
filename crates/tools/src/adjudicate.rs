@@ -1422,6 +1422,24 @@ pub const NEVER_WRITE: &[&str] = &[
     ".config/google-chrome",
     ".config/chromium",
     ".git",
+    // The clause said "or a browser profile", and three of them is not the
+    // clause. Same reasoning as the read-side list in `intent::SECRET_DIRS`,
+    // which these are kept in step with.
+    ".config/BraveSoftware",
+    ".config/microsoft-edge",
+    ".config/vivaldi",
+    ".config/opera",
+    ".thunderbird",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Firefox",
+    "AppData/Local/Google/Chrome",
+    "AppData/Roaming/Mozilla",
+    ".local/share/keyrings",
+    ".gnome2/keyrings",
+    ".config/gcloud",
+    ".azure",
+    ".config/op",
+    ".config/Bitwarden",
 ];
 
 /// The gate that consults an adjudicator.

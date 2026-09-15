@@ -1592,6 +1592,28 @@ pub const SECRET_DIRS: &[&str] = &[
     ".config/flowy",
     "/etc/shadow",
     "/etc/sudoers",
+    // **The rest of the browsers, and the rest of the credential stores.** The
+    // operator's list: *"matching `.ssh` and then google chrome firefox etc
+    // profile folder paths"*. A browser profile is a session-cookie store, which
+    // is a credential store that happens to be shaped like a directory — and
+    // having three of them here and not the others was an accident of whichever
+    // ones somebody had installed.
+    ".config/BraveSoftware",
+    ".config/microsoft-edge",
+    ".config/vivaldi",
+    ".config/opera",
+    ".thunderbird",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Firefox",
+    "AppData/Local/Google/Chrome",
+    "AppData/Roaming/Mozilla",
+    // Credential stores that are not browsers.
+    ".local/share/keyrings",
+    ".gnome2/keyrings",
+    ".config/gcloud",
+    ".azure",
+    ".config/op",
+    ".config/Bitwarden",
 ];
 
 /// Files that are secret wherever they sit, matched on the final path segment.
@@ -1839,6 +1861,20 @@ fn under(path: &str, dir: &str) -> bool {
     path == d || path.starts_with(&format!("{d}/"))
 }
 
+/// **The files that decide what runs unasked**, matched wherever they sit.
+///
+/// Hardcoded, and the only list here that is: these are the paths whose contents
+/// are the other lists. `$XDG_CONFIG_HOME` moves them, so the match is on the tail
+/// rather than on an absolute path, and a name is enough — there is no legitimate
+/// reason for a session to write a file called `permission.json` under a `letibot`
+/// directory that is not this.
+fn touches_own_config(text: &str) -> bool {
+    let t = text.replace('\\', "/");
+    ["permission.json", "sensitive.json", "modes.tsv", "providers.toml"]
+        .iter()
+        .any(|f| t.contains(&format!("letibot/{f}")))
+}
+
 /// Which secret store a path is in, if any.
 ///
 /// **Directories before file names**, and the order is load-bearing rather than
@@ -1984,6 +2020,15 @@ pub const ALWAYS_ASK: &[AlwaysAskRule] = &[
               passed by identity flag. Using the key is fine WHEN THEY SAID SO, which \
               makes it an ask and not an auto; disclosure of the key is a different \
               thing and is inexpressible",
+    },
+    AlwaysAskRule {
+        name: "changes_its_own_rules",
+        why: "the call writes the files that decide what may run unasked — the \
+              preapproved ruleset and the sensitive-path list. A session that can \
+              edit those can grant itself anything and then do it quietly, so this \
+              one asks however the lists are configured. It is the only rule that \
+              cannot be configured, because it is the rule protecting the \
+              configuration",
     },
     AlwaysAskRule {
         name: "could_not_be_read",
@@ -2216,8 +2261,14 @@ impl Baseline {
 
         // 3. The disposition: which of the four outcome classes this is. Computed
         //    last, from the intents and their scopes, and only ever tightened.
-        b.settle(env);
+        // **The parse is carried BEFORE the disposition is computed**, because one
+        // of the rules `settle` applies reads the command's own text: a write to the
+        // session's rule files asks, and a redirection names its target nowhere else
+        // — no scoped intent, no argument. With the order the other way round that
+        // rule saw `command: None` and `printf x > …/permission.json` settled as
+        // `MayApprove`, which is the one call it exists to catch.
         b.command = Some(n);
+        b.settle(env);
         b
     }
 
@@ -2256,6 +2307,46 @@ impl Baseline {
         if self.intents.contains(&Intent::PrivilegeEscalation) {
             let d = "this command escalates privilege".to_string();
             ask("privilege_escalation", d, self);
+        }
+        // **The rules about the rules, and the one thing not read from them.**
+        //
+        // Everything else on this tier is a judgement about an action. This is a
+        // judgement about the SESSION: a call that writes the preapproved ruleset or
+        // the sensitive-path list is a call that decides what the next thousand
+        // calls may do unasked. Nothing in those files can turn it off, which is the
+        // whole point — a guard whose own configuration is editable by the thing it
+        // guards is not a guard, and the operator named that before the second list
+        // was written: *"which is itself must be behind human ask in code level —
+        // the only hardcoded part."*
+        //
+        // Writes and deletes only. Reading its own configuration is ordinary and
+        // often useful, and asking about it would teach the operator to wave the
+        // prompt through.
+        // **The whole string, not the parse.** Finding the write target
+        // structurally missed `printf x > …/permission.json`, because a redirection
+        // produces no scoped intent — and that is precisely the shape a model
+        // reaching for its own rules would use. The operator's correction: *"the
+        // whole damn string should go thru regex"*. Right, and the asymmetry is
+        // why: a false positive here is one prompt, and a false negative is a
+        // session that granted itself something quietly.
+        //
+        // Still gated on the call being a WRITE. A command that only reads its own
+        // configuration is ordinary, and asking about it would teach the operator to
+        // wave prompts through — the mechanism every entry on this tier exists to
+        // protect.
+        if self
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::WriteFile | Intent::Destroy))
+        {
+            let mut seen: Vec<String> = self.scoped.iter().map(|si| si.target.clone()).collect();
+            if let Some(cmd) = &self.command {
+                seen.push(cmd.source.clone());
+            }
+            if let Some(target) = seen.into_iter().find(|t| touches_own_config(t)) {
+                let d = format!("this call writes `{}`", target.trim());
+                ask("changes_its_own_rules", d, self);
+            }
         }
         // Destruction is judged by SCOPE, never by the verb. `rm -rf target/debug` is
         // ordinary work; the same verb outside the project is not.
@@ -2849,6 +2940,51 @@ mod tests {
             b("rm -f x").scoped.first().map(|s| s.region.clone()),
             risky.scoped.first().map(|s| s.region.clone()),
             "a relative target reads the same with and without the `cd`"
+        );
+    }
+
+    /// **A session cannot quietly rewrite the rules it runs under.**
+    ///
+    /// The operator: *"if a model wants to change that config it will be forced to
+    /// ask me"*. Every other entry on the always-ask tier is a judgement about an
+    /// action; this one is about the session, and it is the one rule that is not
+    /// read from the files it protects — a guard whose configuration is editable by
+    /// the thing it guards is not a guard.
+    #[test]
+    fn writing_its_own_rule_files_always_asks() {
+        for cmd in [
+            "printf x > /home/dead/.config/letibot/permission.json",
+            "rm /home/dead/.config/letibot/sensitive.json",
+            "cp /tmp/x /home/dead/.config/letibot/modes.tsv",
+        ] {
+            let x = b(cmd);
+            match &x.tier {
+                Tier::AlwaysAsk { rule, .. } => {
+                    assert_eq!(*rule, "changes_its_own_rules", "{cmd}: {:?}", x.tier)
+                }
+                // An inexpressible verdict is stricter and is also fine: what must
+                // never happen is this passing without a person.
+                Tier::Inexpressible { .. } => {}
+                t => panic!("{cmd} did not reach a human: {t:?}"),
+            }
+        }
+
+        // **Reading it does not ask.** A session looking at its own configuration is
+        // ordinary, and a prompt for it would teach the operator to wave prompts
+        // through — which is the mechanism every always-ask entry exists to protect.
+        let read = b("cat /home/dead/.config/letibot/permission.json");
+        assert!(
+            !matches!(&read.tier, Tier::AlwaysAsk { rule, .. } if *rule == "changes_its_own_rules"),
+            "reading its own config asked: {:?}",
+            read.tier
+        );
+
+        // And an ordinary write elsewhere is untouched.
+        let ordinary = b("printf x > /home/dead/Projects/letibot/notes.md");
+        assert!(
+            !matches!(&ordinary.tier, Tier::AlwaysAsk { rule, .. } if *rule == "changes_its_own_rules"),
+            "{:?}",
+            ordinary.tier
         );
     }
 
