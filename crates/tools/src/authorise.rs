@@ -729,6 +729,24 @@ impl OracleScope {
         })
     }
 
+    /// **A scope with a measurement behind it.** What [`crate::authorise`]'s own
+    /// doc has asked for all along, and what a corpus replay produces: the intents
+    /// and reach the guard agreed with the operator on, and `evidence` carrying the
+    /// numbers it was fitted to. `declared` is false, so the banner says EARNED —
+    /// and it says it only for a scope that came through this door.
+    pub fn earned(
+        intents: std::collections::BTreeSet<Intent>,
+        max_scope: EffectScope,
+        evidence: impl Into<String>,
+    ) -> Self {
+        OracleScope {
+            intents,
+            max_scope,
+            evidence: evidence.into(),
+            declared: false,
+        }
+    }
+
     /// Whether this authority was granted by a person rather than measured.
     ///
     /// A flag rather than a substring test on `evidence`: the sentence is prose and

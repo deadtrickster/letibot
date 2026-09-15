@@ -88,6 +88,7 @@
 pub mod corpus;
 pub mod oracle;
 pub mod answers;
+pub mod calibrate;
 pub mod slash;
 pub mod sudo;
 pub mod config;

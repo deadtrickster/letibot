@@ -229,6 +229,11 @@ fn run() -> Result<i32, String> {
                 query = Some(Query::Rename(id, title));
             }
             "--delete" => query = Some(Query::Delete(next()?)),
+            // Replay the operator-answered corpus against the guard and print
+            // what it earns. `--calibrate-write` also records it where the
+            // daemon reads it at startup. See `letibot_harnessd::calibrate`.
+            "--calibrate" => query = Some(Query::Calibrate { write: false }),
+            "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
             "--workspace" => cfg.workspace = PathBuf::from(next()?),
             "--socket" => cfg.socket = PathBuf::from(next()?),
@@ -394,6 +399,17 @@ fn run() -> Result<i32, String> {
     // header for why that ordering is load-bearing rather than tidy.
     if let Some(q) = query {
         return run_query(&cfg, q, scope.as_deref(), tsv);
+    }
+
+    // **A measurement beats a grant.** `[gatekeeper]` above is what the operator
+    // DECLARED; this is what a corpus replay EARNED, written beside the store by
+    // `--calibrate-write`. When both exist the earned one wins — it is the same
+    // authority with numbers behind it instead of a promise — and the banner says
+    // EARNED, carrying those numbers. Read here, after `--store` is known, and
+    // absent/malformed is silently the declared scope, the same fail-open a
+    // startup read must have.
+    if let Some(earned) = letibot_harnessd::calibrate::read_calibration(&cfg) {
+        cfg.oracle_scope = Some(earned);
     }
 
     let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
@@ -722,6 +738,7 @@ enum Query {
     Latest,
     Rename(String, String),
     Delete(String),
+    Calibrate { write: bool },
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -739,6 +756,35 @@ fn run_query(
         .map_err(|e| format!("opening {}: {e}", path.display()))?;
 
     match q {
+        Query::Calibrate { write } => {
+            // The store connection above is dropped by the replay opening its own;
+            // two handles on one WAL database is the store's declared shape.
+            drop(store);
+            let report = letibot_harnessd::calibrate::replay(cfg, path, 10_000)?;
+            print!("{}", report.render());
+            match (write, report.earned_scope()) {
+                (true, Some(scope)) => {
+                    let file = letibot_harnessd::calibrate::write_calibration(cfg, &scope)?;
+                    println!(
+                        "\nrecorded in {} — the guard opens with this scope from the \
+                         next daemon start, labelled EARNED with the numbers above. \
+                         Delete the file to go back to the built-in floor, or to \
+                         whatever `[gatekeeper]` in providers.toml declares.",
+                        file.display()
+                    );
+                }
+                (true, None) => println!(
+                    "\nnothing recorded: no intent reached {} rows with zero false \
+                     allows, so there is no scope this evidence supports.",
+                    letibot_harnessd::calibrate::MIN_ROWS
+                ),
+                (false, _) => println!(
+                    "\n(a dry run — `--calibrate-write` records the scope above so the \
+                     daemon reads it at startup)"
+                ),
+            }
+            Ok(0)
+        }
         Query::Rename(id, title) => {
             store
                 .set_title(&id, &title)
