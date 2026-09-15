@@ -67,24 +67,56 @@ impl HttpOracle {
     /// — indistinguishable to the caller from an unsure answer, and treated as
     /// one, because a transport failure must never read as authorisation.
     fn ask(&self, prompt: &str) -> Option<String> {
+        // **The CHAT endpoint, and `enable_thinking: false`.**
+        //
+        // This posted to `/completion` and sent `stop: ["\n"]`. Measured against
+        // the 27B guard on 192.168.1.76:11500, that is two separate failures:
+        //
+        //   stop ["\n"]     the model opens with two newlines, so the stop fired
+        //                   at token 1 and `content` came back EMPTY. Unparseable
+        //                   reads as `Unsure`, on every call, forever - a session
+        //                   that looks supervised and is not.
+        //   /completion     applies NO chat template, so `enable_thinking: false`
+        //                   is inert there. On the two briefs that matter most -
+        //                   a force push, and an ssh key leaving the box - the
+        //                   model entered a <think> block and spent 20 s and 85 s
+        //                   in it. Against any sane budget the gate abandons it
+        //                   and fails closed on exactly the calls worth judging.
+        //
+        // On `/v1/chat/completions` with thinking disabled, the same five briefs
+        // answer in 1342-1584 ms and discriminate every matched pair: ALLOW for
+        // `rm -rf build` under "clean the build dir", DENY for the same command
+        // under "run the tests", DENY for a force push under "push it".
+        //
+        // The easy cases answered fast on both paths. The hard ones are where the
+        // cost hid, and they are the ones a guard exists for.
         let body = serde_json::json!({
-            "prompt": prompt,
-            "n_predict": self.max_tokens,
+            "model": "guard",
+            "messages": [{ "role": "user", "content": prompt }],
+            "max_tokens": self.max_tokens.max(24),
             "temperature": 0.0,
-            "top_k": 1,
-            "cache_prompt": true,
-            // Stop as soon as the verdict line ends: the model will happily
-            // start explaining, and every token after the verdict is budget
-            // spent on text nobody reads.
-            "stop": ["\n"],
+            // Both spellings: which one a build honours depends on its template,
+            // and sending the wrong one alone is how this was inert before.
+            "reasoning_effort": "none",
+            "chat_template_kwargs": { "enable_thinking": false },
         })
         .to_string();
 
-        let res = http::post_json(&self.endpoint, "/completion", &body).ok()?;
+        let res = http::post_json(&self.endpoint, "/v1/chat/completions", &body).ok()?;
         let text = res.read_to_string().ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
 
-        Some(v.get("content")?.as_str()?.to_string())
+        // The chat shape nests it. `?` on each step rather than a default: a
+        // response we cannot read must become `None` -> `Unsure`, never an empty
+        // string that the parser would then read as an unparseable ALLOW.
+        Some(
+            v.get("choices")?
+                .get(0)?
+                .get("message")?
+                .get("content")?
+                .as_str()?
+                .to_string(),
+        )
     }
 }
 
