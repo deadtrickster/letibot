@@ -100,6 +100,86 @@ mod tests {
         assert!(v.eos().is_some());
     }
 
+    /// **Does a space survive tokenise → detokenise?**
+    ///
+    /// Asked 2026-09-15 because the operator reports the same model editing files
+    /// fine in opencode and failing here on dropped spaces — `self.x!= y` for a
+    /// file holding `self.x != y`. letibot is token-native where opencode sends
+    /// text, so this round trip is the one step opencode does not have, which
+    /// makes it the first place to look rather than the last.
+    ///
+    /// NOT YET RUN: every test in this module loads a vocabulary, and a
+    /// vocab-only load still initialises the CUDA backend, which aborts while the
+    /// model servers hold the cards (97 of 98 GiB on both, 2026-09-15). So this
+    /// is written and unverified, and saying so is the point.
+    #[test]
+    fn spaces_survive_the_token_round_trip() {
+        let v = vocab();
+        for text in [
+            "if self.session_id != s.session_id {",
+            "if !text.is_empty() && x != y {",
+            "v.filter(|l| !l.trim().is_empty())",
+        ] {
+            let ids = v.tokenize_text(text).expect("tokenize");
+            let back = v.detokenize(&ids, false).expect("detokenize");
+            assert_eq!(back, text, "the round trip changed the text");
+        }
+    }
+
+    /// Which side of the round trip loses the space — and it decides whether the
+    /// model is affected at all. If `tokenize` maps `x != y` and `x!= y` to the
+    /// SAME ids, the information is gone before the prompt is built and the model
+    /// is genuinely shown the wrong text. If the ids differ, tokenize is faithful
+    /// and only `detokenize` is lossy, which is a display bug and reaches nothing.
+    #[test]
+    fn which_half_of_the_round_trip_eats_the_space() {
+        let v = vocab();
+        let with = v.tokenize_text("if self.session_id != s.session_id {").unwrap();
+        let without = v.tokenize_text("if self.session_id!= s.session_id {").unwrap();
+        eprintln!("with space:    {with:?}");
+        eprintln!("without space: {without:?}");
+        eprintln!("detok(with)    = {:?}", v.detokenize(&with, false).unwrap());
+        eprintln!("detok(without) = {:?}", v.detokenize(&without, false).unwrap());
+        assert_ne!(
+            with, without,
+            "TOKENIZE is lossy: `x != y` and `x!= y` produce identical ids, so the \
+             space is destroyed before the prompt is built and the model is shown \
+             text the file does not contain"
+        );
+    }
+
+    /// Concatenating `piece()` is faithful where `llama_detokenize` is not.
+    #[test]
+    fn pieces_concatenated_reproduce_the_text_exactly() {
+        let v = vocab();
+        for text in [
+            "if self.session_id != s.session_id {",
+            "if !text.is_empty() && x != y {",
+            "v.filter(|l| !l.trim().is_empty())",
+            "a, b. c! d? e: f; g",
+        ] {
+            let ids = v.tokenize_text(text).unwrap();
+            let joined: String = ids.iter().map(|&i| v.piece(i, false).unwrap()).collect();
+            assert_eq!(joined, text, "piece-concat changed the text");
+        }
+    }
+
+    #[test]
+    fn isolate_the_space_losing_token() {
+        let v = vocab();
+        for id in [961u32, 5824] {
+            eprintln!(
+                "id {id}: piece(false)={:?} piece(true)={:?} detok_alone={:?}",
+                v.piece(id, false),
+                v.piece(id, true),
+                v.detokenize(&[id], false)
+            );
+        }
+        // Two tokens either side, to see whether position matters.
+        eprintln!("detok([961, 274]) = {:?}", v.detokenize(&[961, 274], false));
+        eprintln!("detok([842, 961]) = {:?}", v.detokenize(&[842, 961], false));
+    }
+
     #[test]
     fn a_missing_model_is_an_error_not_a_panic() {
         let e = Vocab::load(Path::new("/nonexistent/nope.gguf"));

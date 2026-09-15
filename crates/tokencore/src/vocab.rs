@@ -62,7 +62,10 @@ impl std::fmt::Display for VocabError {
                 write!(f, "libllama could not load a vocabulary from {path}")
             }
             VocabError::TextTooLong { bytes } => {
-                write!(f, "{bytes} bytes of text exceeds llama_tokenize's i32 length")
+                write!(
+                    f,
+                    "{bytes} bytes of text exceeds llama_tokenize's i32 length"
+                )
             }
             VocabError::BadTokenId { id } => write!(f, "token id {id} is out of range"),
             VocabError::BadPath => write!(f, "model path is not representable as a C string"),
@@ -100,8 +103,8 @@ impl Vocab {
     pub fn load(path: &Path) -> Result<Self, VocabError> {
         LLAMA_INIT.call_once(|| unsafe { ffi::letibot_llama_init(1) });
 
-        let c_path = CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(|_| VocabError::BadPath)?;
+        let c_path =
+            CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| VocabError::BadPath)?;
 
         let model = unsafe { ffi::letibot_vocab_load(c_path.as_ptr()) };
         if model.is_null() {
@@ -177,9 +180,8 @@ impl Vocab {
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let len = i32::try_from(text.len()).map_err(|_| VocabError::TextTooLong {
-            bytes: text.len(),
-        })?;
+        let len =
+            i32::try_from(text.len()).map_err(|_| VocabError::TextTooLong { bytes: text.len() })?;
 
         // Every token decodes to at least one byte, so byte length is an upper
         // bound. The negative-return retry below is kept anyway: it is the
@@ -287,57 +289,55 @@ impl Vocab {
         String::from_utf8(buf).map_err(|_| VocabError::NotUtf8)
     }
 
-    /// Tokens back to text.
+    /// Tokens back to text, by concatenating [`Vocab::piece`].
     ///
     /// `render_special = true` reproduces the exact string a dialect rendered,
     /// which is the "ours" side of the `/apply-template` fidelity diff.
     /// `false` reproduces what a reader is meant to see.
-    pub fn detokenize(&self, tokens: &[TokenId], render_special: bool) -> Result<String, VocabError> {
+    ///
+    /// # Why this is not `llama_detokenize`
+    ///
+    /// **It used to be, and it silently ate spaces before punctuation.** Measured
+    /// 2026-09-15 on GLM-5.3-Flash:
+    ///
+    /// ```text
+    /// tokenize("… self.session_id != s …")  ->  [.., 842, 961, 274, ..]
+    /// piece(961)              = " !="      <- faithful
+    /// llama_detokenize([961]) = "!="       <- space gone
+    /// llama_detokenize([842, 961]) = "_id!="   <- gone mid-sequence too
+    /// ```
+    ///
+    /// That is `clean_up_tokenization_spaces`, a HuggingFace post-processing rule
+    /// that strips the space before `!`, `?`, `.`, `,` and friends. It is right
+    /// for showing prose to a person and catastrophic here, because this function
+    /// is how a MODEL'S OWN OUTPUT becomes text: the ids the server streamed are
+    /// detokenized to get the assistant's message, tool calls and their arguments
+    /// included. So a model that correctly emitted ` !=` had the space removed on
+    /// the way out, wrote `old_string: "self.x!= y"` against a file holding
+    /// `self.x != y`, and `edit` refused it byte-for-byte — over and over.
+    ///
+    /// The operator's report is what identified it: *"glm in opencode has zero
+    /// problems editing files"*. opencode reads the server's JSON text and never
+    /// detokenizes, so it never met this. Being token-native is what exposed us
+    /// to it, and `tokenize` was faithful throughout — ` !=` and `!=` are 961 and
+    /// 5824, distinct ids — so the model was always SHOWN the right thing. Only
+    /// the way back was lossy.
+    ///
+    /// `piece` per token has neither problem and is what the ledger's own
+    /// invariants already compare against.
+    pub fn detokenize(
+        &self,
+        tokens: &[TokenId],
+        render_special: bool,
+    ) -> Result<String, VocabError> {
         if tokens.is_empty() {
             return Ok(String::new());
         }
-        let ids: Vec<ffi::LlamaToken> = tokens
-            .iter()
-            .map(|&t| {
-                if t >= self.n_tokens {
-                    Err(VocabError::BadTokenId { id: t as i32 })
-                } else {
-                    Ok(t as i32)
-                }
-            })
-            .collect::<Result<_, _>>()?;
-
-        let mut buf = vec![0u8; tokens.len() * 8 + 64];
-        let mut n = unsafe {
-            ffi::llama_detokenize(
-                self.vocab,
-                ids.as_ptr(),
-                ids.len() as i32,
-                buf.as_mut_ptr() as *mut c_char,
-                buf.len() as i32,
-                false,
-                render_special,
-            )
-        };
-        if n < 0 {
-            buf.resize((-n) as usize, 0);
-            n = unsafe {
-                ffi::llama_detokenize(
-                    self.vocab,
-                    ids.as_ptr(),
-                    ids.len() as i32,
-                    buf.as_mut_ptr() as *mut c_char,
-                    buf.len() as i32,
-                    false,
-                    render_special,
-                )
-            };
-            if n < 0 {
-                return Err(VocabError::NotUtf8);
-            }
+        let mut out = String::new();
+        for &t in tokens {
+            out.push_str(&self.piece(t, render_special)?);
         }
-        buf.truncate(n as usize);
-        String::from_utf8(buf).map_err(|_| VocabError::NotUtf8)
+        Ok(out)
     }
 
     /// Resolve one control literal to its exact single id.
