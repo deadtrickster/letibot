@@ -512,13 +512,39 @@ daemon_pid() {
 }
 
 warn_swallowed_flags() {
-  [ ${#EXTRA_ARGS[@]} -gt 0 ] || return 0
+  # **The SEAT is the flag that is silently swallowed most, and it does not travel
+  # in EXTRA_ARGS.** Role reaches harnessd as `--role` and the shell as `--bash`,
+  # so a `leticode` (role leticode, bash on) run against a folder whose daemon is
+  # already a plain `letibot` (coder, no bash) attached to the coder daemon and
+  # said nothing -- the operator got a session that could not run a test and was
+  # told nothing about why. The seat is fixed when the daemon starts; attaching
+  # cannot change it, and the honest thing is to say so, not to look only at the
+  # args a person typed after the verb.
+  local want_role="$ROLE" want_bash have_role have_bash mism=0
+  want_bash="$([ -n "$BASH_ON" ] && echo true || echo false)"
+  have_role="$(record_field role 2>/dev/null || true)"
+  have_bash="$(record_field bash 2>/dev/null || true)"
   {
-    echo "letibot: this folder's daemon is ALREADY RUNNING (pid $(daemon_pid 2>/dev/null || echo "?")) and these flags did NOT take effect:"
-    printf '         %s\n' "${EXTRA_ARGS[*]}"
-    echo "         They are read when harnessd STARTS and are fixed for the life of the daemon."
-    echo "         To apply them:  letibot --stop && letibot ${EXTRA_ARGS[*]}"
-    echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one."
+    if [ -n "$have_role" ] && [ "$have_role" != "$want_role" ]; then
+      echo "letibot: you asked for the \`$want_role\` seat, but this folder's daemon is already running as \`$have_role\` (pid $(daemon_pid 2>/dev/null || echo "?"))."
+      mism=1
+    fi
+    if [ -n "$have_bash" ] && [ "$have_bash" != "$want_bash" ]; then
+      echo "letibot: you asked for $([ "$want_bash" = true ] && echo "a shell" || echo "no shell"), but this folder's daemon was started with $([ "$have_bash" = true ] && echo "one" || echo "none")."
+      mism=1
+    fi
+    if [ "$mism" = 1 ]; then
+      echo "         The seat is fixed when harnessd STARTS; attaching to a running one cannot change it."
+      echo "         For the seat you asked for:  letibot --stop && (the command you just ran)"
+      echo "         Sessions are on disk, so nothing is lost -- '--continue' reopens this one under the new seat."
+    fi
+    if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+      echo "letibot: this folder's daemon is ALREADY RUNNING (pid $(daemon_pid 2>/dev/null || echo "?")) and these flags did NOT take effect:"
+      printf '         %s\n' "${EXTRA_ARGS[*]}"
+      echo "         They are read when harnessd STARTS and are fixed for the life of the daemon."
+      echo "         To apply them:  letibot --stop && letibot ${EXTRA_ARGS[*]}"
+      echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one."
+    fi
   } >&2
 }
 daemon_line() {
