@@ -312,7 +312,13 @@ pub enum ClientFrame {
         /// client frame. An older daemon ignores it and writes the derived pattern,
         /// which is what it did before; a newer one reading an older head's frame
         /// gets `None` and does the same.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        // `default` but NOT `skip_serializing_if`: this module's own law, checked
+        // by `no_frame_field_is_elided_when_zero_or_empty`, is that an absent
+        // field and an empty one must not be the same bytes. Skipping it would
+        // make "this head sent no pattern" and "this head is too old to have the
+        // field" identical on the wire, which is the distinction the rule exists
+        // to keep. `default` still lets an older head's frame parse.
+        #[serde(default)]
         pattern: Option<String>,
     },
     /// Answer an open **question**: a choice, a note on that choice, a typed reply,

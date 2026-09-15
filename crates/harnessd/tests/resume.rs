@@ -105,6 +105,25 @@ fn biggest(path: &std::path::Path) -> (String, u32, String) {
 /// the config could not open.
 const WANTED: Dialect = Dialect::Qwen;
 
+/// **The operator's project modes are not this test's business.**
+///
+/// A resumed session takes its workspace from the STORE, so on this box that is
+/// `~/Projects/letibot` — which has a row in the operator's real
+/// `~/.config/letibot/modes.tsv` saying `writes allowed`. `Harness::open` then
+/// applies it, the resumed session's seat turns out to have no write tools, and
+/// the mode's prerequisite refuses: "missing: writable backend". That refusal is
+/// correct and has nothing to do with resume.
+///
+/// These two tests are about the resume path, so they supply an empty store and
+/// let the mode be the daemon's. Same discipline as `wired.rs`: state the
+/// condition as a value rather than inheriting whatever this laptop happens to
+/// be configured for. Not by pinning $XDG_CONFIG_HOME — `set_var` beside a
+/// running thread is undefined behaviour this edition aborts for.
+fn empty_modes(parts: Parts) -> Parts {
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    parts
+}
+
 fn config(store: &std::path::Path, session_id: &str, workspace: &str) -> Config {
     let mut cfg = Config::for_this_box(workspace);
     cfg.dialect = WANTED;
@@ -133,7 +152,7 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     let elsewhere = "/tmp";
     assert_ne!(workspace, elsewhere);
     let cfg = config(&path, &session_id, elsewhere);
-    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let parts = empty_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new(&session_id);
     let h = Harness::open(&parts, cfg, hub.clone()).expect("the session must resume");
 
@@ -211,7 +230,7 @@ fn a_session_recorded_under_another_dialect_is_refused_by_name() {
     }
 
     let cfg = config(&path, &session_id, &workspace);
-    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let parts = empty_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new(&session_id);
     let err = Harness::open(&parts, cfg, hub.clone())
         .err()

@@ -113,7 +113,7 @@ pub fn expect(endpoint: &Endpoint, want: &str) {
 
 /// Case-insensitive, and blind to the `.`/`-` split that separates an alias from a
 /// file name: `qwen-3.8-flash-next` against `Qwen3.8-Flash-Next-UD-Q6_K_XL`.
-fn matches(served: &str, want: &str) -> bool {
+pub fn matches(served: &str, want: &str) -> bool {
     let norm = |s: &str| {
         s.chars()
             .filter(|c| c.is_ascii_alphanumeric())

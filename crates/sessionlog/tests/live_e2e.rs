@@ -66,15 +66,35 @@ fn endpoint() -> Endpoint {
     // so the wrong one being up is the ordinary case rather than the strange one —
     // and the failure it produces (`400 Prompt contains invalid tokens`) names the
     // tokenizer for what is really a different model. Once per binary.
-    static CHECKED: OnceLock<()> = OnceLock::new();
-    CHECKED.get_or_init(|| {
-        letibot_turn::serving::expect(
-            &ep,
-            &std::env::var("LETIBOT_MODEL_ALIAS")
-                .unwrap_or_else(|_| "qwen-3.8-flash-next".to_string()),
-        )
-    });
     ep
+}
+
+/// Is a ChatML model actually behind the port? See `live_qwen.rs` for the whole
+/// argument: this test builds a `ChatMlRenderer` and a `ChatMlParser`, so against
+/// GLM its control tokens do not resolve and nothing is exercised. Which
+/// singleton is up is a fact about the box, so it SKIPS — loudly, saying it is
+/// not a pass — rather than leaving the suite permanently red.
+fn qwen_is_served() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let want =
+            std::env::var("LETIBOT_MODEL_ALIAS").unwrap_or_else(|_| "qwen-3.8-flash-next".into());
+        match letibot_turn::serving::served_model(&endpoint()) {
+            Ok(served) if letibot_turn::serving::matches(&served, &want) => true,
+            Ok(served) => {
+                eprintln!(
+                    "SKIPPED: {} is serving `{served}`, and this test renders ChatML for \
+                     `{want}`, so nothing was run and THIS IS NOT A PASS.",
+                    endpoint().authority()
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!("SKIPPED: could not ask /props ({e}); THIS IS NOT A PASS.");
+                false
+            }
+        }
+    })
 }
 
 /// What one head saw, accumulated from increments only.
@@ -99,6 +119,9 @@ impl Seen {
 
 #[test]
 fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
+    if !qwen_is_served() {
+        return;
+    }
     // Before a socket, a head or a thread exists. The turn runs on a spawned thread,
     // so a preflight that fires in there panics one thread while this one sits out
     // its 120 s recv timeout and then reports "head A must receive the stream" — a

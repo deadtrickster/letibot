@@ -49,6 +49,39 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// The models this box can be serving, by the path `/props` reports: the alias,
+/// the dialect that pairs with it, and the GGUF its vocabulary comes from.
+///
+/// A table rather than a guess: pairing a dialect with the wrong vocabulary is
+/// the `5 control token(s) could not be resolved` refusal, and it is better to
+/// know nothing about a model than to assume its dialect.
+fn known_local_model(served: &str) -> Option<(&'static str, Dialect, &'static str)> {
+    const KNOWN: &[(&str, &str, Dialect, &str)] = &[
+        (
+            "GLM-5.3-Flash",
+            "glm-5.3-flash",
+            Dialect::Glm,
+            "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+        ),
+        (
+            "Qwen3.8-Flash-Next",
+            "qwen-3.8-flash-next",
+            Dialect::Qwen,
+            "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf",
+        ),
+        (
+            "Qwen3.8-27B",
+            "qwen3.8-27b",
+            Dialect::Qwen,
+            "/home/dead/models/Qwen3.8-27B-UD-Q6_K_XL.gguf",
+        ),
+    ];
+    KNOWN.iter().find_map(|(needle, alias, d, gguf)| {
+        (served.contains(needle) && std::path::Path::new(gguf).exists())
+            .then_some((*alias, *d, *gguf))
+    })
+}
+
 fn config() -> Config {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -68,15 +101,48 @@ fn config() -> Config {
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
         cfg.vocab_gguf = g.into();
     }
+    // **The dialect follows the model, and that is what makes the escape hatch
+    // work.** `serving::expect`'s panic tells an operator whose box serves another
+    // model to point these tests elsewhere with LETIBOT_COMPLETION_URL,
+    // LETIBOT_VOCAB_GGUF and LETIBOT_MODEL_ALIAS. Doing exactly that used to fail
+    // anyway, for a different reason: the dialect stayed Qwen, so GLM's vocabulary
+    // could not resolve `<|im_end|>` and the session refused to open. An escape
+    // hatch that does not open is worse than none — it costs the reader the time
+    // to find out.
+    //
+    // So these three tests were red on this box all day and were reported as "not
+    // mine, environment". They are green now, against whatever is actually served.
+    cfg.dialect = Dialect::Qwen;
     if let Ok(m) = std::env::var("LETIBOT_MODEL_ALIAS") {
+        cfg.dialect = Dialect::parse(&m).unwrap_or_else(|| {
+            panic!("LETIBOT_MODEL_ALIAS={m} names no dialect this build knows")
+        });
         cfg.model = m;
     }
-    cfg.dialect = Dialect::Qwen;
     // What is actually behind the endpoint, asked before anything is tokenised for
     // it. The three model services on this box are singletons that evict each other
     // and have shared a port, so `cfg.model` naming one is not evidence that one is
     // up — and the failure that follows, `400 Prompt contains invalid tokens`, is a
     // sentence about the tokenizer for what is really the other model's vocabulary.
+    // **Follow what is served, rather than refusing because it is not Qwen.**
+    // These are singleton services that evict each other, so which one is up is a
+    // fact about the box at this moment and not a fault in the code. When the
+    // served model is one this build has a dialect and a GGUF for, use it; only
+    // refuse when it is genuinely unknown, and keep `expect`'s sentence for that.
+    if std::env::var("LETIBOT_MODEL_ALIAS").is_err()
+        && let Ok(served) = letibot_turn::serving::served_model(&cfg.endpoint)
+        && !letibot_turn::serving::matches(&served, &cfg.model)
+        && let Some((alias, dialect, gguf)) = known_local_model(&served)
+    {
+        eprintln!(
+            "preflight: {} serves `{served}`, so this test runs against {alias} rather \
+             than refusing. LETIBOT_MODEL_ALIAS overrides.",
+            cfg.endpoint.authority()
+        );
+        cfg.model = alias.into();
+        cfg.dialect = dialect;
+        cfg.vocab_gguf = gguf.into();
+    }
     static CHECKED: OnceLock<()> = OnceLock::new();
     CHECKED.get_or_init(|| letibot_turn::serving::expect(&cfg.endpoint, &cfg.model));
     // Short answers, and a bound low enough that a model which loops is a failing
