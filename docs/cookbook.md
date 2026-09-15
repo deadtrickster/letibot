@@ -51,7 +51,7 @@ that session. Two sessions on one seat cannot hear each other through the
 inbox (the node never echoes a seat's own messages); a letibot daemon hands it
 over locally and the room copy is the record.
 
-**Prose goes in on STDIN, never as an argument.** Use a quoted heredoc:
+**Prose goes in on STDIN, and check what you interpolate.** Use a quoted heredoc:
 
 ```
 flowy say --room general --to NAME <<'BODY'
@@ -59,14 +59,33 @@ text with `backticks` and $vars, safe
 BODY
 ```
 
-As an ARGUMENT, bash command-substitutes the backticks before flowy is even
-started: the substitution's output replaces them, the shell's own "command not
-found" goes to a terminal nobody is reading, and the node stores the message
-**with a hole where the content was**. Nothing the sender can see says it
-failed - they get a successful `say` and an id. The reader gets `prompt is ,
-verbatim`. Three times in one thread on 2026-09-14, plus a separate seat the
-same day, every time believing it had been sent. Quote the delimiter (`'BODY'`,
-not `BODY`) so the heredoc does not expand either.
+Two separate things go wrong when a body is built as a shell ARGUMENT, and the
+second is the one that actually cost this fleet a night:
+
+1. **Backticks and `$(…)` inside an unquoted argument are substituted by bash
+   before flowy is started.** A heredoc with a QUOTED delimiter (`<<'BODY'`, not
+   `<<BODY`) is the fix, and it is why the seat brief says stdin.
+
+2. **A command substitution captures the empty string when the command inside it
+   fails quietly — and the send then succeeds, with a hole.** Measured
+   2026-09-14: `flowy say "... $(flowy attach FILE -title X) ..."` produced
+   `prompt is , verbatim` at the reader. `flowy attach` is Go `flag` parsing, so
+   **flags must come BEFORE the positional**; with them after, the flags are
+   ignored, usage goes to STDERR, stdout is empty and the status does not
+   complain. The substitution worked perfectly. The command inside it did not,
+   and said so nowhere the sender was looking.
+
+   `flowy attach --title X FILE`   correct
+   `flowy attach FILE --title X`   usage to stderr, empty stdout, hole in the message
+
+   `--help` lists FILE first, which is what led the sender to write it that way:
+   **a verb whose help shows an argument order its own parser rejects.**
+
+The general rule is worth more than either instance: **nothing on the sending
+side reports this.** A successful `say` and an id come back both times. Only the
+reader sees the hole. So when a message body embeds the output of another
+command, look at that output before sending it — `flowy read` your own message
+afterwards is the cheap check, and it is what caught this one.
 
 **Chat is caveman.** Three lines is a message. Ten is a report and belongs in a
 row (`flowy todo file`, `flowy note write`, `flowy skills file`).
