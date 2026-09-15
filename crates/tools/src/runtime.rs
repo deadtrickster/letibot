@@ -1259,6 +1259,10 @@ fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {
             .unwrap_or(rendered.len() as u64),
         spill: r.spill.as_ref().map(|s| s.hash.clone()),
         repairs: r.repairs.len() as u32,
+        // Bounded where it is built: three lines of context either side of
+        // the change, four hundred lines the cap, so the fan-out cost is
+        // known here and not a property of whatever file the model chose.
+        edit: r.edit.as_ref().map(|e| e.excerpt(3, 400)),
     }
 }
 

@@ -156,6 +156,12 @@ pub enum CallState {
         full_bytes: u64,
         /// The spill locator, when the output spilled: a head can offer the rest.
         spill: Option<String>,
+        /// Both sides of the file a file-editing call changed, bounded to the
+        /// region that differs — the raw material of the two-panel diff. A
+        /// snapshot recorded before the field existed has none, and
+        /// `#[serde(default)]` is what lets it still load.
+        #[serde(default)]
+        edit: Option<crate::event::ToolEdit>,
     },
 }
 
@@ -467,6 +473,7 @@ impl SessionView {
                 inline_bytes,
                 full_bytes,
                 spill,
+                edit,
                 ..
             } => {
                 if let Some(c) = self.call_mut(call_id) {
@@ -476,6 +483,7 @@ impl SessionView {
                         inline_bytes: *inline_bytes,
                         full_bytes: *full_bytes,
                         spill: spill.clone(),
+                        edit: edit.clone(),
                     };
                 }
             }

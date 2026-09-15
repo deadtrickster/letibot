@@ -37,6 +37,7 @@
 //! | [`width`] | columns, grapheme clusters, escape-aware wrap and truncate |
 //! | [`highlight`] | streaming-safe syntax colouring for fenced code |
 //! | [`diff`] | line diff, intra-line word diff, unified rendering |
+//! | [`sidediff`] | the two-panel before/after view of a file edit |
 //! | [`progress`] | the prefill bar, which needs data neither upstream has |
 //! | [`card`] | tool calls: collapsed, expanded, and what a long result looks like |
 //! | [`editor`] | multi-line input, history, paste, kill ring |
@@ -47,5 +48,6 @@ pub mod diff;
 pub mod editor;
 pub mod highlight;
 pub mod progress;
+pub mod sidediff;
 pub mod style;
 pub mod width;

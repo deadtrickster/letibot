@@ -64,6 +64,37 @@ pub struct PromptProgress {
     pub time_ms: u64,
 }
 
+/// Both sides of a file-editing call, bounded to what differs, as a
+/// [`SessionEvent::ToolFinished`] carries it.
+///
+/// The log's own shape, lifted field by field from `letibot_tools`'s
+/// `ToolEditExcerpt` in `lift_tools.rs`: the event enum is compiled with the
+/// `tools` feature off as often as on, so it cannot name a `letibot-tools`
+/// type, and the wire shape belongs to the log anyway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEdit {
+    /// Relative to the session root, as the head should label it.
+    pub path: String,
+    /// The tool created the file: `before` is empty and a two-panel view
+    /// renders the left side as nothing rather than as deleted content.
+    pub created: bool,
+    /// 1-based line of the old file that `before` starts at, so a gutter
+    /// numbers the left panel exactly as `read` would.
+    pub before_start: usize,
+    /// 1-based line of the new file that `after` starts at.
+    pub after_start: usize,
+    /// Line counts of each **whole** file, so "… N unchanged lines" is a
+    /// fact rather than a guess.
+    pub before_lines: usize,
+    pub after_lines: usize,
+    /// The cap cut the excerpt: there is more change than this carries.
+    pub truncated: bool,
+    /// The excerpt lines, LF-joined, no trailing newline. Empty when the
+    /// side has no lines in the range (a pure insertion has no `before`).
+    pub before: String,
+    pub after: String,
+}
+
 /// A todo's state, on the wire. The same three words the store spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -508,6 +539,17 @@ pub enum SessionEvent {
         /// How many of §8.1 clause 2's repairs the call needed. A head that cannot
         /// see this cannot see a model steadily emitting malformed calls.
         repairs: u32,
+        /// Both sides of the file a file-editing call changed, bounded to the
+        /// region that differs. The one payload an event carries, because it
+        /// is the one payload the transcript does not have: the model-facing
+        /// result numbers only the after lines, and once the write has landed
+        /// the before side exists nowhere else. `#[serde(default)]` so a log
+        /// recorded before the field existed replays with `None`, and a head
+        /// without the two-panel view renders exactly what it always did. No
+        /// `PROTOCOL_VERSION` bump: an added, defaulted field on an existing
+        /// event is the version-4 argument, not the version-10 one.
+        #[serde(default)]
+        edit: Option<ToolEdit>,
     },
     TurnFinished {
         turn_id: String,
@@ -854,6 +896,44 @@ mod tests {
             let back: SessionEvent = serde_json::from_str(&s).unwrap();
             assert_eq!(e, back, "{s}");
         }
+    }
+
+    #[test]
+    fn an_edit_excerpt_round_trips_and_an_old_log_reads_as_none() {
+        let e = SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "fnv1a:1".into(),
+            inline_bytes: 12,
+            full_bytes: 12,
+            spill: None,
+            repairs: 0,
+            edit: Some(ToolEdit {
+                path: "crates/ui/src/diff.rs".into(),
+                created: false,
+                before_start: 22,
+                after_start: 22,
+                before_lines: 790,
+                after_lines: 793,
+                truncated: false,
+                before: "pub fn render(old: &[&str]) -> Vec<String> {\n".into(),
+                after: "pub fn render(old: &[&str]) -> Vec<String> {\n    let d = diff_lines(old, new);\n".into(),
+            }),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains("\"before_start\":22"), "{s}");
+        let back: SessionEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(e, back);
+
+        // A log recorded before the field existed has no `edit` key. It must
+        // parse, and read as None — the head then renders exactly what it
+        // always rendered, which is the whole compatibility argument.
+        let old = r#"{"event":"tool_finished","turn_id":"t1","call_id":"c1",
+            "outcome":{"outcome":"ok"},"payload_digest":"fnv1a:1",
+            "inline_bytes":12,"full_bytes":12,"repairs":0}"#;
+        let back: SessionEvent = serde_json::from_str(old).unwrap();
+        assert!(matches!(back, SessionEvent::ToolFinished { edit: None, .. }));
     }
 
     /// The flatten that puts an event inside an [`Envelope`] is where a field-name

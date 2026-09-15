@@ -204,6 +204,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             full_bytes: 12,
             spill: None,
             repairs: 0,
+            edit: None,
         },
         turn_finished("t1"),
         SessionEvent::TurnInterrupted {
@@ -329,6 +330,7 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         full_bytes: 8_412,
         spill: None,
         repairs: 0,
+        edit: None,
     });
     out.push(appended("s.3", "tool_result"));
     for w in chunks(MARKDOWN) {

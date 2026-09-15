@@ -964,6 +964,7 @@ mod tests {
                 full_bytes: 1,
                 spill: None,
                 repairs: 0,
+                edit: None,
             },
         ]
     }

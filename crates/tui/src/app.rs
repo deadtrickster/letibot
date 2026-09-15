@@ -36,7 +36,7 @@ use letibot_transcript::{TranscriptItem, UserPart};
 
 use letibot_ui::editor::{Editor, Reaction};
 use letibot_ui::style::{Painter, Role};
-use letibot_ui::{card, progress, width};
+use letibot_ui::{card, diff::DiffConfig, progress, sidediff, width};
 
 use crate::markdown::IncrementalMarkdown;
 use crate::render::{
@@ -390,6 +390,11 @@ struct TurnPane {
 pub struct App {
     pub cfg: RenderConfig,
     pub verbosity: Verbosity,
+    /// The two-panel before/after view for file-edit cards, on when the pane
+    /// is wide enough to hold both. `/diff` flips it; the unified renderer is
+    /// the fallback at every width, which is what makes the toggle safe to
+    /// flip on a narrow terminal.
+    pub diff_split: bool,
     session_id: String,
     head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
@@ -727,6 +732,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("think", "fold or unfold the model's reasoning"),
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
+    ("diff", "toggle the two-panel file-edit diff"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
     ("reseat", "rebuild the prompt from the tools seated now"),
@@ -739,6 +745,7 @@ impl App {
         App {
             cfg,
             verbosity: Verbosity::Normal,
+            diff_split: true,
             session_id: String::new(),
             head_id: String::new(),
             seated: None,
@@ -1379,6 +1386,7 @@ impl App {
                 inline_bytes,
                 full_bytes,
                 spill,
+                edit,
                 ..
             } => {
                 if let Some(t) = self.turn.as_mut()
@@ -1392,6 +1400,7 @@ impl App {
                         inline_bytes,
                         full_bytes,
                         spill,
+                        edit,
                     };
                 }
                 Disposition::Rendered
@@ -2506,6 +2515,14 @@ impl App {
                 ));
                 None
             }
+            "diff" => {
+                self.diff_split = !self.diff_split;
+                self.say(&format!(
+                    "file edits render {}",
+                    if self.diff_split { "side by side (unified below 100 columns)" } else { "as a unified diff" }
+                ));
+                None
+            }
             "interrupt" | "i" => Some(Action::Interrupt("operator typed /interrupt".into())),
             "compact" => {
                 // The session this head is **in**, for the same reason /rename
@@ -3406,7 +3423,7 @@ impl App {
                 if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live.iter() {
-                        owned.extend(step_in(call_card(c, &cfg, now_ms, tool), ind));
+                        owned.extend(step_in(call_card(c, &cfg, now_ms, tool, self.diff_split), ind));
                     }
                     owned.push(String::new());
                     segs.push(Seg::Owned(owned));
@@ -4812,7 +4829,7 @@ fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     out
 }
 
-fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<String> {
+fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_split: bool) -> Vec<String> {
     let mut card = card::Card::new(&c.name, &c.call_id);
     // §4.1, fixed. `ToolCallProposed` now carries a bounded display target beside
     // the digest — the path, the pattern, the command line — so a call that is
@@ -4822,6 +4839,10 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
     // is not a display string and a guess is worse than a blank.
     card.target = c.target.clone();
     let mut body: Vec<String> = Vec::new();
+    // Both sides of the file this call changed, when it changed one and the
+    // event carried them. Bound in the arm, used after it: the phase match
+    // decides what the header says, and the body decision needs both.
+    let mut edit_excerpt: Option<letibot_sessionlog::event::ToolEdit> = None;
     card.phase = match &c.state {
         CallState::Proposed => card::Phase::Proposed,
         CallState::Running => card::Phase::Running {
@@ -4833,6 +4854,7 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
             inline_bytes,
             full_bytes,
             spill,
+            edit,
             ..
         } => {
             // §8.3's disclosure, as prose and in units a person reads. It goes in
@@ -4849,6 +4871,7 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
                 card.bytes = Some((*inline_bytes, *inline_bytes));
                 body.push(bytes_human(*inline_bytes));
             }
+            edit_excerpt = edit.clone();
             let outcome = display_outcome(outcome);
             if c.started_ms == 0 || c.ended_ms == 0 {
                 // A snapshot has no timestamps, and `0.0s` is a measurement that
@@ -4862,6 +4885,40 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold) -> Vec<St
             }
         }
     };
+    // The two-panel before/after view. It replaces the byte-count body when
+    // this call edited a file, the operator has it switched on, and the pane
+    // is wide enough for both panels (opencode's gate, and for the same
+    // reason); every other case keeps exactly what the card already said,
+    // which is what makes the toggle safe to flip at any width.
+    if matches!(card.verb, card::Verb::Edit | card::Verb::Write)
+        && diff_split
+        && cfg.width >= sidediff::MIN_SPLIT_WIDTH
+        && let Some(e) = edit_excerpt
+    {
+        let dcfg = DiffConfig {
+            // The card indents its body by two, so the panels are built for
+            // the width the body actually has, or the card truncates the
+            // right panel's tail to fit and the diff lies by omission.
+            width: cfg.width.saturating_sub(2),
+            palette: cfg.palette(),
+            // The excerpt already carries ±3 lines of context around the
+            // change; re-diffing with the same keeps it intact.
+            context: 3,
+            line_numbers: true,
+            intra_line: false,
+            max_rows: 60,
+        };
+        body = sidediff::render_edit(&e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg);
+        if e.truncated {
+            body.push(cfg.palette().paint(
+                Role::Faint,
+                &format!(
+                    "… the excerpt was capped; the file is {} lines now",
+                    e.after_lines
+                ),
+            ));
+        }
+    }
     card.body = body;
     let verb = card.verb.clone();
     card.render(&card::CardConfig {
@@ -6676,6 +6733,7 @@ mod tests {
                 full_bytes: 214,
                 spill: None,
                 repairs: 0,
+                edit: None,
             },
         )));
         let screen = a.screen(120, 24).join("\n");
@@ -6699,6 +6757,7 @@ mod tests {
             full_bytes: 40,
             spill: None,
             repairs: 0,
+            edit: None,
         });
         let mut a = app();
         a.apply(ServerFrame::Resync {
@@ -7181,6 +7240,7 @@ mod tests {
                 full_bytes: 480_000,
                 spill: Some("9fa3c1".into()),
                 repairs: 0,
+                edit: None,
             },
         )));
         let screen = a.screen(160, 12).join("\n");
@@ -8646,5 +8706,144 @@ mod tests {
             ts,
             event,
         }
+    }
+
+    /// A finished edit call carrying both sides of a small change.
+    fn edit_row(edit: Option<letibot_sessionlog::event::ToolEdit>) -> CallRow {
+        CallRow {
+            call_id: "c1".into(),
+            name: "edit".into(),
+            target: "a.rs".into(),
+            state: CallState::Finished {
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "fnv1a:1".into(),
+                inline_bytes: 64,
+                full_bytes: 64,
+                spill: None,
+                edit,
+            },
+            started_ms: 1_000,
+            ended_ms: 2_000,
+            note: None,
+        }
+    }
+
+    fn edit_excerpt() -> letibot_sessionlog::event::ToolEdit {
+        letibot_sessionlog::event::ToolEdit {
+            path: "a.rs".into(),
+            created: false,
+            before_start: 1,
+            after_start: 1,
+            before_lines: 2,
+            after_lines: 3,
+            truncated: false,
+            before: "fn a() {}\n".into(),
+            after: "fn a() {\n    x();\n}\n".into(),
+        }
+    }
+
+    fn plain_cfg(width: usize) -> RenderConfig {
+        RenderConfig { width, color: false, ..Default::default() }
+    }
+
+    #[test]
+    fn an_edit_call_renders_the_two_panel_diff_when_it_is_on() {
+        let rows = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, true);
+        let joined = rows.join("\n");
+        assert!(joined.contains('│'), "two panels with a separator: {joined}");
+        assert!(joined.contains('-') && joined.contains("fn a() {}"), "{joined}");
+        assert!(joined.contains('+') && joined.contains("x();"), "{joined}");
+        // The removed and added first lines share one row — the change reads
+        // across — and the two added lines that have no old counterpart get
+        // their own rows with an empty left panel.
+        assert!(
+            rows.iter().any(|r| r.contains('-') && r.contains('+') && r.contains('│')),
+            "{joined}"
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.contains('│'))
+                .any(|r| r.split_once('│').unwrap().0.trim().is_empty() && r.contains("x();")),
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn the_diff_toggle_and_a_narrow_pane_both_fall_back_to_unified() {
+        let off = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, false);
+        assert!(!off.join("\n").contains('│'), "switched off: {off:?}");
+
+        // opencode's gate: under 100 columns the panels cannot hold code and
+        // gutters, so the switch being on is not enough.
+        let narrow = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(80), 0, Fold::Open, true);
+        assert!(!narrow.join("\n").contains('│'), "narrow pane: {narrow:?}");
+
+        // And the fallback is the card's old body, not an empty one.
+        assert!(off.iter().any(|r| r.contains("64 B")), "{off:?}");
+    }
+
+    #[test]
+    fn a_created_file_renders_as_all_right_panel_and_a_cap_says_so() {
+        let created = letibot_sessionlog::event::ToolEdit {
+            created: true,
+            before: String::new(),
+            before_lines: 0,
+            ..edit_excerpt()
+        };
+        let rows = call_card(&edit_row(Some(created)), &plain_cfg(120), 0, Fold::Open, true);
+        let body: Vec<&str> = rows.iter().filter(|r| r.contains('│')).map(String::as_str).collect();
+        assert!(!body.is_empty(), "{rows:?}");
+        for r in &body {
+            let (left, _right) = r.split_once('│').unwrap();
+            assert!(left.trim().is_empty(), "created: no left panel: {r:?}");
+        }
+
+        let capped = letibot_sessionlog::event::ToolEdit { truncated: true, ..edit_excerpt() };
+        let rows = call_card(&edit_row(Some(capped)), &plain_cfg(120), 0, Fold::Open, true);
+        assert!(
+            rows.iter().any(|r| r.contains("the excerpt was capped")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_edit_call_never_grows_a_second_panel() {
+        let mut row = edit_row(Some(edit_excerpt()));
+        row.name = "grep".into();
+        let rows = call_card(&row, &plain_cfg(120), 0, Fold::Open, true);
+        assert!(!rows.join("\n").contains('│'), "{rows:?}");
+    }
+
+    #[test]
+    fn the_live_event_path_feeds_the_two_panel_view() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::proposed("t1", "c1", "edit"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "fnv1a:1".into(),
+                inline_bytes: 64,
+                full_bytes: 64,
+                spill: None,
+                repairs: 0,
+                edit: Some(edit_excerpt()),
+            },
+        )));
+        let screen = a.screen(120, 24).join("\n");
+        // The diff body, not the byte-count fallback: the added line is on
+        // the screen. (The screen always contains `│` — the composer's box —
+        // so the separator proves nothing; the code does.)
+        assert!(screen.contains("x();"), "{screen}");
+        assert!(screen.contains("fn a() {}"), "{screen}");
+        // And the toggle the command flips is the one the card reads: the
+        // body falls back to the byte count the card always showed.
+        a.command("diff");
+        let screen = a.screen(120, 24).join("\n");
+        assert!(screen.contains("64 B"), "{screen}");
+        assert!(!screen.contains("x();"), "{screen}");
     }
 }

@@ -6,11 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# No dependencies, and that is a decision rather than an omission.
+# One dependency, and it is a decision rather than an omission.
 #
 # This crate is the *rendering primitives* half of a head: measure a string in
 # terminal columns, wrap it, colour a code block, draw a diff, lay out a tool
-# card, edit a line. Every one of those has a well-known crate behind it
+# card, edit a line. Nearly every one of those has a well-known crate behind it
 # (`unicode-width`, `unicode-segmentation`, `syntect`, `similar`, `tui-textarea`)
 # and reaching for them would be the ordinary choice.
 #
@@ -24,8 +24,21 @@ repository.workspace = true
 # The bound this puts on us: when a module here grows past "the subset a head
 # needs", it should be deleted and replaced by the real crate, not extended.
 #
-# It also depends on no *letibot* crate. A rendering primitive that knows what a
-# `ToolOutcome` is cannot be tested without the transcript, and a head that wants
-# to draw something the transcript does not model has to fork it. So the types
-# here are the display's own, and the mapping from engine types to them lives in
-# the head — one `From` impl in `letibot-tui`, not a dependency edge here.
+# The exception is `rano` (`~/Projects/rano`), and the reason is the reverse of
+# the rule: its tree-sitter engine is a *smaller* subset than anything this
+# crate could grow on its own — six grammars, one capture walk, no theme
+# format, the palette left to the caller. Writing a second tree-sitter
+# integration to colour the two-panel diff would have been the second one in
+# the process. The absolute path is deliberate: rano is an operator-local
+# project, not a published crate, and a relative path would resolve differently
+# from this repo's nested checkout than from a sibling worktree.
+#
+# It still depends on no *letibot* crate. A rendering primitive that knows what
+# a `ToolOutcome` is cannot be tested without the transcript, and a head that
+# wants to draw something the transcript does not model has to fork it. So the
+# types here are the display's own, and the mapping from engine types to them
+# lives in the head — one `From` impl in `letibot-tui`, not a dependency edge
+# here.
+
+[dependencies]
+rano = { path = "/home/dead/Projects/rano/rano" }

@@ -14,6 +14,7 @@
 
 use letibot_transcript::ToolOutcome;
 
+use crate::edit::ToolEditExcerpt;
 use crate::schema::Access;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +59,17 @@ pub enum ToolEvent {
         /// this cannot see a model steadily emitting malformed calls, which is the
         /// signal that a dialect or a schema is wrong.
         repairs: u32,
+        /// Both sides of the file this call changed, bounded to the region
+        /// that differs ([`ToolEditExcerpt`]). **The exception to this
+        /// module's no-payload rule**, and the reason it is safe: that rule
+        /// exists because a payload is already in the transcript and an
+        /// event fans out to every head — but the *before* side of an edit
+        /// is in neither. Once the write lands the old bytes are gone, the
+        /// model-facing payload numbers only the after lines, and a head
+        /// that attaches later can never recover the pair. So the bounded
+        /// pair rides here, capped, once, and a head draws the change from
+        /// it instead of pretending the excerpt is a diff.
+        edit: Option<ToolEditExcerpt>,
     },
 }
 

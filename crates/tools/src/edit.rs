@@ -489,9 +489,144 @@ pub fn display_lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
+/// The before/after of a file-editing call, bounded to what differs, as it
+/// rides the tool event to a head.
+///
+/// Serde lives here and not in the log crate because the event carrying it
+/// is emitted before any log exists, and `letibot-tools` must stay free of
+/// `letibot-sessionlog` (see `sessionlog/src/lift_tools.rs`): the runtime
+/// cannot know the log's types, so the log lifts this into its own shape
+/// field by field.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolEditExcerpt {
+    /// Relative to the session root, as the head should label it.
+    pub path: String,
+    /// The tool created the file: `before` is empty and a two-panel view
+    /// renders the left side as nothing rather than as deleted content.
+    pub created: bool,
+    /// 1-based line of the old file that `before` starts at, so a gutter
+    /// numbers the left panel exactly as `read` would.
+    pub before_start: usize,
+    /// 1-based line of the new file that `after` starts at.
+    pub after_start: usize,
+    /// Line counts of each **whole** file, so "… N unchanged lines" is a
+    /// fact rather than a guess.
+    pub before_lines: usize,
+    pub after_lines: usize,
+    /// The cap cut the excerpt: there is more change than this carries.
+    pub truncated: bool,
+    /// The excerpt lines, LF-joined, no trailing newline. Empty when the
+    /// side has no lines in the range (a pure insertion has no `before`).
+    pub before: String,
+    pub after: String,
+}
+
+impl FileEdit {
+    /// The bounded before/after a head draws a two-panel diff from: the
+    /// changed span plus `context` lines either side, capped at `cap`
+    /// lines per side.
+    ///
+    /// The cap is not stinginess for its own sake — the event fans out to
+    /// every attached head, and a whole-file `write` of a large file would
+    /// otherwise put tens of thousands of lines on the wire for a display
+    /// that shows sixty rows. [`ChangedSpan`] is an exact fact, so the
+    /// excerpt contains the whole change unless the cap cut it, and
+    /// `truncated` says when it did.
+    pub fn excerpt(&self, context: usize, cap: usize) -> ToolEditExcerpt {
+        let before: Vec<&str> = self.before.lines().collect();
+        let after: Vec<&str> = self.after.lines().collect();
+        // The span is 1-based inclusive; widen by `context` and clamp to the
+        // file, then work 0-based. A pure insertion has `last_before ==
+        // first - 1`, so the old range comes out empty by the same
+        // arithmetic, and a created file has no old lines at all.
+        let b_lo = self.changed.first.saturating_sub(context + 1);
+        let a_lo = b_lo;
+        let b_hi = (self.changed.last_before + context).min(before.len());
+        let a_hi = (self.changed.last_after + context).min(after.len());
+        let take_before = b_hi.saturating_sub(b_lo);
+        let take_after = a_hi.saturating_sub(a_lo);
+        let truncated = take_before > cap || take_after > cap;
+        let (n_before, n_after) = (take_before.min(cap), take_after.min(cap));
+        ToolEditExcerpt {
+            path: self.path.clone(),
+            created: self.created,
+            before_start: b_lo + 1,
+            after_start: a_lo + 1,
+            before_lines: before.len(),
+            after_lines: after.len(),
+            truncated,
+            before: before[b_lo..b_lo + n_before].join("\n"),
+            after: after[a_lo..a_lo + n_after].join("\n"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_excerpt_bounds_the_change_and_numbers_the_gutters() {
+        let before: String = (1..=50).map(|i| format!("line {i}\n")).collect();
+        let after = before.replacen("line 25", "line 25 changed", 1);
+        let fe = FileEdit {
+            path: "f".into(),
+            before: before.clone(),
+            after: after.clone(),
+            created: false,
+            before_digest: String::new(),
+            after_digest: String::new(),
+            replacements: 1,
+            changed: changed_span(&before, &after),
+        };
+        let ex = fe.excerpt(3, 400);
+        assert_eq!(ex.before_start, 22, "25 minus three lines of context");
+        assert_eq!(ex.after_start, 22);
+        assert_eq!(ex.before.lines().count(), 7, "22..=28");
+        assert_eq!(ex.before.lines().next().unwrap(), "line 22");
+        assert_eq!(ex.after.lines().nth(3), Some("line 25 changed"));
+        assert_eq!(ex.before_lines, 50, "whole-file counts ride along");
+        assert!(!ex.truncated);
+    }
+
+    #[test]
+    fn the_excerpt_cap_cuts_and_says_so() {
+        let before: String = (1..=900).map(|i| format!("{i}\n")).collect();
+        let after: String = (1..=900).map(|i| format!("{i}x\n")).collect();
+        let fe = FileEdit {
+            path: "f".into(),
+            before,
+            after,
+            created: false,
+            before_digest: String::new(),
+            after_digest: String::new(),
+            replacements: 900,
+            changed: ChangedSpan { first: 1, last_before: 900, last_after: 900, before_lines: 900, after_lines: 900 },
+        };
+        let ex = fe.excerpt(3, 100);
+        assert!(ex.truncated);
+        assert_eq!(ex.before.lines().count(), 100);
+        assert_eq!(ex.before_start, 1);
+    }
+
+    #[test]
+    fn a_created_file_has_an_empty_before_and_a_numbered_after() {
+        let fe = FileEdit {
+            path: "new.rs".into(),
+            before: String::new(),
+            after: "x\ny\n".into(),
+            created: true,
+            before_digest: String::new(),
+            after_digest: String::new(),
+            replacements: 1,
+            changed: changed_span("", "x\ny\n"),
+        };
+        let ex = fe.excerpt(3, 400);
+        assert!(ex.created && ex.before.is_empty());
+        assert_eq!(ex.after, "x\ny", "LF-joined, no trailing newline");
+        assert_eq!(ex.after_start, 1);
+        assert!(!ex.truncated);
+    }
 
     #[test]
     fn occurrences_do_not_overlap_because_a_replacement_cannot() {
