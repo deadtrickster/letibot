@@ -211,7 +211,7 @@ pub struct Arm {
 /// adds one thing to the row above it.
 pub const ARMS: &[Arm] = &[
     Arm {
-        name: "asked-for-it, no examples (what shipped)",
+        name: "asked-for-it, no examples (the floor)",
         variant: letibot_tools::authorise::BriefVariant::AskedForIt,
         examples: false,
         claim: false,
@@ -232,7 +232,7 @@ pub const ARMS: &[Arm] = &[
     // it, "follows-from + examples is best" cannot be told apart from "examples are
     // what helped, and the rewording came along for the ride".
     Arm {
-        name: "asked-for-it + the operator's own answers",
+        name: "asked-for-it + their own answers (SHIPS)",
         variant: letibot_tools::authorise::BriefVariant::AskedForIt,
         examples: true,
         claim: false,
@@ -246,7 +246,8 @@ pub const ARMS: &[Arm] = &[
 ];
 
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
-    replay_arm(cfg, store, limit, ARMS[2])
+    // The arm that SHIPS, so a calibration measures the guard as it runs.
+    replay_arm(cfg, store, limit, ARMS[3])
 }
 
 /// **The rows to replay, taken once.**

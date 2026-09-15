@@ -532,7 +532,7 @@ mod tests {
             trail: Default::default(),
             prior: Vec::new(),
             examples: Vec::new(),
-            brief_variant: letibot_tools::authorise::BriefVariant::Follows,
+            brief_variant: letibot_tools::authorise::BriefVariant::AskedForIt,
             agent_claim: None,
             reading: None,
             shape: None,

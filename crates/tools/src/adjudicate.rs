@@ -1932,7 +1932,7 @@ impl AdjudicatedGate {
             class,
             prior,
             examples: Self::operator_examples(&self.log, turn_seq(call.turn_id)),
-            brief_variant: crate::authorise::BriefVariant::Follows,
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
             agent_claim: (self.agent_claim)(),
             reading: Some(baseline.clone()),
             shape: shape_of(baseline),
@@ -2297,7 +2297,7 @@ impl Gate for AdjudicatedGate {
             // A path is not a tool call, so this session's record of tool calls is
             // not evidence about it; an empty list here says exactly that.
             examples: Vec::new(),
-            brief_variant: crate::authorise::BriefVariant::Follows,
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
             agent_claim: None,
             reading: None,
             shape: None,
