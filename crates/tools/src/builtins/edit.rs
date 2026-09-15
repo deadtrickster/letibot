@@ -586,13 +586,20 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
 /// 1,283 bytes. The guard was right and the recovery was ruinous: it spent a
 /// third of a context window to say "try again".
 ///
-/// Below the ceiling the whole file still goes in, because for an ordinary source
-/// file that is the cheapest possible retry — one call instead of a read and a
-/// call. Above it, an excerpt around the target goes in instead and the model is
-/// told to read what it still needs. 32 KiB is roughly 8k tokens: large enough
-/// that almost every file in this tree takes the fast path, small enough that the
-/// slow one cannot cost a context window.
-const PASTE_CEILING: usize = 32 * 1024;
+/// **4 KiB, which is about the size of the excerpt itself.** That is deliberate:
+/// it means there is no cliff. A file small enough to take the whole-file path is
+/// one where "the whole file" and "eighty lines around the target" are nearly the
+/// same text, so the two paths agree rather than trading a round trip for eight
+/// thousand tokens.
+///
+/// An earlier version of this fix set it at 32 KiB — ~8k tokens — on the argument
+/// that the fast path should cover almost every file in this tree. The operator's
+/// answer, 2026-09-15: *"no I dont want 32kb ingected into context"*. He is
+/// right, and the reasoning was backwards: this is the budget for a REFUSAL, not
+/// for a read. The model asked to change two lines; what it needs back is enough
+/// to see whether its target is still there, and `read` is one call away for the
+/// rest.
+const PASTE_CEILING: usize = 4 * 1024;
 
 /// Lines around the first occurrence of `needle`, numbered, with what was left
 /// out named rather than silently dropped.
@@ -737,9 +744,13 @@ mod tests {
 
         let r = h.call("edit", r#"{"path":"big.rs","old_string":"pub fn target() {}","new_string":"pub fn target(x: u8) {}"}"#);
         assert!(!r.is_grounded(), "a stale edit must refuse: {}", r.render());
-        // BOUNDED: nothing close to the whole file.
+        // BOUNDED. Not against PASTE_CEILING — that is the threshold for CHOOSING
+        // the excerpt, and the excerpt plus its explanation is legitimately a
+        // little larger. What matters is that the refusal is a fixed small cost
+        // that does not scale with the file: ~4.5 KiB here, about 1k tokens, for
+        // a file of any size.
         assert!(
-            r.payload.len() < super::PASTE_CEILING,
+            r.payload.len() < 8 * 1024 && r.payload.len() < body.len() / 10,
             "the refusal pasted {} bytes for a {} byte file — this is the 123k-token bug",
             r.payload.len(),
             body.len()

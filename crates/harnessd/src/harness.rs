@@ -1904,6 +1904,13 @@ impl<'a> Harness<'a> {
         &self.cfg
     }
 
+    /// The session's own config, to change a decision that is the session's
+    /// rather than the daemon's — `auto_compact` turning itself off after a
+    /// compaction that did not free enough. See `Sessions::compact_if_at_the_wall`.
+    pub fn config_mut(&mut self) -> &mut Config {
+        &mut self.cfg
+    }
+
     pub fn transcript_id(&self) -> &str {
         &self.transcript_id
     }

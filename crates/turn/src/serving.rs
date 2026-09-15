@@ -45,7 +45,33 @@ pub fn served_model(endpoint: &Endpoint) -> Result<String, String> {
             return Ok(v);
         }
     }
-    Err(format!("/props answered but named no model: {}", truncate(&body, 200)))
+    Err(format!(
+        "/props answered but named no model: {}",
+        truncate(&body, 200)
+    ))
+}
+
+/// The server's context window, from `/props`, or `None` when it does not say.
+///
+/// **The wall, read rather than assumed.** `docs/compaction.md` §1 settled that
+/// compaction is driven by `n_ctx` and by memory pressure, and by nothing else:
+/// quality does not degrade with depth (160 samples, 1.000 at 60k against 0.829
+/// at zero). So the trigger is this number, and a harness that guessed it would
+/// either compact a conversation that had room or discover the wall by hitting
+/// it — which is what happened on 2026-09-15, as a 500 with nothing recorded.
+///
+/// `None` is a real answer and not a failure: a metered provider has no `/props`
+/// and its window is the operator's to state. The caller decides what to do with
+/// not knowing; it must not invent a number.
+pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
+    let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
+    // `n_ctx` sits inside `default_generation_settings`, and it is a number rather
+    // than a string, so `field` — which reads quoted values — cannot serve.
+    let at = body.find("\"n_ctx\"")?;
+    let rest = &body[at + "\"n_ctx\"".len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok().filter(|n| *n > 0)
 }
 
 /// Refuse, loudly and by name, unless the server is serving `want`.
@@ -60,7 +86,10 @@ pub fn expect(endpoint: &Endpoint, want: &str) {
         // Not reachable is the live tests' own business — they fail on the request
         // and their failure says so. This one is only about serving the WRONG model.
         Err(e) => {
-            eprintln!("preflight: could not ask {}/props ({e}); letting the test fail on its own request", endpoint.authority());
+            eprintln!(
+                "preflight: could not ask {}/props ({e}); letting the test fail on its own request",
+                endpoint.authority()
+            );
             return;
         }
     };
@@ -105,7 +134,11 @@ fn field(body: &str, key: &str) -> Option<String> {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..n]) }
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..n])
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +166,25 @@ mod tests {
     #[test]
     fn the_model_is_read_out_of_a_props_body() {
         let body = r#"{"default_generation_settings":{"n_ctx":262144},"model_path":"/m/GLM-5.3-Flash.gguf"}"#;
-        assert_eq!(field(body, "\"model_path\"").as_deref(), Some("/m/GLM-5.3-Flash.gguf"));
+        assert_eq!(
+            field(body, "\"model_path\"").as_deref(),
+            Some("/m/GLM-5.3-Flash.gguf")
+        );
+    }
+}
+
+#[cfg(test)]
+mod ctx_tests {
+    /// `n_ctx` is a NUMBER nested inside `default_generation_settings`, so the
+    /// quoted-string reader used for `model_path` cannot find it — the parse is
+    /// separate on purpose and this is what pins that.
+    #[test]
+    fn the_window_is_read_out_of_a_props_body() {
+        let body = r#"{"default_generation_settings":{"n_ctx":262144,"n_batch":2048},"model_path":"/m/x.gguf"}"#;
+        let at = body.find("\"n_ctx\"").unwrap();
+        let rest = &body[at + "\"n_ctx\"".len()..];
+        let rest = rest.trim_start().strip_prefix(':').unwrap().trim_start();
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert_eq!(digits.parse::<u64>().unwrap(), 262144);
     }
 }

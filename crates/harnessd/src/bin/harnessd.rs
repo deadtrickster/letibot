@@ -303,6 +303,12 @@ fn run() -> Result<i32, String> {
             "--vm-arg" => cfg.vm_args.push(next()?),
             // What is behind `web_search`. Without it the tool refuses and names
             // this flag, which is the state every session has had until now.
+            // The wall, when the operator knows it and the server will not say —
+            // a metered provider, or a proxy that does not serve /props.
+            "--context-window" => {
+                cfg.context_window = Some(next()?.parse().map_err(|e| format!("--context-window: {e}"))?)
+            }
+            "--no-auto-compact" => cfg.auto_compact = false,
             "--web-search" => {
                 cfg.web_search = match next()?.as_str() {
                     // `none` is how an operator with a key in providers.toml
@@ -415,6 +421,14 @@ fn run() -> Result<i32, String> {
         },
     };
 
+    // **The wall, read off the server rather than assumed.** Only for a local
+    // endpoint: a metered provider has no `/props`, and its window stays `None`
+    // unless the operator states it, because a guessed window would either
+    // compact a conversation that had room or fail to compact one that did not.
+    if cfg.context_window.is_none() && cfg.provider.is_none() {
+        cfg.context_window = letibot_turn::serving::served_ctx(&cfg.endpoint);
+    }
+
     let mut sessions =
         match Sessions::open_first_with_seat(&parts, cfg, registry.clone(), seat.clone()) {
             Ok(s) => s,
@@ -451,6 +465,29 @@ fn run() -> Result<i32, String> {
     eprintln!("  workspace {workspace}");
     eprintln!("  socket   {socket}");
     eprintln!("  prefix   {prefix_tokens} tokens, head {ledger_head}");
+    {
+        // Say the wall and what happens at it. A session that will compact itself
+        // without warning is a session doing something the operator did not see
+        // coming, and one that will NOT is worth knowing before it dies at 500.
+        let c = sessions.harness_of(&session_id).map(|h| h.config().clone());
+        if let Some(c) = c {
+            match (c.context_window, c.auto_compact) {
+                (Some(w), true) => eprintln!(
+                    "  context  {w} tokens; compacts automatically with {} left, as one \
+                     more message so the prefix stays cached",
+                    c.headroom()
+                ),
+                (Some(w), false) => eprintln!(
+                    "  context  {w} tokens; --no-auto-compact, so `/compact` is the only \
+                     way and the wall is a 500"
+                ),
+                (None, _) => eprintln!(
+                    "  context  UNKNOWN (the endpoint did not say and --context-window was \
+                     not given), so nothing compacts on its own and the wall is a 500"
+                ),
+            }
+        }
+    }
     eprintln!("  sessions 1 open — a head can list them, switch, and make more");
     if let Some(seat) = &seat {
         // From the seat, not from the config: what it is, where the credential came

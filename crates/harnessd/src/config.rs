@@ -206,6 +206,19 @@ pub struct Config {
     /// several models may share one dialect.
     pub model: String,
     pub endpoint: Endpoint,
+    /// The server's context window, in tokens — the wall compaction exists for.
+    /// Read from `/props` at startup (`serving::served_ctx`), overridable with
+    /// `--context-window`, and `None` when nothing said: a metered provider has
+    /// no `/props`, and a window that is not known must not be invented.
+    pub context_window: Option<u64>,
+    /// Compact automatically when a turn leaves less than [`Config::headroom`]
+    /// of the window free. On by default where the window is known.
+    ///
+    /// `docs/compaction.md` §1: the trigger is `n_ctx` and memory pressure, and
+    /// NOT quality — depth was measured not to hurt (1.000 at 60k against 0.829
+    /// at zero). So the policy is *compact when you must, as late as possible*,
+    /// and this is the "must".
+    pub auto_compact: bool,
     /// The GGUF the vocabulary is read from. For a split model, the first shard.
     pub vocab_gguf: PathBuf,
     /// The root every read-only tool is confined to.
@@ -495,6 +508,42 @@ answer those directly. When a tool reports that it found nothing, say so — do 
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
+impl Config {
+    /// How much of the window must stay free for a turn to be safe to start.
+    ///
+    /// A compaction is itself a turn: it re-sends the resident prompt and
+    /// generates a summary, so firing it with no room left fails exactly like the
+    /// turn it was meant to prevent. The reserve is the output budget plus a
+    /// margin for the instruction and the next user message.
+    ///
+    /// Measured 2026-09-15: the session that died was at ~244k of 262144 — 93% —
+    /// and the 500 arrived on the NEXT turn. A reserve of a sixteenth of the
+    /// window (16k of 262144) would have fired the compaction two turns earlier,
+    /// with room to summarise.
+    pub fn headroom(&self) -> u64 {
+        // A sixteenth of the window, floored at 2k so a summary has room, and
+        // CAPPED AT A QUARTER so it cannot swallow the window it is reserving in.
+        //
+        // The cap is not hypothetical: the first version was `(w/16).max(8192)`,
+        // which for any window of 8192 or less makes the reserve larger than the
+        // window, `should_compact` true on every turn, and compaction a loop that
+        // never lets a conversation start. Caught by asking what the formula does
+        // at the edges rather than at 262144.
+        let w = self.context_window.unwrap_or(0);
+        (w / 16).max(2048).min(w / 4)
+    }
+
+    /// Is this turn's resident size close enough to the wall to compact first?
+    /// `false` whenever the window is unknown — not knowing is not a reason to
+    /// act, and an invented number here would compact conversations that had room.
+    pub fn should_compact(&self, resident_tokens: u64) -> bool {
+        let Some(w) = self.context_window else {
+            return false;
+        };
+        self.auto_compact && resident_tokens + self.headroom() >= w
+    }
+}
+
 /// Which search provider `web_search` gets, when the operator has not said.
 ///
 /// **A configured key IS the opt-in.** The operator's rule, 2026-09-15: *"i dont
@@ -584,6 +633,8 @@ impl Config {
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             web_search: default_web_search(),
+            context_window: None,
+            auto_compact: true,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             provider: None,
@@ -1528,5 +1579,41 @@ mod tests {
             );
         }
         assert!(DEFAULT_SYSTEM.contains("Answer in English"), "§5.2: state the language");
+    }
+}
+
+#[cfg(test)]
+mod compaction_trigger_tests {
+    use super::*;
+
+    /// The reserve must leave a usable window at every size. The first version
+    /// did not: `(w/16).max(8192)` exceeds any window of 8192 or less, which makes
+    /// `should_compact` true before a conversation has said anything.
+    #[test]
+    fn the_headroom_never_swallows_the_window_it_reserves_in() {
+        let mut cfg = Config::for_this_box(std::env::temp_dir());
+        for w in [262144u64, 131072, 32768, 16000, 8192, 4096, 2048, 1024] {
+            cfg.context_window = Some(w);
+            let h = cfg.headroom();
+            assert!(h < w, "window {w}: headroom {h} is not smaller than the window");
+            assert!(h <= w / 4, "window {w}: headroom {h} is more than a quarter");
+            // An empty conversation must never be at the wall.
+            assert!(!cfg.should_compact(0), "window {w} compacts an empty session");
+            // And a full one must be.
+            assert!(cfg.should_compact(w), "window {w} never compacts");
+        }
+    }
+
+    /// Not knowing the window is not a reason to act. A metered provider has no
+    /// `/props`, and inventing a number would compact conversations that had room.
+    #[test]
+    fn an_unknown_window_never_triggers() {
+        let mut cfg = Config::for_this_box(std::env::temp_dir());
+        cfg.context_window = None;
+        assert!(!cfg.should_compact(u64::MAX));
+        // And the switch is honoured when the window IS known.
+        cfg.context_window = Some(1000);
+        cfg.auto_compact = false;
+        assert!(!cfg.should_compact(999_999));
     }
 }

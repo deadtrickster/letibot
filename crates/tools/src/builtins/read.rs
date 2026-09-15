@@ -192,12 +192,17 @@ impl Tool for Read {
                     end + 1
                 ));
             } else {
+                // The SAME sentence as the limit branch above. The cap is already
+                // stated once in this tool's schema, which is in the stable prefix
+                // of every turn; repeating "read returns at most 200 lines per
+                // call" on each capped read spends context restating something the
+                // model was told at the top, and the numbers in this line already
+                // imply it. Context is the scarce resource for attention as well
+                // as for memory — the operator's point, 2026-09-15.
                 notes.push(format!(
-                    "showing lines {offset}–{end} of {total}; read returns at most {} \
-                     lines per call — call again with offset={} for the next {}",
-                    ctx.limits.max_read_lines,
-                    end + 1,
-                    ctx.limits.max_read_lines
+                    "showing lines {offset}–{end} of {total}; call read again with \
+                     offset={} for the rest",
+                    end + 1
                 ));
             }
         }
@@ -254,6 +259,58 @@ fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Does `read` hand the model the file's bytes, spaces and all?**
+    ///
+    /// Asked because a fleet seat reported that the same model edits files fine
+    /// in opencode and keeps failing here on missing spaces — `if self.x!= y`
+    /// where the file has `if self.x != y`. If the model is copying back what it
+    /// was shown, the loss is on the way OUT, and this is the cheapest place to
+    /// find out.
+    /// What a model that asked for 50 lines actually gets told. The operator's
+    /// question, 2026-09-15: is the 200-line cap still being recited at it?
+    #[test]
+    fn a_read_with_a_limit_is_never_told_about_the_cap_it_did_not_hit() {
+        let mut h = crate::testing::harness();
+        let body: String = (1..=300).map(|i| format!("line {i}\n")).collect();
+        h.write_file("big.txt", &body);
+
+        let asked = h.call("read", r#"{"path":"big.txt","limit":50}"#);
+        let notes = asked.notes.join(" ");
+        eprintln!("limit=50 note: {notes}");
+        assert_eq!(asked.payload.lines().count(), 50, "it returned {}", asked.payload.lines().count());
+        assert!(
+            !notes.contains("200") && !notes.contains("at most"),
+            "a model that asked for 50 is being told about the 200 cap: {notes}"
+        );
+        assert!(notes.contains("of 300"), "it should still say there is more: {notes}");
+
+        // And with no limit, where the cap DID bind, it still says where to
+        // continue — without restating the number, which is in the schema.
+        let unasked = h.call("read", r#"{"path":"big.txt"}"#);
+        let n2 = unasked.notes.join(" ");
+        eprintln!("no-limit note: {n2}");
+        assert!(!n2.contains("at most"), "{n2}");
+        assert!(n2.contains("offset=201"), "{n2}");
+    }
+
+    #[test]
+    fn read_returns_every_space_the_file_has() {
+        let mut h = crate::testing::harness();
+        let body = "fn a() {\n    if !text.is_empty() && x != y {\n        v.filter(|l| !l.trim().is_empty())\n    }\n}\n";
+        h.write_file("s.rs", body);
+        let r = h.call("read", r#"{"path":"s.rs"}"#);
+        for needle in [
+            "if !text.is_empty() && x != y {",
+            "v.filter(|l| !l.trim().is_empty())",
+        ] {
+            assert!(
+                r.payload.contains(needle),
+                "read did not return `{needle}` intact — the space loss is in the TOOL:\n{}",
+                r.payload
+            );
+        }
+    }
     use crate::testing::harness;
 
     #[test]
@@ -308,8 +365,16 @@ mod tests {
         assert!(r.is_grounded());
         assert_eq!(r.payload.lines().count(), 200, "{}", r.payload);
         let notes = r.notes.join(" ");
-        assert!(notes.contains("at most 200 lines"), "{notes}");
+        // The note says WHERE to continue and how much there is. It does not
+        // restate the cap: that is in this tool's schema, which is in the stable
+        // prefix of every turn, and repeating it per call is context spent saying
+        // something the model was already told.
+        assert!(notes.contains("of 300"), "{notes}");
         assert!(notes.contains("offset=201"), "{notes}");
+        assert!(
+            !notes.contains("at most"),
+            "the cap belongs in the schema, not on every result: {notes}"
+        );
     }
 
     #[test]

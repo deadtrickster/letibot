@@ -175,7 +175,10 @@ impl<'a> Sessions<'a> {
         }
         let (tool, slot) = letibot_flowy::Flowy::unattached();
         self.slots.insert(session_id.to_string(), slot.clone());
-        let cond = self.seat.clone().map(|seat| self.attach_session(&seat, session_id, &slot));
+        let cond = self
+            .seat
+            .clone()
+            .map(|seat| self.attach_session(&seat, session_id, &slot));
         (Some(Box::new(tool)), cond)
     }
 
@@ -208,7 +211,10 @@ impl<'a> Sessions<'a> {
     pub fn slash(&mut self, session_id: &str, line: &str) -> crate::slash::SlashReply {
         use crate::slash::{Slash, SlashReply};
         match Slash::parse(line) {
-            Slash::Help(h) => SlashReply { lines: vec![h], ok: false },
+            Slash::Help(h) => SlashReply {
+                lines: vec![h],
+                ok: false,
+            },
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
             Slash::Supervise { want, at } => {
                 let Some(h) = self.open.get_mut(session_id) else {
@@ -221,11 +227,21 @@ impl<'a> Sessions<'a> {
                 if let Some(addr) = at {
                     let ep = match letibot_turn::Endpoint::parse(&addr) {
                         Ok(e) => e,
-                        Err(why) => return SlashReply { lines: vec![why], ok: false },
+                        Err(why) => {
+                            return SlashReply {
+                                lines: vec![why],
+                                ok: false,
+                            };
+                        }
                     };
                     match h.attach_oracle(ep) {
                         Ok(line) => lines.push(line),
-                        Err(why) => return SlashReply { lines: vec![why], ok: false },
+                        Err(why) => {
+                            return SlashReply {
+                                lines: vec![why],
+                                ok: false,
+                            };
+                        }
                     }
                 }
                 match want {
@@ -258,10 +274,24 @@ impl<'a> Sessions<'a> {
             }
             Slash::FlowyStatus => crate::slash::flowy_status(self.seat.as_ref()),
             Slash::FlowyLogout => match self.detach_seat() {
-                Some(name) => SlashReply { lines: vec![format!("released seat `{name}`; the room is no longer heard")], ok: true },
-                None => SlashReply { lines: vec!["no seat was attached".into()], ok: false },
+                Some(name) => SlashReply {
+                    lines: vec![format!(
+                        "released seat `{name}`; the room is no longer heard"
+                    )],
+                    ok: true,
+                },
+                None => SlashReply {
+                    lines: vec!["no seat was attached".into()],
+                    ok: false,
+                },
             },
-            Slash::FlowyLogin { seat, addr, token, token_file, new_reader } => {
+            Slash::FlowyLogin {
+                seat,
+                addr,
+                token,
+                token_file,
+                new_reader,
+            } => {
                 let (creds, mut lines) = match crate::slash::flowy_login_credentials(
                     seat.as_deref(),
                     addr.as_deref(),
@@ -281,7 +311,10 @@ impl<'a> Sessions<'a> {
                 };
                 if new_reader {
                     match seat.declare_reader() {
-                        Ok(r) => lines.push(format!("declared reader `{}` at cursor {}", r.reader, r.cursor)),
+                        Ok(r) => lines.push(format!(
+                            "declared reader `{}` at cursor {}",
+                            r.reader, r.cursor
+                        )),
                         Err(e) => {
                             lines.push(format!("declaring the reader: {e}"));
                             return SlashReply { lines, ok: false };
@@ -289,7 +322,9 @@ impl<'a> Sessions<'a> {
                     }
                 } else {
                     match seat.reader() {
-                        Ok(Some(r)) => lines.push(format!("reader `{}` at cursor {}", r.reader, r.cursor)),
+                        Ok(Some(r)) => {
+                            lines.push(format!("reader `{}` at cursor {}", r.reader, r.cursor))
+                        }
                         Ok(None) => {
                             lines.push(format!(
                                 "reader `{}` is NOT DECLARED on the node. If this seat has never listened, \
@@ -300,12 +335,16 @@ impl<'a> Sessions<'a> {
                             ));
                             return SlashReply { lines, ok: false };
                         }
-                        Err(e) => lines.push(format!("node not answering yet ({e}); the listener will keep trying")),
+                        Err(e) => lines.push(format!(
+                            "node not answering yet ({e}); the listener will keep trying"
+                        )),
                     }
                 }
                 let _ = session_id;
                 lines.extend(self.attach_seat(seat));
-                lines.push("attached. `/flowy status` for the seat; the `flowy` tool speaks as it.".into());
+                lines.push(
+                    "attached. `/flowy status` for the seat; the `flowy` tool speaks as it.".into(),
+                );
                 SlashReply { lines, ok: true }
             }
             Slash::Models => {
@@ -314,14 +353,25 @@ impl<'a> Sessions<'a> {
                     .get(session_id)
                     .map(|h| h.provider_line())
                     .unwrap_or_else(|| "(session not open)".into());
-                SlashReply { lines: crate::slash::models_listing(&current), ok: true }
+                SlashReply {
+                    lines: crate::slash::models_listing(&current),
+                    ok: true,
+                }
             }
-            Slash::ModelsSet { provider, model, key } => {
-                let (choice, mut lines) =
-                    match crate::slash::models_choice(&provider, model.as_deref(), key.as_deref(), None) {
-                        Ok(x) => x,
-                        Err(lines) => return SlashReply { lines, ok: false },
-                    };
+            Slash::ModelsSet {
+                provider,
+                model,
+                key,
+            } => {
+                let (choice, mut lines) = match crate::slash::models_choice(
+                    &provider,
+                    model.as_deref(),
+                    key.as_deref(),
+                    None,
+                ) {
+                    Ok(x) => x,
+                    Err(lines) => return SlashReply { lines, ok: false },
+                };
                 let Some(h) = self.open.get_mut(session_id) else {
                     lines.push(format!("session {session_id} is not open"));
                     return SlashReply { lines, ok: false };
@@ -353,7 +403,9 @@ impl<'a> Sessions<'a> {
         seat.start();
         self.parts
             .skills
-            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(seat.clone())));
+            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(
+                seat.clone(),
+            )));
         let ids: Vec<String> = self
             .open
             .keys()
@@ -367,9 +419,13 @@ impl<'a> Sessions<'a> {
             let cond = self.attach_session(&seat, &id, &slot);
             self.declare_flowy_monitor(&id, Some(cond));
             match self.refresh_fabric(&id) {
-                Ok(true) => report.push(format!("{id}: attached; the fabric block went in as a system update")),
+                Ok(true) => report.push(format!(
+                    "{id}: attached; the fabric block went in as a system update"
+                )),
                 Ok(false) => report.push(format!("{id}: attached")),
-                Err(e) => report.push(format!("{id}: attached; the fabric block could not be read: {e}")),
+                Err(e) => report.push(format!(
+                    "{id}: attached; the fabric block could not be read: {e}"
+                )),
             }
         }
         report
@@ -662,7 +718,14 @@ impl<'a> Sessions<'a> {
             };
             let (tool, cond) = self.seat_tool(session_id);
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
-            let h = Harness::open_with_registry(self.parts, cfg, hub, None, tool, self.registry.clone())?;
+            let h = Harness::open_with_registry(
+                self.parts,
+                cfg,
+                hub,
+                None,
+                tool,
+                self.registry.clone(),
+            )?;
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
         }
@@ -686,7 +749,10 @@ impl<'a> Sessions<'a> {
         self.publish_title(session_id);
         self.arm_wake(session_id);
         match out {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                self.compact_if_at_the_wall(session_id);
+                Ok(r)
+            }
             Err(e) => {
                 let turn_id = self
                     .open
@@ -697,6 +763,118 @@ impl<'a> Sessions<'a> {
                     publish_failure(hub, &turn_id, &e);
                 }
                 Err(e)
+            }
+        }
+    }
+
+    /// **Compact when the next turn would not fit.** `docs/compaction.md` §1:
+    /// the trigger is the wall and nothing else — depth was measured not to hurt
+    /// quality — so the policy is *as late as possible*, and this is the last
+    /// moment that is still safe.
+    ///
+    /// Why it is here and not inside the engine: compaction reaches the store,
+    /// the resume chain and the registry, which is why `turn::compaction` says
+    /// building the new base is the caller's act. This is that caller.
+    ///
+    /// Measured 2026-09-15, which is why it exists at all: a session reached
+    /// ~244k of 262144 and the NEXT turn came back `500 Context size has been
+    /// exceeded` with nothing recorded. Nothing compacted on its own, because
+    /// until now nothing could — compaction was only ever `/compact` from a head,
+    /// and by the time a person notices, the turn that would have told them has
+    /// already failed.
+    ///
+    /// A failure here is announced and swallowed: the turn the operator asked for
+    /// SUCCEEDED, and turning its reply into an error because the tidying
+    /// afterwards did not work would lose the thing they wanted.
+    fn compact_if_at_the_wall(&mut self, session_id: &str) {
+        let resident = match self.open.get(session_id) {
+            Some(h) => h.ledger_len() as u64,
+            None => return,
+        };
+        if !self.base.should_compact(resident) {
+            return;
+        }
+        let hub = self.registry.get(session_id);
+        let window = self.base.context_window.unwrap_or(0);
+        // **Said where it can be seen, not only where a head would see it.** The
+        // hub reaches attached heads; a one-shot has none, and a compaction it
+        // could not see is precisely the "a session doing something the operator
+        // did not see coming" the banner promises against. Verified 2026-09-15:
+        // the fork was in the store and the terminal said nothing.
+        eprintln!(
+            "  compacting: {resident} of {window} tokens resident, less than the {} the \
+             next turn needs",
+            self.base.headroom()
+        );
+        if let Some(hub) = &hub {
+            hub.publish(SessionEvent::Warning {
+                code: "auto_compact".into(),
+                detail: format!(
+                    "{resident} of {window} tokens resident, leaving less than the \
+                     {} the next turn needs — compacting now, as one more message so \
+                     the prefix the server already holds is reused. This is the wall, \
+                     not a judgement about the conversation.",
+                    self.base.headroom()
+                ),
+            });
+        }
+        match self.compact(session_id) {
+            Ok(report) => {
+                let after = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.ledger_len() as u64)
+                    .unwrap_or(0);
+                // **If it did not help, stop trying.** A summary that is itself
+                // over the threshold would compact again next turn, and again —
+                // a loop that spends a turn each time and never lets the
+                // conversation continue. Better to say so once and let the wall
+                // be the wall: the operator can `/compact` by hand, shorten the
+                // session, or raise the window.
+                if self.base.should_compact(after) {
+                    self.base.auto_compact = false;
+                    if let Some(h) = self.open.get_mut(session_id) {
+                        h.config_mut().auto_compact = false;
+                    }
+                    if let Some(hub) = &hub {
+                        hub.publish(SessionEvent::Warning {
+                            code: "auto_compact_no_progress".into(),
+                            detail: format!(
+                                "compacted from {resident} to {after} tokens and that is \
+                                 STILL within {} of the {window} window, so automatic \
+                                 compaction is now off for this session rather than \
+                                 looping once per turn. The summary itself is near the \
+                                 wall: start a fresh session, or raise --context-window \
+                                 if the server really has more.",
+                                self.base.headroom()
+                            ),
+                        });
+                    }
+                } else {
+                    eprintln!("  compacted: {after} tokens resident now, was {resident}");
+                    if let Some(hub) = &hub {
+                        hub.publish(SessionEvent::Warning {
+                            code: "auto_compact".into(),
+                            detail: format!(
+                                "compacted: {after} tokens resident now, was {resident}."
+                            ),
+                        });
+                    }
+                }
+                let _ = report;
+            }
+            Err(e) => {
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "auto_compact_failed".into(),
+                        detail: format!(
+                            "the automatic compaction did not run: {e}. The turn you \
+                             asked for succeeded; what failed is the tidying after it, \
+                             and the next turn may hit the context wall. `/compact` \
+                             retries it.",
+                        ),
+                    });
+                }
             }
         }
     }
@@ -985,7 +1163,11 @@ impl<'a> Sessions<'a> {
                 let reply = self.slash(session_id, &line);
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
-                        code: if reply.ok { "slash".into() } else { "slash_refused".into() },
+                        code: if reply.ok {
+                            "slash".into()
+                        } else {
+                            "slash_refused".into()
+                        },
                         detail: format!("/{line}\n{}", reply.lines.join("\n")),
                     });
                 }
