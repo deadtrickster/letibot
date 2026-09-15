@@ -239,9 +239,9 @@ pub fn flowy_status(seat: Option<&Seat>) -> SlashReply {
     let Some(seat) = seat else {
         return SlashReply::ok(vec![
             "flowy: no seat is attached to this daemon.".into(),
-            "  /flowy login            attach the seat on the usual path ($FLOWY_AGENT, or the only".into(),
+            "  /flowy login attach the seat on the usual path ($FLOWY_AGENT, or the only".into(),
             "                          token under ~/.config/flowy/agents/)".into(),
-            "  /flowy login SEAT       which seat, when there are several".into(),
+            "  /flowy login SEAT which seat, when there are several".into(),
             "  /flowy login SEAT --token T [--addr URL]   a seat this box has never held".into(),
         ]);
     };
@@ -375,7 +375,7 @@ pub fn flowy_login_credentials(
 pub fn models_listing(current: &str) -> Vec<String> {
     let mut lines = vec![format!("models — now answering: {current}")];
     lines.push(
-        "  local            the llama.cpp server this daemon was started against   /models local"
+        "  local the llama.cpp server this daemon was started against   /models local"
             .into(),
     );
     for p in letibot_provider::presets::ALL {

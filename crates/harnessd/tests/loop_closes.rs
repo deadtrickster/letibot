@@ -82,6 +82,18 @@ fn known_local_model(served: &str) -> Option<(&'static str, Dialect, &'static st
     })
 }
 
+/// **The operator's per-project mode is not this test's business.**
+///
+/// `Harness::open` applies the project store's row over `cfg.mode` (D13), and the
+/// row for this repository is whatever was last set with `/mode`. When the
+/// operator set `automode`, these three went red demanding an authorisation
+/// oracle — a correct refusal about a mode the test never asked for. Third file
+/// to need this; a test asserts about the conditions it supplies.
+fn own_modes(parts: Parts) -> Parts {
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    parts
+}
+
 fn config() -> Config {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -156,7 +168,7 @@ fn config() -> Config {
 fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
     let _lock = serial();
     let cfg = config();
-    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new("loop-test");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
 
@@ -214,7 +226,7 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
 fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
     let _lock = serial();
     let cfg = config();
-    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new("abstain-test");
     let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
 
@@ -308,7 +320,7 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     let socket = cfg.socket.clone();
     let session = "socket-test".to_string();
     cfg.session_id = session.clone();
-    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let registry = Registry::new();
     registry
         .create(session.clone(), "", Sessions::wiring(&cfg))

@@ -670,7 +670,7 @@ impl OracleScope {
             .collect();
         if !outside.is_empty() {
             return Err(format!(
-                "the action carries intent(s) [{}], which are outside this oracle's                  earned authority",
+                "the action carries intent(s) [{}], which are outside this oracle's earned authority",
                 outside.join(" ")
             ));
         }

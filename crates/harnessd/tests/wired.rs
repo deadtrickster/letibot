@@ -61,10 +61,21 @@ fn config(seat: Seat) -> Config {
 }
 
 fn parts(cfg: &Config) -> Parts {
-    Parts::load(cfg).expect(
+    let p = Parts::load(cfg).expect(
         "the vocabulary must load; set LETIBOT_VOCAB_GGUF if this box is not the one \
          this repository is developed on",
-    )
+    );
+    // **The operator's per-project mode is not this test's business.**
+    //
+    // `Harness::open` applies the project store's row over `cfg.mode` (D13), and
+    // the row for this repository is whatever the operator last set with `/mode`.
+    // The moment he set `automode`, eight of these went red demanding an
+    // authorisation oracle — a correct refusal about a mode the test never asked
+    // for. The third time a test here has been decided by this laptop's
+    // configuration rather than by its own fixture; `wired`'s job is to assert
+    // what a session seats, so it supplies the conditions it is asserting about.
+    *p.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    p
 }
 
 /// An adjudicator that would admit anything, and never gets the chance to.

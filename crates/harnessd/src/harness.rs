@@ -1274,7 +1274,7 @@ impl<'a> Harness<'a> {
             Some(name) => {
                 let seat = Seat::parse(&name).map_err(|e| {
                     HarnessError::Setup(format!(
-                        "session {} records the role `{name}`, which this build does not                          know: {e}. Refusing rather than re-seating the conversation with                          the daemon's own role, which would change its tools without                          saying so.",
+                        "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
                         cfg.session_id
                     ))
                 })?;
@@ -2456,7 +2456,7 @@ impl<'a> Harness<'a> {
                     self.hub.publish(SessionEvent::Warning {
                         code: "context_wall".into(),
                         detail: format!(
-                            "stopping this turn after {round} round(s): {resident} of                              {window} tokens are resident and the next round needs                              {} free. Everything so far is committed, and the session                              compacts before the next turn — this is the wall, not a                              failure of the work.",
+                            "stopping this turn after {round} round(s): {resident} of                              {window} tokens are resident and the next round needs                              {} free. Everything so far is committed, and the session compacts before the next turn — this is the wall, not a failure of the work.",
                             self.cfg.headroom()
                         ),
                     });

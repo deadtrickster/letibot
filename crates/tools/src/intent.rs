@@ -1048,7 +1048,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["-f", "--force"],
         intent: Intent::Destroy,
-        why: "`docker rm -f` kills a running container and removes it, losing anything               written outside a volume",
+        why: "`docker rm -f` kills a running container and removes it, losing anything written outside a volume",
         provenance: Provenance::HandWritten,
     },
     FlagRule {
@@ -1143,7 +1143,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["-f", "--force", "-x", "-X"],
         intent: Intent::Destroy,
-        why: "`git clean -f` deletes untracked files, and `-x` deletes ignored ones               too — build output, .env files, anything git was told not to watch.               Nothing is recoverable from git afterwards",
+        why: "`git clean -f` deletes untracked files, and `-x` deletes ignored ones too — build output, .env files, anything git was told not to watch. Nothing is recoverable from git afterwards",
         provenance: Provenance::HandWritten,
     },
     FlagRule {
@@ -1152,7 +1152,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["--hard"],
         intent: Intent::Destroy,
-        why: "`git reset --hard` discards every uncommitted change in the working tree               along with moving the branch; the changes are not in the reflog",
+        why: "`git reset --hard` discards every uncommitted change in the working tree along with moving the branch; the changes are not in the reflog",
         provenance: Provenance::HandWritten,
     },
     FlagRule {
@@ -1161,7 +1161,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["-f", "--force", "--force-with-lease", "--delete"],
         intent: Intent::Destroy,
-        why: "a force push overwrites history on the REMOTE, where other people's               clones already point at what it replaces",
+        why: "a force push overwrites history on the REMOTE, where other people's clones already point at what it replaces",
         provenance: Provenance::HandWritten,
     },
     FlagRule {
@@ -1183,7 +1183,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["-s", "--size"],
         intent: Intent::Destroy,
-        why: "`truncate -s` sets a file's length outright — `-s 0` empties it and the               contents are gone, which `touch`-like names do not suggest",
+        why: "`truncate -s` sets a file's length outright — `-s 0` empties it and the contents are gone, which `touch`-like names do not suggest",
         provenance: Provenance::HandWritten,
     },
 ];
@@ -3579,7 +3579,7 @@ mod secret_is_not_destruction {
         let (destroys, secret, tier) = look("/bin/cp /home/op/.ssh/id_ed25519 /tmp/x");
         assert!(!destroys, "a copy destroys nothing");
         assert!(secret, "but the source IS a secret: regions must say so");
-        println!("  cp key      destroy={destroys} secret={secret} tier={tier}");
+        println!("  cp key destroy={destroys} secret={secret} tier={tier}");
 
         // Reading it is the same shape.
         let (destroys, secret, tier) = look("/bin/cat /home/op/.ssh/id_ed25519");
@@ -3599,7 +3599,7 @@ mod secret_is_not_destruction {
         let (destroys, secret, tier) = look("/bin/rm -f /home/op/.ssh/id_ed25519");
         assert!(destroys, "rm destroys");
         assert!(secret);
-        println!("  rm key      destroy={destroys} secret={secret} tier={tier}");
+        println!("  rm key destroy={destroys} secret={secret} tier={tier}");
     }
 }
 

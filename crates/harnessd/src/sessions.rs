@@ -1242,7 +1242,7 @@ impl<'a> Sessions<'a> {
                         // have to decide what happens to the grants and the breaker
                         // taken under the old point.
                         detail: format!(
-                            "{} is set to `{}` from the NEXT session in this project —                              this one keeps the point it opened at. {}",
+                            "{} is set to `{}` from the NEXT session in this project — this one keeps the point it opened at. {}",
                             workspace.display(),
                             mode.name,
                             mode.summary

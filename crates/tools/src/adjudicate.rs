@@ -2195,7 +2195,7 @@ impl Gate for AdjudicatedGate {
                 },
                 by: "boundary:flow".into(),
                 basis: format!(
-                    "{evidence} ({}). The consequence of a disclosure does not land on                      the person who would be consenting to it — it lands on every host                      that credential opens and on whoever reads the transcript later —                      and it cannot be undone afterwards. So no context, no classifier                      verdict and no operator instruction promotes it",
+                    "{evidence} ({}). The consequence of a disclosure does not land on the person who would be consenting to it — it lands on every host that credential opens and on whoever reads the transcript later — and it cannot be undone afterwards. So no context, no classifier verdict and no operator instruction promotes it",
                     rule.as_str()
                 ),
                 latency_ms: 0,
@@ -2682,7 +2682,7 @@ pub fn startup_disclosure_for(
         startup_disclosure_inner(adjudicator, backend_writable, classes);
     if !classes.is_empty() && !denials_surfaced {
         detail.push_str(
-            " DENIALS ARE NOT SURFACED: no denial sink is attached, so a refusal reaches              the model and stops there. The operator will see a task that stopped rather              than the decision that stopped it, which is the failure mode that makes a              model try a variant instead of asking. Attach one with              `AdjudicatedGate::with_denial_sink`.",
+            " DENIALS ARE NOT SURFACED: no denial sink is attached, so a refusal reaches the model and stops there. The operator will see a task that stopped rather than the decision that stopped it, which is the failure mode that makes a model try a variant instead of asking. Attach one with              `AdjudicatedGate::with_denial_sink`.",
         );
         return (state, detail, false);
     }
