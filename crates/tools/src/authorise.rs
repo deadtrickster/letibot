@@ -626,6 +626,11 @@ pub struct OracleScope {
     /// and required, because a scope with no evidence behind it is the guess this
     /// field exists to prevent.
     pub evidence: String,
+    /// **Granted by a person, rather than measured.** Carried as a fact so the
+    /// banner and the audit row do not have to read the prose above to know which
+    /// of the two they are looking at — and so a widening that a human chose can
+    /// never be rendered as one that was earned.
+    pub declared: bool,
 }
 
 impl OracleScope {
@@ -647,6 +652,7 @@ impl OracleScope {
             .collect(),
             max_scope: EffectScope::HostProject,
             evidence: evidence.into(),
+            declared: false,
         }
     }
 
@@ -670,6 +676,32 @@ impl OracleScope {
     /// reason every other refusal in this tree gives: a setting that quietly did
     /// not take is worse than one that refused.
     pub fn declared(intents: &[String], max_scope: Option<&str>) -> Result<Self, String> {
+        // **An unset list is the floor's list, never an empty one.**
+        //
+        // `max_scope = "host_other"` on its own is an operator saying *reach
+        // further*, and building an empty intent set from it would produce a scope
+        // that covers NOTHING — narrower than the default they were trying to
+        // widen, and silently so: every call would ask, which is exactly the
+        // symptom they were fixing. The two lines are independent knobs and
+        // omitting one must not reinterpret the other.
+        if intents.is_empty() {
+            let floor = OracleScope::narrowest("");
+            let max_scope = match max_scope {
+                None => floor.max_scope,
+                Some(s) => EffectScope::parse(s).ok_or_else(|| Self::scope_names(s))?,
+            };
+            return Ok(OracleScope {
+                intents: floor.intents,
+                max_scope,
+                declared: true,
+                evidence: format!(
+                    "the built-in intents, reaching `{}` — declared by the operator \
+                     in providers.toml under `[gatekeeper]`, which is a grant and \
+                     not a calibration: no corpus was replayed to arrive at it",
+                    max_scope.as_str()
+                ),
+            });
+        }
         let mut set = std::collections::BTreeSet::new();
         for name in intents {
             let i = Intent::parse(name).ok_or_else(|| {
@@ -686,19 +718,31 @@ impl OracleScope {
         }
         let max_scope = match max_scope {
             None => EffectScope::HostProject,
-            Some(s) => EffectScope::parse(s).ok_or_else(|| {
-                format!(
-                    "`{s}` is not an effect scope. The names are: in_run, \
-                     host_project, host_other, external"
-                )
-            })?,
+            Some(s) => EffectScope::parse(s).ok_or_else(|| Self::scope_names(s))?,
         };
         Ok(OracleScope {
             intents: set,
             max_scope,
+            declared: true,
             evidence: "declared by the operator in providers.toml under                        `[gatekeeper]` — this is a grant, not a calibration: no                        corpus was replayed to arrive at it"
                 .into(),
         })
+    }
+
+    /// Whether this authority was granted by a person rather than measured.
+    ///
+    /// A flag rather than a substring test on `evidence`: the sentence is prose and
+    /// a reader that greps it would be a second definition of the distinction, in
+    /// the layer that renders it.
+    pub fn is_declared(&self) -> bool {
+        self.declared
+    }
+
+    fn scope_names(given: &str) -> String {
+        format!(
+            "`{given}` is not an effect scope. The names are: in_run, host_project, \
+             host_other, external"
+        )
     }
 
     /// Whether this oracle may be asked about this action at all.
@@ -1458,23 +1502,65 @@ impl ModelAdjudicator {
     }
 }
 
+/// **The operator's own sentences, by the indices the oracle cited.**
+///
+/// The oracle answers with positions in the trail it was shown; a person reading
+/// the prompt needs the words. Clipped utterances are marked, because a truncated
+/// authorisation that reads as complete is worse than a missing one — the same
+/// rule `Utterance::clipped` exists for one layer down.
+///
+/// An index the trail does not have is skipped rather than guessed at: a citation
+/// pointing at nothing is not evidence, and inventing a line for it would be the
+/// harness authorising itself.
+fn quoted(trail: &AuthorisationTrail, cites: &[usize]) -> Vec<String> {
+    cites
+        .iter()
+        .filter_map(|i| trail.utterances.get(*i))
+        .map(|u| {
+            let text = u.text.trim();
+            // One line each: a prompt is a ladder, not a transcript. The whole
+            // utterance is in the session above, where it was said.
+            let line: String = text.chars().take(120).collect();
+            let short = line.len() < text.len() || u.clipped;
+            format!("\"{}{}\"", line.trim_end(), if short { "…" } else { "" })
+        })
+        .collect()
+}
+
 impl ModelAdjudicator {
     /// Record what the call amounted to, and hand the decision straight back.
     ///
     /// Wrapped around every `return` in `decide` so that a path added later cannot
     /// forget it: the compiler will not catch a missing record, and a row silently
     /// carrying the previous call's advice is worse than one carrying none.
-    fn note(&self, d: AdjudicationDecision, consulted: bool, would: &'static str) -> AdjudicationDecision {
+    fn note(
+        &self,
+        d: AdjudicationDecision,
+        consulted: bool,
+        would: &'static str,
+        cites: Vec<String>,
+    ) -> AdjudicationDecision {
         if let Ok(mut g) = self.last_advice.lock() {
             *g = Some(crate::adjudicate::ModelAdvice {
                 consulted,
                 would,
                 by: d.by.clone(),
                 basis: d.basis.clone(),
-                // `Widening::cites` is consumed building the decision and there is no
-                // field on one to carry it. Empty here is *not reported*, and the
-                // renderer says so rather than showing it as "cited nothing".
-                cites: Vec::new(),
+                // **The operator's own sentence, not an index into it.**
+                //
+                // This used to be empty with a note saying `Widening::cites` was
+                // consumed building the basis and a decision had no field to carry
+                // it — "empty here is *not reported*, and the renderer says so".
+                // The renderer does not say so: it prints *"cites nothing from your
+                // words"*, so the screen carried `basis: … (citing trail entry 0)`
+                // and `cites nothing from your words` one line apart. The operator
+                // read the second one and was right to: *"it also told that i didnt
+                // mention anything while it was clear that i instructed the model to
+                // use worktrees"*.
+                //
+                // An index is not evidence to a person either. What answers *which
+                // of my words authorised this* is the words.
+                cites,
                 latency_ms: d.latency_ms,
             });
         }
@@ -1500,7 +1586,7 @@ impl Adjudicator for ModelAdjudicator {
                         ABOUT. No oracle was consulted"
                     .into(),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, false, "unavailable");
+            }, false, "unavailable", Vec::new());
         }
         if let Tier::AlwaysAsk { rule, why } = &req.tier {
             return self.note(AdjudicationDecision {
@@ -1516,7 +1602,7 @@ impl Adjudicator for ModelAdjudicator {
                      have changed that"
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, false, "ask");
+            }, false, "ask", Vec::new());
         }
         if let Tier::Inexpressible { rule, evidence } = &req.tier {
             return self.note(AdjudicationDecision {
@@ -1533,7 +1619,7 @@ impl Adjudicator for ModelAdjudicator {
                     rule.as_str()
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, false, "refuse");
+            }, false, "refuse", Vec::new());
         }
         if !req.trail.was_collected() {
             let why = match &req.trail.provenance {
@@ -1551,7 +1637,7 @@ impl Adjudicator for ModelAdjudicator {
                      evidence. {why}"
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, false, "unavailable");
+            }, false, "unavailable", Vec::new());
         }
 
         let baseline = (self.baseline)(req);
@@ -1573,7 +1659,7 @@ impl Adjudicator for ModelAdjudicator {
                     scope.evidence
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, false, "ask");
+            }, false, "ask", Vec::new());
         }
 
         let mut brief = ModelBrief::new(req, &baseline);
@@ -1605,7 +1691,7 @@ impl Adjudicator for ModelAdjudicator {
                         .join(", ")
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, true, "admit"),
+            }, true, "admit", quoted(&brief.trail, &w.cites)),
             // Neither of these denies. The oracle found no authorisation, which leaves
             // the baseline where it was — asking — and with one adjudicator attached
             // there is nobody else here to ask, so it escalates. The gate turns that
@@ -1620,7 +1706,7 @@ impl Adjudicator for ModelAdjudicator {
                 by: me,
                 basis: why,
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, true, "ask"),
+            }, true, "ask", Vec::new()),
             // **Unsure is its own verdict and its own row.** The operator named this
             // case: the gate says it cannot tell, the person is asked anyway, and
             // that goes to the corpus too. `consulted` is true — an oracle answered,
@@ -1634,7 +1720,7 @@ impl Adjudicator for ModelAdjudicator {
                 by: me,
                 basis: why,
                 latency_ms: started.elapsed().as_millis() as u64,
-            }, true, "ask"),
+            }, true, "ask", Vec::new()),
         }
     }
 
@@ -1644,9 +1730,15 @@ impl Adjudicator for ModelAdjudicator {
 
     fn describe(&self) -> String {
         let scope = self.oracle.scope();
+        // **"Earned" is a claim about where the authority came from.** It was
+        // hard-coded into the sentence while the evidence beside it could say the
+        // operator declared it, which is the banner asserting a measurement that
+        // was never taken. `OracleScope` is careful about exactly this distinction;
+        // the line that renders it has to be too.
+        let how = if scope.is_declared() { "Declared" } else { "Earned" };
         format!(
             "{} — answers only 'did the operator ask for this'; may widen a \
-             may-approve ask into an allow-once and can do nothing else. Earned scope: \
+             may-approve ask into an allow-once and can do nothing else. {how} scope: \
              intents [{}] up to `{}`, on the basis that {}. Budget {} ms.",
             self.oracle.describe(),
             scope
@@ -1664,6 +1756,51 @@ impl Adjudicator for ModelAdjudicator {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A citation is the operator's words, not an index into them.**
+    ///
+    /// The advice carried an empty `cites` while its own basis said *"citing trail
+    /// entry 0"*, and the head prints "cites nothing from your words" for an empty
+    /// one — so the prompt asserted, one line under the citation, that the operator
+    /// had said nothing. They noticed.
+    #[test]
+    fn a_citation_carries_the_sentence_that_authorised_it() {
+        let trail = AuthorisationTrail {
+            utterances: vec![
+                Utterance {
+                    speaker: Speaker::Operator,
+                    text: "use a worktree for this, not the main checkout".into(),
+                    clipped: false,
+                    turns_ago: 3,
+                    seconds_ago: Some(90),
+                },
+                Utterance {
+                    speaker: Speaker::Operator,
+                    text: "x".repeat(400),
+                    clipped: true,
+                    turns_ago: 1,
+                    seconds_ago: None,
+                },
+            ],
+            provenance: TrailProvenance::Scanned {
+                messages_scanned: 41,
+                operator_messages: 2,
+            },
+        };
+        let q = quoted(&trail, &[0]);
+        assert_eq!(q.len(), 1);
+        assert!(q[0].contains("use a worktree"), "{q:?}");
+        assert!(q[0].starts_with('"') && q[0].ends_with('"'), "{q:?}");
+
+        // A long or clipped utterance is marked rather than silently shortened.
+        let long = quoted(&trail, &[1]);
+        assert!(long[0].contains('…'), "a shortened citation must say so: {long:?}");
+
+        // An index the trail does not have is skipped, never invented: a citation
+        // pointing at nothing is not evidence.
+        assert!(quoted(&trail, &[7]).is_empty());
+        assert_eq!(quoted(&trail, &[0, 7]).len(), 1);
+    }
 
     /// **A declaration is not a calibration, and says which it is.**
     ///
@@ -1703,6 +1840,21 @@ mod tests {
         // The floor is unchanged for a box that says nothing.
         let floor = OracleScope::narrowest("test fixture, not a calibration");
         assert!(floor.covers(&carries, EffectScope::HostProject).is_err());
+
+        // **`max_scope` alone widens the reach and keeps the intents.** Reading an
+        // absent list as an EMPTY one would build a scope covering nothing —
+        // narrower than the default the operator was widening, and silently so.
+        let reach = OracleScope::declared(&[], Some("host_other")).unwrap();
+        let mut write = std::collections::BTreeSet::new();
+        write.insert(Intent::WriteFile);
+        assert!(
+            reach.covers(&write, EffectScope::HostOther).is_ok(),
+            "a bare `max_scope` must keep the built-in intents: {}",
+            reach.evidence
+        );
+        assert!(reach.covers(&write, EffectScope::External).is_err());
+        // It is still a grant rather than a measurement, and says so.
+        assert!(reach.evidence.contains("not a calibration"), "{}", reach.evidence);
     }
     use super::*;
     use crate::adjudicate::{

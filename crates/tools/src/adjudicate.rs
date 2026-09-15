@@ -2455,6 +2455,50 @@ impl Gate for AdjudicatedGate {
         //    carrying both.
         self.advice = self.ask_the_advisor(&req);
         req.advice = self.advice.clone();
+
+        // **At a point whose decider is the MODEL, the model's admit IS the
+        // decision.** Otherwise `automode` is `supervised` wearing another name.
+        //
+        // `Mode::AUTO` says it in as many words — *"a model answers, within the
+        // scope it has earned"* — and `Decider::Model` is the whole content of the
+        // point. What actually happened was that the decider never reached the
+        // adjudicator: the gate asked the advisor, threw its verdict onto the
+        // request as advice, and then asked the person anyway. The operator saw
+        // `model says admit` and a permission ladder under it, on a mode they chose
+        // precisely so the model would answer.
+        //
+        // Three things still bound it, and all three predate this:
+        //
+        //  * the always-ask list, which is exempted here by name — the mode's own
+        //    sentence promises it "still reaches you", and this is where that is
+        //    kept true;
+        //  * the oracle's scope, which decides whether it may answer about this
+        //    action at all (it returns `ask` when it may not, and that falls
+        //    through to the person below);
+        //  * `Tier::Inexpressible`, refused at step 1b, before any of this.
+        //
+        // And it admits ONCE. The oracle mints `allow_once` and nothing here turns
+        // that into a standing grant.
+        if self.mode.decider == crate::mode::Decider::Model
+            && !matches!(req.tier, Tier::AlwaysAsk { .. })
+            && let Some(a) = self.advice.clone()
+            && a.consulted
+            && a.would == "admit"
+        {
+            let d = AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Selected {
+                    option_id: "allow_once".into(),
+                },
+                by: a.by.clone(),
+                basis: a.basis.clone(),
+                latency_ms: a.latency_ms,
+            };
+            self.breaker.admitted(&direction);
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
         let decision = self.adjudicator.decide(&req);
         // What it was shown, verbatim, for the corpus row — and, at a supervised
         // point, what the model told the person before they answered. Both are read
@@ -2863,6 +2907,111 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **`automode` means the model answers.** It advised and the person was asked
+    /// anyway, which is `supervised` under another name — and the operator chose
+    /// the point precisely so the model would decide.
+    ///
+    /// The always-ask list is the exemption the mode's own sentence promises, and
+    /// it is asserted here beside the admit so the two cannot drift apart.
+    #[test]
+    fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
+        use crate::authorise::{AuthorisationTrail, OracleAnswer, Widening};
+        use crate::mode::Mode;
+
+        /// An oracle that authorises everything it is allowed to be asked about.
+        struct Yes;
+        impl crate::authorise::AuthorisationOracle for Yes {
+            fn authorised(&self, brief: &mut crate::authorise::ModelBrief) -> OracleAnswer {
+                // The witness is the proof, and taking it is how an oracle widens.
+                let Some(w) = brief.adjudicable() else {
+                    return OracleAnswer::Unsure {
+                        why: "no witness".into(),
+                    };
+                };
+                OracleAnswer::Authorised(Widening::new(
+                    w,
+                    brief.request_id.clone(),
+                    vec![0],
+                    "the operator asked for exactly this",
+                ))
+            }
+            fn describe(&self) -> String {
+                "test oracle".into()
+            }
+        }
+
+        /// A person who would refuse. If the ladder is reached at all, the call is
+        /// denied — so an admit below can only have come from the model.
+        struct Refuses;
+        impl Adjudicator for Refuses {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                AdjudicationDecision::selected(req, "deny", "human:test", "the person said no")
+            }
+            fn describe(&self) -> String {
+                "a person who refuses".into()
+            }
+        }
+
+        let gate = || {
+            AdjudicatedGate::new(Box::new(Refuses))
+                .with_mode(Mode::AUTO)
+                .with_advisor(std::sync::Arc::new(crate::ModelAdjudicator::new(
+                    Box::new(Yes),
+                    |_req: &AdjudicationRequest| {
+                        crate::intent::Baseline::of_command("touch /tmp/x", &Default::default())
+                    },
+                )))
+                .start_supervised(true)
+                .with_trail_source(|_call: &GateCall<'_>| AuthorisationTrail {
+                    utterances: vec![crate::authorise::Utterance {
+                        speaker: crate::authorise::Speaker::Operator,
+                        text: "make that file".into(),
+                        clipped: false,
+                        turns_ago: 0,
+                        seconds_ago: Some(5),
+                    }],
+                    provenance: crate::authorise::TrailProvenance::Scanned {
+                        messages_scanned: 1,
+                        operator_messages: 1,
+                    },
+                })
+        };
+
+        let args = serde_json::json!({"path": "/home/dead/Projects/letibot/notes.md"});
+        let mut g = gate();
+        let d = g.admit(&GateCall {
+            name: "write",
+            access: Access::Write,
+            args: &args,
+            turn_id: "t1",
+            call_id: "c1",
+            workspace: "/home/dead/Projects/letibot",
+            target_exists: Some(true),
+        });
+        assert!(
+            matches!(d, GateDecision::Admit),
+            "the model authorised it and the person was asked anyway: {d:?}"
+        );
+
+        // The always-ask list still reaches the person, who refuses — so the point
+        // has not become allow-all by another route.
+        let secret = serde_json::json!({"path": "/home/dead/.ssh/id_rsa"});
+        let mut g = gate();
+        let d = g.admit(&GateCall {
+            name: "write",
+            access: Access::Write,
+            args: &secret,
+            turn_id: "t1",
+            call_id: "c2",
+            workspace: "/home/dead/Projects/letibot",
+            target_exists: Some(true),
+        });
+        assert!(
+            !matches!(d, GateDecision::Admit),
+            "an always-ask action was settled by the model: {d:?}"
+        );
+    }
     /// **A `bash` call is about its command**, and the prompt has to be able to say
     /// so. Measured 2026-09-15: every exec permission the operator was shown read
     /// *"`bash` wants exec access to `<no target argument>`"* — the placeholder for

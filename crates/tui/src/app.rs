@@ -3715,20 +3715,34 @@ impl App {
             for l in wrap(&format!("  model says {}: {}", a.would, a.basis), w) {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
-            let grounds = if a.cites.is_empty() {
-                // **Said out loud, not omitted.** An oracle that authorised
-                // something while citing none of your words is the case most worth
-                // a second look, and a blank line there reads as "no note" rather
-                // than as "it could not ground this".
-                "cites nothing from your words".to_string()
+            // **Said out loud when it is a fact, omitted when it is not one.**
+            //
+            // An oracle that AUTHORISED something while citing none of your words
+            // is the case most worth a second look, and a blank line there reads as
+            // "no note" rather than as "it could not ground this". That is the only
+            // case this sentence is true about.
+            //
+            // It was printed unconditionally, and the citations never arrived from
+            // the layer below — so a screen carried `the operator authorised this:
+            // … (citing trail entry 0)` and `cites nothing from your words` one
+            // line apart. The operator read the second: *"it also told that i didnt
+            // mention anything while it was clear that i instructed the model to
+            // use worktrees"*. An oracle that did not authorise has nothing to cite
+            // and saying so about it claims a search that was never the question.
+            let grounds = if !a.cites.is_empty() {
+                Some(format!("cites {}", a.cites.join(" · ")))
+            } else if a.would == "admit" {
+                Some("cites nothing from your words".to_string())
             } else {
-                format!("cites: {}", a.cites.join(" · "))
+                None
             };
-            out.push(colour(
-                &self.cfg,
-                sgr::DIM,
-                &format!("  {} · {} · {} ms", a.by, grounds, a.latency_ms),
-            ));
+            let tail = match &grounds {
+                Some(g) => format!("  {} · {g} · {} ms", a.by, a.latency_ms),
+                None => format!("  {} · {} ms", a.by, a.latency_ms),
+            };
+            for l in wrap(&tail, w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
         }
         // **One option per line, with the highlighted one marked.**
         //
