@@ -131,6 +131,34 @@ mod tests {
     /// SAME ids, the information is gone before the prompt is built and the model
     /// is genuinely shown the wrong text. If the ids differ, tokenize is faithful
     /// and only `detokenize` is lossy, which is a display bug and reaches nothing.
+    /// **A character whose bytes straddle two tokens.** The case the first
+    /// version of the piece-based `detokenize` did not survive: it decoded each
+    /// token on its own, so both halves of a multi-byte character were invalid
+    /// UTF-8 and any message containing one became `<undecodable N token(s)>`.
+    /// Six transcript rows on the operator's box before it was caught.
+    ///
+    /// The lesson is narrow and worth keeping: the fidelity fix needed `piece`
+    /// instead of `llama_detokenize`; it never needed per-token DECODING, and
+    /// per-token decoding is what broke it.
+    #[test]
+    fn multibyte_characters_survive_detokenizing() {
+        let v = vocab();
+        for text in [
+            "héllo wörld",
+            "日本語のテキスト",
+            "emoji: 🙂 and ✅ and 🚀",
+            "Кириллица и ещё немного текста",
+            "math: ∀x ∈ ℝ, x² ≥ 0",
+            "mixed: if x != y { \"señor\" } // ✓",
+        ] {
+            let ids = v.tokenize_text(text).expect("tokenize");
+            let back = v.detokenize(&ids, false).unwrap_or_else(|e| {
+                panic!("{text:?} came back undecodable ({e:?}) — a character split across tokens")
+            });
+            assert_eq!(back, text, "the round trip changed {text:?}");
+        }
+    }
+
     #[test]
     fn which_half_of_the_round_trip_eats_the_space() {
         let v = vocab();

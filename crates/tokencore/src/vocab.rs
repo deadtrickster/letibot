@@ -255,6 +255,18 @@ impl Vocab {
 
     /// Render one token to its display piece.
     pub fn piece(&self, id: TokenId, render_special: bool) -> Result<String, VocabError> {
+        String::from_utf8(self.piece_bytes(id, render_special)?).map_err(|_| VocabError::NotUtf8)
+    }
+
+    /// One token's BYTES, undecoded.
+    ///
+    /// The distinction is not pedantry: a multi-byte character can straddle two
+    /// tokens, so each half is invalid UTF-8 on its own and only the pair decodes.
+    /// Anything assembling a run of tokens must join the bytes and decode ONCE —
+    /// see [`Vocab::detokenize`], which did not, for about ninety minutes on
+    /// 2026-09-15, and turned every message containing a non-ASCII character into
+    /// `<undecodable N token(s)>`.
+    pub fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError> {
         if id >= self.n_tokens {
             return Err(VocabError::BadTokenId { id: id as i32 });
         }
@@ -286,10 +298,10 @@ impl Vocab {
             }
         }
         buf.truncate(n as usize);
-        String::from_utf8(buf).map_err(|_| VocabError::NotUtf8)
+        Ok(buf)
     }
 
-    /// Tokens back to text, by concatenating [`Vocab::piece`].
+    /// Tokens back to text, by concatenating [`Vocab::piece_bytes`].
     ///
     /// `render_special = true` reproduces the exact string a dialect rendered,
     /// which is the "ours" side of the `/apply-template` fidelity diff.
@@ -333,11 +345,19 @@ impl Vocab {
         if tokens.is_empty() {
             return Ok(String::new());
         }
-        let mut out = String::new();
+        // **Bytes first, decode once.** Concatenating `piece` — which decodes each
+        // token on its own — was a regression of exactly ninety minutes on
+        // 2026-09-15: a character whose bytes straddle two tokens makes both halves
+        // invalid UTF-8, so a message containing any non-ASCII text became
+        // `<undecodable N token(s)>`. The space fidelity this function exists for
+        // comes from using `piece` at all rather than `llama_detokenize`; it does
+        // not require decoding one token at a time, and decoding one at a time is
+        // wrong.
+        let mut bytes = Vec::new();
         for &t in tokens {
-            out.push_str(&self.piece(t, render_special)?);
+            bytes.extend_from_slice(&self.piece_bytes(t, render_special)?);
         }
-        Ok(out)
+        String::from_utf8(bytes).map_err(|_| VocabError::NotUtf8)
     }
 
     /// Resolve one control literal to its exact single id.
