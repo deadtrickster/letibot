@@ -6232,7 +6232,11 @@ mod tests {
         )));
         let line = a.inflight_line(120).unwrap();
         assert!(line.contains("prefill 97%"), "{line}");
-        assert!(line.contains("38.1k cached (92%)"), "{line}");
+        // The counts live in the header's ctx/cached readout; the line keeps what
+        // the header cannot show — the expansion rate. 1,800 computed tokens in
+        // 900 ms.
+        assert!(line.contains("2000 tok/s"), "{line}");
+        assert!(!line.contains("cached"), "{line}");
         // And it never wraps, at any width.
         for w in [24usize, 40, 60, 80, 120, 200] {
             assert!(line_width(&a.inflight_line(w).unwrap()) <= w, "w={w}");
