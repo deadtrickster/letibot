@@ -162,6 +162,14 @@ pub enum HarnessError {
     /// Reported, never silently truncated to whatever the last round happened to
     /// say.
     LoopBound { rounds: usize },
+    /// The turn stopped because the next round would not fit in the context
+    /// window. **Not a failure of the work**: everything already produced is
+    /// committed, and `Sessions` compacts before the next turn.
+    ContextWall {
+        rounds: usize,
+        resident: u64,
+        window: u64,
+    },
     /// **The progress check fired.** `stall_rounds` consecutive rounds produced
     /// nothing this turn had not already seen.
     ///
@@ -183,6 +191,21 @@ impl std::fmt::Display for HarnessError {
             // same defect as `grep` reporting absence when it had opened no files.
             // Reaching here now means every round was still producing new results,
             // which is a fact about the size of the task, not about the model.
+            HarnessError::ContextWall {
+                rounds,
+                resident,
+                window,
+            } => write!(
+                f,
+                "stopped after {rounds} round(s) at the context wall: {resident} of \
+                 {window} tokens resident and the next round would not fit. Everything \
+                 this turn produced is committed. A compaction was ATTEMPTED — whether \
+                 it succeeded is its own line above, because a summary turn can refuse \
+                 (it may not call tools) and saying it worked when it did not is the \
+                 failure this whole check exists to avoid. Ask again: if it compacted, \
+                 the turn continues on the summary; if it did not, the wall is still \
+                 there and `/compact` or a fresh session is the way past it."
+            ),
             HarnessError::LoopBound { rounds } => write!(
                 f,
                 "stopped after {rounds} rounds — the round backstop, and it is not a \
@@ -663,6 +686,9 @@ pub struct Harness<'a> {
     /// Read at open time from the backend, the gate and the seated schemas, so the
     /// adjudication disclosure is a reading rather than a claim. See [`GateWiring`].
     wiring: GateWiring,
+    /// True only while [`Harness::compact`] is running its summary turn. See the
+    /// context-wall check in `run_rounds` for why that turn must be exempt.
+    compacting: bool,
     /// `Some` when this harness was rebuilt from the store rather than opened fresh.
     /// The daemon prints it; a head is told through the log, by the rows themselves.
     resumed: Option<ResumeReport>,
@@ -1763,6 +1789,7 @@ impl<'a> Harness<'a> {
             system_updates: 0,
             last_turn_id: String::new(),
             resumed: resume,
+            compacting: false,
             open_notes: notes,
             new_title: None,
             trail,
@@ -2144,6 +2171,13 @@ impl<'a> Harness<'a> {
     /// refusal here leaves the session exactly as it was, and the next attempt
     /// appends a fresh instruction over this one.
     pub fn compact(&mut self) -> Result<CompactReport, HarnessError> {
+        self.compacting = true;
+        let out = self.compact_inner();
+        self.compacting = false;
+        out
+    }
+
+    fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
             .map_err(HarnessError::Turn)?;
@@ -2381,6 +2415,61 @@ impl<'a> Harness<'a> {
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
 
         for round in 0..self.cfg.max_tool_rounds {
+            // **The wall can arrive MID-TURN, and the turn boundary is too late.**
+            //
+            // A tool result is appended between rounds, so one big one can put the
+            // conversation past `n_ctx` while the turn is still running; the next
+            // round then sends a prompt the server refuses with
+            // `500 Context size has been exceeded` and the WHOLE TURN is lost with
+            // nothing recorded. That is how the operator's session died on
+            // 2026-09-15 — a 123k-token `edit` refusal, mid-turn.
+            //
+            // Measured after the boundary check was added and before this one: a
+            // 700-line read at `--context-window 8000` left 11,818 tokens
+            // resident, 3,818 PAST the window, and survived only because the model
+            // happened not to need another round.
+            //
+            // pi puts a `prepareNextTurn` hook here for the same reason — its own
+            // comment says *"Preparation can be long-running (for example,
+            // compaction)"* — and runs it between rounds rather than around the
+            // turn.
+            //
+            // This stops the turn instead of compacting in place, because
+            // `turn::compaction` is explicit that building the new base reaches
+            // the store, the resume chain and the registry, none of which a
+            // `Harness` owns. Stopping is the honest half a `Harness` CAN do: the
+            // rounds so far are committed, `Sessions` compacts at the boundary it
+            // already checks, and the next turn continues on the summary. A turn
+            // that ends early and says so beats one the server refuses whole.
+            // `!self.compacting`: **the compaction turn is exempt.** It runs
+            // through this same loop, and it is the one turn whose whole purpose
+            // is to be over the wall — stopping it there would make compaction
+            // impossible exactly when it is needed, which is what happened on the
+            // first run of this check.
+            if round > 0
+                && !self.compacting
+                && let Some(window) = self.cfg.context_window
+                && self.cfg.auto_compact
+            {
+                let resident = self.session.ledger.len() as u64;
+                if resident + self.cfg.headroom() >= window {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "context_wall".into(),
+                        detail: format!(
+                            "stopping this turn after {round} round(s): {resident} of                              {window} tokens are resident and the next round needs                              {} free. Everything so far is committed, and the session                              compacts before the next turn — this is the wall, not a                              failure of the work.",
+                            self.cfg.headroom()
+                        ),
+                    });
+                    eprintln!(
+                        "  context wall: stopped after {round} round(s) at {resident} of {window} tokens"
+                    );
+                    return Err(HarnessError::ContextWall {
+                        rounds: round,
+                        resident,
+                        window,
+                    });
+                }
+            }
             let mut sink = CapturingSink::new(self.hub.clone());
             let mut steering = self.steering();
             let outcome = match &self.provider {

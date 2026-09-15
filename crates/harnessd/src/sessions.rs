@@ -754,6 +754,14 @@ impl<'a> Sessions<'a> {
                 Ok(r)
             }
             Err(e) => {
+                // **The wall is the one failure that must still compact.** The
+                // turn stopped precisely because the context is full; returning
+                // without compacting leaves the NEXT turn to meet the same wall at
+                // round zero, and the one after that, forever. Everything the turn
+                // produced is committed, so there is nothing to lose by tidying now.
+                if matches!(e, HarnessError::ContextWall { .. }) {
+                    self.compact_if_at_the_wall(session_id);
+                }
                 let turn_id = self
                     .open
                     .get(session_id)
@@ -864,6 +872,11 @@ impl<'a> Sessions<'a> {
                 let _ = report;
             }
             Err(e) => {
+                // Said on stderr too. The first run of this code printed
+                // `compacting:` and then nothing at all, because the failure went
+                // only to a hub with no head attached — a compaction that silently
+                // did not happen is worse than one that never fired.
+                eprintln!("  compaction FAILED: {e}");
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "auto_compact_failed".into(),
