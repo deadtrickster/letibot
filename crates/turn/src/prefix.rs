@@ -115,6 +115,27 @@ impl PrefixCheck {
         matches!(self, PrefixCheck::Held { .. })
     }
 
+    /// **Is this verdict the operator's business, or only a diagnostic?**
+    ///
+    /// Three of the four are: a divergence is our defect, a skip means the check
+    /// did not run (and silence there would read as a pass), and both change what
+    /// somebody would do. `cache_reuse_shortfall` changes nothing — the invariant
+    /// HELD, the prompts are proven identical, and the server simply resumed from
+    /// a context checkpoint slightly behind the boundary. It is bounded by the
+    /// checkpoint spacing, it does not accumulate, and there is no action.
+    ///
+    /// The operator's rule, 2026-09-15: *"if problem wasnt us and restorable, why
+    /// it shown to me at all and not behind --debug in some log file?"* He is
+    /// right, and the cost is not the line — it is that a warning nobody can act
+    /// on teaches them to skim the ones they can. That is the same way three red
+    /// tests became furniture in this session until he asked about them.
+    ///
+    /// So it still MEASURES, and the number still travels; it is only routed to
+    /// the debug channel unless asked for.
+    pub fn diagnostic_only(&self) -> bool {
+        matches!(self, PrefixCheck::Held { .. })
+    }
+
     /// The `Warning` this verdict should raise, if any.
     pub fn warning(&self) -> Option<(&'static str, String)> {
         match self {

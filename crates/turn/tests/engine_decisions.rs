@@ -767,11 +767,26 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
         other => panic!("the invariant must hold: {other:?}"),
     }
     assert!(second.metrics.prefix_check.held());
+    // **Measured, carried, and NOT put in front of the operator.** The shortfall
+    // is still in `metrics.prefix_check` above — the numbers travel and a caller
+    // that wants them has them — but it does not raise a warning, because the
+    // invariant held and there is nothing to do about it.
+    //
+    // The operator's rule, 2026-09-15: "if problem wasnt us and restorable, why
+    // it shown to me at all and not behind --debug in some log file?" The cost of
+    // an unactionable warning is not its line, it is that it trains people to
+    // skim the warnings that ARE actionable — `prefix_divergence` below being the
+    // one that matters. `LETIBOT_DEBUG=1` brings it back.
     assert!(
-        sink.warnings()
+        second.metrics.prefix_check.diagnostic_only(),
+        "a held invariant is a diagnostic, not a warning"
+    );
+    assert!(
+        !sink
+            .warnings()
             .iter()
             .any(|(c, _)| *c == "cache_reuse_shortfall"),
-        "the shortfall must be surfaced even though the invariant held"
+        "an unactionable verdict must not compete with the actionable ones"
     );
     assert!(
         !sink

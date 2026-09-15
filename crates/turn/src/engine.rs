@@ -241,6 +241,22 @@ pub struct TurnEngine<'a> {
     pub frame_capture: FrameCapture,
 }
 
+/// Whether diagnostic-only verdicts are wanted this run: `LETIBOT_DEBUG=1`.
+///
+/// An environment variable rather than a config field on purpose — this decides
+/// what is PRINTED, not what the harness does, and a session should not have to
+/// be restarted to see one more line. Read once.
+fn debug_warnings() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("LETIBOT_DEBUG").ok().as_deref(),
+            Some("1") | Some("true")
+        )
+    })
+}
+
+
 impl<'a> TurnEngine<'a> {
     /// Resolve the dialect against the vocabulary and fail **now** if it does not
     /// fit. Every failure this can raise is one that is otherwise silent at
@@ -779,7 +795,15 @@ impl TurnEngine<'_> {
             outcome.final_chunk.timings.cache_n,
         );
         if let Some((code, detail)) = check.warning() {
-            sink.emit(TurnEvent::Warning { code, detail });
+            // A verdict the operator cannot act on goes to the debug channel, not
+            // to their screen — see `PrefixCheck::diagnostic_only`. The
+            // measurement still happens and the numbers are still carried; what
+            // changes is whether a line nobody can do anything about competes for
+            // attention with `prefix_divergence`, which is our defect, and
+            // `prefix_check_skipped`, which means nothing was checked.
+            if !check.diagnostic_only() || debug_warnings() {
+                sink.emit(TurnEvent::Warning { code, detail });
+            }
         }
         // Independently, §4.3 clause 5: the chain must still agree with the tokens.
         // Cheap next to a prefill, and it is what turns "append-only by

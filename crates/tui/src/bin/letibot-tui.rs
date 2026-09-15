@@ -45,6 +45,7 @@ struct Args {
     /// wait for the turns to end, exit. `letibot --stop --force` runs this
     /// before it pkills.
     interrupt_all: bool,
+    list_sessions: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
 }
@@ -62,6 +63,7 @@ fn parse() -> Result<Args, String> {
         budget: Budget::default(),
         identity: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
         interrupt_all: false,
+        list_sessions: false,
         wait: 30,
     };
     let mut it = std::env::args().skip(1);
@@ -87,6 +89,12 @@ fn parse() -> Result<Args, String> {
             "--demo" => a.demo = true,
             "--no-tty" => a.no_tty = true,
             "--interrupt-all" => a.interrupt_all = true,
+            // Print this daemon's live sessions, one per line, and exit. For
+            // `letibot --ls`, which draws the byobu-shaped view across folders.
+            "--list-sessions" => a.list_sessions = true,
+            // Print this daemon's live sessions, one per line, and exit. For
+            // `letibot --ls`, which draws the byobu-shaped view across folders.
+            "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
@@ -100,7 +108,7 @@ fn usage() -> String {
      \x20           [--since SEQ] [--identity NAME]\n\
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
      \x20           [--body-lines N] [--reasoning-lines N]\n\
-     \x20           [--interrupt-all [--wait SECS]]"
+     \x20           [--interrupt-all [--wait SECS]] [--list-sessions]"
         .into()
 }
 
@@ -122,6 +130,13 @@ fn main() {
         return;
     }
 
+    if args.list_sessions {
+        if let Err(e) = list_sessions(&args) {
+            eprintln!("letibot-tui: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.interrupt_all {
         if let Err(e) = interrupt_all(&args) {
             eprintln!("letibot-tui: {e}");
@@ -250,6 +265,75 @@ fn now_ms() -> u64 {
 /// running turn is asked to stop over the protocol, the abort is recorded like
 /// any other, and the daemon is left to a plain SIGTERM, which it can now take
 /// promptly because nothing is mid-turn.
+/// This daemon's sessions, one TSV line each, for `letibot --ls`.
+///
+/// Reuses `discover` — which learns the ids from the daemon's own refusal of a
+/// bogus one — so it needs no session id from the caller, and `ask_sessions`,
+/// which is the same round trip `--interrupt-all` already makes.
+///
+/// TSV rather than a drawn table: the caller composes this with every other
+/// daemon's answer and does the aligning, and a format a shell can cut is worth
+/// more here than one a person can read.
+fn list_sessions(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    let held = discover(&args.socket)?;
+    let Some(first) = held.first() else {
+        return Ok(());
+    };
+    let (mut client, _hello, reader) = HeadClient::attach(
+        &args.socket,
+        first,
+        u64::MAX,
+        "remote",
+        "ls",
+        Caps::default(),
+    )?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pump_thread = std::thread::spawn(move || pump(reader, tx));
+    let out = ask_sessions(&mut client, &rx, Instant::now() + Duration::from_secs(5));
+    let _ = client.detach();
+    let _ = pump_thread.join();
+    for s in out? {
+        // id, title, live, running, heads, rows, model
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            s.session_id,
+            one_line(&s.title),
+            s.live,
+            s.status.running,
+            s.status.heads,
+            s.status.items,
+            if s.status.model.is_empty() { "-" } else { &s.status.model },
+        );
+    }
+    Ok(())
+}
+
+/// A session title as ONE TSV field.
+///
+/// A title is the first words of a prompt, so it is arbitrary text: it can hold
+/// tabs and newlines, and a reader splitting on tabs then sees a title as three
+/// columns and the next session's row as a continuation of this one. Measured
+/// the first time `letibot --ls` was run against this box — seventy sessions
+/// rendered as shredded half-lines.
+///
+/// The EMITTER guarantees the format. A consumer cannot un-split a field, and
+/// asking every caller to quote correctly is how one of them does not.
+fn one_line(title: &str) -> String {
+    if title.trim().is_empty() {
+        return "-".into();
+    }
+    let flat: String = title
+        .chars()
+        .map(|c| if c.is_control() || c == '\t' { ' ' } else { c })
+        .collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 60 {
+        flat.chars().take(59).collect::<String>() + "…"
+    } else {
+        flat
+    }
+}
+
 fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(args.wait.max(1));
     let held = discover(&args.socket)?;

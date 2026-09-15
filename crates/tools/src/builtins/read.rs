@@ -184,7 +184,17 @@ impl Tool for Read {
                 ctx.limits.max_read_bytes / 1024,
                 end + 1
             ));
-        } else if end < total {
+        } else if end < total && limit.is_none() {
+            // **Only when the cap bound the output.** A caller that passed
+            // `limit` chose this window and knows where it ends; telling it "there
+            // is more of the file" is news about something it decided. The note
+            // exists for the other case — no limit, and the 200-line cap stopped
+            // short of the end — where the boundary is OURS and silence would
+            // read as "that was the whole file".
+            //
+            // The operator's example, 2026-09-15: `read 30 25 app.rs` returned 31
+            // lines and was told "showing lines 25–54 of 7861; call read again
+            // with offset=55 for the rest". It asked for thirty. It got thirty.
             if limit.is_some() {
                 notes.push(format!(
                     "showing lines {offset}–{end} of {total}; call read again with \
@@ -277,13 +287,14 @@ mod tests {
 
         let asked = h.call("read", r#"{"path":"big.txt","limit":50}"#);
         let notes = asked.notes.join(" ");
-        eprintln!("limit=50 note: {notes}");
+        eprintln!("limit=50 note: {notes:?}");
         assert_eq!(asked.payload.lines().count(), 50, "it returned {}", asked.payload.lines().count());
+        // It asked for fifty and got fifty: the window is its own, so there is
+        // nothing to report. No note at all.
         assert!(
-            !notes.contains("200") && !notes.contains("at most"),
-            "a model that asked for 50 is being told about the 200 cap: {notes}"
+            notes.is_empty(),
+            "a caller that chose its own window needs no note: {notes:?}"
         );
-        assert!(notes.contains("of 300"), "it should still say there is more: {notes}");
 
         // And with no limit, where the cap DID bind, it still says where to
         // continue — without restating the number, which is in the schema.
