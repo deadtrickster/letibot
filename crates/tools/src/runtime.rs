@@ -255,6 +255,29 @@ pub trait Tool: Send + Sync {
     /// all. What it must still handle is a *missing* argument, because supplying
     /// one would be inventing meaning.
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation;
+
+    /// **What THIS call does**, when a tool's verbs differ in kind.
+    ///
+    /// The schema's class is one value for the whole tool, so a tool that
+    /// dispatches on an argument gets its most consequential verb's class applied
+    /// to every verb. `flowy` declared `Network` for all eight of its actions, so
+    /// `flowy read` — which only reads the fabric — was adjudicated exactly like
+    /// `flowy say`, which puts a message in front of other people. The operator's
+    /// report was that bookkeeping tools should not be reaching the guard at all.
+    ///
+    /// The brief already knew about this and worked around it: it pushes the `op`
+    /// into the boundary facts because *"a tool that dispatches on an op is one
+    /// tool to the gate and ten actions to whoever is deciding"*. This is the same
+    /// observation applied one layer earlier, where it can stop the call reaching
+    /// the gate at all.
+    ///
+    /// The default is the schema's class, so a tool that does one thing says
+    /// nothing. **A tool may only narrow**, never widen: the runtime takes the more
+    /// consequential of the two, so a tool cannot talk its way out of the gate by
+    /// claiming a call is a read.
+    fn access_for(&self, _args: &Value) -> Option<crate::schema::Access> {
+        None
+    }
 }
 
 /// One gated call, as the gate sees it.
@@ -1095,7 +1118,18 @@ impl ToolRuntime {
 
         // Clause 4. The gate is consulted **only** when the declared access is not
         // read: a read-only tool has no code path to a question.
-        if !schema.access.is_unattended() {
+        // What this particular call amounts to, which for a tool with verbs of
+        // different kinds is not what the schema says. Narrowing only: the tool's
+        // answer is used when it is LESS consequential than the declared class, so
+        // a tool cannot declare its way past the gate.
+        let declared = schema.access;
+        let effective = self
+            .registry
+            .get(&call.name)
+            .and_then(|t| t.access_for(&args))
+            .filter(|a| a.is_unattended() && !declared.is_unattended())
+            .unwrap_or(declared);
+        if !effective.is_unattended() {
             let workspace = self
                 .backend
                 .root_path()

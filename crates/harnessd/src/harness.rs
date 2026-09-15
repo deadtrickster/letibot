@@ -1587,7 +1587,9 @@ impl<'a> Harness<'a> {
                     (None, AdjudicatorChoice::Console) => {
                         Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
                     }
-                    (None, AdjudicatorChoice::Model) => model_adjudicator(&cfg, "`--adjudicator model`")?,
+                    (None, AdjudicatorChoice::Model) => {
+                        model_adjudicator(&cfg, "`--adjudicator model`", Some(hub.clone()))?
+                    }
                 };
                 // **The guard model, attached whenever there is one to attach.**
                 //
@@ -1601,7 +1603,7 @@ impl<'a> Harness<'a> {
                 // exactly as it did before and `/supervise` refuses by name, which is
                 // a better answer than refusing to start.
                 let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match &cfg.oracle {
-                    Some(_) => Some(model_adjudicator(&cfg, "`--oracle`")?.into()),
+                    Some(_) => Some(model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into()),
                     None => None,
                 };
                 let trail_for_gate = trail.clone();
@@ -2138,7 +2140,8 @@ impl<'a> Harness<'a> {
     /// permanent without being asked.
     pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
         self.cfg.oracle = Some(endpoint.clone());
-        let advisor = model_adjudicator(&self.cfg, "`/supervise`").map_err(|e| e.to_string())?;
+        let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
+            .map_err(|e| e.to_string())?;
         self.runtime
             .gate
             .attach_advisor(std::sync::Arc::from(advisor))?;
@@ -4137,7 +4140,11 @@ mod tests {
 ///
 /// `asked_by` names whichever of the two asked, so the refusal says which flag or
 /// which mode is missing an `--oracle` rather than naming one of them for both.
-pub(crate) fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator>, HarnessError> {
+pub(crate) fn model_adjudicator(
+    cfg: &Config,
+    asked_by: &str,
+    hub: Option<Arc<Hub>>,
+) -> Result<Box<dyn Adjudicator>, HarnessError> {
     let Some(ep) = cfg.oracle.clone() else {
         return Err(HarnessError::Setup(format!(
             "{asked_by} needs `--oracle HOST:PORT`: ModelAdjudicator takes an \
@@ -4169,5 +4176,20 @@ pub(crate) fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn 
                 .unwrap_or("");
             letibot_tools::intent::Baseline::of_command(cmd, &surroundings)
         },
-    )))
+    )
+    // **The wait, announced before it starts.** Consulting the guard costs
+    // seconds on this box, and a turn that pauses with nothing on the screen
+    // reads as a hang — the operator went to `htop` to find out whether
+    // anything was wrong. Nothing was; the guard was deciding, and nobody
+    // said so. `ToolProgress` is the one the head already renders as the
+    // latest note on the running call.
+    .with_notice(move |req: &letibot_tools::AdjudicationRequest, note: &str| {
+        if let Some(h) = &hub {
+            h.publish(SessionEvent::ToolProgress {
+                turn_id: req.turn_id.clone(),
+                call_id: req.call_id.clone(),
+                note: note.to_string(),
+            });
+        }
+    })))
 }

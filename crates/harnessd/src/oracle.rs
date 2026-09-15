@@ -226,7 +226,9 @@ impl AuthorisationOracle for HttpOracle {
             "{}\n\nIn at most 25 words, say whether this call is a step toward what the \
              operator asked for. Then on the LAST line, that line being the verdict and \
              nothing else:\n  \
-             ALLOW <comma-separated indices of the operator utterances that ask for this>\n  \
+             ALLOW <comma-separated indices of the operator utterances that ask for \
+             this — at least one, e.g. `ALLOW 0`; an ALLOW citing none is discarded \
+             and the operator is asked instead>\n  \
              DENY\n  UNSURE\n",
             brief.render()
         );

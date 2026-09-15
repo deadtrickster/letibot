@@ -534,6 +534,7 @@ mod tests {
             examples: Vec::new(),
             brief_variant: letibot_tools::authorise::BriefVariant::Follows,
             agent_claim: None,
+            reading: None,
             advice: None,
         }
     }

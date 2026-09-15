@@ -1654,9 +1654,29 @@ pub struct ModelAdjudicator {
     /// answer without consulting it, and from the outside a short-circuit and a
     /// verdict are the same `AdjudicationDecision`.
     last_advice: Mutex<Option<crate::adjudicate::ModelAdvice>>,
+    /// **Said where the operator reads it, before the wait starts.**
+    ///
+    /// Consulting the guard costs seconds, and a turn that pauses with nothing on
+    /// the screen reads as a hang: *"the tool call latency grew, i almost thought
+    /// something stalled and looked at htop"*. Nothing was wrong — the guard was
+    /// deciding — and the one thing missing was anybody saying so.
+    ///
+    /// A closure because this type must not learn what a session log is. `None`
+    /// says nothing, which is what a caller with nowhere to say it should do.
+    notice: Box<dyn Fn(&AdjudicationRequest, &str) + Send + Sync>,
 }
 
 impl ModelAdjudicator {
+    /// Where "the guard is deciding" is announced. Installed by the layer that has
+    /// a session log; see [`ModelAdjudicator::notice`].
+    pub fn with_notice(
+        mut self,
+        f: impl Fn(&AdjudicationRequest, &str) + Send + Sync + 'static,
+    ) -> Self {
+        self.notice = Box::new(f);
+        self
+    }
+
     pub fn new(
         oracle: Box<dyn AuthorisationOracle>,
         baseline: impl Fn(&AdjudicationRequest) -> Baseline + Send + Sync + 'static,
@@ -1666,6 +1686,7 @@ impl ModelAdjudicator {
             baseline: Box::new(baseline),
             last_shown: Mutex::new(None),
             last_advice: Mutex::new(None),
+            notice: Box::new(|_, _| {}),
         }
     }
 }
@@ -1808,7 +1829,13 @@ impl Adjudicator for ModelAdjudicator {
             }, false, "unavailable", Vec::new());
         }
 
-        let baseline = (self.baseline)(req);
+        // **The gate's own reading when it travelled**, and only otherwise the
+        // closure. Re-deriving produced a second classification that disagreed with
+        // the first on every tool that is not `bash`; see `AdjudicationRequest::reading`.
+        let baseline = match &req.reading {
+            Some(b) => b.clone(),
+            None => (self.baseline)(req),
+        };
 
         // The authority this oracle has EARNED. An action outside it escalates without
         // the oracle being asked: it cannot be wrong about a question nobody put to it,
@@ -1849,7 +1876,13 @@ impl Adjudicator for ModelAdjudicator {
             *g = Some(shown.clone());
         }
 
-        // Below this line the oracle IS consulted, and only below it.
+        // Below this line the oracle IS consulted, and only below it — which is
+        // also the line where the wait starts, so it is where the operator is told
+        // one is starting.
+        (self.notice)(
+            req,
+            &format!("asking {} whether this follows from what you asked for", self.oracle.describe()),
+        );
         match self.oracle.authorised(&mut brief) {
             OracleAnswer::Authorised(w) => self.note(AdjudicationDecision {
                 request_id: req.id.clone(),
@@ -2087,6 +2120,7 @@ mod tests {
             examples: Vec::new(),
             brief_variant: BriefVariant::Follows,
             agent_claim: None,
+            reading: None,
             advice: None,
         }
     }

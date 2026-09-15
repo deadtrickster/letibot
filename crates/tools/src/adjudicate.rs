@@ -692,6 +692,20 @@ pub struct AdjudicationRequest {
     /// words to this call. Never an authorisation and never citable — see
     /// [`crate::authorise::ModelBrief::agent_claim`].
     pub agent_claim: Option<String>,
+    /// **Layer A's finding, as a value rather than as prose.**
+    ///
+    /// `baseline` above is the sentence a human reads. `ModelAdjudicator` needs the
+    /// classification, and used to RE-DERIVE it from `arguments["command"]` — which
+    /// works for `bash` and for nothing else. A `write` has no `command`, so the
+    /// re-derivation ran over an empty string, produced `intents [unknown]`, and
+    /// every file edit at `automode` escalated to the operator with a reason that
+    /// contradicted the line above it: *"ask — intents [write_file] / model says
+    /// ask: the action carries intent(s) [unknown]"*, at `0 ms`, the oracle never
+    /// consulted.
+    ///
+    /// One derivation, done where the surroundings are known, carried to whoever
+    /// needs it. Two classifications of one call could not agree and did not.
+    pub reading: Option<crate::intent::Baseline>,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1894,6 +1908,7 @@ impl AdjudicatedGate {
             examples: Self::operator_examples(&self.log, turn_seq(call.turn_id)),
             brief_variant: crate::authorise::BriefVariant::Follows,
             agent_claim: (self.agent_claim)(),
+            reading: Some(baseline.clone()),
             // Filled by `SupervisedAdjudicator` between the model's answer and the
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
@@ -2257,6 +2272,7 @@ impl Gate for AdjudicatedGate {
             examples: Vec::new(),
             brief_variant: crate::authorise::BriefVariant::Follows,
             agent_claim: None,
+            reading: None,
             advice: None,
             summary: format!(
                 "`{tool}` named `{}`, which is outside this session's filesystem view",

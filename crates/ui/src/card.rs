@@ -222,7 +222,13 @@ impl Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     /// The model asked for it; nothing has run.
-    Proposed,
+    ///
+    /// `note` is what is happening WHILE nothing runs — today, the guard being
+    /// asked whether the call follows from what the operator wanted. That wait is
+    /// seconds long and used to render as the bare word "proposed", so a turn sat
+    /// still with no reason given: *"the tool call latency grew, i almost thought
+    /// something stalled and looked at htop"*.
+    Proposed { note: Option<String> },
     /// In flight. `elapsed_ms` is supplied by the caller, never read from a
     /// clock here.
     Running {
@@ -247,7 +253,7 @@ pub enum Phase {
 
 impl Phase {
     pub fn is_running(&self) -> bool {
-        matches!(self, Phase::Running { .. } | Phase::Proposed)
+        matches!(self, Phase::Running { .. } | Phase::Proposed { .. })
     }
 }
 
@@ -359,7 +365,7 @@ impl Card {
             call_id: call_id.to_string(),
             target: String::new(),
             body: Vec::new(),
-            phase: Phase::Proposed,
+            phase: Phase::Proposed { note: None },
             bytes: None,
             spill: None,
         }
@@ -385,7 +391,7 @@ impl Card {
         let p = cfg.palette;
         let running = self.phase.is_running();
         let (mark, mark_role) = match &self.phase {
-            Phase::Proposed => ('○', Role::Faint),
+            Phase::Proposed { .. } => ('○', Role::Faint),
             Phase::Running { .. } => ('◐', Role::Pending),
             Phase::Finished { outcome, .. } | Phase::Replayed { outcome } => {
                 ('●', outcome.role())
@@ -406,7 +412,13 @@ impl Card {
         // The right-hand side: state, timing, disclosure.
         let mut tail: Vec<String> = Vec::new();
         match &self.phase {
-            Phase::Proposed => tail.push("proposed".into()),
+            Phase::Proposed { note } => match note {
+                // The reason beats the state: "proposed" says what it is, and the
+                // note says why nothing is happening yet, which is the question the
+                // operator actually has while looking at it.
+                Some(n) => tail.push(n.clone()),
+                None => tail.push("proposed".into()),
+            },
             Phase::Running { elapsed_ms, note } => {
                 tail.push(crate::progress::duration(*elapsed_ms));
                 if let Some(n) = note {

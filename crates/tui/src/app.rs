@@ -4844,7 +4844,7 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
     // decides what the header says, and the body decision needs both.
     let mut edit_excerpt: Option<letibot_sessionlog::event::ToolEdit> = None;
     card.phase = match &c.state {
-        CallState::Proposed => card::Phase::Proposed,
+        CallState::Proposed => card::Phase::Proposed { note: c.note.clone() },
         CallState::Running => card::Phase::Running {
             elapsed_ms: now_ms.saturating_sub(c.started_ms),
             note: c.note.clone(),

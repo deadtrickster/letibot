@@ -286,7 +286,8 @@ pub fn replay_rows(
         &Intent::ALL.iter().map(|i| i.as_str().to_string()).collect::<Vec<_>>(),
         Some("external"),
     )?);
-    let adjudicator = crate::harness::model_adjudicator(&oracle_cfg, "`--calibrate`")
+    let adjudicator = // No hub: a replay has no session to announce a wait on.
+        crate::harness::model_adjudicator(&oracle_cfg, "`--calibrate`", None)
         .map_err(|e| e.to_string())?;
 
     // Every gated tool's access class, read off the real registry rather than
