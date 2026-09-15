@@ -38,6 +38,20 @@ fn config(seat: Seat) -> Config {
         .expect("the workspace root is two levels above this crate")
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
+    // **These tests assert what an UNCONFIGURED session seats**, so the fixture
+    // supplies nothing to configure. `Config::for_this_box` reads the operator's
+    // own `~/.config/letibot` — `providers.toml` for a search key,
+    // `permission.json` for the preapproved list — and without this the answer
+    // depends on whose machine is running them. Caught 2026-09-15: a Brave key in
+    // the operator's `providers.toml` seated `web_search` and turned the
+    // default-tool-set assertion below into a claim about that laptop.
+    //
+    // Set as FIELDS rather than by pinning `$XDG_CONFIG_HOME`: these tests run in
+    // parallel threads, and `set_var` beside a running thread is undefined
+    // behaviour that this edition aborts the process for — measured, after all ten
+    // had already passed.
+    cfg.web_search = None;
+    cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
     cfg.seat = seat;
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {

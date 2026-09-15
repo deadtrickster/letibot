@@ -495,6 +495,25 @@ answer those directly. When a tool reports that it found nothing, say so — do 
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
+/// Which search provider `web_search` gets, when the operator has not said.
+///
+/// **A configured key IS the opt-in.** The operator's rule, 2026-09-15: *"i dont
+/// want to do leticode --web-search brave"*. Putting a key under `[brave]` in
+/// `providers.toml` is already a deliberate act, and requiring a flag on top of
+/// it means the capability is off in exactly the sessions whose operator went to
+/// the trouble of configuring it.
+///
+/// So: a resolvable key attaches the provider, and `--web-search none` turns it
+/// off. No key is still no tool — an unconfigured box is byte-identical to one
+/// from before this existed.
+///
+/// The cost, stated because it is real and one-time: seating a tool changes the
+/// stable prefix, so the first session after a key is added re-prefills. That is
+/// the price of turning a capability on, and it is paid once per project.
+fn default_web_search() -> Option<String> {
+    letibot_websearch::resolve_key(None).ok().map(|_| "brave".to_string())
+}
+
 /// The permission ruleset, two layers in precedence order (last match wins):
 /// `~/.config/letibot/permission.json` — the preapproved list, installed from
 /// the repository's `config/permission.json` the first time no file is there
@@ -564,7 +583,7 @@ impl Config {
             permission: parse_permission(),
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
-            web_search: None,
+            web_search: default_web_search(),
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             provider: None,

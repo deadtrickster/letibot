@@ -98,6 +98,11 @@ already up, then attaches the TUI head to it.
   letibot --ask               the old behaviour: every write asks, every time
   letibot --writes            approve a class once, for the session (default)
   letibot --mode N            read-only | always-ask | writes-allowed | automode | allow-all
+  letibot --supervise         start supervised: the guard model answers every gated
+                              call before you do, and both verdicts land on one
+                              corpus row. `/supervise` does the same mid-session and
+                              is the usual way. The guard's address is config, not a
+                              flag: [gatekeeper] endpoint in providers.toml
   letibot --bash              seat the shell, and grant the toolchain
   letibot --vm                run the session's tools in a firecode VM on a COPY of
                               the workspace: the VM is the boundary, allow-all inside,
@@ -108,11 +113,24 @@ already up, then attaches the TUI head to it.
                               Key: --brave-key, $BRAVE_API_KEY, or [brave] key= in
                               ~/.config/letibot/providers.toml
   letibot --model M           the provider's model (default: the preset's)
+  letibot --oracle H:P        the guard model for `--mode supervised` and
+                              `--adjudicator model`: a llama.cpp /completion
+                              endpoint answering "did the operator ask for this".
+                              Its own endpoint, not --endpoint - the guard need
+                              not be the model doing the work. Both refuse by
+                              name without it rather than falling back to a
+                              person, so a session cannot silently be weaker
+                              than the mode it printed
+  letibot --oracle-budget-ms N  how long the gate waits for that answer before
+                              failing closed (default 400). Measured against a
+                              4B on THIS box's CPU; a remote oracle needs its
+                              own number
   LETIBOT_MODE=writes-allowed letibot        the same, by env
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
 LETIBOT_LOG LETIBOT_ENDPOINT LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
 LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_GRANTS_RO
+LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS
 
 The daemon logs to ~/logs/harnessd.log. Model choice is detected from what the
 server on 8080 has loaded (letibot --status reports it); explicit --glm/--flash/
@@ -134,13 +152,13 @@ for a in "$@"; do
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
     --vm-arg|--provider|--model|--mode|--session|-s|--rename|--delete|\
-    --web-search|--brave-key) skip=1 ;;
+    --web-search|--brave-key|--oracle|--oracle-budget-ms) skip=1 ;;
   esac
   case "$a" in
-    --help|-h|help|--read-only|--writes|--bash|--ask|--glm|--flash|--dense|--attach|--daemons|--all|\
+    --help|-h|help|--read-only|--writes|--bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
     --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model|\
-    --web-search|--brave-key) ;;
+    --web-search|--brave-key|--oracle|--oracle-budget-ms) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
     *) break ;;
@@ -199,6 +217,19 @@ ADJ="${LETIBOT_ADJUDICATOR:-head}"
 #   letibot --ask      the old behaviour: every write asks, every time
 #   letibot --mode N   read-only | always-ask | writes-allowed | automode | allow-all
 MODE="${LETIBOT_MODE:-writes-allowed}"
+
+# THE GUARD MODEL, for the two points that consult one.
+#
+# `supervised` asks the model AND you, on every gated call; `automode` asks only the
+# model. Both need an endpoint and both refuse by name without one -- the daemon does
+# that, and this checks it here too so the refusal arrives before a daemon starts and
+# a session opens, rather than at the first write.
+# The guard's address is CONFIG, not an argument: `[gatekeeper] endpoint` in
+# ~/.config/letibot/providers.toml, read by the daemon itself. These two are the
+# one-off override and are empty in the ordinary case, which is every case.
+SUPERVISE="${LETIBOT_SUPERVISE:-}"
+ORACLE="${LETIBOT_ORACLE:-}"
+ORACLE_BUDGET="${LETIBOT_ORACLE_BUDGET_MS:-}"
 
 # A SHELL, AND WHAT IT NEEDS TO BE USEFUL.
 #
@@ -298,6 +329,17 @@ while [ $# -gt 0 ]; do
     --mode)
       [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, allow-all)"
       MODE="$2"; shift 2 ;;
+    --supervise)
+      # Start supervised. `/supervise` inside the session does the same thing and is
+      # the one people will use -- this exists so a script does not have to type into
+      # a TUI. Not a mode: supervision moves at run time and a mode does not.
+      SUPERVISE=1; shift ;;
+    --oracle)
+      [ $# -ge 2 ] || die "--oracle HOST:PORT   the guard model for --mode supervised / automode"
+      ORACLE="$2"; shift 2 ;;
+    --oracle-budget-ms)
+      [ $# -ge 2 ] || die "--oracle-budget-ms N   how long the gate waits before failing closed"
+      ORACLE_BUDGET="$2"; shift 2 ;;
     # A VM placement, and what to tell firecode. Forwarded verbatim; harnessd
     # owns the meaning (see `harnessd --help`).
     --vm)
@@ -409,6 +451,17 @@ daemon_pid() {
   [ -n "$p" ] && [ -d "/proc/$p" ] && { echo "$p"; return 0; }
   return 1
 }
+
+warn_swallowed_flags() {
+  [ ${#EXTRA_ARGS[@]} -gt 0 ] || return 0
+  {
+    echo "letibot: this folder's daemon is ALREADY RUNNING (pid $(daemon_pid 2>/dev/null || echo "?")) and these flags did NOT take effect:"
+    printf '         %s\n' "${EXTRA_ARGS[*]}"
+    echo "         They are read when harnessd STARTS and are fixed for the life of the daemon."
+    echo "         To apply them:  letibot --stop && letibot ${EXTRA_ARGS[*]}"
+    echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one."
+  } >&2
+}
 daemon_line() {
   # One line about this folder's daemon, for the attach banner and --status.
   local p started role model
@@ -507,6 +560,7 @@ case "${1:-}" in
     fi
     if up; then
       echo "letibot: attached to $(daemon_line)" >&2
+      warn_swallowed_flags
       exec "$BIN/letibot-tui" --socket "$SOCKET" --identity "${USER:-operator}"
     fi
     version_skew_or_continue
@@ -609,9 +663,27 @@ if [ $# -gt 0 ]; then
   exec "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
        --socket "$ONESHOT_SOCK" \
        --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
-       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
+       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
+       "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
        ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
+
+# **A flag that shapes the SESSION cannot be applied to a daemon that is already
+# running.** (definition; called from both the attach and the start paths) The role, the model, the provider and the search backend are all
+# decided when harnessd starts and are cloned into every session it opens, so
+# passing one here while a daemon is up used to do exactly nothing, silently.
+#
+# Measured 2026-09-15: `leticode --web-search brave` against a daemon started
+# without it attached, seated no `web_search`, and said so nowhere -- the
+# operator reasonably concluded the feature did not work. That is the same
+# "a banner saying one thing and a session doing another" this tree refuses
+# everywhere else, and a launcher is not exempt from it.
+#
+# It is a WARNING rather than a refusal: attaching is still what you asked for
+# and the session is still usable. What it may not do is pretend the flag landed.
+
+if up; then warn_swallowed_flags; fi
 
 if ! up; then
   version_skew_or_continue
@@ -622,7 +694,9 @@ if ! up; then
   # failure is a line in this terminal rather than a surprise inside a prompt.
   setsid "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
-      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
+      ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
+      "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
       ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
       >>"$LOG" 2>&1 </dev/null &
   DPID=$!

@@ -303,7 +303,14 @@ fn run() -> Result<i32, String> {
             "--vm-arg" => cfg.vm_args.push(next()?),
             // What is behind `web_search`. Without it the tool refuses and names
             // this flag, which is the state every session has had until now.
-            "--web-search" => cfg.web_search = Some(next()?),
+            "--web-search" => {
+                cfg.web_search = match next()?.as_str() {
+                    // `none` is how an operator with a key in providers.toml
+                    // turns the tool off for one daemon without deleting it.
+                    "none" | "off" => None,
+                    other => Some(other.to_string()),
+                }
+            }
             // Held by the websearch crate, not by `Config` — which derives
             // `Debug`, and a secret in a struct that can be `{:?}`-printed is a
             // secret one `eprintln!` away from a log.
