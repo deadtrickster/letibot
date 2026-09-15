@@ -688,6 +688,10 @@ pub struct AdjudicationRequest {
     /// The shipping one everywhere; `--calibrate --compare` is the only caller
     /// that sets the other, and it sets it to measure the difference.
     pub brief_variant: crate::authorise::BriefVariant,
+    /// What the agent says it is doing, for the guard to connect the operator's
+    /// words to this call. Never an authorisation and never citable — see
+    /// [`crate::authorise::ModelBrief::agent_claim`].
+    pub agent_claim: Option<String>,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1430,6 +1434,13 @@ pub struct AdjudicatedGate {
     /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
     /// the key because that is what an execution vehicle changes.
     grants: Vec<crate::grant::Grant>,
+    /// **What the agent says it is doing right now**, supplied by the layer that
+    /// has the transcript. A closure for the reason the trail source is one: this
+    /// type must not learn to read a conversation.
+    ///
+    /// `None` by default, so a gate nobody wired says nothing rather than
+    /// inventing a claim.
+    agent_claim: Box<dyn Fn() -> Option<String> + Send + Sync>,
     /// opencode's permission model, verbatim: the operator's `permission` config
     /// plus the `always` approvals, evaluated before the mode. `allow` admits,
     /// `deny` refuses, `ask` falls through to the mode and the adjudicator. See
@@ -1509,6 +1520,7 @@ impl AdjudicatedGate {
             agent: "agent".into(),
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
+            agent_claim: Box::new(|| None),
             permission: crate::permission::Ruleset::new(),
             permission_sink: None,
             exec_follows_mode: false,
@@ -1619,6 +1631,16 @@ impl AdjudicatedGate {
 
     /// **Install the guard model.** Held, not switched on: `/supervise` does that,
     /// and it can only do it if this was installed when the session opened.
+    /// Where "what the agent says it is doing" comes from. Installed by the
+    /// harness, which is the only layer holding the transcript.
+    pub fn with_agent_claim(
+        mut self,
+        f: impl Fn() -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.agent_claim = Box::new(f);
+        self
+    }
+
     pub fn with_advisor(mut self, advisor: std::sync::Arc<dyn Adjudicator>) -> Self {
         self.advisor = Some(advisor);
         self
@@ -1871,6 +1893,7 @@ impl AdjudicatedGate {
             prior,
             examples: Self::operator_examples(&self.log, turn_seq(call.turn_id)),
             brief_variant: crate::authorise::BriefVariant::Follows,
+            agent_claim: (self.agent_claim)(),
             // Filled by `SupervisedAdjudicator` between the model's answer and the
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
@@ -2125,7 +2148,22 @@ impl AdjudicatedGate {
         now_turn: Option<u64>,
     ) -> Vec<PriorAnswer> {
         let mut out: Vec<PriorAnswer> = Vec::new();
-        for row in log.iter().filter(|r| r.direction == key) {
+        // **A HUMAN's answers, never the gate's own.**
+        //
+        // This filtered on the shape and nothing else, so an admit by the mode, by
+        // the permission ruleset, or BY THE ORACLE ITSELF came back to the oracle as
+        // "admit — 3 time(s)" on the next call of that shape. That is a ratchet: the
+        // operator's words for it were *"self recursion can do drift — 'that command
+        // was approved already by someone and this is ever so slightly different'"*,
+        // and their instruction was that the guard's own decisions do not go in the
+        // brief. They do not now.
+        //
+        // What survives is what a person decided, which is the only kind of prior
+        // answer that is evidence about anything other than the guard's own habits.
+        for row in log
+            .iter()
+            .filter(|r| r.direction == key && r.decision.by.starts_with("human"))
+        {
             let ago = match (now_turn, turn_seq(&row.request.turn_id)) {
                 (Some(n), Some(t)) => Some(n.saturating_sub(t)),
                 _ => None,
@@ -2218,6 +2256,7 @@ impl Gate for AdjudicatedGate {
             // not evidence about it; an empty list here says exactly that.
             examples: Vec::new(),
             brief_variant: crate::authorise::BriefVariant::Follows,
+            agent_claim: None,
             advice: None,
             summary: format!(
                 "`{tool}` named `{}`, which is outside this session's filesystem view",
@@ -4834,31 +4873,58 @@ mod tests {
     /// the same direction matches and a different direction does not.
     #[test]
     fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age() {
-        let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
+        // **A PERSON's answer, and only a person's.** This used to run against a
+        // closed gate, whose fail-closed refusal is nobody's judgement, and assert
+        // that it came back as history. It does not any more, and the reason is the
+        // operator's: *"self recursion can do drift — 'that command was approved
+        // already by someone and this is ever so slightly different'. we dont
+        // include its own decisions to the brief."* A gate shown its own answers
+        // ratchets; only what a human decided is evidence about what anyone wanted.
+        let mut human = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            |req: &AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "the person said yes",
+                ))
+            },
+        )))
+        .with_surroundings(pinned());
         let args = json!({"command": "/bin/ls /w"});
 
-        // The first call: no history. (It refuses — closed gate — which is itself
-        // a row, and the denial is what the second call must see.)
-        let req1 = g.request_for(&bash_at(&args, "s#3"));
+        let req1 = human.request_for(&bash_at(&args, "s#3"));
         assert!(
             req1.prior.is_empty(),
             "nothing has been decided yet: {:?}",
             req1.prior
         );
-        let _ = g.admit(&bash_at(&args, "s#3"));
+        let _ = human.admit(&bash_at(&args, "s#3"));
 
         // A re-spelling of the same direction, three turns later.
-        let req2 = g.request_for(&bash_at(&json!({"command": "/bin/ls -a /w"}), "s#6"));
+        let req2 = human.request_for(&bash_at(&json!({"command": "/bin/ls -a /w"}), "s#6"));
         assert_eq!(req2.prior.len(), 1, "{:?}", req2.prior);
         let p = &req2.prior[0];
-        assert_eq!(p.effect, "refuse");
+        assert_eq!(p.effect, "admit");
         assert_eq!(p.count, 1);
         assert_eq!(p.latest_turns_ago, Some(3));
         assert_eq!(p.first_turns_ago, Some(3));
 
+        // And the gate's OWN decisions stay out: a closed gate refuses every call,
+        // and none of those refusals is shown back to it as history.
+        let mut closed = AdjudicatedGate::closed().with_surroundings(pinned());
+        let _ = closed.admit(&bash_at(&args, "s#3"));
+        let after = closed.request_for(&bash_at(&args, "s#6"));
+        assert!(
+            after.prior.is_empty(),
+            "the gate was shown its own answer: {:?}",
+            after.prior
+        );
+
         // A different direction does not inherit the answer: regions differ, and
         // a history for one shape is not a history for the next.
-        let other = g.request_for(&bash_at(&json!({"command": "/bin/ls /elsewhere"}), "s#6"));
+        let other = human.request_for(&bash_at(&json!({"command": "/bin/ls /elsewhere"}), "s#6"));
         assert!(
             other.prior.is_empty(),
             "a different region set is a different direction: {:?}",

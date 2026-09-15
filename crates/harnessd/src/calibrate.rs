@@ -202,6 +202,8 @@ pub struct Arm {
     pub variant: letibot_tools::authorise::BriefVariant,
     /// Whether the operator's own earlier answers are shown.
     pub examples: bool,
+    /// Whether the agent's statement of what it is doing is shown.
+    pub claim: bool,
 }
 
 /// The three that matter: what shipped, the reworded question alone, and the
@@ -212,21 +214,45 @@ pub const ARMS: &[Arm] = &[
         name: "asked-for-it, no examples (what shipped)",
         variant: letibot_tools::authorise::BriefVariant::AskedForIt,
         examples: false,
+        claim: false,
     },
     Arm {
         name: "follows-from, no examples",
         variant: letibot_tools::authorise::BriefVariant::Follows,
         examples: false,
+        claim: false,
     },
     Arm {
         name: "follows-from + the operator's own answers",
         variant: letibot_tools::authorise::BriefVariant::Follows,
         examples: true,
+        claim: false,
+    },
+    Arm {
+        name: "+ what the agent says it is doing",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: true,
+        claim: true,
     },
 ];
 
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
-    replay_arm(cfg, store, limit, ARMS[2])
+    replay_arm(cfg, store, limit, ARMS[3])
+}
+
+/// **The rows to replay, taken once.**
+///
+/// `--compare` runs several arms over "the same" calls, and the store is being
+/// written by a live daemon while it does: reading per arm gave each one a
+/// different row set, so the arms differed by a few calls as well as by the change
+/// under test. Measured — the row totals came out 26, 28, 34, 37 — which is not a
+/// comparison of anything. Snapshot first, then vary one thing.
+pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
+    let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
+    let rows = db
+        .corpus(false, 100_000)
+        .map_err(|e| format!("reading the corpus: {e}"))?;
+    Ok(rows.into_iter().filter(|r| r.asked).take(limit).collect())
 }
 
 pub fn replay_arm(
@@ -235,11 +261,16 @@ pub fn replay_arm(
     limit: usize,
     arm: Arm,
 ) -> Result<Report, String> {
+    replay_rows(cfg, store, rows_to_replay(store, limit)?, arm)
+}
+
+pub fn replay_rows(
+    cfg: &Config,
+    store: &Path,
+    answered: Vec<StoredAdjudication>,
+    arm: Arm,
+) -> Result<Report, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
-    let rows = db
-        .corpus(false, 100_000)
-        .map_err(|e| format!("reading the corpus: {e}"))?;
-    let answered: Vec<StoredAdjudication> = rows.into_iter().filter(|r| r.asked).take(limit).collect();
 
     let mut oracle_cfg = cfg.clone();
     oracle_cfg.oracle_scope = Some(OracleScope::declared(
@@ -370,6 +401,17 @@ pub fn replay_arm(
         if !arm.examples {
             req.examples.clear();
         }
+        // **The agent's own sentence for the round this call came from.** Recovered
+        // from the transcript rather than the corpus, which does not store it: the
+        // assistant item immediately before this decision is the prose a model puts
+        // in front of its tool calls, and that is the sentence the live gate now
+        // carries. Reconstructed per row so the replay asks the question the live
+        // session asks.
+        req.agent_claim = if arm.claim {
+            claim_before(&db, &row.session_id, row.decided_ms)
+        } else {
+            None
+        };
         let started = std::time::Instant::now();
         let _ = adjudicator.decide(&req);
         let advice = adjudicator.last_advice();
@@ -409,6 +451,31 @@ pub fn replay_arm(
         report.rows.push(r);
     }
     Ok(report)
+}
+
+/// The agent's own prose for the round a decision came from.
+///
+/// The corpus does not store it — the brief the oracle saw is not kept for rows a
+/// human answered — so it is read back out of the transcript: the newest assistant
+/// item written before the decision. Bounded like an utterance, for the same
+/// reason.
+fn claim_before(db: &Store, session_id: &str, before_ms: i64) -> Option<String> {
+    let text: Option<String> = db
+        .connection()
+        .query_row(
+            "SELECT item_json FROM transcript_item
+              WHERE transcript_id LIKE ?1 AND kind = 'assistant' AND created_at <= ?2
+              ORDER BY created_at DESC LIMIT 1",
+            [format!("{session_id}%"), before_ms.to_string()],
+            |r| r.get(0),
+        )
+        .ok();
+    let v: serde_json::Value = serde_json::from_str(&text?).ok()?;
+    let t = v.get("text")?.as_str()?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(t.chars().take(600).collect())
 }
 
 /// Layer A's reading of this call, the same way the gate takes it.

@@ -368,6 +368,13 @@ struct TrailInner {
     items: usize,
     /// The turn currently being served. 0 before the first one.
     turn: u32,
+    /// **The agent's most recent statement of what it is doing**, for the guard to
+    /// connect the operator's words to a call with. Never an authorisation, never
+    /// citable — see [`letibot_tools::authorise::ModelBrief::agent_claim`].
+    ///
+    /// One line, replaced rather than accumulated: the question is what it is doing
+    /// NOW, and a history of claims is a history the agent wrote.
+    claim: Option<String>,
 }
 
 impl TrailMirror {
@@ -444,6 +451,22 @@ impl TrailMirror {
             }
         }
         g.turn = items.len() as u32;
+    }
+
+    /// What the agent last said it was doing, bounded the way an utterance is.
+    fn claim(&self) -> Option<String> {
+        self.lock().claim.clone()
+    }
+
+    /// Record it. Called with the assistant's own prose for a turn — the sentence
+    /// before the tool calls, which is where a model says what it is about to do.
+    fn claims(&self, text: &str) {
+        let t = text.trim();
+        if t.is_empty() {
+            return;
+        }
+        let mut g = self.lock();
+        g.claim = Some(t.chars().take(UTTERANCE_CHARS).collect());
     }
 
     /// **The trail, walked backwards.** What
@@ -1613,6 +1636,14 @@ impl<'a> Harness<'a> {
                     // §2. Without this the trail is `NotCollected` — *nobody
                     // looked*, which is not the same fact as an empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())
+                    // What the agent says it is doing, so the guard can connect the
+                    // operator's words to a call that does not repeat them. Outside
+                    // the trail's numbering by construction, so it can never be what
+                    // an `ALLOW <n>` cites.
+                    .with_agent_claim({
+                        let t = trail.clone();
+                        move || t.claim()
+                    })
                     // §4b. Without this a denial reaches the model and stops there.
                     .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
                 let g = match advisor {
@@ -2941,6 +2972,14 @@ impl<'a> Harness<'a> {
                 .flatten()
                 .collect();
             let text = visible_text(&appended);
+            // **What the agent says it is doing, recorded before its calls are
+            // adjudicated.** A model's prose for a round is the sentence in front of
+            // its tool calls — "the queued-prompt rendering lives in app.rs; I am
+            // reading the composer block" — and that sentence is the one thing the
+            // guard is missing when the operator's instruction names a goal rather
+            // than a file. Never an authorisation and never citable; see
+            // `ModelBrief::agent_claim`.
+            self.trail.claims(&text);
             metrics.push(ok.metrics);
 
             if calls.is_empty() {

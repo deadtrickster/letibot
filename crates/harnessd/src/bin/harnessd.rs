@@ -885,11 +885,13 @@ fn run_query(
                  difference belongs to one change.\n"
             );
             println!(
-                "  {:<44} {:>7} {:>7} {:>13}",
+                "  {:<46} {:>7} {:>7} {:>13}",
                 "arm", "agreed", "asks", "FALSE ALLOWS"
             );
+            // One snapshot, every arm. The store is live.
+            let rows = letibot_harnessd::calibrate::rows_to_replay(path, 10_000)?;
             for arm in letibot_harnessd::calibrate::ARMS {
-                let r = letibot_harnessd::calibrate::replay_arm(cfg, path, 10_000, *arm)?;
+                let r = letibot_harnessd::calibrate::replay_rows(cfg, path, rows.clone(), *arm)?;
                 let agreed = r.rows.iter().filter(|x| x.is_saved_prompt()).count();
                 let bad = r.rows.iter().filter(|x| x.is_false_allow()).count();
                 let asks = r
@@ -897,7 +899,7 @@ fn run_query(
                     .iter()
                     .filter(|x| !x.guard_allowed && x.operator_admitted)
                     .count();
-                println!("  {:<44} {agreed:>7} {asks:>7} {bad:>13}", arm.name);
+                println!("  {:<46} {agreed:>7} {asks:>7} {bad:>13}", arm.name);
             }
             println!(
                 "\nagreed: prompts this arm would have saved you. asks: times it would \
