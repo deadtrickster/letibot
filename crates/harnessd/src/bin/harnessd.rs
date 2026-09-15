@@ -235,6 +235,9 @@ fn run() -> Result<i32, String> {
             // Re-render any stable prefix stored with no tokens, so a transcript
             // hanging off one can be resumed again. See `Query::RepairPrefixes`.
             "--repair-prefixes" => query = Some(Query::RepairPrefixes),
+            // Run every arm over the same rows and print them side by side. A
+            // prompt change to this seam is a hypothesis until this says otherwise.
+            "--compare" => query = Some(Query::Compare),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
@@ -764,6 +767,7 @@ enum Query {
     Delete(String),
     Calibrate { write: bool },
     RepairPrefixes,
+    Compare,
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -845,6 +849,35 @@ fn run_query(
             }
             println!(
                 "repaired {fixed} prefix row(s); the transcripts on them resume again."
+            );
+            Ok(0)
+        }
+        Query::Compare => {
+            drop(store);
+            println!(
+                "replaying the same operator-answered calls under each brief, so a \
+                 difference belongs to one change.\n"
+            );
+            println!(
+                "  {:<44} {:>7} {:>7} {:>13}",
+                "arm", "agreed", "asks", "FALSE ALLOWS"
+            );
+            for arm in letibot_harnessd::calibrate::ARMS {
+                let r = letibot_harnessd::calibrate::replay_arm(cfg, path, 10_000, *arm)?;
+                let agreed = r.rows.iter().filter(|x| x.is_saved_prompt()).count();
+                let bad = r.rows.iter().filter(|x| x.is_false_allow()).count();
+                let asks = r
+                    .rows
+                    .iter()
+                    .filter(|x| !x.guard_allowed && x.operator_admitted)
+                    .count();
+                println!("  {:<44} {agreed:>7} {asks:>7} {bad:>13}", arm.name);
+            }
+            println!(
+                "\nagreed: prompts this arm would have saved you. asks: times it would \
+                 still have come to you. FALSE ALLOWS: times it would have admitted \
+                 what you refused — the only column that is a fault, and the one a \
+                 wording change must not raise."
             );
             Ok(0)
         }

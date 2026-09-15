@@ -684,6 +684,10 @@ pub struct AdjudicationRequest {
     /// this person's judgement rather than a tally. Filled here, from the audit
     /// log, exactly as `prior` is; see [`crate::authorise::DecisionExample`].
     pub examples: Vec<crate::authorise::DecisionExample>,
+    /// Which wording of the guard's question this request will be briefed with.
+    /// The shipping one everywhere; `--calibrate --compare` is the only caller
+    /// that sets the other, and it sets it to measure the difference.
+    pub brief_variant: crate::authorise::BriefVariant,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1866,6 +1870,7 @@ impl AdjudicatedGate {
             class,
             prior,
             examples: Self::operator_examples(&self.log, turn_seq(call.turn_id)),
+            brief_variant: crate::authorise::BriefVariant::Follows,
             // Filled by `SupervisedAdjudicator` between the model's answer and the
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
@@ -2207,6 +2212,7 @@ impl Gate for AdjudicatedGate {
             // A path is not a tool call, so this session's record of tool calls is
             // not evidence about it; an empty list here says exactly that.
             examples: Vec::new(),
+            brief_variant: crate::authorise::BriefVariant::Follows,
             advice: None,
             summary: format!(
                 "`{tool}` named `{}`, which is outside this session's filesystem view",

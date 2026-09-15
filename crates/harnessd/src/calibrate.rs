@@ -167,7 +167,7 @@ impl Report {
             return None;
         }
         let replayed = self.rows.len();
-        let false_allows: usize = self.per_intent.values().map(|t| t.false_allows).sum();
+        let false_allows = self.rows.iter().filter(|r| r.is_false_allow()).count();
         let saved = self.rows.iter().filter(|r| r.is_saved_prompt()).count();
         Some(OracleScope::earned(
             intents.into_iter().collect(),
@@ -189,7 +189,47 @@ impl Report {
 /// its scope, so replaying under the current one would measure only what it is
 /// already allowed to answer and could never widen anything. Nothing admits during
 /// a replay — no gate runs, no tool is called, and the answers go into a table.
+/// One configuration of the guard's brief, so two of them differ in exactly one
+/// thing and the difference is attributable.
+#[derive(Debug, Clone, Copy)]
+pub struct Arm {
+    pub name: &'static str,
+    pub variant: letibot_tools::authorise::BriefVariant,
+    /// Whether the operator's own earlier answers are shown.
+    pub examples: bool,
+}
+
+/// The three that matter: what shipped, the reworded question alone, and the
+/// reworded question with the operator's answers beside it. Ordered so each row
+/// adds one thing to the row above it.
+pub const ARMS: &[Arm] = &[
+    Arm {
+        name: "asked-for-it, no examples (what shipped)",
+        variant: letibot_tools::authorise::BriefVariant::AskedForIt,
+        examples: false,
+    },
+    Arm {
+        name: "follows-from, no examples",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: false,
+    },
+    Arm {
+        name: "follows-from + the operator's own answers",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: true,
+    },
+];
+
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
+    replay_arm(cfg, store, limit, ARMS[2])
+}
+
+pub fn replay_arm(
+    cfg: &Config,
+    store: &Path,
+    limit: usize,
+    arm: Arm,
+) -> Result<Report, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
     let rows = db
         .corpus(false, 100_000)
@@ -318,6 +358,13 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         );
         answered_before.truncate(6);
 
+        // **The arm being measured.** One row, one question wording, one decision
+        // about whether the operator's own answers are in front of the guard — so a
+        // difference in the table below belongs to exactly one change.
+        req.brief_variant = arm.variant;
+        if !arm.examples {
+            req.examples.clear();
+        }
         let started = std::time::Instant::now();
         let _ = adjudicator.decide(&req);
         let advice = adjudicator.last_advice();
@@ -420,7 +467,10 @@ impl Report {
         let _ = writeln!(o, "corpus replay against {}", self.oracle);
         let _ = writeln!(o, "  store: {}", self.store);
         let replayed = self.rows.len();
-        let false_allows: usize = self.per_intent.values().map(|t| t.false_allows).sum();
+        // **Rows, not intents.** Summing the per-intent column counts a call once
+        // per intent it carries, so three bad calls read as six — which is what the
+        // headline said before anybody compared it against the arms table.
+        let false_allows = self.rows.iter().filter(|r| r.is_false_allow()).count();
         let saved = self.rows.iter().filter(|r| r.is_saved_prompt()).count();
         let _ = writeln!(
             o,
