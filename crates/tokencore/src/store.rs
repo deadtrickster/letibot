@@ -198,9 +198,12 @@ pub struct NewAdjudication {
     pub effect: String,
     /// Whether the operator was actually put in front of this decision.
     pub asked: bool,
+    /// The command's shape — the parse with its literals holed. `None` for a
+    /// call that is not a command. See `letibot_code::shell::shape`.
+    pub shape: Option<String>,
 }
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -336,6 +339,7 @@ CREATE TABLE IF NOT EXISTS adjudication (
     p_allow        REAL,
     oracle_ms      INTEGER,
     oracle_model   TEXT,
+    shape          TEXT,
     -- Which brief format produced `shown`. A corpus spanning a prompt change is
     -- two datasets, and without this nobody can tell where the seam is.
     brief_sha      TEXT,
@@ -778,6 +782,30 @@ impl Store {
                  CREATE INDEX IF NOT EXISTS adjudication_disagreements
                      ON adjudication (operator_kind) WHERE operator_kind IS NOT NULL;",
             )?;
+        }
+        if from < 6 {
+            // v6: the SHAPE of the command a decision was about — the parse with its
+            // literals replaced by holes, so `grep -n P -A 22 a.rs` and `grep -n Q
+            // -A 3 b.rs` are one row and two calls. Collected before anything is
+            // built on it: the operator's question was whether the same question is
+            // being asked repeatedly, and that is a thing to count rather than
+            // assume. NULL on every existing row, which is "recorded before this
+            // column existed" and not "no shape".
+            // **Idempotent, because a migration is not always run on a file that
+            // has never seen this column.** The v1/v2 fixtures build a CURRENT
+            // store, reverse two steps by hand and set the version back — so the
+            // table already carries `shape` and the plain `ALTER` fails with
+            // "duplicate column name". Asking the file what it has is cheap and is
+            // the only thing that is true for both paths.
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE adjudication ADD COLUMN shape TEXT")?;
+            }
         }
         Ok(())
     }
@@ -1269,9 +1297,9 @@ impl Store {
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
                 trail_json, shown, tool, arguments_json, mode, options_json, agent,
                 model_verdict, verdict, verdict_by, verdict_basis, p_allow, oracle_ms,
-                oracle_model, brief_sha, effect, asked, corpus_version)
+                oracle_model, shape, brief_sha, effect, asked, corpus_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 a.request_id,
                 a.session_id,
@@ -1294,6 +1322,7 @@ impl Store {
                 a.p_allow,
                 a.oracle_ms,
                 a.oracle_model,
+                a.shape,
                 a.brief_sha,
                 a.effect,
                 a.asked as i64,

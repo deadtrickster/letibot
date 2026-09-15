@@ -115,6 +115,10 @@ impl CorpusSink for StoreCorpus {
             // string: a column filled by splitting prose is the column that breaks
             // when the prose changes.
             oracle_model: None,
+            // Carried from the row rather than re-derived: the key a decision is
+            // recorded under and the key a later call is looked up by must be one
+            // derivation.
+            shape: row.shape.clone(),
             brief_sha: Some(row.brief_format.to_string()),
             effect: row.effect.to_string(),
             asked: row.asked,

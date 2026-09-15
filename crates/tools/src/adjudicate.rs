@@ -706,6 +706,9 @@ pub struct AdjudicationRequest {
     /// One derivation, done where the surroundings are known, carried to whoever
     /// needs it. Two classifications of one call could not agree and did not.
     pub reading: Option<crate::intent::Baseline>,
+    /// **The command's shape**: the parse with its literals replaced by holes.
+    /// `None` for a call that is not a command. See [`shape_of`].
+    pub shape: Option<String>,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1290,6 +1293,7 @@ impl AdjudicationRow {
             action: self.request.summary.clone(),
             trail: self.request.trail.clone(),
             shown: self.shown.clone(),
+            shape: self.request.shape.clone(),
             baseline: self.request.baseline.clone(),
             tier: self.request.tier.as_str(),
             tool: self.request.tool.clone(),
@@ -1466,6 +1470,9 @@ pub struct AdjudicatedGate {
     /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
     /// the key because that is what an execution vehicle changes.
     grants: Vec<crate::grant::Grant>,
+    /// Shapes the operator approved themselves this session, with the effect class
+    /// they approved them at. See the lookup for the four bounds.
+    approved_shapes: std::collections::HashMap<String, ActionClass>,
     /// **What the agent says it is doing right now**, supplied by the layer that
     /// has the transcript. A closure for the reason the trail source is one: this
     /// type must not learn to read a conversation.
@@ -1552,6 +1559,7 @@ impl AdjudicatedGate {
             agent: "agent".into(),
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
+            approved_shapes: std::collections::HashMap::new(),
             agent_claim: Box::new(|| None),
             permission: crate::permission::Ruleset::new(),
             permission_sink: None,
@@ -1927,6 +1935,7 @@ impl AdjudicatedGate {
             brief_variant: crate::authorise::BriefVariant::Follows,
             agent_claim: (self.agent_claim)(),
             reading: Some(baseline.clone()),
+            shape: shape_of(baseline),
             // Filled by `SupervisedAdjudicator` between the model's answer and the
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
@@ -2291,6 +2300,7 @@ impl Gate for AdjudicatedGate {
             brief_variant: crate::authorise::BriefVariant::Follows,
             agent_claim: None,
             reading: None,
+            shape: None,
             advice: None,
             summary: format!(
                 "`{tool}` named `{}`, which is outside this session's filesystem view",
@@ -2637,6 +2647,54 @@ impl Gate for AdjudicatedGate {
         //    unasked. The prompt does not offer the option either (see `request_from`)
         //    and the recording site refuses one — the same three mechanisms the
         //    always-ask list uses, and for the same reason.
+        // **A shape the operator already approved, this session.**
+        //
+        // The operator, after answering the same question about a different file
+        // for the fifth time: *"shapes like this must be approved only once"* —
+        // and, asked whether to collect data first or act on it, *"i vote for
+        // approving already"*.
+        //
+        // The key is the parse with its literals holed, so `grep -n P -A 22 a.rs`
+        // and `grep -n Q -A 3 b.rs` are one approval, while `sed -n` and `sed -i`,
+        // or `rm -f` and `rm -rf`, are not — a flag is where a command changes
+        // kind, and the shape keeps flags.
+        //
+        // Four bounds, and they are the reason this is safe to do at all:
+        //
+        //  * only a shape a HUMAN approved goes in the table. The guard's own
+        //    admits never do, which is the operator's own rule about drift —
+        //    *"that command was approved already by someone and this is ever so
+        //    slightly different"* — applied to the mechanism most able to do it;
+        //  * the tier is re-checked HERE, not remembered. Reaching `always-ask` or
+        //    `inexpressible` today means asking today, whatever was approved
+        //    yesterday, so a shape cannot carry a call past the secret list or the
+        //    rule protecting the rule files;
+        //  * the effect class must match the one that was approved, so a shape
+        //    approved inside the project does not admit the same shape outside it;
+        //  * it lives and dies with the session.
+        //  * and a DESTRUCTIVE call is never settled by a shape, however often the
+        //    operator approved one. A shape holes its operands, so `rm -rf <arg>`
+        //    approved over `target/` would stand in for `rm -rf` over anything else
+        //    in the project — and this tree's own rule is that *"destruction is
+        //    judged by SCOPE, never by the verb"*, which is precisely the half a
+        //    shape throws away. The operator's 2026-09-11 rule that exec asks every
+        //    time is narrowed to this rather than dropped: reads, searches and
+        //    builds stop repeating themselves; deletions still ask.
+        if let Tier::MayApprove = req.tier
+            && let Some(shape) = &req.shape
+            && let Some(seen) = self.approved_shapes.get(shape)
+            && *seen == req.class
+            && !baseline.intents.contains(&crate::intent::Intent::Destroy)
+        {
+            let basis =
+                format!("you approved this shape earlier in this session: `{shape}`");
+            let d = AdjudicationDecision::selected(&req, "allow_once", "gate:shape", &basis);
+            self.advise_on_a_settled_call(&req, "a shape the operator approved".into());
+            self.breaker.admitted(&direction);
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
         if let Some(g) = self.grants.iter().find(|g| {
             call.access != Access::Exec
                 && g.covers(
@@ -2745,6 +2803,23 @@ impl Gate for AdjudicatedGate {
                 let kind = req.option(option_id).map(|o| o.kind);
                 match kind {
                     Some(k) if k.admits() => {
+                        // **The shape, remembered — but only from a person, and only
+                        // where a shape may stand in for the next call.**
+                        //
+                        // `MayApprove` only: an `always-ask` admitted by a human is
+                        // admitted for THIS call and no other, which is what that
+                        // tier means, and a shape recorded there would be the
+                        // standing grant the next three mechanisms exist to refuse.
+                        // `decision.by` must be a human for the reason the guard's
+                        // own answers are kept out of the brief: a mechanism that
+                        // learns from itself drifts.
+                        if matches!(req.tier, Tier::MayApprove)
+                            && decision.by.starts_with("human")
+                            && !baseline.intents.contains(&crate::intent::Intent::Destroy)
+                            && let Some(shape) = req.shape.clone()
+                        {
+                            self.approved_shapes.insert(shape, req.class);
+                        }
                         // An always-ask can be admitted — by a human, this turn — but
                         // never turned into a standing grant. Three separate mechanisms
                         // keep that true and this is the second: the tier mints no
@@ -3117,6 +3192,14 @@ fn permission_pattern(args: &Value) -> String {
     "*".to_string()
 }
 
+/// A baseline's command as a shape, when it has one.
+///
+/// One place, so the key a decision is recorded under and the key a later call is
+/// looked up by cannot be derived differently.
+pub fn shape_of(b: &crate::intent::Baseline) -> Option<String> {
+    b.command.as_ref().map(letibot_code::shell::shape)
+}
+
 fn never_hit(args: &Value) -> Option<String> {
     let obj = args.as_object()?;
     for v in obj.values() {
@@ -3140,6 +3223,85 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A shape the operator approved is not asked again — and the things that
+    /// must always ask, still do.**
+    ///
+    /// *"shapes like this must be approved only once"*, and the shape is the parse
+    /// with its literals holed, so the second call is a different command and the
+    /// same question.
+    #[test]
+    fn a_shape_the_operator_approved_is_not_asked_twice() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "yes",
+                ))
+            },
+        )))
+        .with_surroundings(pinned());
+
+        let one = json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+        assert!(matches!(g.admit(&bash_at(&one, "s#1")), GateDecision::Admit));
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+
+        // Different pattern, different context count, different file: one shape.
+        let two = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+        assert!(matches!(g.admit(&bash_at(&two, "s#2")), GateDecision::Admit));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            1,
+            "the same shape asked the operator a second time"
+        );
+
+        // **A flag is where a command changes kind**, so this is NOT that shape.
+        let write = json!({"command": "sed -i s/a/b/ /w/a.rs"});
+        let _ = g.admit(&bash_at(&write, "s#3"));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            2,
+            "a write was admitted by a read's shape"
+        );
+
+        // **A deletion is never settled by a shape.** A shape holes its operands,
+        // and this tree judges destruction by SCOPE — so `rm -rf <arg>` approved
+        // over one directory must not stand in for another. Asked both times.
+        let del = json!({"command": "rm -rf /w/target"});
+        let _ = g.admit(&bash_at(&del, "s#4"));
+        let before = asked.load(Ordering::Relaxed);
+        let del2 = json!({"command": "rm -rf /w/build"});
+        let _ = g.admit(&bash_at(&del2, "s#5"));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            before + 1,
+            "a second deletion of the same shape was admitted without asking"
+        );
+    }
+
+    /// The guard's own admits never become shapes. The operator's rule about
+    /// drift, applied to the mechanism most able to do it: a gate that learned from
+    /// its own answers would widen one slightly-different call at a time.
+    #[test]
+    fn the_gates_own_admits_do_not_become_approved_shapes() {
+        let mut g = AdjudicatedGate::closed().with_mode(crate::mode::Mode::WRITES_ALLOWED);
+        let args = json!({"command": "grep -n x /w/a.rs"});
+        // `writes-allowed` admits a read unasked; nobody was asked, so nothing is
+        // learned from it.
+        let _ = g.admit(&bash_at(&args, "s#1"));
+        assert!(
+            g.approved_shapes.is_empty(),
+            "the gate learned a shape from its own answer: {:?}",
+            g.approved_shapes
+        );
+    }
 
     /// **`/mode` moves the session it is typed in.** The gate reads its mode when
     /// it decides, so the move is a field write — and the standing grants go with

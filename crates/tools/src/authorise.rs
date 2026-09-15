@@ -1403,6 +1403,10 @@ pub struct CorpusRow {
     pub trail: AuthorisationTrail,
     /// The bytes the oracle was given, verbatim. `None` when no oracle was consulted.
     pub shown: Option<String>,
+    /// **The command's shape**: the parse with its literals replaced by holes, so
+    /// the same question asked about a different file is one row. `None` for a call
+    /// that is not a command. See `letibot_code::shell::shape`.
+    pub shape: Option<String>,
     /// Layer A's deterministic reading.
     pub baseline: String,
     pub tier: &'static str,
@@ -2121,6 +2125,7 @@ mod tests {
             brief_variant: BriefVariant::Follows,
             agent_claim: None,
             reading: None,
+            shape: None,
             advice: None,
         }
     }
@@ -2773,6 +2778,7 @@ mod tests {
         // The disagreement IS the training signal; a row that kept only the final
         // state has thrown the label away.
         let row = CorpusRow {
+            shape: None,
             request_id: "adj-1".into(),
             session_id: "s".into(),
             turn_id: "t".into(),

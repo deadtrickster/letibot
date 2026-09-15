@@ -1731,3 +1731,84 @@ mod tests {
         assert!(x.binaries().contains(&"readlink"));
     }
 }
+
+/// **The stable shape of a command**, with its literals replaced by holes.
+///
+/// `cd /a/b && grep -n "struct CallRow" -A 22 crates/tui/src/app.rs` and the same
+/// thing over another file at other line numbers are one shape and two commands.
+/// The operator's observation, after answering the same question for the fifth
+/// time:
+///
+/// > *"i wonder if it is possible to cache the approved/denied shapes somehow - i
+/// > see this patterns like cd <path>; sed <lines> path or grep instead of sed.
+/// > looks cachable especially on tree sitter level"*
+///
+/// # What is kept, and why exactly that
+///
+/// The program and its FLAGS, because a flag is where a command changes kind:
+/// `sed -n` prints and `sed -i` rewrites the file, `grep -r` walks a tree and
+/// `rm -f` stops asking. A shape that folded those together would approve a write
+/// because a read of the same name was approved once, which is the drift this is
+/// supposed to prevent rather than cause.
+///
+/// Everything else becomes a hole. Operands are `<arg>`, and a flag's VALUE is
+/// `<v>` — `-A 22` and `-A 3` are the same shape, `-A` and `-B` are not.
+/// Redirection operators are kept and their targets are holes, so `> <file>` and
+/// `>> <file>` stay apart.
+///
+/// # What it is not
+///
+/// Not a security decision on its own and not a cache key yet: it is the label
+/// under which the same question gets asked repeatedly, so the asking can be
+/// counted before anything is built on it. An unresolved word is `<?>` and a shape
+/// containing one is not the same shape as the resolved spelling, because the
+/// thing that could not be read is exactly where a difference would hide.
+fn is_count_flag(t: &str) -> bool {
+    t.len() > 1 && t.starts_with('-') && t[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+pub fn shape(n: &Normalised) -> String {
+    let mut out = String::new();
+    for (i, st) in n.stages.iter().enumerate() {
+        if i > 0 {
+            out.push_str(if st.pipe_in { " | " } else { " ; " });
+        }
+        out.push_str(st.program.text().unwrap_or("<?>"));
+        for w in &st.argv {
+            out.push(' ');
+            match w.text() {
+                // **A COUNT is not a flag.** `head -26`, `tail -5`, `head -30`:
+                // the dash is punctuation and the number is an operand wearing it.
+                // Keeping them apart would make every `head -N` its own shape,
+                // which is most of what recurs.
+                Some(t) if is_count_flag(t) => out.push_str("-<n>"),
+                // A flag is part of the shape, because a flag is where a command
+                // changes kind: `sed -n` prints and `sed -i` rewrites. `--opt=value`
+                // keeps the option and holes the value — one token, two halves.
+                Some(t) if t.starts_with('-') && t.len() > 1 => match t.split_once('=') {
+                    Some((opt, _)) => out.push_str(&format!("{opt}=<v>")),
+                    None => out.push_str(t),
+                },
+                // Everything else is a hole, flag value or operand alike. Telling
+                // those two apart needs a per-program table of which flags take a
+                // value, and buys nothing: `-A 22` and `-A 3` collapse either way,
+                // and the arity of the stage keeps genuinely different calls apart.
+                Some(_) => out.push_str("<arg>"),
+                // Unresolved stays visible: a shape that hid it would pool "we could
+                // not read this" with a spelling somebody has approved.
+                None => out.push_str("<?>"),
+            }
+        }
+        for r in &st.redirects {
+            out.push(' ');
+            out.push_str(r.op.as_str());
+            out.push_str(match &r.target {
+                RedirectTarget::File(_) => " <file>",
+                RedirectTarget::Descriptor(_) => "&<fd>",
+                RedirectTarget::HereDoc { .. } => " <<heredoc",
+                _ => " <in>",
+            });
+        }
+    }
+    out
+}
