@@ -650,6 +650,57 @@ impl OracleScope {
         }
     }
 
+    /// **The scope the operator has declared for their own guard**, from names.
+    ///
+    /// The doc above says an oracle earns authority by measurement, and that is
+    /// still the rule this type exists to enforce. What it did not have was any
+    /// way for the measurement to arrive: `narrowest` was the only constructor
+    /// anything called, so every oracle on every box held the floor forever, and
+    /// `intents [unknown]` — one verb missing from a classifier table — went to the
+    /// operator for the rest of the session's life. The operator's reading of that
+    /// was *"it is again manual band aid, i doubt qwen doesnt know what worktree
+    /// is"*, and they are right: a table nobody can finish is not a mechanism.
+    ///
+    /// So a human who owns the box may say what their guard is trusted with. That
+    /// is not a calibration and this does not pretend it is: `evidence` says the
+    /// authority was DECLARED, so the disclosure and the audit row say so too, and
+    /// nothing here reads as a number somebody measured.
+    ///
+    /// Unparseable names are an error rather than a silent narrowing, for the
+    /// reason every other refusal in this tree gives: a setting that quietly did
+    /// not take is worse than one that refused.
+    pub fn declared(intents: &[String], max_scope: Option<&str>) -> Result<Self, String> {
+        let mut set = std::collections::BTreeSet::new();
+        for name in intents {
+            let i = Intent::parse(name).ok_or_else(|| {
+                format!(
+                    "`{name}` is not an intent this build knows. The names are: {}",
+                    Intent::ALL
+                        .iter()
+                        .map(|i| i.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            set.insert(i);
+        }
+        let max_scope = match max_scope {
+            None => EffectScope::HostProject,
+            Some(s) => EffectScope::parse(s).ok_or_else(|| {
+                format!(
+                    "`{s}` is not an effect scope. The names are: in_run, \
+                     host_project, host_other, external"
+                )
+            })?,
+        };
+        Ok(OracleScope {
+            intents: set,
+            max_scope,
+            evidence: "declared by the operator in providers.toml under                        `[gatekeeper]` — this is a grant, not a calibration: no                        corpus was replayed to arrive at it"
+                .into(),
+        })
+    }
+
     /// Whether this oracle may be asked about this action at all.
     pub fn covers(
         &self,
@@ -1613,6 +1664,46 @@ impl Adjudicator for ModelAdjudicator {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A declaration is not a calibration, and says which it is.**
+    ///
+    /// The scope had one constructor — the floor — so no oracle could ever hold
+    /// anything else, and a single unclassified verb meant a prompt per call
+    /// forever. A human who owns the box can now say what their guard answers
+    /// about; what they cannot do is have it recorded as a measurement.
+    #[test]
+    fn an_operator_can_declare_what_their_guard_answers_about() {
+        let s = OracleScope::declared(
+            &["inspect".into(), "write_file".into(), "unknown".into()],
+            Some("host_other"),
+        )
+        .expect("the names are the ones the build prints");
+        assert!(s.evidence.contains("not a calibration"), "{}", s.evidence);
+        assert!(s.evidence.contains("providers.toml"), "{}", s.evidence);
+
+        let mut carries = std::collections::BTreeSet::new();
+        carries.insert(Intent::Unknown);
+        assert!(
+            s.covers(&carries, EffectScope::HostOther).is_ok(),
+            "a declared scope that names `unknown` must cover it — that is the \
+             whole reason an operator would write the line"
+        );
+        // And it still bounds: nothing was granted that was not named.
+        let mut net = std::collections::BTreeSet::new();
+        net.insert(Intent::Network);
+        assert!(s.covers(&net, EffectScope::HostProject).is_err());
+        assert!(s.covers(&carries, EffectScope::External).is_err());
+
+        // A typo refuses and lists the vocabulary rather than narrowing in silence.
+        let e = OracleScope::declared(&["wrtie_file".into()], None).unwrap_err();
+        assert!(e.contains("wrtie_file"), "{e}");
+        assert!(e.contains("write_file"), "the names are printed: {e}");
+        assert!(OracleScope::declared(&[], Some("the-moon")).is_err());
+
+        // The floor is unchanged for a box that says nothing.
+        let floor = OracleScope::narrowest("test fixture, not a calibration");
+        assert!(floor.covers(&carries, EffectScope::HostProject).is_err());
+    }
     use super::*;
     use crate::adjudicate::{
         ActionClass, AdjudicatedGate, NoAdjudicator, OnTimeout, RequestKind, permission_options,

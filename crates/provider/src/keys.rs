@@ -83,6 +83,15 @@ pub struct Gatekeeper {
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub budget_ms: Option<u64>,
+    /// **What the operator trusts their guard to answer about**, as intent names:
+    /// `intents = "inspect read_file write_file execute_code destroy unknown"`.
+    ///
+    /// Empty means the built-in floor. See `OracleScope::declared` for why a
+    /// declaration is not a calibration and is labelled as one or the other.
+    pub intents: Vec<String>,
+    /// How far an effect may land and still be the guard's to answer about:
+    /// `in_run`, `host_project` (the default), `host_other`, `external`.
+    pub max_scope: Option<String>,
 }
 
 /// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
@@ -100,6 +109,19 @@ pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
         endpoint: sec.get("endpoint").or_else(|| sec.get("oracle")).cloned(),
         model: sec.get("model").cloned(),
         budget_ms: sec.get("budget_ms").and_then(|v| v.parse().ok()),
+        // Whitespace- or comma-separated, because both spellings are what people
+        // type and neither is worth a refusal.
+        intents: sec
+            .get("intents")
+            .map(|v| {
+                v.split([' ', ',', '\t'])
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        max_scope: sec.get("max_scope").or_else(|| sec.get("scope")).cloned(),
     }
 }
 

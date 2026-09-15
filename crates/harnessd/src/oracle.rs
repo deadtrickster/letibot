@@ -56,13 +56,26 @@ impl HttpOracle {
             // Enough for `ALLOW 0,2` and no more. Raising this buys prose and
             // spends the budget; see the module header for the measurements.
             max_tokens: 6,
-            // Narrowest until a corpus says otherwise. Widening this is a
-            // configuration change with a number behind it, per OracleScope.
+            // Narrowest until a corpus says otherwise, or until the operator says
+            // otherwise in their own file — see `with_scope`.
             scope: OracleScope::narrowest(
                 "no corpus has been replayed against this oracle on this box, so it \
                  holds the narrowest authority the seam offers",
             ),
         }
+    }
+
+    /// Put the operator's declared authority behind this guard.
+    ///
+    /// The floor stays the default: a box that says nothing behaves exactly as it
+    /// did. What this adds is a way for the person who owns the box to say what
+    /// their guard is trusted with — which the type wanted all along and nothing
+    /// supplied, so every oracle everywhere held the floor forever and one verb
+    /// missing from a classifier table meant a prompt per call for the life of the
+    /// session.
+    pub fn with_scope(mut self, scope: OracleScope) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// One round trip. `None` when the endpoint did not answer in time or at all

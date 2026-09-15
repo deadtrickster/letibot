@@ -179,6 +179,26 @@ fn run() -> Result<i32, String> {
         if let Some(m) = gk.model.filter(|m| !m.trim().is_empty()) {
             cfg.oracle_model = Some(m);
         }
+        // **The authority the operator declares for their own guard.** Refused by
+        // name rather than narrowed silently: a `[gatekeeper] intents` line with a
+        // typo in it would otherwise leave the guard at the floor while the
+        // operator believes they widened it, which is the shape of every other
+        // "the banner says one thing and the session does another" defect this
+        // tree refuses.
+        if !gk.intents.is_empty() || gk.max_scope.is_some() {
+            match letibot_tools::authorise::OracleScope::declared(
+                &gk.intents,
+                gk.max_scope.as_deref(),
+            ) {
+                Ok(scope) => cfg.oracle_scope = Some(scope),
+                Err(why) => {
+                    return Err(format!(
+                        "[gatekeeper] in {}: {why}",
+                        letibot_provider::keys::config_file().display()
+                    ));
+                }
+            }
+        }
         if let Some(ms) = gk.budget_ms {
             cfg.oracle_budget = std::time::Duration::from_millis(ms);
         }

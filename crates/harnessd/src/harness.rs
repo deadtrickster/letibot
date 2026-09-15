@@ -3829,7 +3829,10 @@ fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator
     // guard on another box is a different model, and naming this session's to that
     // server is both a wrong request and a wrong disclosure.
     let guard_model = cfg.oracle_model.clone().unwrap_or_else(|| cfg.model.clone());
-    let oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget);
+    let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget);
+    if let Some(scope) = &cfg.oracle_scope {
+        oracle = oracle.with_scope(scope.clone());
+    }
     // Layer A, re-derived per request from the command as the program will receive
     // it. Not copied from the request's own `baseline` string: that is prose for a
     // human, and the adjudicator needs the classification.

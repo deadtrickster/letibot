@@ -237,6 +237,18 @@ impl EffectScope {
             EffectScope::External => "external",
         }
     }
+
+    /// The inverse of [`EffectScope::as_str`], derived from it.
+    pub fn parse(name: &str) -> Option<EffectScope> {
+        [
+            EffectScope::InRun,
+            EffectScope::HostProject,
+            EffectScope::HostOther,
+            EffectScope::External,
+        ]
+        .into_iter()
+        .find(|s| s.as_str() == name.trim())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

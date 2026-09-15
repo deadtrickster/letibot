@@ -346,6 +346,10 @@ pub struct Config {
     /// holding a 27B, and the banner announced the guard by the wrong name — a
     /// disclosure that is a guess about which model is guarding.
     pub oracle_model: Option<String>,
+    /// **The authority the operator has declared for their guard**, from
+    /// `[gatekeeper] intents` / `max_scope` in providers.toml. `None` is the
+    /// built-in floor, which is what a box that has said nothing gets.
+    pub oracle_scope: Option<letibot_tools::authorise::OracleScope>,
     /// Layer B's latency budget. The trait's default is 400ms and
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
@@ -652,6 +656,7 @@ impl Config {
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,
+            oracle_scope: None,
             oracle_budget: std::time::Duration::from_millis(400),
             supervise: false,
             intent_prose: false,
