@@ -228,6 +228,15 @@ pub const ARMS: &[Arm] = &[
         examples: true,
         claim: false,
     },
+    // The missing cell of the 2x2: the ORIGINAL question with the examples. Without
+    // it, "follows-from + examples is best" cannot be told apart from "examples are
+    // what helped, and the rewording came along for the ride".
+    Arm {
+        name: "asked-for-it + the operator's own answers",
+        variant: letibot_tools::authorise::BriefVariant::AskedForIt,
+        examples: true,
+        claim: false,
+    },
     Arm {
         name: "+ what the agent says it is doing",
         variant: letibot_tools::authorise::BriefVariant::Follows,
@@ -237,7 +246,7 @@ pub const ARMS: &[Arm] = &[
 ];
 
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
-    replay_arm(cfg, store, limit, ARMS[3])
+    replay_arm(cfg, store, limit, ARMS[2])
 }
 
 /// **The rows to replay, taken once.**

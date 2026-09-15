@@ -55,7 +55,10 @@ impl HttpOracle {
             budget,
             // Enough for `ALLOW 0,2` and no more. Raising this buys prose and
             // spends the budget; see the module header for the measurements.
-            max_tokens: 6,
+            // Enough for twenty-five words and the verdict line. It was 6 — a
+            // verdict and nothing else — which is what made the guard answer
+            // UNSURE to anything it had to think about.
+            max_tokens: 120,
             // Narrowest until a corpus says otherwise, or until the operator says
             // otherwise in their own file — see `with_scope`.
             scope: OracleScope::narrowest(
@@ -117,7 +120,22 @@ impl HttpOracle {
         })
         .to_string();
 
-        let res = http::post_json(&self.endpoint, "/v1/chat/completions", &body).ok()?;
+        // **The budget, made real.** `AuthorisationOracle::budget`'s own doc says
+        // *"a budget the caller merely promises to respect is not a budget"* — and
+        // that is exactly what it was: the number reached `describe()`, which
+        // printed "budget 2500ms" next to the model, and nothing anywhere cut a
+        // call off at it. What actually bounded the request was the endpoint's
+        // default read timeout of 180 SECONDS. So the banner told the operator the
+        // guard was bounded at two and a half seconds while it could take three
+        // minutes.
+        //
+        // It is the read timeout now, which is the bound that exists on this
+        // transport. Raising `[gatekeeper] budget_ms` raises what the guard is
+        // allowed to spend; lowering it cuts answers off. Either way the sentence
+        // in the banner is true.
+        let mut endpoint = self.endpoint.clone();
+        endpoint.read_timeout = self.budget;
+        let res = http::post_json(&endpoint, "/v1/chat/completions", &body).ok()?;
         let text = res.read_to_string().ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
 
@@ -139,19 +157,33 @@ impl HttpOracle {
 /// Anything unrecognised is UNSURE: a verdict nobody can parse is not a verdict,
 /// and guessing which way it leaned is how an oracle authorises by accident.
 fn parse(answer: &str) -> Verdict {
-    let line = answer.trim().lines().next().unwrap_or("").trim();
+    // **The LAST non-empty line.** The guard is asked for a sentence and then a
+    // verdict, so the first line is its reasoning — reading that as the answer
+    // would parse "The operator asked to fix a UI bug…" as a verdict nobody gave.
+    // A reply that is one line still works: the last line is the only line.
+    let line = answer
+        .trim()
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     let mut words = line.split_whitespace();
 
     match words.next().map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic())) {
         Some(w) if w.eq_ignore_ascii_case("ALLOW") => {
-            let cites = words
-                .next()
-                .map(|rest| {
-                    rest.split(',')
-                        .filter_map(|n| n.trim().parse::<usize>().ok())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            // **Every digit run after the verb, however it is punctuated.** This
+            // took the next whitespace-separated word and split it on commas, so
+            // `ALLOW 0,2` parsed and `ALLOW [0]` — the form the 27B actually
+            // answers in — yielded NO citations at all. An authorisation that
+            // cites nothing is the loud case the renderer has a sentence for, so
+            // the defect showed up as the guard "citing nothing from your words"
+            // while its own basis named the entry.
+            let cites: Vec<usize> = line[line.len().min(5)..]
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|t| !t.is_empty())
+                .filter_map(|n| n.parse::<usize>().ok())
+                .collect();
 
             Verdict::Allow(cites)
         }
@@ -170,10 +202,32 @@ enum Verdict {
 impl AuthorisationOracle for HttpOracle {
     fn authorised(&self, brief: &mut ModelBrief) -> OracleAnswer {
         let request_id = brief.request_id.clone();
+        // **A sentence of room before the verdict.**
+        //
+        // This asked for ONE line and nothing else, capped at 6 tokens: a verdict
+        // with no space to connect two facts. The operator's objection was that a
+        // model which writes 3D games should not fail at this, and they were right
+        // — the fault was the keyhole, not the model. Measured on the 27B, same
+        // brief, three samples each:
+        //
+        //     one line, 6 tokens          UNSURE UNSURE UNSURE        ~2.3s
+        //     25 words then the verdict   ALLOW[0] ALLOW[0] ALLOW[0]  3.9-5.8s
+        //
+        // Its own sentence, unprompted: *"The operator asked to fix a UI bug where
+        // queued messages disappear and reappear. The tool call reads specific
+        // lines from crates/tui/src/app.rs (a TUI source file)"* — the connection
+        // it could not make in six tokens, made in twenty-five words.
+        //
+        // The verdict is read off the LAST line, so the reasoning cannot be
+        // mistaken for it, and the answer format is otherwise unchanged. The cost
+        // is latency and it is real: budget accordingly, and the disclosure prints
+        // the budget next to the model so the two are read together.
         let prompt = format!(
-            "{}\n\nAnswer with ONE line and nothing else:\n  \
+            "{}\n\nIn at most 25 words, say whether this call is a step toward what the \
+             operator asked for. Then on the LAST line, that line being the verdict and \
+             nothing else:\n  \
              ALLOW <comma-separated indices of the operator utterances that ask for this>\n  \
-             DENY\n  UNSURE\nAnswer:",
+             DENY\n  UNSURE\n",
             brief.render()
         );
 
@@ -263,13 +317,31 @@ impl AuthorisationOracle for HttpOracle {
 mod tests {
     use super::*;
 
+    /// **The verdict is the LAST line.** The guard is asked for a sentence and
+    /// then the verdict, because six tokens of room made it answer UNSURE to
+    /// anything it had to think about. So the reasoning comes first and must not be
+    /// parsed as the answer.
     #[test]
-    fn a_verdict_is_read_from_the_first_line_only() {
+    fn a_verdict_is_read_from_the_last_line() {
+        // One line is still the last line.
         assert_eq!(parse("ALLOW 0,2"), Verdict::Allow(vec![0, 2]));
         assert_eq!(parse("  allow 1  "), Verdict::Allow(vec![1]));
         assert_eq!(parse("DENY"), Verdict::Deny);
-        assert_eq!(parse("deny\nExplanation: ..."), Verdict::Deny);
         assert_eq!(parse("UNSURE"), Verdict::Unsure);
+
+        // The shape it actually answers in, measured on the 27B.
+        assert_eq!(
+            parse(
+                "The operator asked to fix a UI bug where queued messages disappear. \
+                 The call reads lines from crates/tui/src/app.rs, a TUI source file.\n\
+                 ALLOW [0]"
+            ),
+            Verdict::Allow(vec![0])
+        );
+        // Trailing blank lines are not a verdict.
+        assert_eq!(parse("reasoning here\nDENY\n\n  \n"), Verdict::Deny);
+        // And prose with no verdict line is not an accidental ALLOW.
+        assert_eq!(parse("I think this is probably fine"), Verdict::Unsure);
     }
 
     /// Anything unparseable is UNSURE rather than a guess. An oracle that leans
