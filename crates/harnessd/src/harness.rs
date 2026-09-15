@@ -1432,6 +1432,29 @@ impl<'a> Harness<'a> {
             if has_exec_tools && backend_confined {
                 have.push(Prereq::Confinement);
             }
+            // **The guard model, by the same fact the advisor is built from.**
+            //
+            // `cfg.oracle` is `Some` when an endpoint is known — `--oracle`, or
+            // `[gatekeeper] endpoint` in the operator's providers.toml, which the
+            // daemon reads at startup — and the advisor below is attached on exactly
+            // that condition. Nothing used to push this, so `automode` could not
+            // open however the box was configured: the operator's file said
+            // `endpoint = "192.168.1.76:11500"`, `cfg.oracle` held it, and the
+            // refusal told them to put in that file the line that was already in it.
+            //
+            // Measured 2026-09-15, and it BRICKED THE WORKSPACE rather than costing
+            // a turn: `/mode automode` writes the project's row, and from then on
+            // every daemon started in that project refused to open at all. A mode a
+            // running daemon accepts and a restarted one cannot is the worst shape
+            // this check can have — the state it guards against, one layer up.
+            //
+            // Reachability is deliberately not tested here. An endpoint that does
+            // not answer is a guard that overruns its budget, and the gate already
+            // abandons one that does; a TCP probe at open would make every session
+            // start wait on another box being up.
+            if cfg.oracle.is_some() {
+                have.push(Prereq::Oracle);
+            }
             // What the role actually seated, read off the resolved schemas rather than
             // off the role's name. A prerequisite is about a capability the session
             // will use: a read-only seat needs no writable backend however strict the
@@ -1530,7 +1553,18 @@ impl<'a> Harness<'a> {
                     // §4b. Without this a denial reaches the model and stops there.
                     .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
                 let g = match advisor {
-                    Some(a) => g.with_advisor(a).start_supervised(cfg.supervise),
+                    // **A point whose decider is the MODEL starts supervised.**
+                    //
+                    // `/supervise` is a toggle over a session whose mode leaves the
+                    // deciding to a person. `automode` does not: `Decider::Model` is
+                    // the whole content of the point, and a session that opened at
+                    // automode with the guard attached and never consulted would be
+                    // the banner-says-one-thing state this module refuses everywhere
+                    // else. So the mode turns it on, and `--supervise` still turns it
+                    // on for the points that do not.
+                    Some(a) => g
+                        .with_advisor(a)
+                        .start_supervised(cfg.supervise || cfg.mode.decider == letibot_tools::mode::Decider::Model),
                     None => g,
                 };
                 // **The corpus.** Without this the gate's rows are a `Vec` that dies
@@ -3791,7 +3825,11 @@ fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator
              prerequisite exists to prevent."
         )));
     };
-    let oracle = crate::oracle::HttpOracle::new(ep, cfg.model.clone(), cfg.oracle_budget);
+    // The guard's own model when the operator named one, else the session's. A
+    // guard on another box is a different model, and naming this session's to that
+    // server is both a wrong request and a wrong disclosure.
+    let guard_model = cfg.oracle_model.clone().unwrap_or_else(|| cfg.model.clone());
+    let oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget);
     // Layer A, re-derived per request from the command as the program will receive
     // it. Not copied from the request's own `baseline` string: that is prose for a
     // human, and the adjudicator needs the classification.

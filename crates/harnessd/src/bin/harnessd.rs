@@ -172,6 +172,13 @@ fn run() -> Result<i32, String> {
         if let Some(ep) = gk.endpoint.as_deref().and_then(|s| Endpoint::parse(s).ok()) {
             cfg.oracle = Some(ep);
         }
+        // The guard's own model, when it is not the one doing the work. Read here
+        // beside the endpoint because they describe the same server, and a file that
+        // names a model nobody reads is a setting the operator will reasonably
+        // believe took effect.
+        if let Some(m) = gk.model.filter(|m| !m.trim().is_empty()) {
+            cfg.oracle_model = Some(m);
+        }
         if let Some(ms) = gk.budget_ms {
             cfg.oracle_budget = std::time::Duration::from_millis(ms);
         }

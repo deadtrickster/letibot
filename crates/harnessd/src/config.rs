@@ -337,6 +337,15 @@ pub struct Config {
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
     /// Required by [`AdjudicatorChoice::Model`] and meaningless without it.
     pub oracle: Option<Endpoint>,
+    /// **Which model answers at that endpoint**, when it is not the one doing the
+    /// work. `[gatekeeper] model` in the operator's providers.toml.
+    ///
+    /// `None` means *the session's own model*, which is the right default for a
+    /// guard on the same server. It stopped being right the moment the operator
+    /// put the guard on another box: the request named `glm-5.3-flash` to a server
+    /// holding a 27B, and the banner announced the guard by the wrong name — a
+    /// disclosure that is a guess about which model is guarding.
+    pub oracle_model: Option<String>,
     /// Layer B's latency budget. The trait's default is 400ms and
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
@@ -642,6 +651,7 @@ impl Config {
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
+            oracle_model: None,
             oracle_budget: std::time::Duration::from_millis(400),
             supervise: false,
             intent_prose: false,
