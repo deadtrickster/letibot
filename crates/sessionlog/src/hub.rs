@@ -92,6 +92,14 @@ pub enum CommandKind {
     /// same reason a prompt is: a head that asked while the screen moved still
     /// meant it.
     Compact,
+    /// **Rebuild this conversation's prompt from the tools seated now**, forking it
+    /// onto the new prefix the way a compaction forks onto a summary. A turn, so
+    /// it is queued exactly like one.
+    ///
+    /// The tool schemas live in the stable prefix and a session's is fixed when it
+    /// is created, so a conversation opened without a shell can never call one
+    /// however its daemon is later seated. This is the only thing that changes it.
+    Reseat,
     Interrupt {
         reason: String,
     },
@@ -198,6 +206,7 @@ impl CommandKind {
         match self {
             CommandKind::Prompt { .. } => "prompt",
             CommandKind::Compact => "compact",
+            CommandKind::Reseat => "reseat",
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
@@ -861,6 +870,10 @@ impl Hub {
                     format!("{REJECT_STALE_SEQ}: queued anyway")
                 }
                 (CommandKind::Compact, false) => crate::protocol::NOTE_COMPACT_QUEUED.into(),
+                // Queued like a compaction, and stale-tolerant for the same reason:
+                // a head that asked while the screen moved still meant it.
+                (CommandKind::Reseat, true) => format!("{REJECT_STALE_SEQ}: queued anyway"),
+                (CommandKind::Reseat, false) => "re-seat queued".into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {

@@ -1159,6 +1159,62 @@ impl<'a> Sessions<'a> {
                 Ok(r) => Outcome::Compacted(Box::new(r)),
                 Err(e) => Outcome::Failed(e.to_string()),
             },
+            // A re-seat is a compaction that lands on a different prompt, so it
+            // runs through the same door and reports through the same one. What it
+            // adds is the sentence naming which tools the model can call now that
+            // it could not before — the reason anybody types this.
+            CommandKind::Reseat => {
+                let out = match self.harness(session_id) {
+                    Ok(h) => h.reseat(),
+                    Err(e) => Err(e),
+                };
+                match out {
+                    Ok(r) => {
+                        if let Some(hub) = &hub {
+                            let mut said = format!(
+                                "this conversation now speaks the prompt this daemon \
+                                 seats: {} tokens of history replaced by a {}-token \
+                                 summary, and the tool list rebuilt",
+                                r.fork.was_tokens, r.fork.base_tokens
+                            );
+                            if !r.gained.is_empty() {
+                                said.push_str(&format!(
+                                    ". The model can now call: {}",
+                                    r.gained.join(", ")
+                                ));
+                            }
+                            if !r.lost.is_empty() {
+                                said.push_str(&format!(
+                                    ". It has lost: {}",
+                                    r.lost.join(", ")
+                                ));
+                            }
+                            said.push_str(
+                                ". The server's cache for the new prompt is cold, so the \
+                                 next turn prefills from scratch — that is what changing \
+                                 the announced tools costs.",
+                            );
+                            hub.publish(SessionEvent::Warning {
+                                code: "reseated".into(),
+                                detail: said,
+                            });
+                        }
+                        Outcome::Compacted(Box::new(crate::harness::CompactReport {
+                            fork: r.fork,
+                            summary_turn: r.summary_turn,
+                        }))
+                    }
+                    Err(e) => {
+                        if let Some(hub) = &hub {
+                            hub.publish(SessionEvent::Warning {
+                                code: "reseat_refused".into(),
+                                detail: e.to_string(),
+                            });
+                        }
+                        Outcome::Failed(e.to_string())
+                    }
+                }
+            }
             CommandKind::Interrupt { reason } => {
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {

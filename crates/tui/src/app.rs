@@ -116,6 +116,9 @@ pub enum Action {
     /// Compact the session this head is in: one summary turn, then the history
     /// is replaced by that summary through a transcript fork.
     Compact,
+    /// Rebuild this conversation's prompt from the tools seated now, forking onto
+    /// it. The only thing that changes a live session's tool list.
+    Reseat,
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     Mode { name: String },
@@ -726,6 +729,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("verbosity", "cycle the event-stream detail"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
+    ("reseat", "rebuild the prompt from the tools seated now"),
     ("interrupt", "stop the running turn"),
     ("quit", "leave the head"),
 ];
@@ -2513,6 +2517,20 @@ impl App {
                     return None;
                 }
                 Some(Action::Compact)
+            }
+            // **The tool list is in the prompt, and a prompt is fixed for a
+            // conversation.** So this is the only way a session that opened without
+            // a shell ever gets one: summarise, and continue under a prompt built
+            // from what is seated now. Same refusal as `/compact` for the same
+            // reason — it acts on the session this head is in, never one you are
+            // only looking at.
+            "reseat" => {
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
+                }
+                self.say("re-seating: summarising, then rebuilding the prompt…");
+                Some(Action::Reseat)
             }
             other => {
                 // The daemon's verbs. The head does not know them and does not

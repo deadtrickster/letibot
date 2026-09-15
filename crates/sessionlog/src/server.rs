@@ -540,6 +540,18 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::ReseatSession {
+                client_request_id,
+                expected_seq,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::Reseat,
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Mode {
                 client_request_id,
                 expected_seq,

@@ -79,7 +79,7 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let summary = "decided A because B; changed crates/x/src/lib.rs; `cargo test` green; \
                    the open question is whether Y holds";
     let report = h
-        .fork_to_summary(&outcome(summary))
+        .fork_to_summary(&outcome(summary), None, None)
         .expect("the fork must land");
 
     // (1) The store now holds two transcripts for the session, and the second is
@@ -140,10 +140,10 @@ fn a_second_compaction_forks_off_the_first_fork() {
     let mut h = opened(&cfg, &parts);
 
     let first = h
-        .fork_to_summary(&outcome("first summary"))
+        .fork_to_summary(&outcome("first summary"), None, None)
         .expect("the first fork");
     let second = h
-        .fork_to_summary(&outcome("second summary"))
+        .fork_to_summary(&outcome("second summary"), None, None)
         .expect("the second fork");
     assert_eq!(first.transcript_id, format!("{session_id}#t1"));
     assert_eq!(second.transcript_id, format!("{session_id}#t2"));
@@ -176,7 +176,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
     let e = h
-        .fork_to_summary(&outcome("anything"))
+        .fork_to_summary(&outcome("anything"), None, None)
         .expect_err("no store, no fork");
     assert!(
         e.to_string().contains("store"),

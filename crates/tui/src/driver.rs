@@ -159,6 +159,9 @@ pub fn tick(
             Action::Compact => {
                 client.compact(app.seq)?;
             }
+            Action::Reseat => {
+                client.reseat(app.seq)?;
+            }
             Action::Mode { name } => {
                 client.set_mode(app.seq, &name)?;
             }

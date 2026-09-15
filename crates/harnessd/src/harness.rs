@@ -689,6 +689,11 @@ pub struct Harness<'a> {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
+    /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema
+    /// serialiser. Kept so a re-seat can build a new stable prefix the same way
+    /// `open` built the first one — one renderer, so the prefix a re-seat writes
+    /// and the prefix a fresh session writes cannot drift.
+    render: std::sync::Arc<Wiring>,
     /// The prerequisites this session's wiring supplies and the classes it seats,
     /// read once at open. What `/mode` checks a new point against, so a move that
     /// the open would have refused is refused the same way rather than taken and
@@ -788,6 +793,33 @@ pub struct ForkReport {
 pub struct CompactReport {
     pub fork: ForkReport,
     pub summary_turn: CompactionOutcome,
+}
+
+/// What a re-seat did: the fork it made, the summary that carried the conversation
+/// across, and — the part the operator asked for — which tools the model can now
+/// call that it could not before, and which it has lost.
+pub struct ReseatReport {
+    pub fork: ForkReport,
+    pub summary_turn: CompactionOutcome,
+    pub gained: Vec<String>,
+    pub lost: Vec<String>,
+}
+
+/// The tool names in a rendered schema list.
+///
+/// Both shapes one is rendered in — OpenAI's `{function:{name}}` and the bare
+/// `{name}` — and a schema whose name cannot be read is left out rather than
+/// guessed at: this feeds a sentence that tells the operator what changed, and a
+/// guess there is worse than a shorter list.
+fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
+    tools_json
+        .iter()
+        .filter_map(|j| {
+            let v: serde_json::Value = serde_json::from_str(j).ok()?;
+            let n = v.pointer("/function/name").or_else(|| v.get("name"))?.as_str()?;
+            Some(n.to_string())
+        })
+        .collect()
 }
 
 /// Whether the store already holds this transcript row.
@@ -1756,6 +1788,70 @@ impl<'a> Harness<'a> {
                     tools_json: own.tools_json,
                 };
 
+                // **What the MODEL can call is the prefix, not the registry.**
+                //
+                // The tool schemas live in the stable prefix, and a resume replays
+                // the stored one — it must, the stored tokens were produced under
+                // it. The registry, meanwhile, is rebuilt from THIS daemon's flags.
+                // When the two disagree the session has tools the conversation has
+                // never been told about, and every disclosure below is computed
+                // from the registry: the banner announced `bash` and
+                // `Access: exec` at a session whose prompt lists nine tools and no
+                // shell, so the model never called it and the operator spent an
+                // hour on "still no exec" while the banner said exec was seated.
+                //
+                // Named here, where both halves are in hand. This does not refuse:
+                // the conversation is intact and every tool the PREFIX declares
+                // still works. What it may not do is let the disclosure claim the
+                // difference away.
+                {
+                    let now = parts.wiring.tools_json(&schemas);
+                    if now != own_prefix.tools_json {
+                        // Both shapes a tool schema is rendered in: OpenAI's
+                        // `{function:{name}}` and the bare `{name}`. A schema whose
+                        // name cannot be read is left out of the diff rather than
+                        // guessed at — the sentence below names what it is sure of.
+                        let named = |t: &[String]| -> std::collections::BTreeSet<String> {
+                            t.iter()
+                                .filter_map(|j| {
+                                    let v: serde_json::Value = serde_json::from_str(j).ok()?;
+                                    let n = v
+                                        .pointer("/function/name")
+                                        .or_else(|| v.get("name"))?
+                                        .as_str()?;
+                                    Some(n.to_string())
+                                })
+                                .collect()
+                        };
+                        let (was, is) = (named(&own_prefix.tools_json), named(&now));
+                        let added: Vec<&String> = is.difference(&was).collect();
+                        let gone: Vec<&String> = was.difference(&is).collect();
+                        let mut say = String::from(
+                            "this session's PROMPT carries the tool list it was created with,                              and this daemon seats a different one. A resume replays the                              stored prefix, so what the model can actually call is the                              stored list",
+                        );
+                        if !added.is_empty() {
+                            say.push_str(&format!(
+                                " — seated here but NOT in this conversation's prompt, so the                                  model cannot call them: {}",
+                                added
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                        if !gone.is_empty() {
+                            say.push_str(&format!(
+                                " — in the prompt but not seated here, so a call to them                                  refuses: {}",
+                                gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                            ));
+                        }
+                        say.push_str(
+                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it the way a compaction does;                              a new session gets the seated list from the start.",
+                        );
+                        notes.push(say);
+                    }
+                }
+
                 let rows = session.ledger.rows().len();
                 let report = ResumeReport {
                     transcript_id: transcript_id.clone(),
@@ -1897,6 +1993,7 @@ impl<'a> Harness<'a> {
             last_turn_id: String::new(),
             resumed: resume,
             compacting: false,
+            render: parts.wiring.clone(),
             supplies,
             open_notes: notes,
             new_title: None,
@@ -2323,6 +2420,97 @@ impl<'a> Harness<'a> {
         out
     }
 
+    /// **Re-seat this conversation onto the tool list that is seated NOW.**
+    ///
+    /// The tool schemas live in the stable prefix, and a session's prefix is fixed
+    /// the moment it is created — a resume replays the stored one because the
+    /// stored tokens were produced under it, and a compaction fork keeps it for the
+    /// same reason. So a conversation started by a daemon with no shell can never
+    /// call one, however the daemon that reopened it is seated: the registry has
+    /// the tool, the prompt has never heard of it, and the banner — computed from
+    /// the registry — says `exec` while the model sits there unable to.
+    ///
+    /// That is the whole of the operator's hour: *"i did letibot --stop and
+    /// leticode --continue but still no exec"*, and then the diagnosis, which was
+    /// theirs: *"i guess it is because we announce tools once at the start of the
+    /// session"*. Exactly so.
+    ///
+    /// What cannot be done is swapping the list under a live transcript: every
+    /// token in it was produced under the old prefix, and appending to them under a
+    /// new one builds a prompt no model was trained on — the same rule the dialect
+    /// check enforces at resume. What CAN be done is what compaction already does
+    /// for a different reason: summarise, then continue in a fresh transcript. The
+    /// only difference here is which prefix the fork opens under, so this is
+    /// `compact` with one argument changed.
+    ///
+    /// The cost is stated because it is real: the conversation continues from a
+    /// summary, not from its own tokens, and the prefix is new so the server's
+    /// cache for it is cold. Both are what changing the announced tools costs, and
+    /// a version that hid either would be hiding the thing the operator is paying.
+    pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
+        let next = StablePrefix {
+            system: self.cfg.system.clone(),
+            tools_json: self.render.tools_json(&self.runtime.registry.schemas()),
+        };
+        if next == self.prefix {
+            return Err(HarnessError::Setup(
+                "this conversation's prompt already carries exactly the tools that are                  seated, so there is nothing to re-seat. Nothing was changed."
+                    .into(),
+            ));
+        }
+        let Some(store) = self.store.as_ref() else {
+            return Err(HarnessError::Setup(
+                "re-seating forks the conversation onto a new prompt, and a fork needs a                  store to write it to; this session has none."
+                    .into(),
+            ));
+        };
+        // The new prefix is recorded before the summary turn runs: a fork that
+        // summarised and then could not write its prompt would leave a transcript
+        // pointing at a prefix that does not exist, which is the one state a resume
+        // cannot rebuild.
+        let rec = StablePrefixRecord {
+            dialect_sha: hex32(&self.render.spec().template_sha),
+            system: next.system.clone(),
+            tools_json: next.tools_json.clone(),
+            tokens: Vec::new(),
+            h_init: [0u8; 32],
+            vocab_source: self.cfg.vocab_gguf.display().to_string(),
+        };
+        let next_id = store
+            .put_stable_prefix(&rec)
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+        let before = tool_names(&self.prefix.tools_json);
+        let after = tool_names(&next.tools_json);
+
+        self.compacting = true;
+        let out = (|| -> Result<ReseatReport, HarnessError> {
+            let mut sink = CapturingSink::new(self.hub.clone());
+            let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
+                .map_err(HarnessError::Turn)?;
+            if outcome.tool_calls > 0 {
+                return Err(HarnessError::Setup(format!(
+                    "the summary turn proposed {} tool call(s); a summary is a record, not                      an action, so nothing was re-seated.",
+                    outcome.tool_calls
+                )));
+            }
+            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id))?;
+            // Only after the fork has landed: until then this harness is still
+            // speaking the old prompt, and a `self.prefix` that ran ahead of the
+            // transcript would make every later turn build the wrong bytes.
+            self.prefix = next;
+            self.prefix_id = next_id;
+            Ok(ReseatReport {
+                fork,
+                summary_turn: outcome,
+                gained: after.difference(&before).cloned().collect(),
+                lost: before.difference(&after).cloned().collect(),
+            })
+        })();
+        self.compacting = false;
+        out
+    }
+
     fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
@@ -2335,7 +2523,7 @@ impl<'a> Harness<'a> {
                 outcome.tool_calls
             )));
         }
-        let fork = self.fork_to_summary(&outcome)?;
+        let fork = self.fork_to_summary(&outcome, None, None)?;
         Ok(CompactReport {
             fork,
             summary_turn: outcome,
@@ -2358,9 +2546,22 @@ impl<'a> Harness<'a> {
     pub fn fork_to_summary(
         &mut self,
         outcome: &CompactionOutcome,
+        onto: Option<&StablePrefix>,
+        onto_id: Option<&str>,
     ) -> Result<ForkReport, HarnessError> {
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
+        // The prefix the FORK opens under, which is the caller's choice and not
+        // always this session's. A compaction keeps the one the conversation has
+        // been speaking under; a re-seat is the whole point of being able to hand
+        // in a different one, because the tool list lives in here.
+        // Cloned rather than borrowed: `persist` below needs `&mut self`, and a
+        // prefix is two strings and a small vector — cheaper than threading a
+        // borrow through the whole fork.
+        let onto: StablePrefix = onto.cloned().unwrap_or_else(|| self.prefix.clone());
+        let onto_id: String = onto_id
+            .map(str::to_string)
+            .unwrap_or_else(|| self.prefix_id.clone());
         // The old transcript is flushed with the summary turn in it, and before the
         // fork writes anything: a fork that dropped the turn that justified it
         // would leave the store unable to say where the summary came from. With no
@@ -2391,14 +2592,14 @@ impl<'a> Harness<'a> {
             .put_fork(
                 &new_id,
                 &self.cfg.session_id,
-                &self.prefix_id,
+                &onto_id,
                 &old_id,
                 forked_at as u32,
             )
             .map_err(|e| HarnessError::Store(e.to_string()))?;
         let mut next = self
             .engine
-            .open(&new_id, &self.prefix)
+            .open(&new_id, &onto)
             .map_err(|e| HarnessError::Setup(format!("opening the compacted transcript: {e}")))?;
         let note = TranscriptItem::System {
             text: format!(

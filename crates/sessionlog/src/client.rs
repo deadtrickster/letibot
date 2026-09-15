@@ -171,6 +171,17 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Ask the daemon to rebuild this conversation's prompt from the tools it seats
+    /// now, forking onto it. Queued like a compaction, because it is one.
+    pub fn reseat(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ReseatSession {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Move this session's project to a named point. The daemon persists it in the
     /// mode store, so it applies without a daemon restart (D13).
     pub fn set_mode(&mut self, expected_seq: u64, name: &str) -> Result<String, ClientError> {

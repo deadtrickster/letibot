@@ -147,7 +147,15 @@ use crate::view::Snapshot;
 /// would fail to parse it — the same mid-session deserialization failure, and the
 /// same ATTACH-time refusal. No new event: the promotion is the `bash` tool's own
 /// `Backgrounded` result, attributed to the operator.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// # 14: a session can be re-seated onto the tools that are seated now
+///
+/// [`ClientFrame::ReseatSession`] is a new client frame, so a version-13 daemon
+/// would fail to parse it — the version-4 argument, and the same ATTACH-time
+/// refusal. It exists because the tool schemas live in the stable prefix and a
+/// session's prefix is fixed when it is created: a conversation opened by a daemon
+/// with no shell could never call one, however the daemon that reopened it was
+/// seated, and the banner — computed from the registry — said otherwise.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -244,6 +252,17 @@ pub enum ClientFrame {
     /// history. Queued like a prompt (it runs a turn) and accepted on a stale
     /// `expected_seq` for the same reason.
     CompactSession {
+        client_request_id: String,
+        expected_seq: u64,
+    },
+    /// Rebuild this conversation's prompt from the tools the daemon seats now,
+    /// forking it onto the new prefix. A turn, queued like a compaction.
+    ///
+    /// A new frame, so a version-13 daemon would fail to parse it — the version-4
+    /// argument again, and the same ATTACH-time refusal covers it. No new event:
+    /// the re-seat announces itself as the fork it produces plus a `reseated`
+    /// warning naming the tools that changed.
+    ReseatSession {
         client_request_id: String,
         expected_seq: u64,
     },
