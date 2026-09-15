@@ -26,7 +26,7 @@
 //! rejects is counted. That is what makes the counter meaningful rather than
 //! decorative: there is a key that changes it, so the number moves.
 
-use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Usage};
+use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Timings, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring, short_id};
 use letibot_sessionlog::view::{
@@ -426,11 +426,35 @@ pub struct App {
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
     queued: Vec<Action>,
+    /// Prompts this head has sent that the transcript does not hold yet.
+    ///
+    /// A prompt sent while a turn runs is **queued as a follow-up user item**
+    /// (§13.2), and the item is appended only at the next step boundary — which for
+    /// a turn with no tool calls is the turn's end. Between the enter press and
+    /// that append the words existed nowhere on the screen: the composer had
+    /// handed them off, the hub had accepted them, and the operator was looking at
+    /// a conversation that had swallowed a sentence they had just typed. It comes
+    /// back at the boundary, so nothing is lost — but "not lost" and "visible" are
+    /// different requirements, and this is the second one.
+    ///
+    /// Each entry renders at the tail of the body, marked `queued`, until a user
+    /// row lands carrying exactly its text ([`App::record_item`]) or the session
+    /// changes ([`App::load`]). It is this head's own queue, not the hub's: the
+    /// hub's queue is not in a snapshot, and a `CommandIssued` carries no text, so
+    /// a second head cannot show it — this is the one place the words are still
+    /// held by the party that typed them.
+    pending_prompts: Vec<String>,
     /// Set when this head asked for a session and is waiting to be told its id.
     want_new_session: bool,
     /// The last turn's `usage`, kept past the end of the turn so the header can
     /// say how much context this session is carrying while nothing is running.
     usage: Option<Usage>,
+    /// The last turn's `timings`, kept for the same reason and shown beside it:
+    /// the decode rate and the wall time the turn footer used to carry. They
+    /// moved because the footer repeated the header's context and cache numbers
+    /// next to them, and one fact on one screen twice is one fact rendered as a
+    /// question — see `turn_footer` for what the footer kept.
+    last_timings: Option<Timings>,
     items: Vec<SnapshotItem>,
     hist_lines: Vec<String>,
     hist_upto: usize,
@@ -461,6 +485,9 @@ pub struct App {
     /// Screen requests this head has not answered yet. Answered by the DRIVER,
     /// after the frame is built, with the rows it actually drew.
     screen_requests: Vec<String>,
+    /// The terminal's full width at the last render, gutter included. See
+    /// [`App::screen`].
+    term_cols: usize,
     /// Which option of `open[0]` is highlighted.
     ///
     /// A permission prompt used to be answered by TYPING an option id or its first
@@ -676,6 +703,17 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
 /// and what the live line shows, and offering both spellings doubles the list
 /// to teach the same actions. `command()` still takes the short forms.
+/// The opening delimiter of a screen sent by `/cells`, and its closing one.
+///
+/// A marker rather than a sentence because two readers need the edges: the model,
+/// to know where the operator's words stop and the picture starts, and this head,
+/// to fold a copy of its own screen out of its own transcript — see
+/// [`fold_cells`]. Kept here beside the command that writes them so the pair
+/// cannot drift.
+const CELLS_OPEN: &str = "\u{27e6}screen ";
+const CELLS_MARK_END: &str = "\u{27e7}";
+const CELLS_CLOSE: &str = "\u{27e6}end screen\u{27e7}";
+
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("new", "TITLE — start a fresh session"),
     ("sessions", "the session picker"),
@@ -686,6 +724,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("think", "fold or unfold the model's reasoning"),
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
+    ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
     ("interrupt", "stop the running turn"),
     ("quit", "leave the head"),
@@ -707,8 +746,10 @@ impl App {
             screen_rows: 0,
             completion: None,
             queued: Vec::new(),
+            pending_prompts: Vec::new(),
             want_new_session: false,
             usage: None,
+            last_timings: None,
             items: Vec::new(),
             hist_lines: Vec::new(),
             hist_upto: 0,
@@ -721,6 +762,7 @@ impl App {
             secret: None,
             secret_buf: String::new(),
             screen_requests: Vec::new(),
+            term_cols: 0,
             sel: 0,
             notes: Vec::new(),
             heads: 0,
@@ -1010,19 +1052,43 @@ impl App {
         if self.session_id != s.session_id {
             self.call_targets.clear();
             self.usage = None;
+            self.last_timings = None;
             self.model.clear();
             self.turn = None;
             self.heads = 0;
+            // The queue is the old session's. Whatever was queued there stays
+            // queued *there* — the hub drains it into that session's transcript —
+            // but this head is no longer looking at that session, and an echo of
+            // words belonging to a conversation that is no longer on the screen is
+            // the same lie a carried-over model name is.
+            self.pending_prompts.clear();
         }
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
+        // A resync of the *same* session keeps the queue — the hub's command
+        // queue survives a resync, and a prompt queued behind a running turn is
+        // still behind that turn — but anything the snapshot's transcript already
+        // holds has landed, and its echo stands down the way `record_item` would
+        // have stood it down had the row arrived live.
+        for it in &s.items {
+            if let Some(TranscriptItem::User { parts }) = &it.item
+                && let Some(text) = parts.iter().find_map(|p| match p {
+                    UserPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
+            {
+                self.pending_prompts.remove(at);
+            }
+        }
         // The snapshot's in-flight calls are **not** seeded into `call_targets`.
         // They reach the screen as `TurnPane::calls`, which carries each call's own
         // target on the row that is about to draw it; putting them in an id-keyed
         // table as well is how a live `call_0` came to relabel a settled one.
-        if let Some(TurnState::Finished { usage, .. }) = s.turn.as_ref().map(|t| &t.state) {
+        if let Some(TurnState::Finished { usage, timings, .. }) = s.turn.as_ref().map(|t| &t.state) {
             self.usage = Some(*usage);
+            self.last_timings = Some(*timings);
         }
         self.items = s.items;
         self.invalidate_history();
@@ -1398,8 +1464,11 @@ impl App {
                 // Kept on the head, not only on the pane: the session header says
                 // how much context this conversation is carrying, and that question
                 // is asked between turns, when the pane may have been superseded by
-                // the transcript.
+                // the transcript. The timings are kept with it — the header now
+                // carries the turn's rate and duration too, which is why the footer
+                // no longer does.
                 self.usage = Some(usage);
+                self.last_timings = Some(timings);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
                     t.state = Some(TurnState::Finished {
@@ -2105,6 +2174,13 @@ impl App {
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
         self.scroll = 0;
+        // Held here, visibly, until the transcript takes the words over. When the
+        // session is idle the user row lands within a tick and this is a one-frame
+        // acknowledgement; when a turn is running it is the whole fix — the hub
+        // queues the prompt as a follow-up user item and appends it at the next
+        // step boundary, and until then this is the only place the sentence exists
+        // where the person who typed it can see it.
+        self.pending_prompts.push(text.clone());
         Some(Action::Prompt(text))
     }
 
@@ -2293,6 +2369,55 @@ impl App {
     }
 
     fn command(&mut self, cmd: &str) -> Option<Action> {
+        // **`/cells MESSAGE` — the message, and what is on this screen with it.**
+        //
+        // `harness what=screen` lets the model ASK; this is the operator pointing.
+        // Same rows, same bytes, and captured here rather than a moment later on
+        // purpose: the screen being talked about is the one that was there when
+        // Enter was pressed, and a turn takes seconds during which it moves.
+        //
+        // Rendered from this head, at this head's size, escape codes intact — the
+        // whole point is what is actually painted, not a description of it.
+        if let Some(rest) = cmd.strip_prefix("cells") {
+            let message = rest.trim().to_string();
+            let (w, h) = (self.term_cols, self.screen_rows);
+            if w == 0 || h == 0 {
+                // Nothing has been drawn yet, so there is nothing to send. Said
+                // rather than sending an empty block that reads as a blank screen.
+                self.say("nothing has been drawn on this head yet — no cells to send");
+                return None;
+            }
+            let rows = self.screen(w, h);
+            let mut text = if message.is_empty() {
+                String::new()
+            } else {
+                format!("{message}\n\n")
+            };
+            // Delimited rather than introduced by a sentence, so both readers can
+            // find the edges: the model knows where the screen stops and the
+            // operator's words end, and the head knows which part of its own
+            // transcript is a picture of itself and folds it away. A sentence would
+            // do the first job and not the second.
+            text.push_str(&format!(
+                "{CELLS_OPEN}{w}x{h} — my terminal exactly as this head drew it, ANSI \
+                 escape codes included, so what you are reading IS the rendering and \
+                 not a description of it{CELLS_MARK_END}\n"
+            ));
+            for r in &rows {
+                text.push_str(r);
+                text.push('\n');
+            }
+            text.push_str(CELLS_CLOSE);
+            text.push('\n');
+            self.scroll = 0;
+            // **The same string that was sent.** The pending row is cleared by
+            // matching the user item the daemon appends, so an abbreviation here
+            // never matches and the `queued` line never leaves. The screen is taken
+            // out at RENDER time instead, by `queued_lines` and by `user_block`,
+            // which is where a decision about what to show belongs.
+            self.pending_prompts.push(text.clone());
+            return Some(Action::Prompt(text));
+        }
         if let Some(title) = cmd.strip_prefix("new") {
             self.want_new_session = true;
             self.say("making a session…");
@@ -2431,6 +2556,21 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
+        // A user row with body is the transcript taking a queued prompt over. The
+        // steering path appends the operator's words verbatim
+        // (`SteeringMessage::to_item`: "a plain `User` item with exactly its own
+        // text"), so the text is the match — and one row retires one entry, so two
+        // prompts that say the same thing stay queued separately until each of
+        // their rows lands.
+        if let TranscriptItem::User { parts } = &item
+            && let Some(text) = parts.iter().find_map(|p| match p {
+                UserPart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
+        {
+            self.pending_prompts.remove(at);
+        }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
         };
@@ -2637,10 +2777,9 @@ impl App {
     /// # The bottom of the screen
     ///
     /// ```text
-    ///   ⠹ Responding · 4.2s                        1.2k chars · prompt 41.2k tok
-    ///   ╭─ qwen-3.8-flash-next · normal ─────────────────────────────────────────╮
+    ///   ╭────────────────────────────────────────────── 1 subagent running ─╮
     ///   │ › why did the cache miss                                               │
-    ///   ╰─ seq 41 · rendered 12 · filtered 0 · dropped 0 · scrubbed 0 ───────────╯
+    ///   ╰────────────────────────────── ⚠ · ⠹ Responding · 4.2s · 1.2k chars ─╯
     ///   enter send · alt+enter newline · esc esc interrupt · ctrl-r thinking
     /// ```
     ///
@@ -2675,6 +2814,11 @@ impl App {
         let gutter = Self::gutter(term_w);
         let w = term_w - 2 * gutter;
         self.cfg.width = w;
+        // The TERMINAL's width, kept beside the frame's. `cfg.width` is the inner
+        // one — the gutter already taken off — so anything that re-renders from a
+        // stored size has to start from this one or the frame narrows by two
+        // columns every time it is asked for.
+        self.term_cols = term_w;
         let h = h.max(1);
         // Click mapping has to redo this frame's arithmetic without a repaint;
         // the height the frame was composed for is the fact it needed.
@@ -2691,7 +2835,7 @@ impl App {
             (None, Some(d)) => self.decision_lines(d, w),
             (None, None) => Vec::new(),
         };
-        let inflight = self.inflight_line(w);
+        let stuck = self.stuck_line(w);
         let notice = self
             .notice
             .clone()
@@ -2706,17 +2850,18 @@ impl App {
         // whole thing fits with a line of transcript left over. The old code
         // drained the chrome from the *front*, which for a box would have eaten
         // the top border and left the bottom one — a container with one side is
-        // worse than none.
+        // worse than none. The turn's own status costs no row at all any more:
+        // it is inlaid in the bottom border, which is there anyway.
         let mut rows = self.editor.height(self.composer_cols(), h);
         let mut hint = true;
         let mut show_notice = notice.is_some();
-        let mut show_inflight = inflight.is_some();
+        let mut show_stuck = stuck.is_some();
         let mut show_completions = completions.is_some();
         let mut boxed = true;
         let mut dec_rows = dec.len();
         loop {
             let n = dec_rows
-                + usize::from(show_inflight)
+                + usize::from(show_stuck)
                 + usize::from(show_notice)
                 + usize::from(show_completions)
                 // Unboxed costs one row **only when there is an alarm to show**:
@@ -2737,8 +2882,8 @@ impl App {
                 show_notice = false;
             } else if rows > 1 {
                 rows -= 1;
-            } else if show_inflight {
-                show_inflight = false;
+            } else if show_stuck {
+                show_stuck = false;
             } else if boxed {
                 boxed = false;
             } else if dec_rows > 1 {
@@ -2751,7 +2896,7 @@ impl App {
         let (input_rows, caret_row, caret_col) = self.composer_rows(w, rows, boxed);
         let mut chrome: Vec<String> = Vec::new();
         chrome.extend(dec.into_iter().take(dec_rows));
-        if show_inflight && let Some(l) = inflight {
+        if show_stuck && let Some(l) = stuck {
             chrome.push(l);
         }
         if show_notice && let Some(l) = notice {
@@ -2761,12 +2906,44 @@ impl App {
             chrome.push(l);
         }
         if boxed {
-            chrome.push(self.box_edge(w, '╭', '╮', &self.facts()));
+            // The top edge carries exactly one fact, pinned right, and only when
+            // it is true: a subagent this session spawned is still running. The
+            // legend that used to live here — model, dialect, endpoint,
+            // verbosity — was a row of attention paid for ever for facts read
+            // once; this one is a fact that exists only while it does.
+            let running = self
+                .subagents
+                .iter()
+                .filter(|s| s.state == "running")
+                .count();
+            let top = if running > 0 {
+                self.cfg.palette().paint(
+                    Role::Pending,
+                    &format!(
+                        "{running} subagent{} running",
+                        if running == 1 { "" } else { "s" }
+                    ),
+                )
+            } else {
+                String::new()
+            };
+            chrome.push(self.box_edge(w, '╭', '╮', "", &top));
         }
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
         if boxed {
-            chrome.push(self.box_edge(w, '╰', '╯', &self.status_line(w.saturating_sub(6))));
+            // The bottom edge, pinned right: the alarm as a triangle — the
+            // counters behind it are /status's, and were never worth a resident
+            // sentence of bright yellow — and the turn's own status beside it.
+            let mut right: Vec<String> = Vec::new();
+            if self.alarmed() {
+                right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
+            }
+            let status = self.turn_status(w);
+            if !status.is_empty() {
+                right.push(status);
+            }
+            chrome.push(self.box_edge(w, '╰', '╯', "", &right.join(" · ")));
         } else if self.alarmed() {
             chrome.push(self.status_line(w));
         }
@@ -2913,74 +3090,42 @@ impl App {
         (out, crow.saturating_sub(start), col)
     }
 
-    /// One edge of the box, with `legend` inlaid at the left.
+    /// One edge of the box, with a legend inlaid at the left and one pinned to
+    /// the right.
     ///
-    /// `╭─ qwen-3.8-flash-next · normal ────────╮`. A legend rather than a
-    /// decoration: the row is paid for either way, and a border that says what
-    /// the session is talking to costs nothing a plain border does not.
-    fn box_edge(&self, w: usize, open: char, close: char, legend: &str) -> String {
+    /// `╰────────── ⚠ · ⠹ Responding · 4.2s ─╯`. A legend rather than a
+    /// decoration **when there is something to say**: an edge with nothing to
+    /// say renders plain, because a row of attention paid for ever for a fact
+    /// read once is the mistake the composer's top border already made once.
+    /// The right legend yields room to the left one, yields itself by
+    /// truncation next, and is dropped before the border is allowed to wrap.
+    fn box_edge(&self, w: usize, open: char, close: char, left: &str, right: &str) -> String {
         let w = w.max(4);
         let inner = w - 2;
-        // A legend may arrive already painted — the bottom edge's alarm is in the
-        // attention role — and `Palette::paint` closes with a plain reset, which
-        // restores the *terminal default* and not the grey of the border it is
-        // inlaid into. So the border reopens itself on the far side of it. Same
-        // defect and same fix as `style::Painter::inside`, one layer up: a reset
-        // is not a restore.
+        // A legend may arrive already painted — the alarm is in the attention
+        // role, the turn's spinner in pending — and `Palette::paint` closes with
+        // a plain reset, which restores the *terminal default* and not the grey
+        // of the border it is inlaid into. So the border reopens itself on the
+        // far side of each legend. Same defect and same fix as
+        // `style::Painter::inside`, one layer up: a reset is not a restore.
         let reopen = self.cfg.palette().open(Role::Faint);
-        let text = if legend.is_empty() || inner < 10 {
-            String::new()
-        } else {
-            format!("─ {}{reopen} ", trim_to(legend, inner - 4))
-        };
-        let fill = inner.saturating_sub(visible_width(&text));
+        let mut left_text = String::new();
+        if !left.is_empty() && inner >= 10 {
+            left_text = format!("─ {}{reopen} ", trim_to(left, inner - 4));
+        }
+        let left_cols = visible_width(&left_text);
+        let mut right_text = String::new();
+        if !right.is_empty() && inner >= 10 {
+            let room = inner.saturating_sub(left_cols + 2);
+            if room >= 4 {
+                right_text = format!(" {}{reopen} ─", trim_to(right, room));
+            }
+        }
+        let fill = inner.saturating_sub(left_cols + visible_width(&right_text));
         self.cfg.palette().paint(
             Role::Faint,
-            &format!("{open}{text}{}{close}", "─".repeat(fill)),
+            &format!("{open}{left_text}{}{right_text}{close}", "─".repeat(fill)),
         )
-    }
-
-    /// What this composer is talking to: the top edge's legend.
-    ///
-    /// On its own row and not inside the field. The model name is kept past the
-    /// end of a turn, because "what am I talking to" is a question asked while
-    /// nothing is running, which is most of the time anybody is looking at it.
-    fn facts(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        // §4.4, arriving. This used to read `no turn yet` for a freshly attached
-        // head, because `TurnStarted { model }` was the only one of the three facts
-        // that ever reached a head and it only arrives when a turn starts — so the
-        // composer could not name what it was talking to at the one moment somebody
-        // was about to talk to it. The daemon has known all three since it parsed
-        // its own command line; now it says so on `Hello`.
-        let summary = self.wiring.summary();
-        if !summary.is_empty() {
-            parts.push(summary);
-        } else if !self.model.is_empty() {
-            parts.push(self.model.clone());
-        } else {
-            // A `--replay` or `--demo` head has no daemon to have asked.
-            parts.push("no daemon".into());
-        }
-        parts.push(self.verbosity.as_str().to_string());
-        if self.heads > 1 {
-            parts.push(format!("{} heads", self.heads));
-        }
-        if !self.open.is_empty() {
-            parts.push("waiting on your answer".into());
-        }
-        let running = self
-            .subagents
-            .iter()
-            .filter(|s| s.state == "running")
-            .count();
-        if running > 0 {
-            parts.push(format!(
-                "{running} subagent{} running",
-                if running == 1 { "" } else { "s" }
-            ));
-        }
-        parts.join(" · ")
     }
 
     /// The bottom bar: what the keys do, right now.
@@ -3280,6 +3425,18 @@ impl App {
             }
         }
 
+        // The prompts this head has sent that the transcript does not hold yet, at
+        // the tail — the place their rows will land — so a message typed while a
+        // turn runs stays on the screen until the step boundary appends it. See
+        // `pending_prompts` for why this is the head's own queue and not the hub's.
+        if !self.pending_prompts.is_empty() {
+            let mut owned: Vec<String> = vec![String::new()];
+            for q in &self.pending_prompts {
+                owned.extend(queued_lines(q, &cfg));
+            }
+            segs.push(Seg::Owned(owned));
+        }
+
         // Nothing has happened yet. An empty screen with a status line under it is
         // indistinguishable from a head that attached to the wrong socket.
         let opening;
@@ -3330,11 +3487,22 @@ impl App {
         out
     }
 
-    /// The session header: which session, and how big it has got.
+    /// The session header: which session, what it is talking to, and how big it
+    /// has got.
     ///
     /// ```text
-    ///   ▌ the cache question  ~/Projects/letibot            41.2k ctx · 92% cached  2/4
+    ///   ▌ the cache question  ~/Projects/letibot   2/4 · glm-5.3-flash · 41.2k ctx · 92% cached · 45 tok/s · 12.3s · 1.2k out
     /// ```
+    ///
+    /// The model name is here and not on the composer's border, where it used to
+    /// sit with the dialect and the endpoint beside it: the border is the row the
+    /// eye crosses on every return to the field, and a socket address is not part
+    /// of a sentence. The last three fields are the last turn's decode rate, wall
+    /// time and output, and this is their only home: they used to close the turn
+    /// footer, on a line that also repeated the context and cache numbers
+    /// already above — one fact, two places, and the reader stops to check
+    /// whether they agree. The footer keeps only the ending that is news; an
+    /// ordinary one leaves no footer line at all.
     ///
     /// **What is deliberately not on it.** opencode's right-hand side reads
     /// `39,413  20% ($0.29)` — tokens, context *used as a percentage*, and money.
@@ -3378,6 +3546,21 @@ impl App {
             .map(|i| i + 1)
             .unwrap_or(0);
         right.push(format!("{at}/{}", self.sessions.len().max(1)));
+        // What this session is talking to: the daemon's own word from `Hello`, or
+        // — before that has arrived — the model the running turn named. It lived
+        // on the composer's top border, the one row the eye crosses on every
+        // return to the field; the header is where this session's facts live now.
+        // The dialect and the endpoint do not ride along: the dialect's name is
+        // the model's name whenever the two differ at all, and the endpoint is a
+        // socket path, which is the daemon's business and not the sentence's.
+        let model = if !self.wiring.model.is_empty() {
+            self.wiring.model.clone()
+        } else {
+            self.model.clone()
+        };
+        if !model.is_empty() {
+            right.push(model);
+        }
         // Live prefill numbers win over the last turn's: while a turn is running,
         // "how big is this prompt" is a question about the prompt being sent.
         let usage = match self.turn.as_ref().and_then(|t| t.progress.as_ref()) {
@@ -3390,6 +3573,28 @@ impl App {
         if let Some((total, cached)) = usage {
             right.push(format!("{} ctx", progress::thousands(total)));
             right.push(format!("{:.0}% cached", cached as f64 * 100.0 / total as f64));
+        }
+        // The last turn's speed and duration, measured when it ended. A rate nobody
+        // measured is refused, the rule the footer's rate was held to when it lived
+        // there: a turn that decoded nothing has no `predicted_ms`, and `0 tok/s`
+        // would be a number nobody took. Dropped first on a narrow screen — the
+        // context numbers are the ones this header exists for.
+        if let (Some(u), Some(tm)) = (self.usage, self.last_timings) {
+            if tm.predicted_ms > 0.0 {
+                right.push(format!(
+                    "{:.0} tok/s",
+                    u.predicted_tokens as f64 * 1000.0 / tm.predicted_ms
+                ));
+            }
+            if tm.wall_ms > 0 {
+                right.push(dur_human(tm.wall_ms));
+            }
+            // And how much the answer was — the last of the turn's numbers, and
+            // the reason an ordinary ending leaves the body with no footer line
+            // at all.
+            if u.predicted_tokens > 0 {
+                right.push(format!("{} out", progress::thousands(u.predicted_tokens)));
+            }
         }
         // Drop from the end until it leaves room for the name.
         let name_cols = visible_width(&name) + 2;
@@ -3699,7 +3904,6 @@ impl App {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
-
         // **The model's verdict, above the ladder.**
         //
         // At `/mode supervised` the question is not *should this run* but *do you
@@ -3787,8 +3991,9 @@ impl App {
         out
     }
 
-    /// The in-flight line: the one display in this harness with a real
-    /// denominator.
+    /// The turn's status, inlaid in the composer's bottom border and pinned
+    /// right: the spinner, what phase the turn is in, and — once anything has
+    /// arrived — how much. Empty when nothing is running.
     ///
     /// §5.6's prefill progress is the thing nothing surveyed reports, and it is
     /// not a small difference: both projects read for `letibot-ui` talk to a
@@ -3806,39 +4011,90 @@ impl App {
     /// divide by the computed tokens or it reports a cache hit as a speed in the
     /// hundreds of thousands.
     ///
-    /// Once prefill is done there is no denominator any more — the head does not
-    /// know how many tokens are coming — so the line changes to what is actually
-    /// true: elapsed on the left, what has arrived on the right.
-    fn inflight_line(&self, w: usize) -> Option<String> {
-        let t = self.turn.as_ref()?;
-        if !matches!(t.state, Some(TurnState::Running)) {
-            return None;
-        }
+    /// # The spinner runs on this head's clock
+    ///
+    /// It used to be keyed off `t.last_ms`, the last event's timestamp, and the
+    /// defect was visible: a spinner that only moves when a token or a prefill
+    /// batch arrives is not a spinner, it is a snapshot of one — a tool running
+    /// thirty silent seconds froze it on one glyph. The phase is `now_ms` now,
+    /// which the driver advances every tick whether or not anything arrived.
+    /// The duration is measured against the same clock: head and daemon share
+    /// the machine, which is the assumption the stuck line below already makes
+    /// when it diffs `now_ms` against an event timestamp.
+    fn turn_status(&self, w: usize) -> String {
+        let t = match self.turn.as_ref() {
+            Some(t) if matches!(t.state, Some(TurnState::Running)) => t,
+            _ => return String::new(),
+        };
         // **`started_ms == 0` means the turn came out of a snapshot**, which has no
         // timestamps — the same case `Phase::Replayed` exists for on a tool card.
         // `last_ms` is then an epoch millisecond and the difference is one, so the
         // line read `Responding · 496940h16m`. Found by switching into a session
         // that was mid-turn, which is the case the whole switch feature is for.
-        let elapsed = (t.started_ms != 0).then(|| t.last_ms.saturating_sub(t.started_ms));
-        // The spinner still has to turn: it is keyed off the log's clock rather
-        // than off a duration, so it animates in both cases.
-        let phase_ms = elapsed.unwrap_or(t.last_ms);
-        // `Responding · 4.2s` when the duration was measured, and `Responding since
-        // you attached` when it was not — never a number nobody took.
-        let since = match elapsed {
-            Some(ms) => format!(" · {}", progress::duration(ms)),
-            None => " · started before this head attached".to_string(),
+        // `Responding · 4.2s` when the duration was measured, and `Responding
+        // since you attached` when it was not — never a number nobody took.
+        let since = match t.started_ms {
+            0 => " · started before this head attached".to_string(),
+            started => format!(
+                " · {}",
+                progress::duration(self.now_ms.saturating_sub(started))
+            ),
         };
         let p = self.cfg.palette();
+        let spin = p.paint(Role::Pending, &progress::spinner(self.now_ms).to_string());
+        match &t.progress {
+            Some(pp) if pp.total > 0 && pp.processed < pp.total => {
+                let pf = progress::Prefill {
+                    total: pp.total,
+                    cache: pp.cache,
+                    processed: pp.processed,
+                    time_ms: pp.time_ms,
+                };
+                format!(
+                    "{spin} {}",
+                    progress::prefill_line(&pf, w.saturating_sub(6), p),
+                )
+            }
+            // Prefill finished, generation running. The prompt's size and cache
+            // are on the header — live prefill numbers win there, and they win
+            // for the whole turn, not only while prefill runs — so this carries
+            // only what it alone knows: how much has arrived. Nothing yet is no
+            // field at all: `0 chars` is a zero field wearing a measurement's
+            // clothes. One **compact** string, for the border to pin right —
+            // this used to `split_row` into a justified full-width line, which
+            // as a legend put `Responding` at the left edge and clipped the
+            // count it was carrying.
+            Some(pp) if pp.total > 0 => {
+                let mut s = p.paint(Role::Pending, &format!("{spin} Responding{since}"));
+                if t.out_chars > 0 {
+                    s.push_str(&p.paint(
+                        Role::Faint,
+                        &format!(" · {} chars", progress::thousands(t.out_chars as u64)),
+                    ));
+                }
+                s
+            }
+            _ => p.paint(Role::Pending, &format!("{spin} Responding{since}")),
+        }
+    }
 
-        // A turn that is running and silent. The daemon sends prefill progress
-        // while it prefills and a delta per chunk while it generates, so a gap this
-        // long is a real gap and not a slow model — and the case that produced this
-        // line is one a head cannot otherwise show: when a turn *fails*, the engine
-        // publishes a `Warning` and nothing else, so `TurnState` stays `Running`
-        // and the old head span its spinner at a dead session indefinitely. See the
-        // report: `TurnFinished`/`TurnInterrupted` on failure is the daemon's to
-        // fix, and a head saying "nothing for 40s" is not a substitute for it.
+    /// A turn that is running and silent. The daemon sends prefill progress
+    /// while it prefills and a delta per chunk while it generates, so a gap this
+    /// long is a real gap and not a slow model — and the case that produced this
+    /// line is one a head cannot otherwise show: when a turn *fails*, the engine
+    /// publishes a `Warning` and nothing else, so `TurnState` stays `Running`
+    /// and the old head span its spinner at a dead session indefinitely. See the
+    /// report: `TurnFinished`/`TurnInterrupted` on failure is the daemon's to
+    /// fix, and a head saying "nothing for 40s" is not a substitute for it.
+    ///
+    /// A row of its own, above the border, and not inlaid: it is a disclosure
+    /// with a sentence in it, and a sentence truncated to fit a border is a
+    /// disclosure that lost the words that mattered.
+    fn stuck_line(&self, w: usize) -> Option<String> {
+        let t = self.turn.as_ref()?;
+        if !matches!(t.state, Some(TurnState::Running)) {
+            return None;
+        }
         let quiet = if self.last_event_at == 0 {
             0
         } else {
@@ -3859,55 +4115,7 @@ impl App {
                 ),
             ));
         }
-
-        let spin = progress::spinner(phase_ms).to_string();
-        let s = match &t.progress {
-            Some(pp) if pp.total > 0 && pp.processed < pp.total => {
-                let pf = progress::Prefill {
-                    total: pp.total,
-                    cache: pp.cache,
-                    processed: pp.processed,
-                    time_ms: pp.time_ms,
-                };
-                format!(
-                    "{} {}",
-                    p.paint(Role::Pending, &spin),
-                    progress::prefill_line(&pf, w.saturating_sub(2), p),
-                )
-            }
-            // Prefill finished, generation running. `cache` and `total` are still
-            // the truth about the prompt and they are the number this harness
-            // exists to move, so they stay on the screen.
-            Some(pp) if pp.total > 0 => split_row(
-                &p.paint(
-                    Role::Pending,
-                    &format!("{spin} Responding{since}"),
-                ),
-                &p.paint(
-                    Role::Faint,
-                    &format!(
-                        "{} chars · prompt {} tok, {} cached ({:.0}%)",
-                        progress::thousands(t.out_chars as u64),
-                        progress::thousands(pp.total),
-                        progress::thousands(pp.cache),
-                        pp.cache as f64 * 100.0 / pp.total as f64,
-                    ),
-                ),
-                w,
-            ),
-            _ => split_row(
-                &p.paint(
-                    Role::Pending,
-                    &format!("{spin} Responding{since}"),
-                ),
-                &p.paint(
-                    Role::Faint,
-                    &format!("{} chars", progress::thousands(t.out_chars as u64)),
-                ),
-                w,
-            ),
-        };
-        Some(trim_to(&s, w))
+        None
     }
 
     /// The disclosure line: the read mark, what this head suppressed, what the
@@ -3923,8 +4131,11 @@ impl App {
         self.dropped + self.scrubbed + self.resyncs > 0
     }
 
-    /// The bottom border's legend: **the counters that are not zero, and nothing
-    /// else**.
+    /// The alarm line for the **unboxed** composer — the degenerate short-screen
+    /// path, where there is no border to pin a triangle to. The boxed path says
+    /// it with a `⚠` in the bottom edge's right corner and leaves the numbers to
+    /// `/status`; this names them, because on a screen this small the triangle
+    /// alone would be a fact with no way to read it.
     ///
     /// It used to be all of them, plus the sequence numbers, plus the verbosity,
     /// plus the twenty-one-character session id and the head id, on every frame:
@@ -4034,10 +4245,13 @@ impl App {
             "Times this head threw its state away and took a fresh snapshot, \
              because the gap since its read mark was past the daemon's bound.",
         );
-        let wiring = self.wiring.summary();
-        if !wiring.is_empty() {
-            row("wiring", wiring, "Model, dialect and endpoint, from the daemon's own command line.");
-        }
+        row(
+            "verbosity",
+            self.verbosity.as_str().to_string(),
+            "What reaches the transcript at the current filter. /verbosity walks \
+             terse → normal → loud. It used to sit on the composer's border, \
+             which was a row of attention paid for ever for a fact read once.",
+        );
         if !self.wiring.workspace.is_empty() {
             row(
                 "workspace",
@@ -4317,66 +4531,42 @@ fn last_line(raw: &str, cfg: &RenderConfig) -> String {
 
 /// How a turn ended, said in words rather than in the wire's vocabulary.
 ///
-/// `length` is the case that matters: it is not a normal ending, it means the
-/// answer was cut off mid-sentence, and the old line rendered it as `── length ·
-/// …` in the same dim grey as `── eos · …`. §5.7's rule is that truncation is
-/// never folded into success, and a display that makes the two indistinguishable
-/// folds it at the last possible moment.
+/// The footer carries **only the ending that is news**. Its stats line —
+/// prompt, cache, rate, wall time, output — moved to the session header, where
+/// the rest of the turn's numbers live; an ordinary ending (`eos`, `word`) now
+/// leaves the body with no footer line at all, because `── 1.2k out` hovering
+/// above the composer was a settled fact occupying the row a live fact used to
+/// have to earn. What stays is the case §5.7's rule is about: `length` is not a
+/// normal ending, it means the answer was cut off mid-sentence, and truncation
+/// is never folded into success — a display that lets it read like `eos` folds
+/// it at the last possible moment.
 fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
     match state {
         TurnState::Running => Vec::new(),
-        TurnState::Finished {
-            finish_reason,
-            usage,
-            timings,
-        } => {
-            let keep = usage
-                // `f_sim`, not `f_keep`: `Usage` carries one turn's three numbers and
-                // cannot compute `f_keep`, which needs the previous turn's entry as its
-                // denominator (D11/T22). The wording names the denominator so the two
-                // can never be read for each other again.
-                .f_sim()
-                .map(|f| format!("{:.0}% of prompt cached", f * 100.0))
-                .unwrap_or_else(|| "no prompt".into());
-            let rate = if timings.predicted_ms > 0.0 {
-                usage.predicted_tokens as f64 * 1000.0 / timings.predicted_ms
-            } else {
-                0.0
-            };
-            // `23.8k`, the same way the header and the prefill line say it. The
-            // footer said `23800` and the header two rows up said `23.8k ctx`, so
-            // one screen carried one number in two notations — which is a thing a
-            // reader stops to reconcile.
-            let stats = format!(
-                "{} in ({keep}) · {} out · {rate:.0} tok/s · {}",
-                progress::thousands(usage.prompt_tokens),
-                progress::thousands(usage.predicted_tokens),
-                dur_human(timings.wall_ms),
-            );
+        TurnState::Finished { finish_reason, .. } => {
             match finish_reason {
                 letibot_sessionlog::event::FinishReason::Length => vec![colour(
                     cfg,
                     sgr::YELLOW,
                     &format!(
                         "── CUT SHORT — it hit the output limit mid-answer; \
-                         ask it to continue · {stats}"
+                         ask it to continue"
                     ),
                 )],
                 letibot_sessionlog::event::FinishReason::Aborted => vec![colour(
                     cfg,
                     sgr::YELLOW,
-                    &format!("── stopped early (aborted) · {stats}"),
+                    &"── stopped early (aborted)".to_string(),
                 )],
-                // `eos` and `word` are ordinary endings and read as ordinary.
+                // `eos` and `word` are ordinary endings and read as ordinary:
+                // no line at all.
                 letibot_sessionlog::event::FinishReason::Eos
-                | letibot_sessionlog::event::FinishReason::Word => {
-                    vec![dim(cfg, &format!("── {stats}"))]
-                }
+                | letibot_sessionlog::event::FinishReason::Word => Vec::new(),
                 // A reason nobody recognises is shown, never normalised.
                 letibot_sessionlog::event::FinishReason::Other(s) => vec![colour(
                     cfg,
                     sgr::YELLOW,
-                    &format!("── ended for an unrecognised reason: {s} · {stats}"),
+                    &format!("── ended for an unrecognised reason: {s}"),
                 )],
             }
         }
@@ -4723,6 +4913,8 @@ fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
 ///   recorded before the field existed. The same rule as a replayed tool call
 ///   showing no duration.
 fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    let folded = fold_cells(text);
+    let text: &str = folded.as_deref().unwrap_or(text);
     let p = cfg.palette();
     let w = cfg.width.max(20);
     let bar = p.paint(Role::UserAccent, "▌");
@@ -4748,6 +4940,86 @@ fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
             " ".repeat(w.saturating_sub(2).saturating_sub(visible_width(l)))
         };
         out.push(format!("{bar} {}", p.paint(Role::UserBlock, &format!("{l}{tail}"))));
+    }
+    out
+}
+
+/// **A `/cells` message, with the screen taken back out of it.**
+///
+/// The rows are sent for the model and they are a photograph of this head, so
+/// rendering them inside this head is a picture of the terminal inside the
+/// terminal — re-wrapped to a narrower body, which breaks every box it drew. Worse,
+/// it is permanent: the transcript is scrolled back through for the rest of the
+/// session.
+///
+/// So the transcript keeps the operator's words and one line saying what went with
+/// them. Nothing is hidden that the line does not name, and the model still has
+/// every row. `None` when there is no screen in the text, which is every other
+/// message.
+fn fold_cells(text: &str) -> Option<String> {
+    let at = text.find(CELLS_OPEN)?;
+    let rest = &text[at..];
+    let size = rest
+        .strip_prefix(CELLS_OPEN)
+        .and_then(|r| r.split_once(' '))
+        .map(|(size, _)| size)
+        .unwrap_or("");
+    // The rows between the two markers; the delimiter lines are not screen.
+    let rows = rest
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.starts_with(CELLS_CLOSE))
+        .count();
+    let words = text[..at].trim_end();
+    let note = format!("· {rows} rows of this screen ({size}) went with this message");
+    Some(if words.is_empty() {
+        note
+    } else {
+        format!("{words}\n{note}")
+    })
+}
+
+/// A prompt this head has sent that the transcript does not hold yet: the shape a
+/// settled user row gets, dimmed, with `queued` where the timestamp goes.
+///
+/// ```text
+///   ▌ queued · also bump the retry budget
+/// ```
+///
+/// The block sits at the tail of the body — the place its row will occupy the
+/// moment the step boundary appends it — so a message typed mid-turn never leaves
+/// the screen: it changes from `queued` to a timestamped row in place. Dim text
+/// rather than the raised block, because the raised block says "this is in the
+/// conversation" and until the boundary it is not; the tag is what says what is
+/// true instead, in [`Role::Pending`], the colour the spinner already uses for
+/// something in flight.
+fn queued_lines(text: &str, cfg: &RenderConfig) -> Vec<String> {
+    // Folded here as well as in `user_block`, and it has to be the same text going
+    // in: the pending row is removed when the transcript's user item MATCHES it, so
+    // a head that queued an abbreviation and received the real thing would leave the
+    // `queued` line on the screen for the rest of the session. Measured — the fold
+    // belongs to the rendering, not to what was sent.
+    let folded = fold_cells(text);
+    let text: &str = folded.as_deref().unwrap_or(text);
+    let p = cfg.palette();
+    let w = cfg.width.max(20);
+    let bar = p.paint(Role::UserAccent, "▌");
+    let tag = "queued";
+    // The first row shares its width with the tag; the rest hang under the text.
+    let head_w = w.saturating_sub(2 + visible_width(tag) + 3);
+    let mut lines = wrap(text, head_w.max(8));
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let indent = " ".repeat(visible_width(tag) + 3);
+    let mut out = Vec::with_capacity(lines.len());
+    for (i, l) in lines.iter().enumerate() {
+        let label = if i == 0 {
+            p.paint(Role::Pending, &format!("{tag} · "))
+        } else {
+            indent.clone()
+        };
+        out.push(format!("{bar} {}{}", label, p.paint(Role::Faint, l)));
     }
     out
 }
@@ -5313,7 +5585,6 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                         .map(|l| p.paint(outcome_role, &format!("  {l}"))),
                 );
             }
-
             // Folded shows the first line, which is where a tool puts what it did.
             //
             // A failure used to be exempt — *an error nobody can read is an error
@@ -5588,6 +5859,63 @@ mod tests {
         assert_eq!(ask_without_target("`web_search` wants network access", ""), None);
     }
 
+    /// **`/cells` sends the rows this head drew, with the operator's message.**
+    ///
+    /// The model can ask for a screen (`harness what=screen`); this is the other
+    /// direction, and it is captured at Enter rather than when the turn gets round
+    /// to it — by then the screen has moved.
+    #[test]
+    fn cells_sends_the_screen_with_the_message() {
+        let mut a = app();
+        // Draw once, so the head has a size and a frame. Nothing is sent before
+        // that: an unrendered head has no cells, and an empty block would read as a
+        // blank terminal.
+        assert!(
+            matches!(a.submit("/cells look at this".into()), None),
+            "a head that has drawn nothing must refuse rather than send emptiness"
+        );
+        let _ = a.screen(100, 12);
+
+        let Some(Action::Prompt(text)) = a.submit("/cells look at this".into()) else {
+            panic!("/cells did not send");
+        };
+        assert!(text.starts_with("look at this\n\n"), "{text}");
+        assert!(text.contains("100x12"), "the head's real size: {text}");
+        // Delimited at both ends, so the model can see where the picture stops.
+        assert!(text.contains(CELLS_OPEN) && text.contains(CELLS_CLOSE), "{text}");
+
+        // And the transcript shows the words plus one line, not the screen again.
+        let folded = fold_cells(&text).expect("a cells message folds");
+        assert!(folded.starts_with("look at this"), "{folded}");
+        assert!(folded.contains("rows of this screen (100x12)"), "{folded}");
+        assert!(!folded.contains(CELLS_OPEN), "the marker leaked into the fold: {folded}");
+        assert_eq!(folded.lines().count(), 2, "one message, one note: {folded}");
+        // An ordinary message is left exactly alone.
+        assert_eq!(fold_cells("just a message"), None);
+        // The rows themselves, not a summary of them.
+        let drawn = a.screen(100, 12);
+        let last = drawn.last().expect("a frame has rows");
+        assert!(text.contains(last.as_str()), "the rows are not in the message");
+
+        // The pending row holds what was SENT, byte for byte — that is what the
+        // transcript's user item will match when it lands.
+        let echo = a.pending_prompts.last().expect("the message is echoed");
+        assert_eq!(echo, &text);
+        // And it is DRAWN folded: the operator's words and one line, never a copy
+        // of the screen inside the screen.
+        let drawn = queued_lines(echo, &a.cfg);
+        assert!(drawn.iter().any(|l| l.contains("look at this")), "{drawn:#?}");
+        assert!(
+            drawn.iter().any(|l| l.contains("rows of this screen")),
+            "{drawn:#?}"
+        );
+        assert!(
+            drawn.len() < 6,
+            "the queued row is painting the whole screen: {} lines",
+            drawn.len()
+        );
+    }
+
     /// **A refusal the harness made is one dim line, not a wall in red.**
     ///
     /// The operator's report, about a `bash` one-liner the normaliser could not
@@ -5781,14 +6109,33 @@ mod tests {
             snapshot: Box::new(hub.snapshot()),
             scrubbed: Default::default(),
         });
+        // The border says it with a triangle, pinned right — a fact that exists
+        // only while it does, and never a resident sentence of bright yellow.
+        let screen = a.screen(120, 24).join("\n");
+        assert!(screen.contains('⚠'), "{screen}");
+        assert!(
+            !screen.contains("dropped 12"),
+            "the numbers are /status's, not the border's: {screen}"
+        );
+        // …where they keep their names and their counts.
+        a.command("status");
+        let stats = a.screen(120, 40).join("\n");
+        let dropped_row = stats
+            .lines()
+            .find(|l| l.contains("dropped"))
+            .expect("the dropped row is on the /status screen");
+        assert!(dropped_row.contains("12"), "{dropped_row}");
+        let resync_row = stats
+            .lines()
+            .find(|l| l.contains("resync"))
+            .expect("the resync row is on the /status screen");
+        assert!(resync_row.contains('1'), "{resync_row}");
+        // The unboxed composer — no border to pin a triangle to — still names
+        // them on a line of its own.
         let border = a.status_line(200);
         assert!(border.contains("dropped 12"), "{border}");
         assert!(border.contains("resync 1"), "{border}");
         assert!(border.contains("/status"), "and says where the rest is: {border}");
-        assert!(
-            a.screen(120, 24).join("\n").contains("dropped 12"),
-            "and it is on the screen without asking"
-        );
     }
 
     #[test]
@@ -5898,10 +6245,9 @@ mod tests {
                 role: "coder".into(),
             },
         )));
-        // A spawn that the head saw, and the running count reaches the header.
+        // A spawn that the head saw. The running count lives in the pane —
+        // the composer's border used to repeat it, and that border is plain now.
         assert_eq!(a.subagents.len(), 1);
-        let screen = a.screen(100, 24).join("\n");
-        assert!(screen.contains("1 subagent running"), "{screen}");
 
         a.key(Key::CtrlG);
         let screen = a.screen(100, 24).join("\n");
@@ -6144,8 +6490,11 @@ mod tests {
         let screen = a.screen(100, 20);
         let (row, _) = a.cursor().unwrap();
         let joined = screen.join("\n");
-        // The model is on the top edge…
-        assert!(screen[row - 1].contains("normal"), "{:?}", screen[row - 1]);
+        // The top edge closes the box and says nothing: the legend that lived
+        // there — model, dialect, endpoint, verbosity — was a row of attention
+        // the eye paid on every return to the field for facts read once.
+        assert!(screen[row - 1].contains('╭'), "{:?}", screen[row - 1]);
+        assert!(!screen[row - 1].contains("normal"), "{:?}", screen[row - 1]);
         // …the bottom edge closes the box and says nothing, because nothing has
         // gone wrong…
         assert!(screen[row + 1].contains('╰'), "{:?}", screen[row + 1]);
@@ -6158,11 +6507,14 @@ mod tests {
         assert!(screen[row + 2].contains("ctrl-r"), "{:?}", screen[row + 2]);
         assert!(!screen[row].contains("ctrl-r"), "{:?}", screen[row]);
         assert!(!joined.contains("dropped 0"), "{joined}");
-        // Reachable in one command, with the sequence numbers and the full id.
+        // Reachable in one command, with the sequence numbers, the full id, and
+        // the verbosity the border used to carry.
         a.command("status");
         let stats = a.screen(100, 40).join("\n");
         assert!(stats.contains("dropped"), "{stats}");
         assert!(stats.contains("seq"), "{stats}");
+        assert!(stats.contains("verbosity"), "{stats}");
+        assert!(stats.contains("normal"), "{stats}");
     }
 
     #[test]
@@ -6244,12 +6596,16 @@ mod tests {
                 },
             },
         )));
-        let line = a.inflight_line(120).unwrap();
+        let line = a.turn_status(120);
         assert!(line.contains("prefill 97%"), "{line}");
-        assert!(line.contains("38.1k cached (92%)"), "{line}");
+        // The counts live in the header's ctx/cached readout; the line keeps what
+        // the header cannot show — the expansion rate. 1,800 computed tokens in
+        // 900 ms.
+        assert!(line.contains("2000 tok/s"), "{line}");
+        assert!(!line.contains("cached"), "{line}");
         // And it never wraps, at any width.
         for w in [24usize, 40, 60, 80, 120, 200] {
-            assert!(line_width(&a.inflight_line(w).unwrap()) <= w, "w={w}");
+            assert!(line_width(&a.turn_status(w)) <= w, "w={w}");
         }
     }
 
@@ -6894,19 +7250,28 @@ mod tests {
     }
 
     #[test]
-    fn the_composer_can_name_what_it_is_talking_to_before_any_turn() {
+    fn the_header_can_name_what_the_session_is_talking_to_before_any_turn() {
         // §4.4. It read `no turn yet` for a freshly attached head, because
         // `TurnStarted { model }` was the only one of the three facts that reached a
-        // head and it only arrives when a turn starts — so the composer could not
-        // say what it was about to talk to at the one moment somebody was about to.
+        // head and it only arrives when a turn starts — so nothing could say what
+        // the session was about to talk to at the one moment somebody was about
+        // to. The daemon has known the model since it parsed its own command
+        // line; it says so on `Hello`, and the header — not the composer's
+        // border, which the eye crosses on every return to the field — is where
+        // it renders. The dialect and the endpoint do not ride along.
         let mut a = app();
         let empty = Hub::new("s").snapshot();
         a.apply(hello("s", vec![brief("s", "", false)], empty));
-        let facts = a.facts();
-        assert!(facts.contains("qwen-3.8-flash-next"), "{facts}");
-        assert!(facts.contains("qwen3.8"), "{facts}");
-        assert!(facts.contains("127.0.0.1:8080"), "{facts}");
-        assert!(!facts.contains("no turn yet"), "{facts}");
+        let header = a.header_line(200);
+        assert!(header.contains("qwen-3.8-flash-next"), "{header}");
+        assert!(
+            !header.contains("qwen3.8"),
+            "the dialect is not the model's double: {header}"
+        );
+        assert!(
+            !header.contains("127.0.0.1:8080"),
+            "the endpoint is the daemon's business: {header}"
+        );
     }
 
     #[test]
@@ -7618,7 +7983,7 @@ mod tests {
             },
         )));
         assert!(!a.turn_running(), "the turn is still marked running");
-        assert!(a.inflight_line(120).is_none(), "the spinner is still there");
+        assert!(a.turn_status(120).is_empty(), "the spinner is still there");
         let screen = a.screen(120, 16).join("\n");
         assert!(screen.contains("FAILED"), "{screen}");
         assert!(screen.contains("Connection refused"), "{screen}");
@@ -7637,6 +8002,97 @@ mod tests {
             a.screen(120, 16).join("\n").matches("Connection refused").count(),
             1,
             "the same failure is on the screen twice"
+        );
+    }
+
+    #[test]
+    fn a_prompt_typed_mid_turn_stays_on_screen_marked_queued() {
+        // The complaint this whole queue answers: enter pressed while a turn runs,
+        // the hub accepts the prompt as a follow-up user item, and until the step
+        // boundary appends it the words were on no part of the screen. Now they
+        // wait at the tail of the body, marked, where their row will land.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        for c in "also bump the retry budget".chars() {
+            a.key(Key::Char(c));
+        }
+        assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+        assert_eq!(a.input(), "", "the composer handed the words off");
+        let screen = a.screen(80, 24).join("\n");
+        assert!(
+            screen.contains("queued · also bump the retry budget"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn the_queued_echo_stands_down_when_the_row_lands() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        for c in "also bump the retry budget".chars() {
+            a.key(Key::Char(c));
+        }
+        a.key(Key::Enter);
+        assert!(a.screen(80, 24).join("\n").contains("queued ·"));
+        // The step boundary appends the follow-up user item: the transcript has
+        // taken the words over, so the dim echo must go — one row retires one
+        // entry, and the settled row is what remains.
+        a.apply(ServerFrame::Event(env(2, testing::appended("u2", "user"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "u2".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: "also bump the retry budget".into(),
+                    }],
+                }),
+            },
+        )));
+        let screen = a.screen(80, 24).join("\n");
+        assert!(!screen.contains("queued ·"), "{screen}");
+        assert!(
+            screen.contains("also bump the retry budget"),
+            "the words left with the echo: {screen}"
+        );
+    }
+
+    #[test]
+    fn switching_sessions_leaves_the_queue_behind_and_a_resync_keeps_what_is_still_queued() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        for c in "also bump the retry budget".chars() {
+            a.key(Key::Char(c));
+        }
+        a.key(Key::Enter);
+        // A switch is a replacement: the queue belongs to the session it was typed
+        // at, and the hub drains it into *that* transcript.
+        a.apply(hello(
+            "s2",
+            vec![brief("s2", "other", false)],
+            Hub::new("s2").snapshot(),
+        ));
+        assert!(
+            !a.screen(80, 24).join("\n").contains("queued ·"),
+            "an echo of another session's queue"
+        );
+        // Back to the first session. A resync of the *same* session keeps what is
+        // still queued — the hub's queue survived — but a transcript that already
+        // holds the words stands the echo down, the way the live row would have.
+        let hub = Hub::new("s");
+        hub.publish(testing::appended("u1", "user"));
+        hub.record_item(
+            "u1",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "also bump the retry budget".into(),
+                }],
+            },
+        );
+        a.apply(hello("s", vec![brief("s", "", true)], hub.snapshot()));
+        assert!(
+            !a.screen(80, 24).join("\n").contains("queued ·"),
+            "the snapshot already holds the words"
         );
     }
 
@@ -7661,7 +8117,8 @@ mod tests {
             1_788_984_000_000,
             testing::delta("t1", " more"),
         )));
-        let line = a.inflight_line(120).expect("the turn is running");
+        let line = a.turn_status(120);
+        assert!(!line.is_empty(), "the turn is running");
         assert!(line.contains("started before this head attached"), "{line}");
         // No `NNNh` anywhere: that shape is what an epoch renders as.
         let chars: Vec<char> = line.chars().collect();
@@ -7706,6 +8163,158 @@ mod tests {
                 assert!(l.contains("41.2k ctx"), "w={w}: {l}");
             }
         }
+    }
+
+    #[test]
+    fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
+        // One fact, one place. The footer used to close with `45 tok/s · 12.3s ·
+        // 1.2k out` on a line that also repeated the header's context and cache
+        // numbers; the duplicates went, the measurements moved up, and an
+        // ordinary ending now leaves the body with no footer line at all — a
+        // settled fact was occupying the row a live fact used to have to earn.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+                usage: Usage {
+                    prompt_tokens: 41_233,
+                    cached_tokens: 38_100,
+                    predicted_tokens: 1_200,
+                },
+                timings: letibot_sessionlog::event::Timings {
+                    prompt_ms: 900.0,
+                    predicted_ms: 2_000.0,
+                    wall_ms: 12_300,
+                },
+            },
+        )));
+        let header = a.header_line(200);
+        assert!(header.contains("600 tok/s"), "{header}");
+        assert!(header.contains("12.3s"), "{header}");
+        assert!(header.contains("1200 out"), "{header}");
+        assert!(header.contains("41.2k ctx"), "{header}");
+        // An ordinary ending says nothing at all on the body.
+        let screen = a.screen(120, 30);
+        assert!(
+            !screen.iter().any(|l| l.contains("── ")),
+            "an ordinary ending has no footer: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn the_decode_line_does_not_repeat_the_prompts_cache_numbers() {
+        // While the answer decodes, the header already carries the prompt's size
+        // and cache fraction — live prefill numbers win there for the whole
+        // turn — so the in-flight line says only what it alone knows.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::PromptProgress {
+                turn_id: "t1".into(),
+                progress: letibot_sessionlog::event::PromptProgress {
+                    total: 41_233,
+                    cache: 38_100,
+                    processed: 41_233,
+                    time_ms: 900,
+                },
+            },
+        )));
+        let line = a.turn_status(120);
+        // Nothing has arrived yet, and `0 chars` is a zero field wearing a
+        // measurement's clothes: absent, not zero.
+        assert!(!line.contains("chars"), "{line}");
+        assert!(!line.contains("prompt"), "{line}");
+        assert!(!line.contains("cached"), "{line}");
+        // The header is where those numbers live instead.
+        let header = a.header_line(200);
+        assert!(header.contains("41.2k ctx"), "{header}");
+        assert!(header.contains("92% cached"), "{header}");
+        // Once something has arrived, the count is the one fact this line alone
+        // knows — and it is the delta's own count, not a running estimate.
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::delta("t1", "hello"),
+        )));
+        let line = a.turn_status(120);
+        assert!(line.contains("5 chars"), "{line}");
+        // One compact string for the border to pin right — never a justified
+        // full-width line, which as a legend put `Responding` at the left edge
+        // and clipped the count it was carrying.
+        assert!(!line.contains("  "), "no justification padding: {line}");
+    }
+
+    #[test]
+    fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
+        // A spinner keyed off the last event's timestamp is not a spinner, it is
+        // a snapshot of one: a tool running thirty silent seconds froze it on one
+        // glyph, and the frozen duration beside it read as a dead turn. The phase
+        // and the duration both run on `now_ms`, which the driver advances every
+        // tick whether or not anything arrived.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
+        a.clock(1_000);
+        let first = a.turn_status(120);
+        assert!(first.contains("Responding"), "{first}");
+        assert!(first.contains("0ms"), "{first}");
+        a.clock(1_160);
+        let second = a.turn_status(120);
+        assert!(second.contains("160ms"), "the duration ticks: {second}");
+        let glyph = |s: &str| s.chars().find(|c| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(*c));
+        assert_ne!(
+            glyph(&first),
+            glyph(&second),
+            "the glyph moved with no event in between: {first} → {second}"
+        );
+        // And it is inlaid in the bottom border, pinned right — not a row of its
+        // own above the box.
+        let screen = a.screen(100, 24);
+        let row = screen
+            .iter()
+            .find(|l| l.contains("Responding"))
+            .expect("the turn's status is on the screen");
+        assert!(row.contains('╰'), "inlaid in the bottom edge: {row}");
+    }
+
+    #[test]
+    fn a_running_subagent_is_counted_on_the_top_border_and_a_done_one_is_not() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        let screen = a.screen(100, 24);
+        let row = screen
+            .iter()
+            .find(|l| l.contains("subagent"))
+            .expect("the count is on the screen");
+        assert!(row.contains("1 subagent running"), "{row}");
+        assert!(row.contains('╭'), "pinned to the top edge: {row}");
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "done".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        assert!(
+            !a.screen(100, 24).join("\n").contains("subagent running"),
+            "a fact that exists only while it does"
+        );
     }
 
     #[test]

@@ -130,8 +130,9 @@ fn a_head_switches_session_on_one_connection_and_is_reseated() {
     assert_eq!(session_id, "a");
     assert_eq!(snapshot.unwrap().turn.unwrap().text, "this is A");
     // §4.4: the head can name what it is talking to, before any turn of its own.
+    // The model renders in the session header; the dialect and the endpoint are
+    // carried and rendered nowhere — a socket path is the daemon's business.
     assert_eq!(w.model, "qwen-3.8-flash-next");
-    assert_eq!(w.summary(), "qwen-3.8-flash-next · qwen3.8 · 127.0.0.1:8080");
     // …and it is handed the picker's contents by the attach, not by a second trip.
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].title, "the cache question");

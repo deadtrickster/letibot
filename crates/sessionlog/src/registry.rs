@@ -254,21 +254,6 @@ pub struct SessionWiring {
     pub workspace: String,
 }
 
-impl SessionWiring {
-    /// `model · dialect · endpoint`, skipping whichever of them is unknown.
-    ///
-    /// One function because the composer's legend, the session picker and the
-    /// header all want it and three spellings of it drift.
-    pub fn summary(&self) -> String {
-        [&self.model, &self.dialect, &self.endpoint]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" · ")
-    }
-}
-
 /// The last eight characters of a session id, with a leading ellipsis.
 ///
 /// Ids are minted `format!("s-{}", now_ns())`, so two made on the same afternoon

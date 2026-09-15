@@ -187,22 +187,21 @@ pub fn bar(p: &Prefill, cols: usize, palette: Palette) -> String {
     s
 }
 
-/// The whole prefill line: bar, percentage, counts, rate, estimate.
+/// The whole prefill line: bar, percentage, rate, estimate.
+///
+/// The raw counts (`25.1k/41.2k tok · 38.1k cached (92%)`) are deliberately not
+/// here: the header carries `ctx` and `cached%` live for the whole turn, and the
+/// same number in two places is read once and doubted once. What the header
+/// cannot show — how fast the expansion runs and how long is left — is what
+/// this line keeps.
 ///
 /// Degrades by dropping the *least* useful field first as the terminal narrows:
-/// the estimate, then the rate, then the raw counts, then the bar — leaving
-/// `prefill 61%`, which is still true. It never wraps: a status line that wraps
-/// scrolls the transcript by a row every frame, and that reads as flicker.
+/// the estimate, then the rate, then the bar — leaving `prefill 61%`, which is
+/// still true. It never wraps: a status line that wraps scrolls the transcript
+/// by a row every frame, and that reads as flicker.
 pub fn prefill_line(p: &Prefill, cols: usize, palette: Palette) -> String {
     let pct = (p.fraction() * 100.0).round() as u64;
-    let cachepct = (p.cached_fraction() * 100.0).round() as u64;
     let head = format!("prefill {pct}%");
-    let counts = format!(
-        "{}/{} tok · {} cached ({cachepct}%)",
-        thousands(p.processed),
-        thousands(p.total),
-        thousands(p.cache),
-    );
     let rate = p
         .rate()
         .map(|r| format!("{} tok/s", thousands(r as u64)))
@@ -216,13 +215,9 @@ pub fn prefill_line(p: &Prefill, cols: usize, palette: Palette) -> String {
     // Widest form first, then progressively less.
     let barw = 20usize.min(cols / 3);
     let candidates = [
-        format!(
-            "{head} {} {counts} · {rate} · {eta}",
-            bar(p, barw, palette)
-        ),
-        format!("{head} {} {counts} · {rate}", bar(p, barw, palette)),
-        format!("{head} {} {counts}", bar(p, barw, palette)),
-        format!("{head} {counts}"),
+        format!("{head} {} · {rate} · {eta}", bar(p, barw, palette)),
+        format!("{head} {} · {rate}", bar(p, barw, palette)),
+        format!("{head} {}", bar(p, barw, palette)),
         head.clone(),
     ];
     for c in candidates {

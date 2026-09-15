@@ -92,9 +92,6 @@ fn parse() -> Result<Args, String> {
             // Print this daemon's live sessions, one per line, and exit. For
             // `letibot --ls`, which draws the byobu-shaped view across folders.
             "--list-sessions" => a.list_sessions = true,
-            // Print this daemon's live sessions, one per line, and exit. For
-            // `letibot --ls`, which draws the byobu-shaped view across folders.
-            "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
