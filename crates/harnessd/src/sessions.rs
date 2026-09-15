@@ -1269,29 +1269,47 @@ impl<'a> Sessions<'a> {
                     }
                     return Outcome::Failed(format!("persisting mode: {e}"));
                 }
+                // **And this session moves too.** The row above is the project's
+                // point for every session that opens later; this is the one in
+                // front of the operator, which used to be told it would keep the
+                // point it opened at. True, and asked about three times, because
+                // nobody typing `/mode automode` means "next time". The gate reads
+                // its mode at decision time, so the move is cheap; what it has to
+                // get right is in `Harness::set_mode` — the prerequisite check the
+                // open would have run, the grants taken under the old point, and
+                // the guard model for a point whose decider it is.
+                //
+                // A refusal keeps the SESSION where it was and says why; the project
+                // row stays written, because the next session may well be able to
+                // carry the point this one cannot (a `coder` with no shell cannot go
+                // to `allow-all`; a daemon started with `--bash` can).
+                let moved = match self.open.get_mut(session_id) {
+                    Some(h) => h.set_mode(mode),
+                    None => Err("this session has no harness open".into()),
+                };
                 if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "mode_set".into(),
-                        // **"is now" was a lie, and a dangerous one for a guard.**
-                        //
-                        // This writes the project's point to the mode store; the gate
-                        // is built from it in `Harness::open_with_registry`, once, when
-                        // a session opens. So the session reading this message keeps
-                        // the point it started at, and an operator told their project
-                        // "is now supervised" would believe every later call was being
-                        // measured when none of them were.
-                        //
-                        // Saying when it applies is the honest form and it is cheaper
-                        // than rebuilding a live gate mid-session, which would also
-                        // have to decide what happens to the grants and the breaker
-                        // taken under the old point.
-                        detail: format!(
-                            "{} is set to `{}` from the NEXT session in this project — this one keeps the point it opened at. {}",
-                            workspace.display(),
-                            mode.name,
-                            mode.summary
-                        ),
-                    });
+                    let _ = match moved {
+                        Ok(said) => hub.publish(SessionEvent::Warning {
+                            code: "mode_set".into(),
+                            detail: format!(
+                                "{} is at `{}` — {said}, and from every later session in \
+                                 this project. {}",
+                                workspace.display(),
+                                mode.name,
+                                mode.summary
+                            ),
+                        }),
+                        Err(why) => hub.publish(SessionEvent::Warning {
+                            code: "mode_set_next_session_only".into(),
+                            detail: format!(
+                                "{} is set to `{}` for every LATER session in this \
+                                 project; this one stays where it opened, because it \
+                                 cannot carry that point: {why}",
+                                workspace.display(),
+                                mode.name
+                            ),
+                        }),
+                    };
                 }
                 Outcome::Ignored
             }

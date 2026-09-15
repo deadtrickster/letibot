@@ -36,7 +36,7 @@
 
 set -euo pipefail
 
-BIN="${LETIBOT_BIN:-/home/dead/Projects/letibot/target/release}"
+BIN="${LETIBOT_BIN:-/home/dead/Projects/letibot/letibot/target/release}"
 
 # ONE DAEMON PER FOLDER, tmux-style. The workspace is the git toplevel when you
 # are inside a checkout (so `letibot` in a subdirectory joins the daemon of the
@@ -122,7 +122,7 @@ already up, then attaches the TUI head to it.
                               corpus row. `/supervise` does the same mid-session and
                               is the usual way. The guard's address is config, not a
                               flag: [gatekeeper] endpoint in providers.toml
-  letibot --bash              seat the shell, and grant the toolchain
+  letibot --no-bash           seat no shell (the shell is on by default)
   letibot --vm                run the session's tools in a firecode VM on a COPY of
                               the workspace: the VM is the boundary, allow-all inside,
                               writes land in a sibling directory when it ends
@@ -174,7 +174,7 @@ for a in "$@"; do
     --web-search|--brave-key|--oracle|--oracle-budget-ms) skip=1 ;;
   esac
   case "$a" in
-    --help|-h|help|--read-only|--writes|--bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
+    --help|-h|help|--read-only|--writes|--bash|--no-bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
     --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
@@ -252,10 +252,14 @@ ORACLE_BUDGET="${LETIBOT_ORACLE_BUDGET_MS:-}"
 
 # A SHELL, AND WHAT IT NEEDS TO BE USEFUL.
 #
-# `--bash` seats the shell on the coder seat. It is a flag and not a default because
-# `bash` is the one tool whose result is an arbitrary byte stream, and the single choke
-# point every tool result would pass through does not exist yet
-# (docs/boundary-and-adjudication.md §5). Every exec call still asks.
+# The shell is ON by default, for every seat that can carry one. It was a flag —
+# `bash` is the one tool whose result is an arbitrary byte stream, and §5's single
+# choke point for tool results does not exist yet — and the flag produced a coder
+# that could edit a test and not run it. The operator, 2026-09-15, on finding a
+# session seated without one: "i dont think having coder that cant do tests is a
+# sane idea anyway". Correct. What guards the shell is not its absence: every exec
+# call still asks (or the guard model answers, at automode), and the preapproved
+# list is what runs unasked. `--no-bash` seats no shell.
 #
 # The grants are the other half. The confined view is HERMETIC: `$HOME` inside is a
 # fresh tmpfs, so `~/.cargo` and `~/.rustup` are ABSENT — the same property that keeps a
@@ -266,9 +270,10 @@ ORACLE_BUDGET="${LETIBOT_ORACLE_BUDGET_MS:-}"
 # Read-only in the view still means readable INTO THE TRANSCRIPT, which is why these are
 # named here where you can see them rather than compiled into the daemon.
 #
-#   letibot --bash       seat the shell, and grant the toolchain
-#   LETIBOT_BASH=1       the same, for a shell you do not want to keep typing in
-BASH_ON="${LETIBOT_BASH:-}"
+#   letibot              a shell, and the toolchain granted read-only into it
+#   letibot --no-bash    no shell
+#   LETIBOT_BASH=        the same, by env (any non-empty value seats one)
+BASH_ON="${LETIBOT_BASH-1}"
 GRANTS_RO="${LETIBOT_GRANTS_RO:-$HOME/.cargo $HOME/.rustup}"
 
 # WHICH MODEL. Three servers share port 8080 and are systemd `Conflicts=` with
@@ -343,6 +348,8 @@ while [ $# -gt 0 ]; do
       MODE=writes-allowed; shift ;;
     --bash)
       BASH_ON=1; shift ;;
+    --no-bash)
+      BASH_ON=""; shift ;;
     --ask)
       MODE=always-ask; shift ;;
     --mode)

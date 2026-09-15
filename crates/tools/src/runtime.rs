@@ -337,6 +337,27 @@ pub trait Gate: Send + Sync {
         false
     }
 
+    /// **Move this gate to another point in mode-space, now.**
+    ///
+    /// The gate reads its mode at decision time — the decider, the grant scope,
+    /// what admits unasked — so moving it is a field write, and everything the
+    /// session has accumulated (the audit log, the breaker, the advisor) stays.
+    /// What does NOT stay is the standing grants: a grant was an answer to a
+    /// question asked under the old point, and a new point is a new question. A
+    /// grant kept across a tightening would leak permission; kept across a
+    /// loosening it is moot.
+    ///
+    /// Whether the point's PREREQUISITES are met is the caller's to check — the
+    /// gate does not know what backend or oracle is behind it. Returns how many
+    /// grants were dropped, for the sentence the operator reads.
+    ///
+    /// The default refuses, for the reason `set_supervision`'s does: a gate that
+    /// accepted the request and kept deciding at the old point would be the mode
+    /// saying one thing and the session doing another.
+    fn set_mode(&mut self, _mode: crate::mode::Mode) -> Result<usize, String> {
+        Err("this gate has no mode to move".into())
+    }
+
     /// **Attach a guard model to a session that opened without one.**
     ///
     /// So that turning supervision on never means restarting anything. The endpoint

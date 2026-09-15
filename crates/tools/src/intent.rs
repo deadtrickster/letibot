@@ -1420,7 +1420,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
             // shape and were the same hole.
             let (sub, rest) = git_subcommand(argv);
             let subarg = |i: usize| rest.get(i).copied().unwrap_or("");
-            let mut v = match sub {
+            let v = match sub {
                 "status" | "log" | "diff" | "show" | "blame" | "describe" | "rev-parse"
                 | "shortlog" | "ls-files" | "grep" | "whatchanged" | "reflog" => {
                     vec![Inspect]

@@ -689,6 +689,11 @@ pub struct Harness<'a> {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
+    /// The prerequisites this session's wiring supplies and the classes it seats,
+    /// read once at open. What `/mode` checks a new point against, so a move that
+    /// the open would have refused is refused the same way rather than taken and
+    /// then failing on its first call.
+    supplies: Option<(Vec<letibot_tools::mode::Prereq>, letibot_tools::mode::Seats)>,
     /// `Some` when this harness was rebuilt from the store rather than opened fresh.
     /// The daemon prints it; a head is told through the log, by the rows themselves.
     resumed: Option<ResumeReport>,
@@ -1408,6 +1413,8 @@ impl<'a> Harness<'a> {
         // report themselves as nothing anybody can reach; `Confinement` from whether an
         // exec backend was actually built. `Oracle` is on nothing this build can
         // supply, which is why `automode` refuses here rather than being absent.
+        let mut supplies: Option<(Vec<letibot_tools::mode::Prereq>, letibot_tools::mode::Seats)> =
+            None;
         {
             use letibot_tools::mode::Prereq;
             let mut have: Vec<Prereq> = Vec::new();
@@ -1468,6 +1475,12 @@ impl<'a> Harness<'a> {
             if let Err(why) = cfg.mode.check(&have, seats) {
                 return Err(HarnessError::Setup(why));
             }
+            // Kept for `/mode` mid-session: what this session CAN supply is fixed
+            // at open — the backend, the oracle, the confinement, the seated
+            // classes — and a point the operator moves to later is checked
+            // against the same list, or the move refuses by name exactly as the
+            // open would have.
+            supplies = Some((have, seats));
         }
 
         let trail = Arc::new(TrailMirror::default());
@@ -1884,6 +1897,7 @@ impl<'a> Harness<'a> {
             last_turn_id: String::new(),
             resumed: resume,
             compacting: false,
+            supplies,
             open_notes: notes,
             new_title: None,
             trail,
@@ -1989,6 +2003,44 @@ impl<'a> Harness<'a> {
             letibot_provider::keys::config_file().display(),
             endpoint.authority()
         ))
+    }
+
+    /// **Move THIS session to another point, now.**
+    ///
+    /// `/mode` wrote the project's row and told the operator the point applied
+    /// "from the NEXT session". That was true, and it was asked about three times,
+    /// because the sentence is not what anybody typing `/mode automode` wants: they
+    /// want the session in front of them to behave differently from the next call.
+    ///
+    /// What the gate needs is a field write — it reads its mode at decision time —
+    /// so the work here is the part the old comment worried about: the prerequisite
+    /// check the open would have run, re-run against what this session actually
+    /// has; the standing grants, dropped (a new point is a new question); and a
+    /// point whose decider is the model getting its supervision turned on, the way
+    /// an open at that point would. Nothing here touches the backend: writable or
+    /// confined is a property of the SEAT, and the prerequisite check is what
+    /// refuses a point the seat cannot carry.
+    pub fn set_mode(&mut self, mode: letibot_tools::mode::Mode) -> Result<String, String> {
+        if let Some((have, seats)) = &self.supplies {
+            mode.check(have, *seats)?;
+        }
+        let dropped = self.runtime.gate.set_mode(mode)?;
+        let mut said = format!("this session is at `{}` from the next call", mode.name);
+        if dropped > 0 {
+            said.push_str(&format!(
+                " — {dropped} standing grant(s) taken under `{}` no longer apply",
+                self.cfg.mode.name
+            ));
+        }
+        if mode.decider == letibot_tools::mode::Decider::Model && !self.runtime.gate.supervising() {
+            // The check above holds an oracle to be present at this point, so an
+            // error here is a real one and not the ordinary "no `--oracle`".
+            self.set_supervision(true)?;
+            said.push_str("; the guard model now answers");
+        }
+        self.cfg.mode = mode;
+        self.wiring.adjudicator = self.runtime.gate.describe();
+        Ok(said)
     }
 
     pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {
@@ -3815,7 +3867,7 @@ mod tests {
 ///
 /// `asked_by` names whichever of the two asked, so the refusal says which flag or
 /// which mode is missing an `--oracle` rather than naming one of them for both.
-fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator>, HarnessError> {
+pub(crate) fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator>, HarnessError> {
     let Some(ep) = cfg.oracle.clone() else {
         return Err(HarnessError::Setup(format!(
             "{asked_by} needs `--oracle HOST:PORT`: ModelAdjudicator takes an \

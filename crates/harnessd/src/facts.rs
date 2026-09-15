@@ -24,9 +24,12 @@ use letibot_tools::builtins::harness_view::HarnessFacts;
 /// tool has to exist early enough to be in the prompt, and its subject arrives
 /// later.
 ///
-/// Filled once and not refreshed, which is honest here: the disclosures describe
-/// how the session was WIRED, and that is fixed for its life by construction —
-/// `/mode` says so in as many words, "from the NEXT session in this project".
+/// Filled once and not refreshed, which is honest for most of it: the disclosures
+/// describe how the session was WIRED — the backend, the seat, the seams — and
+/// that is fixed for its life by construction. The mode is the exception since
+/// `/mode` started moving the live session; a model that wants the current point
+/// reads `harness what=status` knowing that one line may be a session-open
+/// reading, and the `mode_set` warning is the newer fact.
 pub type DisclosureSlot = Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
 
 pub struct DaemonFacts {

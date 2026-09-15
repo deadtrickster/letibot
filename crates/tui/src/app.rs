@@ -2459,8 +2459,8 @@ impl App {
                 self.say(
                     "/mode NAME — read-only, always-ask, writes-allowed, supervised, \
                      automode, allow-all (or the opencode names plan/default/\
-                     acceptEdits/bypassPermissions). Takes effect on the NEXT session \
-                     in this project: the gate is built when a session opens.",
+                     acceptEdits/bypassPermissions). Moves THIS session from its \
+                     next call, and every later session in this project.",
                 );
                 return None;
             }

@@ -2121,6 +2121,13 @@ impl Gate for AdjudicatedGate {
         Ok(())
     }
 
+    fn set_mode(&mut self, mode: crate::mode::Mode) -> Result<usize, String> {
+        let dropped = self.grants.len();
+        self.grants.clear();
+        self.mode = mode;
+        Ok(dropped)
+    }
+
     fn set_supervision(&mut self, on: bool) -> Result<String, String> {
         // **Refuses rather than pretending.** A gate told to supervise with no guard
         // model installed, that answered "ok", would leave the operator believing
@@ -2907,6 +2914,64 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **`/mode` moves the session it is typed in.** The gate reads its mode when
+    /// it decides, so the move is a field write — and the standing grants go with
+    /// the old point, because they were answers to questions asked under it.
+    #[test]
+    fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
+        use crate::mode::Mode;
+        use crate::runtime::Gate;
+
+        // A person who allows everything for the session, so a grant gets taken.
+        struct Session;
+        impl Adjudicator for Session {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                AdjudicationDecision::selected(req, "allow_session", "human:test", "yes, for the session")
+            }
+            fn describe(&self) -> String {
+                "test".into()
+            }
+        }
+        let mut g = AdjudicatedGate::new(Box::new(Session)).with_mode(Mode::WRITES_ALLOWED);
+        let args = serde_json::json!({"path": "/home/dead/Projects/letibot/notes.md"});
+        let call = GateCall {
+            name: "web_search",
+            access: Access::Network,
+            args: &serde_json::json!({"query": "x"}),
+            turn_id: "t1",
+            call_id: "c1",
+            workspace: "/home/dead/Projects/letibot",
+            target_exists: None,
+        };
+        assert!(matches!(g.admit(&call), GateDecision::Admit));
+        assert_eq!(g.grants().len(), 1, "a session grant was taken under writes-allowed");
+
+        // Move to always-ask: the grant does not survive the point it was taken at.
+        let dropped = g.set_mode(Mode::ALWAYS_ASK).expect("the gate moves");
+        assert_eq!(dropped, 1);
+        assert!(g.grants().is_empty());
+        assert_eq!(g.mode().name, "always-ask");
+
+        // And the new point is the one deciding: a write that writes-allowed admits
+        // unasked now reaches the adjudicator (who, here, grants — but the grant it
+        // takes is refused by always-ask's `Once` scope, so nothing standing is
+        // recorded).
+        let write = GateCall {
+            name: "write",
+            access: Access::Write,
+            args: &args,
+            turn_id: "t1",
+            call_id: "c2",
+            workspace: "/home/dead/Projects/letibot",
+            target_exists: Some(true),
+        };
+        let _ = g.admit(&write);
+        assert!(
+            g.grants().is_empty(),
+            "always-ask must not record a standing grant, whatever the person answered"
+        );
+    }
 
     /// **`automode` means the model answers.** It advised and the person was asked
     /// anyway, which is `supervised` under another name — and the operator chose
