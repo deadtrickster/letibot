@@ -59,6 +59,50 @@ impl std::fmt::Display for KeyError {
 
 impl std::error::Error for KeyError {}
 
+/// **The guard model's address, from the operator's config.**
+///
+/// > *"i dont want to put host and port bro, it is gatekeeper config and should be
+/// > picked up from config"*
+///
+/// Right: an endpoint is a property of the box, not of a session, and a flag that
+/// has to be remembered per invocation is a flag that gets left off. It lives beside
+/// the provider keys because that is already where "where things are and how to
+/// reach them" is written down, and a second config file is a second thing to find.
+///
+/// ```toml
+/// [gatekeeper]
+/// endpoint = "192.168.1.76:8090"
+/// model = "qwen3-4b"      # optional, for the disclosure
+/// budget_ms = 400         # optional
+/// ```
+///
+/// Absent is not an error: a box with no guard runs exactly as it did, and
+/// `/supervise` refuses by naming this section rather than reporting a false success.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Gatekeeper {
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub budget_ms: Option<u64>,
+}
+
+/// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
+/// are all `Gatekeeper::default()` — this is consulted at daemon start and must
+/// never be a reason a daemon does not start.
+pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let Ok(parsed) = parse_file(&file) else {
+        return Gatekeeper::default();
+    };
+    let Some(sec) = parsed.sections.get("gatekeeper") else {
+        return Gatekeeper::default();
+    };
+    Gatekeeper {
+        endpoint: sec.get("endpoint").or_else(|| sec.get("oracle")).cloned(),
+        model: sec.get("model").cloned(),
+        budget_ms: sec.get("budget_ms").and_then(|v| v.parse().ok()),
+    }
+}
+
 pub fn config_file() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

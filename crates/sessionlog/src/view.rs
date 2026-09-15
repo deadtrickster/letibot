@@ -94,6 +94,11 @@ pub struct OpenDecision {
     /// Why the model is stuck, for a question.
     #[serde(default)]
     pub because: String,
+    /// The model's verdict on this permission, at `/mode supervised`. `None`
+    /// everywhere else. Carried into the view so a head attaching mid-question
+    /// renders the same thing a head that was there from the start does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advice: Option<crate::event::ModelAdvice>,
     pub deadline: Option<u64>,
     pub on_timeout: OnTimeout,
     /// When it was asked, so a head can show how long it has been waiting rather
@@ -375,6 +380,7 @@ impl SessionView {
                 options,
                 choices,
                 because,
+                advice,
                 deadline,
                 on_timeout,
             } => {
@@ -387,6 +393,7 @@ impl SessionView {
                     options: options.clone(),
                     choices: choices.clone(),
                     because: because.clone(),
+                    advice: advice.clone(),
                     deadline: *deadline,
                     on_timeout: *on_timeout,
                     asked_ts: env.ts,

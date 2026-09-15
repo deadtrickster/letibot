@@ -119,9 +119,9 @@ pub use args::{Repair, SalvageError, Salvaged, salvage};
 pub use attach::NotAttached;
 pub use authorise::{
     AuthorisationOracle, AuthorisationTrail, Breaker, BreakerState, Budgeted, CorpusRow,
-    DenialNotice, DenialSink, ModelAdjudicator, ModelBrief, OperatorOverride, OracleAnswer,
-    OracleScope, RecordingDenialSink, ScriptedOracle, Speaker, TaskDirection, TrailProvenance,
-    Utterance, Widening, refusal_text,
+    CorpusSink, DenialNotice, DenialSink, ModelAdjudicator, ModelBrief, OperatorOverride,
+    OracleAnswer, OracleScope, RecordingCorpusSink, RecordingDenialSink, ScriptedOracle, Speaker,
+    TaskDirection, TrailProvenance, Utterance, Widening, refusal_text,
 };
 pub use backend::{BackendError, Command, DirEntry, ExecBackend, HostBackend, Output};
 pub use builtins::external::{ExternalBackends, ExternalDisclosure, ExternalWiring};

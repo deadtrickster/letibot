@@ -90,7 +90,14 @@ pub enum Action {
     Interrupt(String),
     /// Move the running command to the background (Ctrl+B), like Claude Code.
     Promote,
-    Answer { req_id: String, option_id: String },
+    Answer {
+        req_id: String,
+        option_id: String,
+        /// The glob typed after the option id, for an *always allow*. `None` means
+        /// the daemon derives the pattern from the call, which is what every answer
+        /// did before this existed.
+        pattern: Option<String>,
+    },
     Resync,
     /// Ask the daemon what sessions it holds.
     ListSessions,
@@ -1323,6 +1330,7 @@ impl App {
                 options,
                 choices,
                 because,
+                advice,
                 deadline,
                 on_timeout,
             } => {
@@ -1339,6 +1347,7 @@ impl App {
                     options,
                     choices,
                     because,
+                    advice,
                     deadline,
                     on_timeout,
                     // Not `ts`. A head renders how long a decision has been waiting
@@ -1870,6 +1879,10 @@ impl App {
                     return Some(Action::Answer {
                         req_id,
                         option_id: opt,
+                        // Enter on the ladder is the no-glob path by construction:
+                        // there is nothing typed to read one from. A glob is given
+                        // by typing `allow_always <pattern>` on the line.
+                        pattern: None,
                     });
                 }
                 _ => {}
@@ -2023,11 +2036,12 @@ impl App {
         // An open decision takes the line as an option id or its first letter, so
         // answering does not require a second keymap.
         if let Some(d) = self.open.first().cloned()
-            && let Some(opt) = match_option(&d, text.trim())
+            && let Some((opt, pattern)) = match_option(&d, text.trim())
         {
             return Some(Action::Answer {
                 req_id: d.req_id,
                 option_id: opt,
+                pattern,
             });
         }
         // Sending scrolls back to the tail: the answer is about to arrive at the
@@ -2256,9 +2270,10 @@ impl App {
             }
             if name.is_empty() {
                 self.say(
-                    "/mode NAME — read-only, always-ask, writes-allowed, automode, \
-                     allow-all (or the opencode names plan/default/acceptEdits/\
-                     bypassPermissions)",
+                    "/mode NAME — read-only, always-ask, writes-allowed, supervised, \
+                     automode, allow-all (or the opencode names plan/default/\
+                     acceptEdits/bypassPermissions). Takes effect on the NEXT session \
+                     in this project: the gate is built when a session opens.",
                 );
                 return None;
             }
@@ -2317,7 +2332,10 @@ impl App {
                 // need to: the line goes over as typed and the answer comes back
                 // on the session log.
                 let verb = other.split_whitespace().next().unwrap_or("");
-                if matches!(verb, "flowy" | "models" | "model" | "login") {
+                if matches!(
+                    verb,
+                    "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
+                ) {
                     if self.session_id.is_empty() {
                         self.say("not attached to a session yet");
                         return None;
@@ -3589,6 +3607,36 @@ impl App {
             sgr::YELLOW,
             &format!("? {} [{}]", d.summary, d.kind),
         )];
+        // **The model's verdict, above the ladder.**
+        //
+        // At `/mode supervised` the question is not *should this run* but *do you
+        // agree with the model*, and a person cannot agree with something they were
+        // not shown. It sits above the options rather than below because it is read
+        // before the choice is made, and it is dim rather than yellow so it reads as
+        // evidence beside the question rather than as a second question.
+        //
+        // Nothing here preselects an option. `self.sel` is untouched: the verdict
+        // informs the answer and must never supply it, or the corpus fills with rows
+        // recording a keystroke rather than a judgement.
+        if let Some(a) = &d.advice {
+            for l in wrap(&format!("  model says {}: {}", a.would, a.basis), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+            let grounds = if a.cites.is_empty() {
+                // **Said out loud, not omitted.** An oracle that authorised
+                // something while citing none of your words is the case most worth
+                // a second look, and a blank line there reads as "no note" rather
+                // than as "it could not ground this".
+                "cites nothing from your words".to_string()
+            } else {
+                format!("cites: {}", a.cites.join(" · "))
+            };
+            out.push(colour(
+                &self.cfg,
+                sgr::DIM,
+                &format!("  {} · {} · {} ms", a.by, grounds, a.latency_ms),
+            ));
+        }
         // **One option per line, with the highlighted one marked.**
         //
         // They used to be joined with `·` onto one wrapped line, which is readable but
@@ -3616,11 +3664,19 @@ impl App {
                 });
             }
         }
-        out.push(colour(
-            &self.cfg,
-            sgr::YELLOW,
-            "  ↑↓ to choose · Enter to answer · or type the id",
-        ));
+        // The glob line is only shown when an *always allow* is actually on offer.
+        // A hint for an option this request does not have is an affordance that does
+        // nothing, which teaches the operator to stop reading the hints.
+        let hint = if d
+            .options
+            .iter()
+            .any(|o| o.kind == letibot_sessionlog::event::OptionKind::AllowAlways)
+        {
+            "  ↑↓ to choose · Enter to answer · or type the id ·              `allow_always <glob>` to set what the rule covers"
+        } else {
+            "  ↑↓ to choose · Enter to answer · or type the id"
+        };
+        out.push(colour(&self.cfg, sgr::YELLOW, hint));
         out
     }
 
@@ -3893,17 +3949,44 @@ impl App {
     }
 }
 
-fn match_option(d: &OpenDecision, typed: &str) -> Option<String> {
-    let t = typed.trim().to_ascii_lowercase();
-    d.options
+/// The option a typed line names, and the glob the operator put after it.
+///
+/// > *"please add globbing to my answers somehow too"*
+///
+/// `allow_always crates/**/tests/*.rs` answers the permission AND says what the
+/// rule should cover, instead of accepting the pattern the gate derives from the
+/// one call in front of you. The two halves split on the first space; everything
+/// after it is the pattern, verbatim and un-lowercased — a glob is a path and
+/// `Cargo.toml` is not `cargo.toml`.
+///
+/// A pattern is only meaningful with `allow_always`, which is the only option that
+/// writes a rule. Typed after anything else it is **refused** rather than dropped:
+/// somebody who wrote `allow_once src/**` meant the rule to cover `src/**`, and
+/// silently granting one call instead is the answer they did not give. Returning
+/// `None` leaves the line in the composer, where they can see it.
+fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>)> {
+    let line = typed.trim();
+    let (word, rest) = match line.split_once(char::is_whitespace) {
+        Some((w, r)) => (w, r.trim()),
+        None => (line, ""),
+    };
+    let t = word.to_ascii_lowercase();
+    let id = d
+        .options
         .iter()
         .find(|o| o.option_id.eq_ignore_ascii_case(&t) || o.label.to_ascii_lowercase() == t)
         .or_else(|| {
             d.options
                 .iter()
                 .find(|o| o.option_id.to_ascii_lowercase().starts_with(&t) && !t.is_empty())
-        })
-        .map(|o| o.option_id.clone())
+        })?;
+    if rest.is_empty() {
+        return Some((id.option_id.clone(), None));
+    }
+    if id.kind != letibot_sessionlog::event::OptionKind::AllowAlways {
+        return None;
+    }
+    Some((id.option_id.clone(), Some(rest.to_string())))
 }
 
 /// The row a `ToolStarted` / `ToolProgress` / `ToolFinished` is about: the
@@ -4243,7 +4326,9 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
-        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, allow-all"),
+        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, allow-all (next session)"),
+        ("/supervise", "the guard model answers every gated call before you do, from the next call — on, off, status"),
+        ("/gate", "what the gate decided, and rule on it afterwards: recent, todo, corpus, ok|grant|revoke ID"),
         ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
         ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
@@ -5158,6 +5243,85 @@ mod tests {
         })
     }
 
+    fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecision {
+        use letibot_sessionlog::event::DecisionOption;
+        OpenDecision {
+            req_id: "d1".into(),
+            kind: "permission".into(),
+            call_id: None,
+            summary: "edit a file".into(),
+            options: kinds
+                .iter()
+                .map(|k| DecisionOption {
+                    option_id: match k {
+                        letibot_sessionlog::event::OptionKind::AllowOnce => "allow_once",
+                        letibot_sessionlog::event::OptionKind::AllowSession => "allow_session",
+                        letibot_sessionlog::event::OptionKind::AllowAlways => "allow_always",
+                        letibot_sessionlog::event::OptionKind::RejectOnce => "deny",
+                        letibot_sessionlog::event::OptionKind::RejectAlways => "deny_always",
+                    }
+                    .to_string(),
+                    label: "x".into(),
+                    kind: *k,
+                })
+                .collect(),
+            choices: vec![],
+            because: String::new(),
+            advice: None,
+            deadline: None,
+            on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
+            asked_ts: 0,
+        }
+    }
+
+    /// **A glob typed after the option id is the rule's coverage.**
+    ///
+    /// > *"please add globbing to my answers somehow too"*
+    #[test]
+    fn an_answer_can_carry_the_operators_own_glob() {
+        use letibot_sessionlog::event::OptionKind;
+        let d = decision_with(&[OptionKind::AllowOnce, OptionKind::AllowAlways, OptionKind::RejectOnce]);
+
+        // The bare id still answers, and asks for no pattern.
+        assert_eq!(
+            match_option(&d, "allow_once"),
+            Some(("allow_once".into(), None))
+        );
+        // A prefix still answers, which is how people actually type.
+        assert_eq!(match_option(&d, "d"), Some(("deny".into(), None)));
+
+        // And the glob rides after it, verbatim: a pattern is a path, so it is not
+        // lowercased the way the option id is.
+        assert_eq!(
+            match_option(&d, "allow_always crates/**/Cargo.toml"),
+            Some(("allow_always".into(), Some("crates/**/Cargo.toml".into())))
+        );
+
+        // **A glob on anything but `allow_always` is refused, not dropped.**
+        // Somebody who typed `allow_once src/**` meant the rule to cover `src/**`;
+        // granting one call instead is an answer they did not give. `None` leaves
+        // the line in the composer where they can see it.
+        assert_eq!(match_option(&d, "allow_once src/**"), None);
+        assert_eq!(match_option(&d, "deny src/**"), None);
+    }
+
+    /// The hint only appears when the option it describes is on offer.
+    #[test]
+    fn the_glob_hint_is_absent_when_no_rule_can_be_written() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+        let with = decision_with(&[OptionKind::AllowOnce, OptionKind::AllowAlways]);
+        let without = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        assert!(
+            a.decision_lines(&with, 100).iter().any(|l| l.contains("allow_always <glob>")),
+            "an always-allow on offer says how to scope it"
+        );
+        assert!(
+            !a.decision_lines(&without, 100).iter().any(|l| l.contains("<glob>")),
+            "a request with no rule to write must not advertise one"
+        );
+    }
+
     /// Type into the composer the way a person does, one key at a time. There is
     /// no `input` field to assign any more, and that is the point: the composer
     /// is a state machine with undo batching and a paste ledger, and a test that
@@ -5480,7 +5644,8 @@ mod tests {
             a.key(Key::Enter),
             Some(Action::Answer {
                 req_id: "r1".into(),
-                option_id: opts[0].clone()
+                option_id: opts[0].clone(),
+                pattern: None
             })
         );
 
@@ -5493,7 +5658,8 @@ mod tests {
             b.key(Key::Enter),
             Some(Action::Answer {
                 req_id: "r2".into(),
-                option_id: opts[1].clone()
+                option_id: opts[1].clone(),
+                pattern: None
             })
         );
 
@@ -5506,7 +5672,8 @@ mod tests {
             c.key(Key::Enter),
             Some(Action::Answer {
                 req_id: "r3".into(),
-                option_id: opts[opts.len() - 1].clone()
+                option_id: opts[opts.len() - 1].clone(),
+                pattern: None
             })
         );
     }
@@ -5536,7 +5703,8 @@ mod tests {
             a.key(Key::Enter),
             Some(Action::Answer {
                 req_id: "r1".into(),
-                option_id: "deny".into()
+                option_id: "deny".into(),
+                pattern: None
             })
         );
     }

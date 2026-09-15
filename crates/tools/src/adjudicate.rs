@@ -404,6 +404,17 @@ pub enum OptionKind {
 }
 
 impl OptionKind {
+    /// Whether choosing this option lets the call run. The three allow shapes differ
+    /// in how far the answer travels, not in whether it admits.
+    pub fn is_allow(self) -> bool {
+        matches!(
+            self,
+            OptionKind::AllowOnce | OptionKind::AllowSession | OptionKind::AllowAlways
+        )
+    }
+}
+
+impl OptionKind {
     pub fn admits(&self) -> bool {
         matches!(
             self,
@@ -496,7 +507,9 @@ pub fn exec_options() -> Vec<DecisionOption> {
         },
         DecisionOption {
             id: "allow_always".into(),
-            label: "Always allow this program and verb (written to ~/.config/letibot/permission.json)".into(),
+            label:
+                "Always allow this program and verb (written to ~/.config/letibot/permission.json)"
+                    .into(),
             kind: OptionKind::AllowAlways,
         },
         DecisionOption {
@@ -619,7 +632,86 @@ pub struct AdjudicationRequest {
     /// for a tier or an admission: the four inputs history feeds is the *brief*,
     /// and the tier is layer A's alone.
     pub prior: Vec<PriorAnswer>,
+    /// **What the model already said about this**, when a model was asked first.
+    ///
+    /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
+    /// [`crate::mode::Mode::AUTO`] the model *is* the decider and there is nobody
+    /// downstream to advise, at `always-ask` no model was consulted at all. Those
+    /// are different facts and `None` covers neither of them alone, which is why the
+    /// point that fills it is the point that says so in its name.
+    ///
+    /// Advice, never a decision: nothing reads this to admit anything. The gate
+    /// admits on the *human's* answer and records this beside it, so a row where the
+    /// two differ keeps both halves.
+    pub advice: Option<ModelAdvice>,
 }
+
+/// The model's verdict, carried to the person who is about to overrule it or agree
+/// with it.
+///
+/// > *"we literally want /mode supervised that will ask model and ask me if i agree
+/// > or not"*
+///
+/// This is the payload of "if i agree or not": you cannot agree with something you
+/// were not shown. It travels on the request rather than being re-derived by a head,
+/// for [`ModelBrief`](crate::authorise::ModelBrief)'s reason one layer down — a head
+/// that reconstructed the verdict would be rendering a guess about what the model
+/// said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelAdvice {
+    /// **Whether an oracle was actually consulted.**
+    ///
+    /// `false` covers every case where a model adjudicator answered *without asking
+    /// a model*: an unresolved action, an always-ask entry, an inexpressible one, an
+    /// uncollected trail, an intent outside the oracle's earned scope. Those are
+    /// layer A's answers arriving through layer B's door, and they are not verdicts.
+    ///
+    /// Load-bearing for the corpus: [`agreement`] fires only when this is `true`.
+    /// Without it a row whose "verdict" was `always-ask short-circuit` would be
+    /// labelled as the operator agreeing or disagreeing with an opinion nothing
+    /// held — manufactured signal, and the worst kind, because it looks like data.
+    pub consulted: bool,
+    /// `admit`, `ask` or `unavailable` — what the model's answer would have done on
+    /// its own. Not an option id: at this point the model has not selected from the
+    /// ladder, it has answered *did the operator ask for this*.
+    pub would: &'static str,
+    /// Which oracle, in its own words.
+    pub by: String,
+    /// Why. The sentence a person reads before agreeing.
+    pub basis: String,
+    /// **Which of the operator's own utterances it relied on.** Empty is a real
+    /// answer and a loud one: an authorisation that cites nothing is one the oracle
+    /// could not ground, and a person should weigh it differently.
+    pub cites: Vec<String>,
+    /// How long it took, against the budget.
+    pub latency_ms: u64,
+}
+
+impl ModelAdvice {
+    /// One line for a head that has room for one line.
+    ///
+    /// An unconsulted oracle says so rather than presenting layer A's short-circuit
+    /// as a verdict. A person reading `model says ask` about a call no model saw
+    /// would weigh their own answer against nothing.
+    pub fn line(&self) -> String {
+        if !self.consulted {
+            return format!("no model verdict — {}", self.basis);
+        }
+        format!(
+            "model ({}) says {} in {} ms: {}",
+            self.by, self.would, self.latency_ms, self.basis
+        )
+    }
+}
+
+/// **Which rendering of [`AdjudicationRequest::brief`] a corpus row was produced
+/// under.** Stamped on every row.
+///
+/// Bump it whenever `brief` changes what it emits. Rows carrying different values
+/// are two datasets: the same decision shown under two briefs is two different
+/// questions, and a trainer pooling them fits the seam between them. A date is
+/// enough of an identifier and is one nobody has to look up.
+pub const BRIEF_FORMAT: &str = "brief/2026-09-14";
 
 impl AdjudicationRequest {
     /// The witness that layer A found this adjudicable **and** readable.
@@ -800,6 +892,56 @@ pub trait Adjudicator: Send + Sync {
     /// adjudicator that shows nothing — [`NoAdjudicator`] — which is a different fact
     /// from an empty brief.
     fn last_brief(&self) -> Option<String> {
+        None
+    }
+
+    /// **What a model said about the last call, when a model was consulted first.**
+    ///
+    /// [`SupervisedAdjudicator`]'s, and `None` for every other adjudicator. The
+    /// same shape as `last_brief` and for the same reason: the gate builds the
+    /// request and the adjudicator is what learns something about it, so an answer
+    /// the adjudicator produced downstream has to be asked for rather than read off
+    /// the request the gate still holds.
+    ///
+    /// The gate copies it into the corpus row's `model_verdict`. Without it that
+    /// column holds whatever *decided*, which at a supervised point is the person —
+    /// and a corpus in which the model and the operator never disagree is a corpus
+    /// with no signal in it at all.
+    fn last_advice(&self) -> Option<ModelAdvice> {
+        None
+    }
+
+    /// **Ask the model and nobody else.**
+    ///
+    /// For the one path that has already been decided and still wants a verdict: a
+    /// standing `allow_session` covers the call, so there is nothing to ask a person,
+    /// and the model's opinion on it is a free labelled example against a ruling the
+    /// operator has already made.
+    ///
+    /// `None` for every adjudicator that has no model in it, which is the honest
+    /// answer — *nobody was consulted* — and not an empty verdict.
+    ///
+    /// It must not block on a person. [`SupervisedAdjudicator`] implements it by
+    /// running its model half alone, and the default here runs nothing at all.
+    fn advise_only(&self, _req: &AdjudicationRequest) -> Option<ModelAdvice> {
+        None
+    }
+
+    /// **The glob the operator typed with their answer**, when they typed one.
+    ///
+    /// > *"please add globbing to my answers somehow too"*
+    ///
+    /// Read by the gate when an answer is `AllowAlways`, which is the only option
+    /// that writes a rule; ignored on every other option id rather than quietly
+    /// widening one. `None` means *derive the pattern from the call*, which is what
+    /// every answer did before this existed — never *match nothing*.
+    ///
+    /// The same shape as `last_brief` and `last_advice`, for the same reason: this
+    /// arrives with the answer, and the answer reaches the adjudicator rather than
+    /// the gate. Threading it through `AdjudicationDecision` instead would have
+    /// touched forty-four literals to carry a value that is `None` in forty-three
+    /// of them.
+    fn last_pattern(&self) -> Option<String> {
         None
     }
 }
@@ -1047,10 +1189,21 @@ pub struct AdjudicationRow {
     /// The bytes an oracle was actually shown, when one was consulted. Verbatim rather
     /// than reconstructed, for the same reason.
     pub shown: Option<String>,
+    /// What a model said about this call **before** the person answered, at a
+    /// supervised point. `None` everywhere else, and never the decider's own answer
+    /// under another name.
+    pub advice: Option<ModelAdvice>,
     /// The circuit breaker's key for this action — see
     /// [`crate::authorise::TaskDirection`]. Carried so an operator lifting a refusal
     /// they were shown does not have to reconstruct which direction it was in.
     pub direction: String,
+    /// The named point in mode-space at the moment of the decision — not the
+    /// gate's mode when the row is read, which a later `/mode` would have changed.
+    pub mode: String,
+    /// Whether a human was put in front of this decision as it was taken. Distinct
+    /// from `operator`, which is what they said *afterwards* and is `None` until
+    /// they do.
+    pub asked: bool,
 }
 
 impl AdjudicationRow {
@@ -1060,20 +1213,79 @@ impl AdjudicationRow {
             request_id: self.request.id.clone(),
             session_id: self.request.session_id.clone(),
             turn_id: self.request.turn_id.clone(),
-            action: self.request.baseline.clone(),
+            action: self.request.summary.clone(),
             trail: self.request.trail.clone(),
             shown: self.shown.clone(),
             baseline: self.request.baseline.clone(),
             tier: self.request.tier.as_str(),
-            model_verdict: Some(format!(
-                "{} by {}: {}",
-                self.decision.outcome.as_str(),
-                self.decision.by,
-                self.decision.basis
-            )),
+            tool: self.request.tool.clone(),
+            arguments: self.request.arguments.clone(),
+            mode: self.mode.clone(),
+            options: self.request.options.iter().map(|o| o.id.clone()).collect(),
+            agent: self.request.agent.clone(),
+            // **The model's verdict, and never the human's wearing its name.**
+            //
+            // At `supervised` the decision belongs to the person and the advice
+            // belongs to the oracle, and writing the person's answer into
+            // `model_verdict` would produce a corpus in which the two never
+            // disagree — every row self-consistent, every row worthless. So when
+            // advice is present it is what this column holds.
+            //
+            // Everywhere else the decider IS what answered, and the column holds
+            // that. The two cases are one line apart and are the reason this is not
+            // `Some(format!(...))` unconditionally, which is what it was.
+            model_verdict: match &self.advice {
+                Some(a) => Some(format!("{} by {}: {}", a.would, a.by, a.basis)),
+                None => Some(format!(
+                    "{} by {}: {}",
+                    self.decision.outcome.as_str(),
+                    self.decision.by,
+                    self.decision.basis
+                )),
+            },
+            // What actually settled the call, always — advice or no advice.
+            verdict: Some(self.decision.outcome.as_str().to_string()),
+            verdict_by: Some(self.decision.by.clone()),
+            verdict_basis: Some(self.decision.basis.clone()),
+            // Not yet produced by any oracle — see `CorpusRow::p_allow`. `None`
+            // here is *no confidence was reported*, and must never be read as
+            // low confidence.
+            p_allow: None,
+            decision_ms: self.decision.latency_ms,
+            brief_format: BRIEF_FORMAT,
             effect: self.effect,
+            asked: self.asked,
             operator: self.operator.clone(),
         }
+    }
+}
+
+/// **Did the person agree with the model?** — in the corpus's own three words.
+///
+/// The vocabulary is [`crate::authorise::OperatorOverride`]'s and it is about the
+/// *gate*, not about politeness: `Granted` is "it would not have run and I let it",
+/// `Revoked` is "it would have run and I stopped it", `Upheld` is "we agree". So the
+/// comparison is between what the model's answer would have done and what actually
+/// happened, and nothing here reads the model's prose.
+///
+/// `would == "ask"` and `would == "unavailable"` are both *not an admission*: the
+/// oracle declined to authorise. Admitting over either of them is the operator
+/// supplying an authorisation the model could not find, which is `Granted`.
+fn agreement(
+    advice: &ModelAdvice,
+    effect: &'static str,
+    note: String,
+) -> crate::authorise::OperatorOverride {
+    use crate::authorise::OperatorOverride;
+    let model_would_admit = advice.would == "admit";
+    let gate_admitted = effect == "admit";
+    match (model_would_admit, gate_admitted) {
+        (true, true) | (false, false) => OperatorOverride::Upheld { note },
+        // The model found no authorisation and the operator admitted anyway. The
+        // single most valuable row in the corpus: an over-refusal, caught.
+        (false, true) => OperatorOverride::Granted { note },
+        // The model authorised it and the operator said no.
+        (true, false) => OperatorOverride::Revoked { note },
     }
 }
 
@@ -1170,7 +1382,9 @@ pub struct AdjudicatedGate {
     /// Where an *Always allow* answer is written down so it outlives the process
     /// — the daemon hands in `~/.config/letibot/permission.json`. Without one the
     /// answer holds for the session and the row says so.
-    permission_sink: Option<std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>>,
+    permission_sink: Option<
+        std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>,
+    >,
     /// **opencode parity: exec follows the mode.**
     ///
     /// Off by default, which is the operator's rule (2026-09-11): no point admits an
@@ -1203,6 +1417,32 @@ pub struct AdjudicatedGate {
     /// The brief the adjudicator was shown for the call in flight, moved into the row
     /// by [`AdjudicatedGate::record`].
     shown: Option<String>,
+    /// What a model said about the call in flight, at a supervised point. Taken from
+    /// [`Adjudicator::last_advice`] beside `shown` and moved into the row the same
+    /// way.
+    advice: Option<ModelAdvice>,
+    /// Set when the call in flight was settled by a **standing grant** rather than by
+    /// somebody answering now: the grant's own reason. Moved into the row's operator
+    /// note, so a label that came from a ruling made turns ago says which ruling.
+    standing: Option<String>,
+    /// **The guard model**, when one is configured. Held whether or not supervision
+    /// is on, so turning it on is a flag and not a rebuild.
+    advisor: Option<std::sync::Arc<dyn Adjudicator>>,
+    /// Whether [`AdjudicatedGate::advisor`] gets a turn on every call.
+    ///
+    /// A field rather than a mode, which is the whole design:
+    ///
+    /// > *"supervised mode is essentially a normal mode but we always ask model"*
+    ///
+    /// The mode decides what asks and is fixed when a session opens, because the
+    /// tools seated under it are. This decides whether the model gets a turn before
+    /// the answer, and nothing about the session's shape depends on it — so
+    /// `/supervise` moves it mid-session without rebuilding a gate, re-seating a
+    /// tool, or deciding what happens to grants taken under a different point.
+    supervise: bool,
+    /// Where corpus rows go so they outlive this process. `None` means the corpus is
+    /// being discarded, and the disclosure says so rather than implying it is kept.
+    corpus_sink: Option<std::sync::Arc<dyn crate::authorise::CorpusSink>>,
 }
 
 impl AdjudicatedGate {
@@ -1223,6 +1463,11 @@ impl AdjudicatedGate {
             denials: None,
             breaker: crate::authorise::Breaker::default(),
             shown: None,
+            advice: None,
+            standing: None,
+            advisor: None,
+            supervise: false,
+            corpus_sink: None,
         }
     }
 
@@ -1314,6 +1559,40 @@ impl AdjudicatedGate {
     ) -> Self {
         self.trail_source = Some(Box::new(f));
         self
+    }
+
+    /// **Install the guard model.** Held, not switched on: `/supervise` does that,
+    /// and it can only do it if this was installed when the session opened.
+    pub fn with_advisor(mut self, advisor: std::sync::Arc<dyn Adjudicator>) -> Self {
+        self.advisor = Some(advisor);
+        self
+    }
+
+    /// Start supervised. `--supervise` on the command line; `/supervise` changes it
+    /// later.
+    ///
+    /// Named apart from [`Gate::supervising`], which asks the question this answers —
+    /// a builder and a getter sharing one name is how a caller ends up reading the
+    /// wrong one.
+    pub fn start_supervised(mut self, on: bool) -> Self {
+        self.supervise = on;
+        self
+    }
+
+    /// **Install the corpus sink.** Without one every decision this gate makes is
+    /// kept in `log` and lost when the process ends.
+    pub fn with_corpus_sink(
+        mut self,
+        sink: std::sync::Arc<dyn crate::authorise::CorpusSink>,
+    ) -> Self {
+        self.corpus_sink = Some(sink);
+        self
+    }
+
+    /// Whether decisions are being written anywhere durable. For the startup
+    /// disclosure, which must not imply a corpus that is not being kept.
+    pub fn corpus_is_kept(&self) -> bool {
+        self.corpus_sink.is_some()
     }
 
     /// **Install the denial sink.** Every refusal is delivered to it at the moment it
@@ -1501,8 +1780,7 @@ impl AdjudicatedGate {
         // in the brief and the history the next call reads back can never be keyed
         // differently. Reading the rows happens **here** — at decision time, per
         // §4h — not at startup and not in a batch job nobody consults.
-        let direction =
-            crate::authorise::TaskDirection::of_parts(call.name, baseline, class.scope);
+        let direction = crate::authorise::TaskDirection::of_parts(call.name, baseline, class.scope);
         let prior = Self::prior_answers(&self.log, &direction.key(), turn_seq(call.turn_id));
         AdjudicationRequest {
             id: self.next_id(),
@@ -1513,6 +1791,10 @@ impl AdjudicatedGate {
             tool: call.name.to_string(),
             class,
             prior,
+            // Filled by `SupervisedAdjudicator` between the model's answer and the
+            // person's, and by nothing else. The gate does not consult a model on
+            // its own.
+            advice: None,
             summary: format!(
                 "`{}` wants {} access to `{target}`",
                 call.name,
@@ -1564,6 +1846,75 @@ impl AdjudicatedGate {
         }
     }
 
+    /// **A standing rule settled this call. Ask the model anyway, and mark the row.**
+    ///
+    /// > *"supervised mode is essentially a normal mode but we always ask model. and
+    /// > model has its turn regardless of glob, deny, allow, allow_session or glob
+    /// > deny or allow from config"*
+    ///
+    /// That is the rule, and this is every place it has to be applied. `admit` has
+    /// seven ways to settle a call before reaching an adjudicator; six of them call
+    /// this, and each one is a place the model would otherwise never get a turn:
+    ///
+    /// | | settled by |
+    /// |---|---|
+    /// | 1a | layer A could not resolve the action |
+    /// | 1b | an inexpressible tier — a secret crossing the boundary |
+    /// | 1  | the never-write list |
+    /// | 1.5 | a `permission` config `deny` |
+    /// | 1.5 | a `permission` config `allow` |
+    /// | 2  | the mode admits this class unasked |
+    /// | 3  | a standing `allow_session` grant |
+    ///
+    /// The seventh is the circuit breaker, and it is the one deliberate exception —
+    /// see the comment at its own return. A rule is the operator's standing answer,
+    /// so the oracle's verdict on a call it already settled is a labelled example
+    /// that costs nobody a keystroke; and a refusal is worth as much as an
+    /// admission, because a model that wants to admit what the operator's rules
+    /// refuse is exactly the miscalibration to find BEFORE automode.
+    ///
+    /// **Nothing read here changes the outcome.** Every caller has already decided
+    /// by the time this runs. An oracle that is slow costs the wait, one that is down
+    /// costs nothing, one that disagrees is recorded disagreeing.
+    ///
+    /// Off at every point but `supervised`: elsewhere there is no model to ask, and
+    /// spending an oracle round trip on a call a rule already settled would be the
+    /// gate paying latency for a row nobody asked for.
+    fn advise_on_a_settled_call(&mut self, req: &AdjudicationRequest, why: String) {
+        self.advice = self.ask_the_advisor(req);
+        if self.advice.is_some() {
+            self.standing = Some(why);
+        }
+    }
+
+    /// The guard model's verdict on this call, or `None` when supervision is off or
+    /// no advisor is installed.
+    ///
+    /// One function so that "is the model consulted" has one answer: every settled
+    /// path and the ask path go through it, and a future path that forgets to call
+    /// it is a path that visibly records no verdict rather than one that quietly
+    /// half-supervises.
+    fn ask_the_advisor(&self, req: &AdjudicationRequest) -> Option<ModelAdvice> {
+        if !self.supervise {
+            return None;
+        }
+        let advisor = self.advisor.as_ref()?;
+        // Its verdict, never its decision: `decide` is called for the answer and the
+        // outcome is thrown away. Nothing downstream reads this to admit anything.
+        let d = advisor.decide(req);
+        advisor.last_advice().or(Some(ModelAdvice {
+            // An advisor that does not report its own advice cannot say whether an
+            // oracle was asked, and assuming one was is the assumption `consulted`
+            // exists to refuse.
+            consulted: false,
+            would: "unavailable",
+            by: d.by,
+            basis: d.basis,
+            cites: Vec::new(),
+            latency_ms: d.latency_ms,
+        }))
+    }
+
     fn record(
         &mut self,
         request: AdjudicationRequest,
@@ -1572,14 +1923,66 @@ impl AdjudicatedGate {
         direction: String,
     ) {
         let shown = self.shown.take();
+        // **Asked is read off who decided, not off the adjudicator's name.** A
+        // human adjudicator that timed out did not ask anybody, and a model
+        // adjudicator that escalated did. `by` is the only field that records
+        // which of those happened.
+        let asked = decision.by.starts_with("human");
+        let mode = self.mode.name.to_string();
+        let advice = self.advice.take();
+        let standing = self.standing.take();
+        // **At `supervised` the label is already in hand, so it is written now.**
+        //
+        // Everywhere else `operator` is filled later by `record_override` or by
+        // `/gate`, because the person has not spoken yet. Here they just did, on
+        // this exact decision, with the model's verdict in front of them — which is
+        // the whole reason to sit through the point. Making them re-rule it from a
+        // list afterwards would be asking the same question twice and getting a
+        // worse answer the second time.
+        // **The label**, when there is one to write.
+        //
+        // Two ways the operator's ruling is already in hand at this moment, and both
+        // are recorded — the difference between them travels in `asked` and in the
+        // note, never by dropping one of them:
+        //
+        //   `asked`     they answered THIS call, with the verdict in front of them
+        //   `standing`  a grant they gave earlier covers it, and nobody was asked
+        //
+        // Neither is invented. With no advice there is nothing to have agreed with,
+        // and the row stays unlabelled for `/gate` or `record_override` to fill.
+        let operator = match (&advice, asked, &standing) {
+            // **No label without a verdict.** `consulted` is false whenever a model
+            // adjudicator answered without asking a model — an always-ask entry, an
+            // unresolved action, an intent outside the oracle's scope. Agreeing with
+            // a short-circuit is not agreeing with anything.
+            (Some(a), _, _) if !a.consulted => None,
+            (Some(a), true, _) => Some(agreement(a, effect, String::new())),
+            (Some(a), false, Some(why)) => Some(agreement(
+                a,
+                effect,
+                format!("standing decision, not a fresh answer: {why}"),
+            )),
+            _ => None,
+        };
         self.log.push(AdjudicationRow {
             request,
             decision,
             effect,
-            operator: None,
+            operator,
             shown,
+            advice,
             direction,
+            mode,
+            asked,
         });
+        // Write through immediately, not at shutdown: a daemon that is killed is the
+        // ordinary end of a session, and a corpus flushed on a clean exit is a corpus
+        // that keeps exactly the runs nothing went wrong in.
+        if let Some(sink) = &self.corpus_sink {
+            // `last` is the row just pushed; building a second one would be a second
+            // chance to diverge from what the log holds.
+            sink.decided(&self.log[self.log.len() - 1].corpus());
+        }
     }
 
     /// **R11: the audit rows, read back.** §4h: *"the audit rows are written and
@@ -1603,10 +2006,7 @@ impl AdjudicatedGate {
                 (Some(n), Some(t)) => Some(n.saturating_sub(t)),
                 _ => None,
             };
-            match out
-                .iter_mut()
-                .find(|p| p.effect == row.effect)
-            {
+            match out.iter_mut().find(|p| p.effect == row.effect) {
                 Some(p) => {
                     p.count += 1;
                     // Rows are appended in decision order, so the last one seen in
@@ -1644,7 +2044,10 @@ impl AdjudicatedGate {
         // the only thing that closes an open one.
         let key = row.direction.clone();
         let granted = matches!(what, crate::authorise::OperatorOverride::Granted { .. });
-        row.operator = Some(what);
+        row.operator = Some(what.clone());
+        if let Some(sink) = &self.corpus_sink {
+            sink.ruled(request_id, &what);
+        }
         // A grant lifts the breaker for that direction: a human answered, and that is
         // the only thing that closes an open one.
         if granted {
@@ -1661,7 +2064,56 @@ impl AdjudicatedGate {
 
 impl Gate for AdjudicatedGate {
     fn describe(&self) -> String {
-        self.adjudicator.describe()
+        match (self.supervise, &self.advisor) {
+            (true, Some(a)) => format!("{} — supervised by {}", self.adjudicator.describe(), a.describe()),
+            _ => self.adjudicator.describe(),
+        }
+    }
+
+    fn supervising(&self) -> bool {
+        self.supervise && self.advisor.is_some()
+    }
+
+    fn attach_advisor(&mut self, advisor: std::sync::Arc<dyn Adjudicator>) -> Result<(), String> {
+        self.advisor = Some(advisor);
+        Ok(())
+    }
+
+    fn set_supervision(&mut self, on: bool) -> Result<String, String> {
+        // **Refuses rather than pretending.** A gate told to supervise with no guard
+        // model installed, that answered "ok", would leave the operator believing
+        // every later call was being measured while none were — the same lie
+        // `Mode::check` refuses to tell by downgrading silently.
+        let Some(advisor) = self.advisor.as_ref() else {
+            return Err(
+                "no guard model is configured, so there is nothing to supervise WITH. \
+                 Put its address in ~/.config/letibot/providers.toml:\n\
+                 \x20 [gatekeeper]\n\
+                 \x20 endpoint = \"HOST:PORT\"\n\
+                 a llama.cpp /completion endpoint. Or `/supervise HOST:PORT` for this \
+                 session only."
+                    .into(),
+            );
+        };
+        if self.supervise == on {
+            return Ok(format!(
+                "already {}",
+                if on { "supervised" } else { "unsupervised" }
+            ));
+        }
+        self.supervise = on;
+        Ok(if on {
+            format!(
+                "supervision ON from the next gated call: {} answers first, you answer \
+                 second, and both land on the same corpus row. Nothing else changed — \
+                 the same calls ask that asked before.",
+                advisor.describe()
+            )
+        } else {
+            "supervision OFF. Calls still ask whoever the mode says; the guard model \
+             is no longer consulted and rows stop carrying a verdict."
+                .into()
+        })
     }
 
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
@@ -1669,7 +2121,7 @@ impl Gate for AdjudicatedGate {
         use crate::intent::BaselineVerdict;
 
         let baseline = self.baseline_for(call);
-        let req = self.request_from(call, &baseline);
+        let mut req = self.request_from(call, &baseline);
         let direction = TaskDirection::of(&req, &baseline);
         let breaker_state = self.breaker.state(&direction);
 
@@ -1694,6 +2146,14 @@ impl Gate for AdjudicatedGate {
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             let why = d.basis.clone();
+            // **The one settled path that does NOT ask the model**, and the exception
+            // is deliberate. Every other short-circuit calls
+            // `advise_on_a_settled_call`; this one is the breaker, which is open
+            // precisely because the same direction has been refused three times in a
+            // row — so the calls arriving here are near-duplicates of rows already in
+            // the corpus, and each one would spend an oracle round trip while a retry
+            // loop is running. The breaker exists to stop a loop; paying latency per
+            // iteration of it is the opposite.
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
@@ -1713,6 +2173,11 @@ impl Gate for AdjudicatedGate {
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             self.breaker.refused(&direction);
             let why = why.clone();
+            // Asked, and it will answer `unavailable` without reaching the oracle —
+            // `ModelAdjudicator` refuses on `!resolved` for the same reason the gate
+            // does. That costs one call and no inference, and the row then says an
+            // unresolved action produced no verdict, rather than saying nothing.
+            self.advise_on_a_settled_call(&req, "layer A could not resolve the action".into());
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
@@ -1738,6 +2203,10 @@ impl Gate for AdjudicatedGate {
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             self.breaker.refused(&direction);
             let id = req.id.clone();
+            self.advise_on_a_settled_call(
+                &req,
+                format!("layer A refuses `{}` outright", rule.as_str()),
+            );
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
@@ -1759,6 +2228,12 @@ impl Gate for AdjudicatedGate {
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             let id = req.id.clone();
             self.breaker.refused(&direction);
+            // Asked here too, and this is the row worth having: an oracle that wants
+            // to admit a call touching `.ssh` is a calibration fact about the guard,
+            // and it is invisible unless the never-list path records a verdict. It
+            // changes nothing — the list is overridable by nobody, the oracle
+            // included, and `Adjudicable` is not minted for it.
+            self.advise_on_a_settled_call(&req, format!("`{hit}` is on the never-write list"));
             self.record(req, d, "refuse", direction.key());
             // The model is told why, because a refusal it cannot understand is a
             // refusal it will retry.
@@ -1797,6 +2272,10 @@ impl Gate for AdjudicatedGate {
                     let tell = self.surface(&req, &d, "denied", breaker_state.clone());
                     self.breaker.refused(&direction);
                     let id = req.id.clone();
+                    self.advise_on_a_settled_call(
+                        &req,
+                        format!("`permission` config denies `{}` for `{pattern}`", call.name),
+                    );
                     self.record(req, d, "refuse", direction.key());
                     return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
                 }
@@ -1812,6 +2291,10 @@ impl Gate for AdjudicatedGate {
                         ),
                     );
                     self.breaker.admitted(&direction);
+                    self.advise_on_a_settled_call(
+                        &req,
+                        format!("`permission` config allows `{}` for `{pattern}`", call.name),
+                    );
                     self.record(req, d, "admit", direction.key());
                     return GateDecision::Admit;
                 }
@@ -1849,6 +2332,14 @@ impl Gate for AdjudicatedGate {
                 ),
             );
             self.breaker.admitted(&direction);
+            // The mode's own admission is a settled call like any other. It cannot
+            // fire at `supervised` today — every non-read disposition there is `Ask`
+            // — and it is wired anyway, because a point is a value and the next one
+            // somebody writes may admit something while still wanting the verdict.
+            self.advise_on_a_settled_call(
+                &req,
+                format!("the `{}` mode admits {} unasked", self.mode.name, call.access.as_str()),
+            );
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
@@ -1886,17 +2377,49 @@ impl Gate for AdjudicatedGate {
                 "a standing permission granted this session covers this call: {}",
                 g.why
             );
+            let why = g.why.clone();
             let d =
                 AdjudicationDecision::selected(&req, "allow_session", "gate:session-grant", &basis);
+            // **A grant settles the person, not the model.**
+            //
+            // > *"it can remember my allow_session, still ask model later, still
+            // > record"*
+            //
+            // The grant is the operator's standing answer, so nobody is asked again —
+            // that is what a grant is for. The oracle is still consulted, because its
+            // verdict on a call the operator has already ruled on is a labelled
+            // example that costs nobody a keystroke, and those are the only cheap ones
+            // there are.
+            //
+            // It does not change the outcome. Nothing below this line reads the
+            // advice to decide anything: the call is admitted by the grant, before and
+            // regardless. An oracle that is slow or down costs the wait and nothing
+            // else; an oracle that disagrees is recorded disagreeing.
+            // Why the label on this row is not a fresh judgement, kept with the row
+            // rather than inferred from `asked` being false. A trainer that wants only
+            // decisions the operator was actually looking at filters on `asked`; one
+            // that will take a standing ruling gets to see which ruling it came from.
+            self.advise_on_a_settled_call(&req, why);
             self.breaker.admitted(&direction);
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
 
-        // 4. Ask.
+        // 4. Ask — and when supervision is on, ask the model FIRST.
+        //
+        //    The ordering is load-bearing. A verdict formed after seeing which way
+        //    the operator went is not a verdict worth training on, and one they never
+        //    saw is advice nobody could agree with. Model, then person, then the row
+        //    carrying both.
+        self.advice = self.ask_the_advisor(&req);
+        req.advice = self.advice.clone();
         let decision = self.adjudicator.decide(&req);
-        // What it was shown, verbatim, for the corpus row.
+        // What it was shown, verbatim, for the corpus row — and, at a supervised
+        // point, what the model told the person before they answered. Both are read
+        // here rather than off `req`, because the gate's own request is the one the
+        // adjudicator was *handed*: whatever it learned downstream is its to report.
         self.shown = self.adjudicator.last_brief();
+        let typed_pattern = self.adjudicator.last_pattern();
 
         match &decision.outcome {
             DecisionOutcome::Selected { option_id } => {
@@ -1922,12 +2445,29 @@ impl Gate for AdjudicatedGate {
                         // revision of 2026-09-14. For `bash` the pattern is the
                         // program and its verb (`cargo test*`), the way Claude Code's
                         // `Bash(cargo test:*)` reads; for a file tool it is the path.
-                        if k == OptionKind::AllowAlways && !matches!(req.tier, Tier::AlwaysAsk { .. }) {
-                            let pattern = match call.args.get("command").and_then(|v| v.as_str()) {
-                                Some(cmd) if call.access == Access::Exec => {
-                                    crate::permission::always_pattern_for_command(cmd)
-                                }
-                                _ => permission_pattern(call.args),
+                        if k == OptionKind::AllowAlways
+                            && !matches!(req.tier, Tier::AlwaysAsk { .. })
+                        {
+                            // **The operator's own glob wins over the derived one.**
+                            //
+                            // The derived pattern — the exact path, or the program and
+                            // its verb — is a good default and it is only ever the
+                            // shape of the call in front of them. Somebody who means
+                            // "any test under crates/" could not say so, and answered
+                            // the same question again for every sibling.
+                            //
+                            // Only here, and only for `AllowAlways`: this is the one
+                            // option that writes a rule, so it is the one place a
+                            // pattern has a meaning. An `allow_once` carrying a glob
+                            // would be a grant nobody named.
+                            let pattern = match typed_pattern {
+                                Some(p) => p,
+                                None => match call.args.get("command").and_then(|v| v.as_str()) {
+                                    Some(cmd) if call.access == Access::Exec => {
+                                        crate::permission::always_pattern_for_command(cmd)
+                                    }
+                                    _ => permission_pattern(call.args),
+                                },
                             };
                             let rule = crate::permission::Rule::new(
                                 call.name,
@@ -2344,8 +2884,632 @@ mod tests {
                 outcome: ToolOutcome::NotRun { .. },
                 ..
             } => {}
-            other => panic!("an asked permission must fall through (closed -> not_run), got {other:?}"),
+            other => {
+                panic!("an asked permission must fall through (closed -> not_run), got {other:?}")
+            }
         }
+    }
+
+    // ---------------------------------------------------------------- supervised
+
+    /// An adjudicator that always picks the first option whose kind matches, and
+    /// records what it was shown.
+    struct Fixed {
+        id: &'static str,
+        allow: bool,
+        seen: std::sync::Mutex<Option<Option<ModelAdvice>>>,
+    }
+
+    impl Fixed {
+        fn new(id: &'static str, allow: bool) -> Self {
+            Fixed { id, allow, seen: std::sync::Mutex::new(None) }
+        }
+    }
+
+    impl Adjudicator for Fixed {
+        fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+            *self.seen.lock().unwrap() = Some(req.advice.clone());
+            let want = |o: &&DecisionOption| o.kind.is_allow() == self.allow;
+            match req.options.iter().find(want) {
+                Some(o) => AdjudicationDecision::selected(req, &o.id, self.id, "because"),
+                None => AdjudicationDecision::unavailable(req, self.id, "no such option"),
+            }
+        }
+        /// Stands in for a model adjudicator, so it reports like one. A double that
+        /// answered without saying whether an oracle was consulted would exercise
+        /// the `consulted: false` fallback in every test and never the real path.
+        fn last_advice(&self) -> Option<ModelAdvice> {
+            self.id.starts_with("model").then(|| ModelAdvice {
+                consulted: true,
+                would: if self.allow { "admit" } else { "ask" },
+                by: self.id.to_string(),
+                basis: "because".into(),
+                cites: Vec::new(),
+                latency_ms: 1,
+            })
+        }
+        fn describe(&self) -> String {
+            self.id.to_string()
+        }
+    }
+
+    fn supervised_gate(model_allows: bool, human_allows: bool) -> AdjudicatedGate {
+        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", model_allows));
+                AdjudicatedGate::new(Box::new(Fixed::new("human:op", human_allows)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(advisor)
+            .start_supervised(true)
+    }
+
+    /// **The person sees the model's verdict before answering.**
+    ///
+    /// Without this the point's name is a lie: "ask me if i agree" requires that
+    /// there is something in front of me to agree with.
+    #[test]
+    fn the_human_is_shown_what_the_model_said() {
+        let seen: std::sync::Arc<std::sync::Mutex<Option<Option<ModelAdvice>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = seen.clone();
+        let human = AskAdjudicator::new("human:op", move |req: &AdjudicationRequest| {
+            *captured.lock().unwrap() = Some(req.advice.clone());
+            req.options
+                .first()
+                .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
+        });
+        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", true));
+                let mut g = AdjudicatedGate::new(Box::new(human))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(advisor)
+            .start_supervised(true);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+
+        let advice = seen.lock().unwrap().clone().expect("the human was asked");
+        let advice = advice.expect("carrying the model's verdict");
+        assert_eq!(advice.would, "admit");
+        assert_eq!(advice.by, "model:test");
+    }
+
+    /// **The model advises and never decides.** The human's answer is the outcome,
+    /// whichever way the model went.
+    #[test]
+    fn the_person_overrules_the_model_in_both_directions() {
+        // Model would allow, person refuses.
+        let mut g = supervised_gate(true, false);
+        assert!(matches!(
+            g.admit(&call("edit", &json!({"path": "src/lib.rs"}))),
+            GateDecision::Refuse { .. }
+        ));
+        assert_eq!(g.log[0].effect, "refuse");
+
+        // Model would not allow, person admits.
+        let mut g = supervised_gate(false, true);
+        assert!(matches!(
+            g.admit(&call("edit", &json!({"path": "src/lib.rs"}))),
+            GateDecision::Admit
+        ));
+        assert_eq!(g.log[0].effect, "admit");
+    }
+
+    /// **One call, one labelled row** — the reason to sit through this point.
+    ///
+    /// The model's verdict and the operator's ruling are both on the row, they are
+    /// different values, and the ruling did not overwrite the verdict. Nothing has
+    /// to be reconstructed afterwards from a list.
+    #[test]
+    fn a_supervised_call_produces_a_labelled_corpus_row_by_itself() {
+        let mut g = supervised_gate(true, false);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let row = g.corpus().remove(0);
+
+        assert!(row.asked, "a person answered this one");
+        // The model's, not the person's wearing its name.
+        let verdict = row.model_verdict.as_deref().expect("the model was asked");
+        assert!(verdict.starts_with("admit by model:test"), "{verdict}");
+        // The person's, separately.
+        assert_eq!(row.verdict_by.as_deref(), Some("human:op"));
+        assert_eq!(row.effect, "refuse");
+        // And the label, computed from the two rather than typed later.
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("revoked"),
+            "the model would have admitted and the person stopped it"
+        );
+        assert!(row.is_disagreement());
+
+        // The other direction is the over-refusal, and it is `granted`.
+        let mut g = supervised_gate(false, true);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let row = g.corpus().remove(0);
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("granted")
+        );
+
+        // Agreement is a label too. A corpus of corrections alone teaches that
+        // every decision was wrong.
+        let mut g = supervised_gate(true, true);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let row = g.corpus().remove(0);
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("upheld")
+        );
+        assert!(!row.is_disagreement());
+    }
+
+    /// **The adviser is not load-bearing.** An oracle that cannot answer leaves the
+    /// person answering exactly as they would at `always-ask`.
+    #[test]
+    fn a_silent_oracle_does_not_stop_the_person_being_asked() {
+        struct Mute;
+        impl Adjudicator for Mute {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                AdjudicationDecision {
+                    request_id: req.id.clone(),
+                    outcome: DecisionOutcome::Timeout,
+                    by: "model:test".into(),
+                    basis: "budget".into(),
+                    latency_ms: 400,
+                }
+            }
+            fn describe(&self) -> String {
+                "model:test".into()
+            }
+        }
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(std::sync::Arc::new(Mute))
+            .start_supervised(true);
+        assert!(matches!(
+            g.admit(&call("edit", &json!({"path": "src/lib.rs"}))),
+            GateDecision::Admit
+        ));
+        let row = g.corpus().remove(0);
+        // No advice, so no label is invented: there is nothing for the person to
+        // have agreed or disagreed with.
+        assert!(row.operator.is_none());
+        assert!(row.asked);
+    }
+
+    /// **A grant stops asking YOU and does not stop asking the MODEL.**
+    ///
+    /// > *"it can remember my allow_session, still ask model later, still record"*
+    ///
+    /// Three claims in one test because they are one mechanism: the person is asked
+    /// once, the oracle is asked on every covered call, and every covered call is a
+    /// labelled row.
+    #[test]
+    fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Counts how often the model was consulted, and how often a person was.
+        struct Counted {
+            id: &'static str,
+            allow: bool,
+            n: std::sync::Arc<AtomicUsize>,
+        }
+        impl Adjudicator for Counted {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                self.n.fetch_add(1, Ordering::SeqCst);
+                // The person takes the SESSION grant, which is the answer this whole
+                // test is about — an `allow_once` would settle one call and prove
+                // nothing about what a remembered answer does.
+                let want = |o: &&DecisionOption| {
+                    if self.allow {
+                        o.kind == OptionKind::AllowSession
+                    } else {
+                        !o.kind.is_allow()
+                    }
+                };
+                match req.options.iter().find(want) {
+                    Some(o) => AdjudicationDecision::selected(req, &o.id, self.id, "yes"),
+                    None => AdjudicationDecision::unavailable(req, self.id, "none offered"),
+                }
+            }
+            fn last_advice(&self) -> Option<ModelAdvice> {
+                self.id.starts_with("model").then(|| ModelAdvice {
+                    consulted: true,
+                    would: if self.allow { "admit" } else { "ask" },
+                    by: self.id.to_string(),
+                    basis: "yes".into(),
+                    cites: Vec::new(),
+                    latency_ms: 1,
+                })
+            }
+            fn describe(&self) -> String {
+                self.id.into()
+            }
+        }
+
+        let asks_model = std::sync::Arc::new(AtomicUsize::new(0));
+        let asks_human = std::sync::Arc::new(AtomicUsize::new(0));
+        let advisor: std::sync::Arc<dyn Adjudicator> =
+            std::sync::Arc::new(Counted { id: "model:test", allow: true, n: asks_model.clone() });
+        // A point that ASKS about writes and lets one answer stand for the session —
+        // the shape a grant is for. Written out rather than borrowed from `NAMED`,
+        // because supervision is no longer a point and this test is about the grant,
+        // not about which dot on the ladder happens to have that scope today.
+        let asks_and_grants = crate::mode::Mode {
+            name: "test:asks-and-grants",
+            grants: crate::mode::GrantScope::Session,
+            ..crate::mode::Mode::ALWAYS_ASK
+        };
+        let mut g = AdjudicatedGate::new(Box::new(Counted {
+            id: "human:op",
+            allow: true,
+            n: asks_human.clone(),
+        }))
+        .with_mode(asks_and_grants)
+        .with_advisor(advisor)
+        .start_supervised(true);
+
+        let args = json!({"path": "src/lib.rs"});
+        for _ in 0..3 {
+            assert!(matches!(g.admit(&call("edit", &args)), GateDecision::Admit));
+        }
+
+        assert_eq!(g.grants().len(), 1, "the first answer took a session grant");
+        assert_eq!(
+            asks_human.load(Ordering::SeqCst),
+            1,
+            "the person is asked once and the grant covers the rest"
+        );
+        assert_eq!(
+            asks_model.load(Ordering::SeqCst),
+            3,
+            "the oracle is asked on EVERY call, grant or no grant — that is the label"
+        );
+
+        // Every one is a row, and every one is labelled.
+        let rows = g.corpus();
+        assert_eq!(rows.len(), 3);
+        for r in &rows {
+            assert!(r.model_verdict.is_some(), "the model answered this one");
+            assert!(r.operator.is_some(), "and the operator's ruling is on it");
+        }
+
+        // The first is a judgement made with the verdict on screen; the other two
+        // are a standing ruling applied. `asked` separates them and the note says
+        // which grant, so a trainer can weight them differently instead of
+        // discovering later that it could not tell them apart.
+        assert!(rows[0].asked);
+        assert!(!rows[1].asked && !rows[2].asked);
+        let note = match rows[1].operator.as_ref().unwrap() {
+            crate::authorise::OperatorOverride::Upheld { note }
+            | crate::authorise::OperatorOverride::Granted { note }
+            | crate::authorise::OperatorOverride::Revoked { note } => note.clone(),
+        };
+        assert!(note.contains("standing decision"), "{note}");
+        assert!(note.contains("granted for this session"), "{note}");
+    }
+
+    /// **A command asks every time**, whatever is granted. The operator's own rule,
+    /// and supervised does not have a relaxed version of it.
+    #[test]
+    fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asks = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = asks.clone();
+        let human = AskAdjudicator::new("human:op", move |req: &AdjudicationRequest| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            req.options
+                .iter()
+                .find(|o| o.kind.is_allow())
+                .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
+        });
+        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", true));
+        let mut g = AdjudicatedGate::new(Box::new(human))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(advisor)
+            .start_supervised(true)
+            .with_exec_follows_mode(false)
+            // An absolute path and a pinned shell, so layer A resolves the action
+            // and it reaches an adjudicator at all. A bare `cargo` under
+            // `ShellTrust::Unknown` is `not_run` and would pass this test for the
+            // wrong reason — nobody asked because nothing was decidable.
+            .with_surroundings(pinned())
+            .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+
+        let args = json!({"command": "/bin/cat /w/src/lib.rs"});
+        for _ in 0..2 {
+            assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        }
+        assert_eq!(
+            asks.load(Ordering::SeqCst),
+            2,
+            "exec asks every time; a standing permission never covers it"
+        );
+        assert!(g.grants().is_empty(), "and no grant is taken over an exec call");
+    }
+
+    /// **A configured glob settles the call and the model is still asked.**
+    ///
+    /// > *"we have configured globs already, they can go thru model in the
+    /// > supervised mode too"*
+    ///
+    /// Both directions. A `deny` is worth as much as an `allow` here: a model that
+    /// routinely wants to admit what the operator's rules refuse is exactly the
+    /// miscalibration to find before automode, and it is invisible if only the
+    /// admissions are measured.
+    #[test]
+    fn a_permission_rule_is_still_measured_against_the_model() {
+        let rules = |json: serde_json::Value| {
+            crate::permission::config_to_ruleset(json.as_object().unwrap()).unwrap()
+        };
+        let gate = |cfg: serde_json::Value, model_allows: bool| {
+            let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", model_allows));
+            AdjudicatedGate::new(Box::new(NoAdjudicator))
+                .with_mode(crate::mode::Mode::ALWAYS_ASK)
+                .with_advisor(advisor)
+                .start_supervised(true)
+                .with_permission(rules(cfg))
+        };
+
+        // An `allow` rule admits, and the oracle's agreement is recorded.
+        let mut g = gate(json!({ "edit": "allow" }), true);
+        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+        let row = g.corpus().remove(0);
+        assert!(row.model_verdict.as_deref().unwrap().starts_with("admit by model:test"));
+        assert!(!row.asked, "nobody was asked: a rule decided");
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("upheld")
+        );
+
+        // A `deny` rule refuses, and an oracle that would have admitted is recorded
+        // disagreeing. This is the over-refusal signal and it only exists because
+        // the deny path asks too.
+        let mut g = gate(json!({ "edit": "deny" }), true);
+        assert!(matches!(
+            g.admit(&call("edit", &json!({"path": "a.rs"}))),
+            GateDecision::Refuse { .. }
+        ));
+        let row = g.corpus().remove(0);
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("revoked"),
+            "the model would have admitted and the operator's rule refused"
+        );
+        assert!(row.is_disagreement());
+
+        // And nothing about the advice changed the outcome: the same rules with a
+        // model that would refuse still admit and still refuse, respectively.
+        let mut g = gate(json!({ "edit": "allow" }), false);
+        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+    }
+
+    /// At every point but `supervised` a settled call spends no oracle round trip.
+    /// There is no model to ask, and paying latency for a row nobody asked for is
+    /// what this guards.
+    #[test]
+    fn a_rule_at_a_non_supervised_point_consults_nothing() {
+        let cfg = json!({ "edit": "allow" });
+        let rules = crate::permission::config_to_ruleset(cfg.as_object().unwrap()).unwrap();
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+            .with_permission(rules);
+        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+        let row = g.corpus().remove(0);
+        // The verdict column holds what decided — the rule — and no label is
+        // invented, because nothing was consulted to agree or disagree with.
+        assert!(row.model_verdict.as_deref().unwrap().contains("gate:permission"));
+        assert!(row.operator.is_none());
+    }
+
+    /// **The model has its turn regardless of what settled the call.**
+    ///
+    /// > *"supervised mode is essentially a normal mode but we always ask model. and
+    /// > model has its turn regardless of glob, deny, allow, allow_session or glob
+    /// > deny or allow from config"*
+    ///
+    /// One case per short-circuit in `admit`, so a path added later that forgets to
+    /// ask fails here rather than quietly producing rows with no verdict. The
+    /// breaker is the one deliberate exception and is asserted as such.
+    #[test]
+    fn every_settled_path_still_gives_the_model_its_turn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Counts every consultation, whatever the answer.
+        struct Counting(std::sync::Arc<AtomicUsize>);
+        impl Adjudicator for Counting {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                AdjudicationDecision::unavailable(req, "model:test", "counted")
+            }
+            fn last_advice(&self) -> Option<ModelAdvice> {
+                Some(ModelAdvice {
+                    consulted: true,
+                    would: "ask",
+                    by: "model:test".into(),
+                    basis: "counted".into(),
+                    cites: Vec::new(),
+                    latency_ms: 1,
+                })
+            }
+            fn describe(&self) -> String {
+                "model:test".into()
+            }
+        }
+
+        let build = |f: &dyn Fn(AdjudicatedGate) -> AdjudicatedGate| {
+            let n = std::sync::Arc::new(AtomicUsize::new(0));
+            let g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+                .with_mode(crate::mode::Mode::ALWAYS_ASK)
+                .with_advisor(std::sync::Arc::new(Counting(n.clone())))
+                .start_supervised(true);
+            (f(g), n)
+        };
+        let rules = |j: serde_json::Value| {
+            crate::permission::config_to_ruleset(j.as_object().unwrap()).unwrap()
+        };
+
+        // Each case: how to set the gate up, and the call that trips that path.
+        let path = json!({"path": "src/lib.rs"});
+        let secret = json!({"path": "/home/op/.ssh/id_ed25519"});
+
+        // 1. the never-write list
+        let (mut g, n) = build(&|g| g);
+        let _ = g.admit(&call("edit", &secret));
+        assert_eq!(n.load(Ordering::SeqCst), 1, "never-write list: model asked");
+        assert_eq!(g.log[0].effect, "refuse", "and the list still refuses");
+
+        // 1.5 a config `deny`, and a config `allow`
+        for (cfg, effect) in [("deny", "refuse"), ("allow", "admit")] {
+            let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": cfg }))));
+            let _ = g.admit(&call("edit", &path));
+            assert_eq!(n.load(Ordering::SeqCst), 1, "config {cfg}: model asked");
+            assert_eq!(g.log[0].effect, effect, "and the rule still decides");
+        }
+
+        // 2. the mode admits unasked. `supervised` never does, so this is asserted
+        //    at a point that does — the wiring is shared and the rule is the same.
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
+        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counting(n.clone()));
+                let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(advisor)
+            .start_supervised(true);
+        let _ = g.admit(&call("edit", &path));
+        let before = n.load(Ordering::SeqCst);
+
+        // 3. a standing grant, on the SAME gate: the second call is covered.
+        let _ = g.admit(&call("edit", &path));
+        assert!(
+            n.load(Ordering::SeqCst) > before,
+            "a grant-covered call still consults the model"
+        );
+
+        // 0. the breaker is the exception, and it is one on purpose: the calls
+        //    reaching it are near-duplicates of rows already recorded, and paying an
+        //    oracle round trip per iteration of a retry loop is what the breaker
+        //    exists to prevent.
+        let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": "deny" }))));
+        for _ in 0..5 {
+            let _ = g.admit(&call("edit", &path));
+        }
+        let asked = n.load(Ordering::SeqCst);
+        assert!(
+            asked < 5,
+            "the breaker must stop consulting, asked {asked} of 5"
+        );
+        assert!(asked >= 3, "and only after it has opened, asked {asked}");
+    }
+
+    /// **A short-circuit is not a verdict**, and a row must not record agreement
+    /// with one.
+    ///
+    /// `ModelAdjudicator` answers five questions without asking a model — an
+    /// unresolved action, an always-ask entry, an inexpressible one, an uncollected
+    /// trail, an intent outside its earned scope. From outside, those produce the
+    /// same `AdjudicationDecision` a real verdict does. Labelling against them would
+    /// manufacture signal, which is worse than none because it looks like data.
+    #[test]
+    fn an_unconsulted_oracle_produces_no_label() {
+        struct Silent;
+        impl Adjudicator for Silent {
+            fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+                AdjudicationDecision::unavailable(req, "model:test", "always-ask short-circuit")
+            }
+            fn last_advice(&self) -> Option<ModelAdvice> {
+                Some(ModelAdvice {
+                    consulted: false,
+                    would: "ask",
+                    by: "model:test".into(),
+                    basis: "`sudo` is on the always-ask list; no oracle was consulted".into(),
+                    cites: Vec::new(),
+                    latency_ms: 0,
+                })
+            }
+            fn describe(&self) -> String {
+                "model:test".into()
+            }
+        }
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(std::sync::Arc::new(Silent))
+            .start_supervised(true);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+
+        let row = g.corpus().remove(0);
+        assert!(
+            row.operator.is_none(),
+            "no oracle spoke, so there is nothing the operator agreed or disagreed with"
+        );
+        // The row still exists and still says what happened — silence is recorded,
+        // not dropped.
+        assert!(row.model_verdict.is_some());
+        assert!(row.asked);
+        // And a head renders it as an absence rather than as an opinion.
+        let advice = g.log[0].advice.as_ref().unwrap();
+        assert!(advice.line().starts_with("no model verdict"), "{}", advice.line());
+    }
+
+    /// **Supervision changes who is consulted and nothing else.**
+    ///
+    /// It used to be a mode, which meant selecting it also pinned the dispositions
+    /// and the grant scope — and meant it could only change by restarting a session.
+    /// It is a flag on the gate now, so this asserts the property that makes that
+    /// safe: the same calls ask, the same answers travel, and only the verdict
+    /// column appears.
+    #[test]
+    fn supervision_changes_who_is_consulted_and_nothing_else() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asks = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = asks.clone();
+        let human = AskAdjudicator::new("human:op", move |req: &AdjudicationRequest| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            req.options
+                .iter()
+                .find(|o| o.kind.is_allow())
+                .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
+        });
+        let mut g = AdjudicatedGate::new(Box::new(human))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_advisor(std::sync::Arc::new(Fixed::new("model:test", true)));
+
+        let args = json!({"path": "src/lib.rs"});
+
+        // Off: the person is asked, and the row carries no verdict.
+        assert!(!g.supervising());
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert!(g.corpus()[0].operator.is_none());
+
+        // **On, mid-session, without rebuilding anything.**
+        let said = g.set_supervision(true).expect("an advisor is installed");
+        assert!(said.contains("supervision ON"), "{said}");
+        assert!(g.supervising());
+
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(
+            asks.load(Ordering::SeqCst),
+            2,
+            "the same calls ask the same person; supervision adds a verdict, not a question"
+        );
+        let row = g.corpus().remove(1);
+        assert!(row.model_verdict.as_deref().unwrap().starts_with("admit by model:test"));
+        assert_eq!(row.verdict_by.as_deref(), Some("human:op"));
+        assert_eq!(
+            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            Some("upheld")
+        );
+
+        // And off again.
+        assert!(g.set_supervision(false).is_ok());
+        assert!(!g.supervising());
+    }
+
+    /// **A gate with no guard model refuses to say it is supervising.**
+    ///
+    /// Answering "ok" and supervising nothing would leave the operator believing
+    /// every later call was measured while none were — the same lie `Mode::check`
+    /// refuses to tell by downgrading silently.
+    #[test]
+    fn supervision_without_an_advisor_refuses_by_name() {
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK);
+        let e = g.set_supervision(true).expect_err("nothing to supervise with");
+        assert!(e.contains("gatekeeper"), "{e}");
+        assert!(!g.supervising());
     }
 
     #[test]
@@ -2939,13 +4103,17 @@ mod tests {
             "no standing permission is recorded for an exec-class call"
         );
         assert!(
-            g.log.iter().all(|r| r.request.option("allow_session").is_none()),
+            g.log
+                .iter()
+                .all(|r| r.request.option("allow_session").is_none()),
             "exec is never offered a session grant"
         );
         // The revision of 2026-09-14: a DURABLE rule is offered — it is the
         // operator's own preapproval, in a file they read — and it is not a grant.
         assert!(
-            g.log.iter().all(|r| r.request.option("allow_always").is_some()),
+            g.log
+                .iter()
+                .all(|r| r.request.option("allow_always").is_some()),
             "exec is offered Always allow, as a rule"
         );
     }
@@ -2965,7 +4133,12 @@ mod tests {
             "human",
             move |req: &AdjudicationRequest| {
                 a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(AdjudicationDecision::selected(req, "allow_always", "human:test", "fine"))
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_always",
+                    "human:test",
+                    "fine",
+                ))
             },
         )))
         .with_mode(crate::mode::Mode::WRITES_ALLOWED)
@@ -3316,18 +4489,18 @@ mod tests {
     /// by somebody.
     #[test]
     fn a_history_of_approvals_cannot_move_an_always_ask_action() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let n = AtomicUsize::new(0);
         let seen: std::sync::Arc<Mutex<Vec<(String, Vec<String>)>>> =
             std::sync::Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
             let i = n.fetch_add(1, Ordering::Relaxed);
-            s.lock()
-                .unwrap()
-                .push((req.tier.as_str().to_string(), 
-                    req.options.iter().map(|o| o.id.to_string()).collect()));
+            s.lock().unwrap().push((
+                req.tier.as_str().to_string(),
+                req.options.iter().map(|o| o.id.to_string()).collect(),
+            ));
             if i < 2 {
                 Some(AdjudicationDecision::selected(
                     req,

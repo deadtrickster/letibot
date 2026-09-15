@@ -49,10 +49,7 @@ impl TodoBoard {
 
     /// The list as it stands.
     pub fn snapshot(&self) -> Vec<TodoItem> {
-        self.todos
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// How many writes have landed. Version, not dirty-flag: a harness that
@@ -255,7 +252,11 @@ mod tests {
         let (mut rt, board) = runtime();
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke("t1", &call("{}"), &mut sink);
-        assert!(matches!(r.outcome, ToolOutcome::Failed { .. }), "{:?}", r.outcome);
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
         assert!(r.payload.contains("todos"), "{}", r.payload);
 
         let r = rt.invoke(

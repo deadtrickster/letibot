@@ -293,6 +293,27 @@ pub enum ClientFrame {
         client_request_id: String,
         req_id: String,
         option_id: String,
+        /// **The operator's own glob**, when they are answering *always allow* and
+        /// want it to cover more than this one call.
+        ///
+        /// > *"please add globbing to my answers somehow too"*
+        ///
+        /// Without it the rule an `always allow` writes is derived from the call:
+        /// the exact path, or the program and its verb. That is a good default and
+        /// it is only ever the shape in front of you — an operator who means *"any
+        /// test under crates/"* had no way to say so, and had to answer the same
+        /// question again for every sibling.
+        ///
+        /// Meaningful **only** for `AllowAlways`, which writes a rule. It is ignored
+        /// on every other option id rather than quietly widening one: an
+        /// `allow_once` carrying a glob would be a grant nobody named.
+        ///
+        /// No `PROTOCOL_VERSION` bump: an added, defaulted field on an existing
+        /// client frame. An older daemon ignores it and writes the derived pattern,
+        /// which is what it did before; a newer one reading an older head's frame
+        /// gets `None` and does the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
     },
     /// Answer an open **question**: a choice, a note on that choice, a typed reply,
     /// or a choice and a note together (§D10). Added at `PROTOCOL_VERSION` 5.
@@ -628,6 +649,9 @@ mod tests {
                 client_request_id: "r3".into(),
                 req_id: "d1".into(),
                 option_id: "allow_once".into(),
+                // The round trip must cover the glob too: an added field that is
+                // never exercised is an added field that silently stops encoding.
+                pattern: Some("crates/**/*.rs".into()),
             },
             ClientFrame::ListSessions,
             ClientFrame::ListTodos,

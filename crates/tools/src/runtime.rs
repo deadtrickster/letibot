@@ -312,6 +312,44 @@ pub trait Gate: Send + Sync {
     fn describe(&self) -> String {
         "none (no adjudicator attached)".into()
     }
+
+    /// **Turn supervision on or off while the session is running.**
+    ///
+    /// > *"I want to start leticode, do /supervise, and move on."*
+    ///
+    /// Supervision is a property of the gate and not of the mode, which is what makes
+    /// that possible: the mode decides *what asks*, and is fixed when a session opens
+    /// because the tools seated under it are. This decides *whether the guard model
+    /// gets a turn before the answer*, and nothing about a session's shape depends on
+    /// it — so it can move without rebuilding anything.
+    ///
+    /// Returns what to tell the operator, and whether it took. A gate with no advisor
+    /// says so rather than reporting success and supervising nothing.
+    ///
+    /// The default refuses, because a gate that silently accepted the request and
+    /// never supervised would be the exact failure the whole feature exists to catch.
+    fn set_supervision(&mut self, _on: bool) -> Result<String, String> {
+        Err("this gate has no adjudicator, so there is nothing to supervise".into())
+    }
+
+    /// Whether the guard model currently gets a turn on every call.
+    fn supervising(&self) -> bool {
+        false
+    }
+
+    /// **Attach a guard model to a session that opened without one.**
+    ///
+    /// So that turning supervision on never means restarting anything. The endpoint
+    /// is the only expensive part of supervision and it is just an address; requiring
+    /// it at daemon start made `/supervise` a lie on every session that had not
+    /// thought to pass it, which is every session somebody starts by typing
+    /// `leticode`.
+    ///
+    /// Replaces whatever was there. The default refuses, for `set_supervision`'s
+    /// reason.
+    fn attach_advisor(&mut self, _advisor: std::sync::Arc<dyn crate::adjudicate::Adjudicator>) -> Result<(), String> {
+        Err("this gate has no adjudicator, so an advisor would have nothing to advise".into())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -859,7 +897,10 @@ impl Registry {
     /// Drop every tool of a denied access class. A subagent's downgrade, applied
     /// after the role is resolved: the tools leave the prompt entirely, so the
     /// model is not told it has a capability the gate would refuse.
-    pub fn without_access(mut self, denied: &std::collections::BTreeSet<crate::schema::Access>) -> Registry {
+    pub fn without_access(
+        mut self,
+        denied: &std::collections::BTreeSet<crate::schema::Access>,
+    ) -> Registry {
         if denied.is_empty() {
             return self;
         }
@@ -1195,14 +1236,20 @@ mod tests {
     #[test]
     fn without_access_drops_a_class_and_leaves_the_rest_in_role_order() {
         let mut reg = Registry::new();
-        reg.register(Box::new(Probe { access: Access::Read })).unwrap();
+        reg.register(Box::new(Probe {
+            access: Access::Read,
+        }))
+        .unwrap();
         let mut denied = std::collections::BTreeSet::new();
         denied.insert(Access::Read);
         assert!(reg.schemas().iter().any(|s| s.name == "probe"));
         let reg = reg.without_access(&denied);
         assert!(reg.schemas().is_empty());
         let mut reg = Registry::new();
-        reg.register(Box::new(Probe { access: Access::Read })).unwrap();
+        reg.register(Box::new(Probe {
+            access: Access::Read,
+        }))
+        .unwrap();
         let mut other = std::collections::BTreeSet::new();
         other.insert(Access::Exec);
         assert_eq!(reg.without_access(&other).schemas().len(), 1);

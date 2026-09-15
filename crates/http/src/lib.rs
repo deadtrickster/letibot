@@ -94,6 +94,25 @@ impl Endpoint {
     pub fn authority(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+
+    /// `HOST:PORT`, as a person types it. The inverse of [`Endpoint::authority`], so
+    /// an address written to a file comes back as the same endpoint.
+    ///
+    /// `rsplit_once` because an IPv6 literal contains colons and only the last one
+    /// separates the port.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (host, port) = s
+            .rsplit_once(':')
+            .ok_or_else(|| format!("`{s}` is not HOST:PORT"))?;
+        if host.is_empty() {
+            return Err(format!("`{s}` has no host"));
+        }
+        let port: u16 = port
+            .parse()
+            .map_err(|e| format!("`{s}`: port {port}: {e}"))?;
+        Ok(Endpoint::new(host, port))
+    }
 }
 
 /// One HTTP response body, delivered as a stream of decoded bytes.

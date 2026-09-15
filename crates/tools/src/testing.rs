@@ -194,8 +194,7 @@ pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
 /// would read.
 pub fn deny_all() -> Box<dyn crate::runtime::Gate> {
     use crate::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
-    let surroundings =
-        crate::intent::Surroundings::from_env("/home/dead/Projects/letibot");
+    let surroundings = crate::intent::Surroundings::from_env("/home/dead/Projects/letibot");
     Box::new(
         AdjudicatedGate::new(Box::new(AskAdjudicator::new(
             "test",

@@ -1012,10 +1012,7 @@ impl Monitors {
                     // immediately; everything else is re-polled every TICK.
                     let Some(me) = weak.upgrade() else { return };
                     let g = me.wake_guard.lock().expect("monitor wake");
-                    let _ = me
-                        .wake
-                        .wait_timeout(g, TICK)
-                        .expect("monitor wake");
+                    let _ = me.wake.wait_timeout(g, TICK).expect("monitor wake");
                     me.tick();
                     let mut reg = me.inner.lock().expect("monitors");
                     if reg.live.is_empty() {
@@ -1179,12 +1176,10 @@ impl Condition for CommandCondition {
                     CommandExpect::OutputContains(s) if text.contains(s.as_str()) => {
                         Some(format!("the command's output contained `{s}`"))
                     }
-                    CommandExpect::NumberAbove(n) => parse_number(&text).and_then(|v| {
-                        (v > *n).then(|| format!("{v} is above {n}"))
-                    }),
-                    CommandExpect::NumberBelow(n) => parse_number(&text).and_then(|v| {
-                        (v < *n).then(|| format!("{v} is below {n}"))
-                    }),
+                    CommandExpect::NumberAbove(n) => parse_number(&text)
+                        .and_then(|v| (v > *n).then(|| format!("{v} is above {n}"))),
+                    CommandExpect::NumberBelow(n) => parse_number(&text)
+                        .and_then(|v| (v < *n).then(|| format!("{v} is below {n}"))),
                     _ => None,
                 }
             }
@@ -1205,10 +1200,16 @@ impl Condition for CommandCondition {
                 format!("command `{}` printing `{s}`", self.argv.join(" "))
             }
             CommandExpect::NumberAbove(n) => {
-                format!("command `{}` printing a number above {n}", self.argv.join(" "))
+                format!(
+                    "command `{}` printing a number above {n}",
+                    self.argv.join(" ")
+                )
             }
             CommandExpect::NumberBelow(n) => {
-                format!("command `{}` printing a number below {n}", self.argv.join(" "))
+                format!(
+                    "command `{}` printing a number below {n}",
+                    self.argv.join(" ")
+                )
             }
         }
     }
@@ -1385,7 +1386,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
-        false,
+            false,
         )
         .expect("first");
         let e = ms
@@ -1396,7 +1397,7 @@ mod tests {
                 None,
                 "turn-2",
                 DEFAULT_TTL,
-            false,
+                false,
             )
             .unwrap_err();
         let msg = e.to_string();
@@ -1423,7 +1424,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
-        false,
+            false,
         )
         .unwrap();
         assert!(ms.tick().is_empty(), "nothing has changed yet");
@@ -1451,7 +1452,7 @@ mod tests {
             None,
             "turn-1",
             Duration::from_millis(1),
-        false,
+            false,
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(5));
@@ -1482,7 +1483,7 @@ mod tests {
                 None,
                 "turn-1",
                 MAX_TTL + Duration::from_secs(1),
-            false,
+                false,
             )
             .unwrap_err();
         assert!(e.to_string().contains("past the cap"), "{e}");
@@ -1504,7 +1505,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
-        false,
+            false,
         )
         .unwrap();
         let retired = ms.retire_under(&owner);
@@ -1532,7 +1533,7 @@ mod tests {
             None,
             "turn-1",
             Duration::from_secs(1),
-        false,
+            false,
         )
         .unwrap();
         let before = ms.list()[0].remaining().unwrap();
@@ -1560,7 +1561,7 @@ mod tests {
             None,
             "turn-1",
             DEFAULT_TTL,
-        false,
+            false,
         )
         .unwrap();
         // There is no `cgroup.events` here, so `populated_at` reads false — which
@@ -1748,6 +1749,4 @@ mod tests {
         assert_eq!(ms.firings().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }
-

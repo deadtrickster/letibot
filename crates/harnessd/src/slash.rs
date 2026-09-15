@@ -43,6 +43,7 @@ impl SlashReply {
 }
 
 /// `flowy status`, `flowy login …`, `flowy logout`, `models …` — parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Slash {
     FlowyStatus,
     FlowyLogin {
@@ -59,7 +60,34 @@ pub enum Slash {
         model: Option<String>,
         key: Option<String>,
     },
+    /// **The supervised-labelling verb.** See [`gate`].
+    Gate(GateVerb),
+    /// Turn the guard model on or off on the running session. `None` reports.
+    ///
+    /// `at` carries an address the first time somebody names one; it is remembered,
+    /// so the second `/supervise` is one word.
+    Supervise { want: Option<bool>, at: Option<String> },
     Help(String),
+}
+
+/// What the operator is saying about a decision the gate already made.
+///
+/// > *"literally i'm ready to sit and answer each turn after the model"*
+///
+/// That is the loop this exists for, and it is not the same thing as answering a
+/// question the gate asked. A gate question is answered *before* the call runs and
+/// is already recorded as a `human:` verdict. This is the other case: the gate
+/// decided by itself, the call has run or been refused, and the operator is saying
+/// whether it should have. It is the only source of a label on an *automatic*
+/// decision, so it is the only thing that makes auto mode supervisable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateVerb {
+    /// Recent decisions, newest first, so the operator can see what to rule on.
+    Recent { limit: usize, only_unlabelled: bool },
+    /// How much corpus there is. A count nobody can see is a count nobody keeps.
+    Counts,
+    /// A ruling on one decision.
+    Rule { request_id: String, kind: &'static str, note: String },
 }
 
 impl Slash {
@@ -134,6 +162,71 @@ impl Slash {
                  for a cloud model"
                     .into(),
             ),
+            // One word, no arguments, and it lands on the session in front of you.
+            // `/supervise off` and `/supervise on` exist for saying it explicitly;
+            // bare `/supervise` turns it ON, because that is what somebody typing it
+            // wants and asking them to say `on` twice is the kind of ceremony that
+            // makes a feature go unused.
+            Some("supervise") | Some("supervised") => match words.get(1).copied() {
+                None | Some("on") | Some("1") | Some("yes") => {
+                    Slash::Supervise { want: Some(true), at: None }
+                }
+                Some("off") | Some("0") | Some("no") => {
+                    Slash::Supervise { want: Some(false), at: None }
+                }
+                Some("status") | Some("?") => Slash::Supervise { want: None, at: None },
+                // **Anything with a colon is an address**, because that is what a
+                // person means by `/supervise 192.168.1.76:8090` and refusing it in
+                // favour of a separate `--oracle` flag on a daemon they did not start
+                // is exactly the ceremony this verb exists to remove.
+                Some(other) if other.contains(':') => Slash::Supervise {
+                    want: Some(true),
+                    at: Some(other.to_string()),
+                },
+                Some(other) => Slash::Help(format!(
+                    "/supervise [on|off|status|HOST:PORT] — `{other}` is none of those"
+                )),
+            },
+            Some("gate") => {
+                let note = |from: usize| words[from.min(words.len())..].join(" ");
+                match words.get(1).copied() {
+                    None | Some("recent") => Slash::Gate(GateVerb::Recent {
+                        limit: words.get(2).and_then(|w| w.parse().ok()).unwrap_or(20),
+                        only_unlabelled: false,
+                    }),
+                    // The working queue for somebody labelling as they go: what has
+                    // not been ruled on yet.
+                    Some("todo") | Some("pending") => Slash::Gate(GateVerb::Recent {
+                        limit: words.get(2).and_then(|w| w.parse().ok()).unwrap_or(20),
+                        only_unlabelled: true,
+                    }),
+                    Some("corpus") | Some("counts") => Slash::Gate(GateVerb::Counts),
+                    // Three verbs, not two, because "the gate was right" is a label
+                    // and not a no-op. A corpus holding only the corrections teaches
+                    // that every decision was wrong.
+                    Some(k @ ("ok" | "upheld" | "grant" | "granted" | "revoke" | "revoked")) => {
+                        let Some(id) = words.get(2) else {
+                            return Slash::Help(format!(
+                                "/gate {k} REQUEST-ID [note] — `/gate todo` lists what is unruled"
+                            ));
+                        };
+                        let kind = match k {
+                            "ok" | "upheld" => "upheld",
+                            "grant" | "granted" => "granted",
+                            _ => "revoked",
+                        };
+                        Slash::Gate(GateVerb::Rule {
+                            request_id: (*id).to_string(),
+                            kind,
+                            note: note(3),
+                        })
+                    }
+                    Some(other) => Slash::Help(format!(
+                        "/gate {other}: the verbs are recent [N], todo [N], corpus, \
+                         and ok|grant|revoke REQUEST-ID [note]"
+                    )),
+                }
+            }
             Some(other) => Slash::Help(format!("/{other} is not a daemon verb; /help lists the head's")),
             None => Slash::Help("/help".into()),
         }
@@ -364,6 +457,54 @@ pub fn models_choice(
 
 #[cfg(test)]
 mod tests {
+
+    /// **`/supervise` is one word.**
+    ///
+    /// > *"I want to start leticode, do /supervise, and move on."*
+    ///
+    /// So a bare `/supervise` turns it ON rather than printing usage: asking somebody
+    /// to say `on` after a verb that has one obvious direction is the ceremony that
+    /// makes a feature go unused. `status` reports without changing anything, and it
+    /// is a different word on purpose.
+    #[test]
+    fn supervise_takes_no_arguments_in_the_case_that_matters() {
+        use super::{GateVerb, Slash};
+        assert_eq!(
+            Slash::parse("supervise"),
+            Slash::Supervise { want: Some(true), at: None }
+        );
+        assert_eq!(
+            Slash::parse("supervise on"),
+            Slash::Supervise { want: Some(true), at: None }
+        );
+        assert_eq!(
+            Slash::parse("supervise off"),
+            Slash::Supervise { want: Some(false), at: None }
+        );
+        assert_eq!(
+            Slash::parse("supervise status"),
+            Slash::Supervise { want: None, at: None }
+        );
+        // An address is the one-off override, and anything with a colon is one —
+        // refusing it in favour of a daemon flag is the ceremony this verb removes.
+        assert_eq!(
+            Slash::parse("supervise 192.168.1.76:8090"),
+            Slash::Supervise { want: Some(true), at: Some("192.168.1.76:8090".into()) }
+        );
+        // A typo is named, never silently treated as `on`: turning a guard on by
+        // accident and turning it on deliberately must not be the same keystroke.
+        assert!(matches!(Slash::parse("supervise yesss"), Slash::Help(_)));
+
+        // And the labelling verb still parses beside it.
+        assert_eq!(
+            Slash::parse("gate ok adj-7 looks right"),
+            Slash::Gate(GateVerb::Rule {
+                request_id: "adj-7".into(),
+                kind: "upheld",
+                note: "looks right".into()
+            })
+        );
+    }
     use super::*;
 
     #[test]
@@ -448,5 +589,135 @@ mod tests {
             assert!(l.contains(&format!("/models {p}/MODEL")), "{l}");
         }
         assert!(l.contains("/models local"));
+    }
+}
+
+/// **The supervised-labelling loop, served from the store.**
+///
+/// Deliberately *not* routed through the live gate, and the reason is the deadlock
+/// `answers` is shaped around: the daemon has one worker, and a slash verb arrives
+/// on the socket reader's thread while the worker may be inside a turn. The ruling
+/// is a row in the store; the store is reachable from here and the gate is not.
+///
+/// **What that costs, stated rather than hidden:** `AdjudicatedGate::record_override`
+/// also resets the consecutive-denial breaker for that direction, because a human
+/// answering is the only thing that closes an open one. A ruling written through
+/// this path records the label and does **not** lift the breaker — so an operator
+/// clearing a run of denials with `/gate grant` will still meet the breaker on the
+/// next call. Lifting it needs the same channel `answers` uses, and that is not
+/// built here.
+pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply {
+    let Some(path) = store_path else {
+        return SlashReply {
+            lines: vec![
+                "no session store is configured (`--store`), so no decision has ever been \
+                 recorded and there is nothing to rule on. This is not an empty corpus — \
+                 it is no corpus."
+                    .into(),
+            ],
+            ok: false,
+        };
+    };
+    let store = match letibot_tokencore::store::Store::open(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return SlashReply { lines: vec![format!("opening {}: {e}", path.display())], ok: false };
+        }
+    };
+
+    match verb {
+        GateVerb::Counts => match store.corpus_counts() {
+            Ok(c) => SlashReply {
+                lines: vec![
+                    format!("{} decisions recorded", c.total),
+                    // Who decided and what it was measured against are independent,
+                    // and reporting one number for both is how a session where the
+                    // operator personally answered four hundred calls read as
+                    // "0 ruled on".
+                    format!("  {} you answered yourself", c.decided_by_operator),
+                    format!("  {} carry a model verdict", c.measured),
+                    format!(
+                        "  {} where you and the model differ — the rows a fine-tune is for",
+                        c.disagreements
+                    ),
+                    format!(
+                        "  {} decided by a rule or a mode with nobody asked",
+                        c.total.saturating_sub(c.decided_by_operator)
+                    ),
+                ],
+                ok: true,
+            },
+            Err(e) => SlashReply { lines: vec![e.to_string()], ok: false },
+        },
+
+        GateVerb::Recent { limit, only_unlabelled } => {
+            // `corpus(only_labelled)` narrows the other way, so the unlabelled queue
+            // is filtered here rather than by asking for a set that excludes itself.
+            let rows = match store.corpus(false, if *only_unlabelled { limit * 8 } else { *limit }) {
+                Ok(r) => r,
+                Err(e) => return SlashReply { lines: vec![e.to_string()], ok: false },
+            };
+            let mut lines = Vec::new();
+            // **"unruled" is not "nobody answered it".** A call the operator was put
+            // in front of already carries their judgement in `verdict_by`; listing it
+            // as work would ask the same question twice and get a worse answer the
+            // second time. The queue is the calls a rule or a mode settled with
+            // nobody asked, and which nobody has ruled on since.
+            for r in rows
+                .iter()
+                .filter(|r| !*only_unlabelled || (!r.asked && r.operator_kind.is_none()))
+                .take(*limit)
+            {
+                let label = match (&r.operator_kind, r.asked) {
+                    (Some(k), _) => format!("[{k}]"),
+                    // An unruled decision the operator was never shown is the one
+                    // auto mode produces, and the one worth ruling on. Marked apart
+                    // from one they answered live, which already carries their
+                    // judgement in the verdict.
+                    (None, false) => "[UNRULED]".to_string(),
+                    (None, true) => "[answered live]".to_string(),
+                };
+                lines.push(format!(
+                    "{label} {} · {} · {} → {}",
+                    r.request_id, r.tool, r.action, r.effect
+                ));
+                if let Some(v) = &r.model_verdict {
+                    lines.push(format!("        {v}"));
+                }
+            }
+            if lines.is_empty() {
+                lines.push(if *only_unlabelled {
+                    "nothing unruled — every decision was either answered by you or \
+                     already ruled on"
+                        .into()
+                } else {
+                    "no decisions recorded".into()
+                });
+            } else {
+                lines.push("`/gate ok|grant|revoke REQUEST-ID [note]`".into());
+            }
+            SlashReply { lines, ok: true }
+        }
+
+        GateVerb::Rule { request_id, kind, note } => {
+            match store.record_operator_ruling(request_id, kind, note) {
+                Ok(true) => SlashReply {
+                    lines: vec![format!("{request_id}: {kind}")],
+                    ok: true,
+                },
+                // Two reasons this returns false and they are different facts, so
+                // both are named rather than collapsed into "not found".
+                Ok(false) => SlashReply {
+                    lines: vec![format!(
+                        "{request_id} was not ruled: either no decision by that id is in \
+                         this store, or it already carries a ruling — the first one \
+                         stands, because the session acted on it. `/gate recent` shows \
+                         which."
+                    )],
+                    ok: false,
+                },
+                Err(e) => SlashReply { lines: vec![e.to_string()], ok: false },
+            }
+        }
     }
 }

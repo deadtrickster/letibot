@@ -275,10 +275,7 @@ impl HostBackend {
     /// Wire the shared "move the running command to the background" channel from the
     /// session's hub. The daemon calls this after construction; a backend a test
     /// built without it simply never sees a request.
-    pub fn with_promote_channel(
-        mut self,
-        channel: Arc<std::sync::Mutex<Option<String>>>,
-    ) -> Self {
+    pub fn with_promote_channel(mut self, channel: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.promote = channel;
         self
     }

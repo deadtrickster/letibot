@@ -42,8 +42,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::event::{
-    Decider, DecisionOption, DecisionOutcome as WireOutcome, OnTimeout as WireOnTimeout, OptionKind,
-    SessionEvent,
+    Decider, DecisionOption, DecisionOutcome as WireOutcome, ModelAdvice as WireAdvice,
+    OnTimeout as WireOnTimeout, OptionKind, SessionEvent,
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
 use letibot_tools::adjudicate::{
@@ -85,6 +85,14 @@ enum Slot {
 pub struct Answers {
     slots: Mutex<HashMap<String, Slot>>,
     cv: Condvar,
+    /// `(req_id, glob)` for the last answer that carried one, so
+    /// [`HeadAdjudicator::last_pattern`] can pick it up after `ask` returns.
+    ///
+    /// Keyed by request rather than kept as a bare `Option`, so a pattern can only
+    /// ever be applied to the call it was typed against. One ask is in flight per
+    /// daemon today — §13.2's single worker — and a value that is only correct
+    /// because of a property elsewhere is the kind that stops being correct quietly.
+    pattern: Mutex<Option<(String, String)>>,
 }
 
 impl Default for Answers {
@@ -98,6 +106,25 @@ impl Answers {
         Answers {
             slots: Mutex::new(HashMap::new()),
             cv: Condvar::new(),
+            pattern: Mutex::new(None),
+        }
+    }
+
+    /// The glob that came with the answer to `req_id`, taken so it cannot be read
+    /// twice.
+    ///
+    /// Returns `None` for any other request, which is the property this is keyed
+    /// for: a pattern typed against one call must never reach the rule written for
+    /// another.
+    pub fn take_pattern(&self, req_id: &str) -> Option<String> {
+        let mut g = self.pattern.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some((id, p)) if id == req_id => {
+                let p = p.clone();
+                *g = None;
+                Some(p)
+            }
+            _ => None,
         }
     }
 
@@ -177,7 +204,13 @@ impl Answers {
 
         let latency_ms = started.elapsed().as_millis() as u64;
         let decision = match waited {
-            Waited::Answered { reply, by } => settle(req, &reply, &by, latency_ms),
+            Waited::Answered { reply, by } => {
+                if let Reply::Permission { pattern: Some(p), .. } = &reply {
+                    *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((req.id.clone(), p.clone()));
+                }
+                settle(req, &reply, &by, latency_ms)
+            }
             Waited::TimedOut => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Timeout,
@@ -258,7 +291,10 @@ impl AnswerSink for Answers {
 /// already refused it at the door, so this arm is the belt to that pair of braces.
 fn settle(req: &AdjudicationRequest, reply: &Reply, by: &str, latency_ms: u64) -> AdjudicationDecision {
     match reply {
-        Reply::Permission { option_id } => AdjudicationDecision {
+        // The glob is not read here. `settle` builds the decision, and a pattern is
+        // not part of one — it is what the answer said to do with the RULE, and only
+        // `AllowAlways` writes one. `Answers::take_pattern` is where it is picked up.
+        Reply::Permission { option_id, .. } => AdjudicationDecision {
             request_id: req.id.clone(),
             outcome: DecisionOutcome::Selected {
                 option_id: option_id.clone(),
@@ -301,6 +337,16 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
             .first()
             .cloned()
             .unwrap_or_default(),
+        // Verbatim from the request the model was asked about, not re-derived. A
+        // head that reconstructed the verdict would render a guess about what the
+        // oracle said — `ModelBrief`'s rule, one layer out.
+        advice: req.advice.as_ref().map(|a| WireAdvice {
+            would: a.would.to_string(),
+            by: a.by.clone(),
+            basis: a.basis.clone(),
+            cites: a.cites.clone(),
+            latency_ms: a.latency_ms,
+        }),
         deadline: Some(deadline_ms),
         on_timeout: match req.on_timeout {
             OnTimeout::Deny => WireOnTimeout::Deny,
@@ -374,6 +420,10 @@ pub struct HeadAdjudicator {
     /// it is what keeps §4c's *"the trail as it was actually shown"* honest for a
     /// human adjudicator as well as a model one.
     shown: Mutex<Option<String>>,
+    /// The glob the operator typed with the last answer, for
+    /// [`Adjudicator::last_pattern`]. `None` when they typed none, which means *use
+    /// the pattern derived from the call*.
+    pattern: Mutex<Option<String>>,
 }
 
 impl HeadAdjudicator {
@@ -383,6 +433,7 @@ impl HeadAdjudicator {
             answers,
             budget: ANSWER_BUDGET,
             shown: Mutex::new(None),
+            pattern: Mutex::new(None),
         }
     }
 
@@ -395,7 +446,13 @@ impl HeadAdjudicator {
 impl Adjudicator for HeadAdjudicator {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
         *self.shown.lock().unwrap_or_else(|e| e.into_inner()) = Some(req.brief());
-        self.answers.ask(&self.hub, req, self.budget)
+        // **Cleared before the ask, not after.** A pattern left over from the
+        // previous answer would be applied to this one, which is a rule the operator
+        // did not write for a call they were not looking at when they typed it.
+        *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let d = self.answers.ask(&self.hub, req, self.budget);
+        *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = self.answers.take_pattern(&req.id);
+        d
     }
 
     fn describe(&self) -> String {
@@ -416,6 +473,13 @@ impl Adjudicator for HeadAdjudicator {
             heads.join(", "),
             self.budget.as_secs()
         )
+    }
+
+    fn last_pattern(&self) -> Option<String> {
+        self.pattern
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn last_brief(&self) -> Option<String> {
@@ -455,6 +519,7 @@ mod tests {
             baseline: "writes one file inside the project".into(),
             trail: Default::default(),
             prior: Vec::new(),
+            advice: None,
         }
     }
 
@@ -493,6 +558,7 @@ mod tests {
                             req_id: d.req_id.clone(),
                             reply: Reply::Permission {
                                 option_id: "allow_once".into(),
+                                pattern: None,
                             },
                         },
                     );
@@ -616,7 +682,8 @@ mod tests {
             "adj-nope",
             "alice",
             &Reply::Permission {
-                option_id: "allow_once".into()
+                option_id: "allow_once".into(),
+                pattern: None
             }
         ));
     }

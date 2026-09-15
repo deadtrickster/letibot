@@ -314,6 +314,7 @@ mod tests {
             options: vec![],
             choices: vec![],
             because: String::new(),
+            advice: None,
             deadline: Some(1),
             on_timeout: OnTimeout::Deny,
         });

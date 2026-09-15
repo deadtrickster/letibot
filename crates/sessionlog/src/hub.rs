@@ -129,7 +129,13 @@ pub enum CommandKind {
 pub enum Reply {
     /// An adjudication grant or denial, by option id — `AllowOnce`, `RejectOnce`
     /// and the rest live behind that id.
-    Permission { option_id: String },
+    Permission {
+        option_id: String,
+        /// The operator's own glob for an *always allow*, when they typed one.
+        /// `None` means *use the pattern derived from the call*, which is what
+        /// every head did before this existed — never *match nothing*.
+        pattern: Option<String>,
+    },
     /// A person's answer to a question: a choice, a note on it, or typed text
     /// (`PROTOCOL_VERSION` 5). Deliberately **not** expressed with
     /// [`crate::event::OptionKind`] — see `crates/sessionlog/src/question.rs`.
@@ -1154,6 +1160,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
+                    pattern: None,
                 },
             },
         );
@@ -1223,6 +1230,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
+                    pattern: None,
                 },
             },
         );
@@ -1296,6 +1304,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
+                    pattern: None,
                 },
             },
         );
@@ -1343,6 +1352,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
+                    pattern: None,
                 },
             },
         );
@@ -1383,6 +1393,7 @@ mod tests {
                 req_id: "r2".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
+                    pattern: None,
                 },
             },
         );

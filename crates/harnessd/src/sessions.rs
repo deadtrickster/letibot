@@ -209,6 +209,53 @@ impl<'a> Sessions<'a> {
         use crate::slash::{Slash, SlashReply};
         match Slash::parse(line) {
             Slash::Help(h) => SlashReply { lines: vec![h], ok: false },
+            Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
+            Slash::Supervise { want, at } => {
+                let Some(h) = self.open.get_mut(session_id) else {
+                    return SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    };
+                };
+                let mut lines = Vec::new();
+                if let Some(addr) = at {
+                    let ep = match letibot_turn::Endpoint::parse(&addr) {
+                        Ok(e) => e,
+                        Err(why) => return SlashReply { lines: vec![why], ok: false },
+                    };
+                    match h.attach_oracle(ep) {
+                        Ok(line) => lines.push(line),
+                        Err(why) => return SlashReply { lines: vec![why], ok: false },
+                    }
+                }
+                match want {
+                    // A report, not a change. `/supervise status` after a long turn
+                    // is the cheapest way to answer "is this being measured", and it
+                    // must not be the same keystroke as turning it on.
+                    None => SlashReply {
+                        lines: vec![if h.supervising() {
+                            "supervised: the guard model answers every gated call \
+                             before you do, and both verdicts land on the corpus row"
+                                .into()
+                        } else {
+                            "not supervised: calls ask whoever the mode says, and no \
+                             model verdict is recorded. `/supervise` turns it on."
+                                .into()
+                        }],
+                        ok: true,
+                    },
+                    Some(on) => match h.set_supervision(on) {
+                        Ok(line) => {
+                            lines.push(line);
+                            SlashReply { lines, ok: true }
+                        }
+                        Err(why) => {
+                            lines.push(why);
+                            SlashReply { lines, ok: false }
+                        }
+                    },
+                }
+            }
             Slash::FlowyStatus => crate::slash::flowy_status(self.seat.as_ref()),
             Slash::FlowyLogout => match self.detach_seat() {
                 Some(name) => SlashReply { lines: vec![format!("released seat `{name}`; the room is no longer heard")], ok: true },
@@ -986,8 +1033,21 @@ impl<'a> Sessions<'a> {
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "mode_set".into(),
+                        // **"is now" was a lie, and a dangerous one for a guard.**
+                        //
+                        // This writes the project's point to the mode store; the gate
+                        // is built from it in `Harness::open_with_registry`, once, when
+                        // a session opens. So the session reading this message keeps
+                        // the point it started at, and an operator told their project
+                        // "is now supervised" would believe every later call was being
+                        // measured when none of them were.
+                        //
+                        // Saying when it applies is the honest form and it is cheaper
+                        // than rebuilding a live gate mid-session, which would also
+                        // have to decide what happens to the grants and the breaker
+                        // taken under the old point.
                         detail: format!(
-                            "{} is now `{}` — {}",
+                            "{} is set to `{}` from the NEXT session in this project —                              this one keeps the point it opened at. {}",
                             workspace.display(),
                             mode.name,
                             mode.summary

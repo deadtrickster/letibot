@@ -94,6 +94,7 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
         ],
         choices: Vec::new(),
         because: String::new(),
+        advice: None,
         deadline: None,
         on_timeout: OnTimeout::Deny,
     }
@@ -110,6 +111,7 @@ pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> Sessi
         options: Vec::new(),
         choices: choices.iter().map(|c| (*c).into()).collect(),
         because: because.into(),
+        advice: None,
         deadline: None,
         on_timeout: OnTimeout::Deny,
     }

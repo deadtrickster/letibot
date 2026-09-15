@@ -321,6 +321,19 @@ pub struct Config {
     pub allow_bash: bool,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
+    /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
+    /// Required by [`AdjudicatorChoice::Model`] and meaningless without it.
+    pub oracle: Option<Endpoint>,
+    /// Layer B's latency budget. The trait's default is 400ms and
+    /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
+    /// that decides whether a given model can hold the seat at all.
+    pub oracle_budget: std::time::Duration,
+    /// **Start with the guard model consulted on every gated call.**
+    ///
+    /// Only a starting value: `/supervise` moves it at run time, which is the point
+    /// of it being a flag on the gate rather than a mode. Meaningless without
+    /// `oracle`, and the gate says so by name rather than pretending.
+    pub supervise: bool,
     /// **Whether the intent check reads the assistant's prose as well as its tools.**
     ///
     /// Off by default, and the asymmetry is deliberate. The tool-declared half of
@@ -386,6 +399,13 @@ pub struct Config {
 /// to make yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdjudicatorChoice {
+    /// [`crate::oracle::HttpOracle`] behind [`letibot_tools::ModelAdjudicator`].
+    ///
+    /// The only choice that can satisfy [`letibot_tools::mode::Prereq::Oracle`],
+    /// and therefore the only one under which `automode` opens. It needs
+    /// `--oracle HOST:PORT`; without one it is a choice that cannot be built,
+    /// and `parse` says so rather than falling back to a person.
+    Model,
     /// [`crate::answers::HeadAdjudicator`] over the session socket.
     ///
     /// **The default for any seat that can reach the gate**, and the reason is which
@@ -437,13 +457,10 @@ impl AdjudicatorChoice {
                  does not seat the tools, so nothing is claimed and nothing refuses."
                     .into(),
             ),
-            "model" => Err(
-                "the model adjudicator is not wired: `ModelAdjudicator` takes an \
-                 `AuthorisationOracle` and this build has no oracle behind it, and its \
-                 always-ask list is unreviewed (TODO.md T25/D13). It would refuse every \
-                 call on an uncollected trail, which is `console` with extra steps"
-                    .into(),
-            ),
+            // Wired as of the HttpOracle. It still needs `--oracle HOST:PORT`;
+            // `Harness::open` refuses by name when the choice is made without
+            // one, rather than silently falling back to a person.
+            "model" => Ok(AdjudicatorChoice::Model),
             other => Err(format!(
                 "unknown adjudicator `{other}`; this build has head, console"
             )),
@@ -454,6 +471,7 @@ impl AdjudicatorChoice {
         match self {
             AdjudicatorChoice::Head => "head",
             AdjudicatorChoice::Console => "console",
+            AdjudicatorChoice::Model => "model",
         }
     }
 }
@@ -553,6 +571,9 @@ impl Config {
             fabric: None,
             allow_bash: false,
             adjudicator: AdjudicatorChoice::default(),
+            oracle: None,
+            oracle_budget: std::time::Duration::from_millis(400),
+            supervise: false,
             intent_prose: false,
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
@@ -838,6 +859,34 @@ impl Config {
                 ));
             }
         }
+        // **The corpus.** Only worth a line where something can reach the gate, for
+        // the trail's reason: a read-only seat decides nothing to record.
+        if wiring.has_write_tools || wiring.has_exec_tools || wiring.has_network_tools {
+            match wiring.corpus {
+                Some(c) => out.push(Disclosure::on(
+                    "corpus",
+                    &format!(
+                        "every decision this gate makes is written to the session \
+                         store, with the model's verdict and the operator's ruling in \
+                         separate columns so a disagreement survives as a label. \
+                         {} decisions recorded: {} you answered yourself, {} measured \
+                         against a model, {} where the two differ. \
+                         `/gate recent` shows them; `/gate ok|grant|revoke ID [note]` \
+                         rules on one after the fact.",
+                        c.total, c.decided_by_operator, c.measured, c.disagreements
+                    ),
+                )),
+                None => out.push(Disclosure::off(
+                    "corpus",
+                    "DISCARDED",
+                    "decisions are kept in memory and lost when this daemon exits. \
+                     Nothing distinguishes this from a session that is keeping them, \
+                     which is why it is said out loud. A labelled decision can only \
+                     be collected as a side effect of working, so a run without a \
+                     store is a run whose evidence cannot be recovered afterwards.",
+                )),
+            }
+        }
         // **The intent diff**, T21.3's error signal.
         if wiring.intent_encoder {
             out.push(Disclosure::on(
@@ -1044,6 +1093,16 @@ pub struct GateWiring {
     /// `false` means monitors are polled: `job_list` shows a firing, with why, and
     /// nothing acts on it until the model happens to look.
     pub monitor_wake: bool,
+    /// Whether the gate's decisions are written somewhere durable, and what is
+    /// already there.
+    ///
+    /// `None` means the corpus is being **discarded**: the rows live in a `Vec` on
+    /// the gate and die with this daemon. That was the state for every run this
+    /// harness has ever made, and it is not a state to be in silently — the labelled
+    /// rows are the expensive ones, they can only be collected as a side effect of
+    /// working, and nothing about a session that is dropping them looks different
+    /// from one that is keeping them.
+    pub corpus: Option<letibot_tokencore::store::CorpusCounts>,
 }
 
 impl GateWiring {
@@ -1064,6 +1123,7 @@ impl GateWiring {
             trail_installed: false,
             intent_encoder: false,
             monitor_wake: false,
+            corpus: None,
         }
     }
 }
@@ -1313,17 +1373,20 @@ mod tests {
         assert_eq!(Seat::parse("opencode").unwrap(), Seat::Leticode);
     }
 
-    /// The model adjudicator is **named as unwired**, not silently missing.
+    /// The model adjudicator **parses, and refuses by name without an oracle.**
     ///
-    /// `--adjudicator model` is the thing somebody reaches for after reading
-    /// `docs/boundary-and-adjudication.md`, and "unknown adjudicator" would read as
-    /// this build not having the concept. It has the concept and no oracle behind
-    /// it (T25/D13), which is a different fact and the one worth saying.
+    /// It used to fail at parse time with a message about T25/D13, because there was
+    /// no oracle in the build at all. There is one now (`crate::oracle::HttpOracle`),
+    /// so the choice is legal and the missing piece moved one layer down: an
+    /// endpoint. The refusal it produces there names `--oracle` — see
+    /// `Harness::open_with_registry`. Rejecting it here again would say this build
+    /// has no model adjudicator, which is no longer true.
     #[test]
-    fn the_model_adjudicator_says_why_it_is_not_here() {
-        let e = AdjudicatorChoice::parse("model").unwrap_err();
-        assert!(e.contains("oracle"), "{e}");
-        assert!(e.contains("D13"), "{e}");
+    fn the_model_adjudicator_parses_now_that_an_oracle_exists() {
+        assert_eq!(
+            AdjudicatorChoice::parse("model").expect("model is a real choice"),
+            AdjudicatorChoice::Model
+        );
     }
 
     /// Every seam this strand wired is disclosed, and each one **moves** with the

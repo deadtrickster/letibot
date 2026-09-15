@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
@@ -24,8 +24,14 @@ impl Default for LspConfig {
         let mut servers = BTreeMap::new();
         servers.insert("rust".into(), vec!["rust-analyzer".into()]);
         servers.insert("go".into(), vec!["gopls".into()]);
-        servers.insert("python".into(), vec!["pyright-langserver".into(), "--stdio".into()]);
-        servers.insert("typescript".into(), vec!["typescript-language-server".into(), "--stdio".into()]);
+        servers.insert(
+            "python".into(),
+            vec!["pyright-langserver".into(), "--stdio".into()],
+        );
+        servers.insert(
+            "typescript".into(),
+            vec!["typescript-language-server".into(), "--stdio".into()],
+        );
         LspConfig { servers }
     }
 }
@@ -70,8 +76,18 @@ fn read_message(r: &mut BufReader<ChildStdout>) -> Option<Value> {
     serde_json::from_slice(&buf).ok()
 }
 
-fn request(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>, id: u64, method: &str, params: Value) -> Option<Value> {
-    write_message(stdin, &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})).ok()?;
+fn request(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Option<Value> {
+    write_message(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+    )
+    .ok()?;
     loop {
         let msg = read_message(stdout)?;
         if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
@@ -81,7 +97,10 @@ fn request(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>, id: u64,
 }
 
 fn notify(stdin: &mut ChildStdin, method: &str, params: Value) -> std::io::Result<()> {
-    write_message(stdin, &json!({"jsonrpc":"2.0","method":method,"params":params}))
+    write_message(
+        stdin,
+        &json!({"jsonrpc":"2.0","method":method,"params":params}),
+    )
 }
 
 fn spawn(language: &str, root: &str, config: &LspConfig) -> Result<Server, String> {
@@ -100,11 +119,21 @@ fn spawn(language: &str, root: &str, config: &LspConfig) -> Result<Server, Strin
         .map_err(|e| format!("could not start `{program}` (is it installed?): {e}"))?;
     let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-    Ok(Server { child, stdin, stdout })
+    Ok(Server {
+        child,
+        stdin,
+        stdout,
+    })
 }
 
 /// The diagnostics for one file, from a live server.
-pub fn diagnostics(path: &str, language: &str, root: &str, content: &str, config: &LspConfig) -> Result<Vec<String>, String> {
+pub fn diagnostics(
+    path: &str,
+    language: &str,
+    root: &str,
+    content: &str,
+    config: &LspConfig,
+) -> Result<Vec<String>, String> {
     let mut s = spawn(language, root, config)?;
 
     let root_uri = format!("file://{}", root.trim_end_matches('/'));
@@ -159,7 +188,12 @@ pub fn diagnostics(path: &str, language: &str, root: &str, content: &str, config
             4 => "hint",
             _ => "?",
         };
-        let range = item.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|v| v.as_i64()).unwrap_or(0);
+        let range = item
+            .get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|s| s.get("line"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let message = item.get("message").and_then(|v| v.as_str()).unwrap_or("?");
         out.push(format!("{}:{} {}: {message}", range + 1, sev, ""));
     }
@@ -199,20 +233,38 @@ impl Tool for LspTool {
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
-            return Invocation::failed("lsp needs a path", "call `lsp` with `path` set to the file to check.");
+            return Invocation::failed(
+                "lsp needs a path",
+                "call `lsp` with `path` set to the file to check.",
+            );
         };
         let Some(language) = args.get("language").and_then(|v| v.as_str()) else {
-            return Invocation::failed("lsp needs a language", "call `lsp` with `language` set to rust, go, python or typescript.");
+            return Invocation::failed(
+                "lsp needs a language",
+                "call `lsp` with `language` set to rust, go, python or typescript.",
+            );
         };
         let content = match ctx.backend.read(path) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(e) => return Invocation::failed(format!("could not read {path}: {e}"), "check the path is inside the workspace and try again."),
+            Err(e) => {
+                return Invocation::failed(
+                    format!("could not read {path}: {e}"),
+                    "check the path is inside the workspace and try again.",
+                );
+            }
         };
         let root = ctx.backend.root_path().unwrap_or_default();
         match diagnostics(path, language, &root, &content, &self.config) {
             Ok(items) if items.is_empty() => Invocation::ok("no diagnostics."),
-            Ok(items) => Invocation::ok(format!("{} diagnostic(s):\n{}", items.len(), items.join("\n"))),
-            Err(e) => Invocation::failed(e, "the language server refused; check the language name and that its server is installed."),
+            Ok(items) => Invocation::ok(format!(
+                "{} diagnostic(s):\n{}",
+                items.len(),
+                items.join("\n")
+            )),
+            Err(e) => Invocation::failed(
+                e,
+                "the language server refused; check the language name and that its server is installed.",
+            ),
         }
     }
 }

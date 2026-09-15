@@ -99,7 +99,117 @@ use crate::vocab::TokenId;
 /// the migration test's fixture, which builds a v1 store by dropping this column.
 pub const ROLE_COLUMN: () = ();
 
-pub const SCHEMA_VERSION: i64 = 4;
+/// One corpus row as stored. `trail_json` stays serialised: a reader that wants
+/// the structure deserialises it, and one that wants to write a training file
+/// does not pay for a parse it will not use.
+#[derive(Debug, Clone)]
+pub struct StoredAdjudication {
+    pub request_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub decided_ms: i64,
+    pub action: String,
+    pub baseline: String,
+    pub tier: String,
+    pub trail_json: String,
+    pub shown: Option<String>,
+    pub tool: String,
+    pub arguments_json: String,
+    pub mode: String,
+    pub options_json: String,
+    pub agent: String,
+    pub model_verdict: Option<String>,
+    pub verdict: Option<String>,
+    pub verdict_by: Option<String>,
+    pub verdict_basis: Option<String>,
+    pub p_allow: Option<f64>,
+    pub oracle_ms: Option<i64>,
+    pub oracle_model: Option<String>,
+    pub brief_sha: Option<String>,
+    pub effect: String,
+    pub asked: bool,
+    pub operator_kind: Option<String>,
+    pub operator_note: Option<String>,
+    pub operator_latency_ms: Option<i64>,
+    pub corpus_version: i64,
+}
+
+/// What the corpus holds, for the disclosure and for `/gate corpus`.
+///
+/// Four numbers rather than three, because the earlier three answered the wrong
+/// question. `labelled` counted `operator_kind IS NOT NULL`, which only fills when
+/// there is a model verdict to agree or disagree with — so a session at `always-ask`
+/// where the operator personally answered four hundred calls read as
+/// *"412 decisions, 0 ruled on"*. Every one of those was a decision a human made.
+///
+/// The split that matters is **who decided** against **what it was measured against**,
+/// and they are independent:
+///
+/// | | |
+/// |---|---|
+/// | `decided_by_operator` | a person answered THIS call. The primary dataset: input → decision |
+/// | `measured` | an oracle also gave a verdict on it. What calibration needs |
+/// | `disagreements` | the two differ. What a fine-tune is for |
+///
+/// A row can be in all three, in `decided_by_operator` alone (`always-ask`, no
+/// oracle), or in `measured` alone (`automode`, nobody watching).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CorpusCounts {
+    pub total: u64,
+    /// `asked = 1`: a person was put in front of this call and answered it.
+    pub decided_by_operator: u64,
+    /// An oracle was actually consulted and gave a verdict. Not merely "a model
+    /// adjudicator answered" — see `ModelAdvice::consulted`.
+    pub measured: u64,
+    /// The operator ruled against what the model would have done.
+    pub disagreements: u64,
+}
+
+/// The write shape for one decision. A struct rather than an argument list
+/// because there are twenty of them and two adjacent `Option<String>`s passed
+/// positionally is a defect waiting for the day somebody adds a twenty-first.
+///
+/// Separate from [`StoredAdjudication`] for [`SessionRecord`]'s reason: the read
+/// shape carries what the row became, including the operator's ruling, which by
+/// construction cannot exist yet at the moment this one is built.
+#[derive(Debug, Clone, Default)]
+pub struct NewAdjudication {
+    pub request_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub action: String,
+    pub baseline: String,
+    pub tier: String,
+    pub trail_json: String,
+    pub shown: Option<String>,
+    pub tool: String,
+    pub arguments_json: String,
+    pub mode: String,
+    pub options_json: String,
+    pub agent: String,
+    pub model_verdict: Option<String>,
+    pub verdict: Option<String>,
+    pub verdict_by: Option<String>,
+    pub verdict_basis: Option<String>,
+    pub p_allow: Option<f64>,
+    pub oracle_ms: Option<i64>,
+    pub oracle_model: Option<String>,
+    pub brief_sha: Option<String>,
+    pub effect: String,
+    /// Whether the operator was actually put in front of this decision.
+    pub asked: bool,
+}
+
+pub const SCHEMA_VERSION: i64 = 5;
+
+/// **What this row's columns mean.** Stamped on every corpus row.
+///
+/// Distinct from [`SCHEMA_VERSION`], which says what the *file* holds. A column
+/// can keep its name and its type and change what it records — a `p_allow` that
+/// switched from a raw softmax to a calibrated one is the same schema and a
+/// different dataset. A trainer that pools two meanings under one name produces a
+/// model fitted to the seam.
+pub const CORPUS_VERSION: i64 = 1;
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -169,6 +279,90 @@ CREATE TABLE IF NOT EXISTS todo (
     todos_json  TEXT NOT NULL,   -- JSON array of {content, status}
     updated_ms  INTEGER NOT NULL
 );
+
+-- **The adjudication corpus.** Every decision this harness makes, and every
+-- decision the operator makes about it, as one row.
+--
+-- It exists because a fine-tune needs labelled disagreements and they can only
+-- be collected as a side effect of working. `AdjudicationRow` was already built
+-- for this -- it keeps `shown` verbatim rather than reconstructed, and keeps the
+-- model's verdict and the operator's answer in SEPARATE columns so the
+-- disagreement survives as the label -- but the rows lived in a Vec on the gate
+-- and died with the process. Every decision made before this table existed is
+-- gone.
+--
+-- NOT append-only by trigger, unlike transcript_item, and the reason is
+-- `operator_kind`: the operator answers AFTER the gate acted, sometimes turns
+-- later, so a row is written when the decision is made and updated once when the
+-- human rules on it. That is the only mutation, and it only ever fills columns
+-- that were NULL.
+CREATE TABLE IF NOT EXISTS adjudication (
+    request_id     TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    turn_id        TEXT NOT NULL,
+    decided_ms     INTEGER NOT NULL,
+    -- Layer A. `action` is the normalised summary plus stages, never raw command
+    -- text, for the same reason the oracle is not shown it.
+    action         TEXT NOT NULL,
+    baseline       TEXT NOT NULL,
+    tier           TEXT NOT NULL,
+    -- The trail as rendered into the brief, and the exact bytes the oracle saw.
+    -- `shown` is NULL when no oracle was consulted -- a human-only decision is
+    -- still a corpus row, and "nobody asked a model" is a fact about it.
+    trail_json     TEXT NOT NULL,
+    shown          TEXT,
+    -- **The input, unnormalised.** `action` above is layer A's reading of it, and
+    -- a corpus that kept only the reading can never be re-featurised when layer A
+    -- changes -- which it will, because the whole point of collecting this is to
+    -- change it. Stored as the gate received it.
+    tool           TEXT NOT NULL DEFAULT '',
+    arguments_json TEXT NOT NULL DEFAULT '{}',
+    -- Where the gate was standing. A decision is not interpretable without it:
+    -- the same call admits under allow-all and asks under always-ask, and a row
+    -- that dropped this teaches the model to ignore the mode.
+    mode           TEXT NOT NULL DEFAULT '',
+    options_json   TEXT NOT NULL DEFAULT '[]',
+    agent          TEXT NOT NULL DEFAULT '',
+    -- Layer B, in parts. `model_verdict` is the formatted line the disclosure
+    -- shows; the three columns beside it are what a trainer actually reads, and
+    -- re-parsing prose to recover them is how a corpus rots.
+    model_verdict  TEXT,
+    verdict        TEXT,
+    verdict_by     TEXT,
+    verdict_basis  TEXT,
+    -- Calibrated P(allow) where the oracle returned logprobs, NULL where it did
+    -- not. A threshold cannot be fitted from hard labels alone, and "the model
+    -- was 0.51 sure" and "the model was 0.99 sure" are the same ALLOW string.
+    p_allow        REAL,
+    oracle_ms      INTEGER,
+    oracle_model   TEXT,
+    -- Which brief format produced `shown`. A corpus spanning a prompt change is
+    -- two datasets, and without this nobody can tell where the seam is.
+    brief_sha      TEXT,
+    effect         TEXT NOT NULL,
+    -- **Was a human actually asked?** The operator named this case directly: an
+    -- UNSURE the gate surfaced and the operator answered anyway is a corpus row,
+    -- and it is a DIFFERENT row from one the gate settled alone. Derivable from
+    -- no other column here.
+    asked          INTEGER NOT NULL DEFAULT 0,
+    -- The label. Filled later, never overwriting model_verdict.
+    operator_kind  TEXT,
+    operator_note  TEXT,
+    operator_ms    INTEGER,
+    -- How long the human took. A ruling given in half a second and one given
+    -- after forty are not the same label, and the second is the one worth most.
+    operator_latency_ms INTEGER,
+    -- The meaning of this row's columns. Rows written before a semantic change
+    -- stay readable because they say which semantics they were written under.
+    corpus_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS adjudication_by_session
+    ON adjudication (session_id, decided_ms);
+
+-- The rows a fine-tune is for: the operator ruled, and ruled against the gate.
+CREATE INDEX IF NOT EXISTS adjudication_disagreements
+    ON adjudication (operator_kind) WHERE operator_kind IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS transcript_item_by_item_id
     ON transcript_item (transcript_id, item_id);
@@ -541,6 +735,48 @@ impl Store {
             // every existing row: a session that predates v4 is a top-level one.
             self.conn.execute_batch(
                 "ALTER TABLE session ADD COLUMN parent_session_id TEXT",
+            )?;
+        }
+        if from < 5 {
+            // v5: the adjudication corpus. Created here for a migrated store,
+            // which never runs SCHEMA_SQL.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS adjudication (
+    request_id     TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    turn_id        TEXT NOT NULL,
+    decided_ms     INTEGER NOT NULL,
+    action         TEXT NOT NULL,
+    baseline       TEXT NOT NULL,
+    tier           TEXT NOT NULL,
+    trail_json     TEXT NOT NULL,
+    shown          TEXT,
+    tool           TEXT NOT NULL DEFAULT '',
+    arguments_json TEXT NOT NULL DEFAULT '{}',
+    mode           TEXT NOT NULL DEFAULT '',
+    options_json   TEXT NOT NULL DEFAULT '[]',
+    agent          TEXT NOT NULL DEFAULT '',
+    model_verdict  TEXT,
+    verdict        TEXT,
+    verdict_by     TEXT,
+    verdict_basis  TEXT,
+    p_allow        REAL,
+    oracle_ms      INTEGER,
+    oracle_model   TEXT,
+    brief_sha      TEXT,
+    effect         TEXT NOT NULL,
+    asked          INTEGER NOT NULL DEFAULT 0,
+    operator_kind  TEXT,
+    operator_note  TEXT,
+    operator_ms    INTEGER,
+    operator_latency_ms INTEGER,
+    corpus_version INTEGER NOT NULL DEFAULT 1
+);
+
+                 CREATE INDEX IF NOT EXISTS adjudication_by_session
+                     ON adjudication (session_id, decided_ms);
+                 CREATE INDEX IF NOT EXISTS adjudication_disagreements
+                     ON adjudication (operator_kind) WHERE operator_kind IS NOT NULL;",
             )?;
         }
         Ok(())
@@ -993,6 +1229,168 @@ impl Store {
     /// Escape hatch for the tests below and for `EXPLAIN`. Read-only by
     /// convention only, which is why the append-only guarantees live in triggers
     /// rather than in whoever holds this reference.
+    // ----------------------------------------------------------- adjudication
+
+    /// Record one decision. Called when the gate acts, not when the operator
+    /// answers — the two are separate events and sometimes separate turns.
+    ///
+    /// Idempotent on `request_id`: a retried write must not produce a second row
+    /// for one decision, and must not clobber an operator ruling that arrived in
+    /// between, which is why this is INSERT OR IGNORE rather than REPLACE.
+    pub fn record_adjudication(&self, a: &NewAdjudication) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO adjudication
+               (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
+                trail_json, shown, tool, arguments_json, mode, options_json, agent,
+                model_verdict, verdict, verdict_by, verdict_basis, p_allow, oracle_ms,
+                oracle_model, brief_sha, effect, asked, corpus_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+            rusqlite::params![
+                a.request_id,
+                a.session_id,
+                a.turn_id,
+                now_ms(),
+                a.action,
+                a.baseline,
+                a.tier,
+                a.trail_json,
+                a.shown,
+                a.tool,
+                a.arguments_json,
+                a.mode,
+                a.options_json,
+                a.agent,
+                a.model_verdict,
+                a.verdict,
+                a.verdict_by,
+                a.verdict_basis,
+                a.p_allow,
+                a.oracle_ms,
+                a.oracle_model,
+                a.brief_sha,
+                a.effect,
+                a.asked as i64,
+                CORPUS_VERSION,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// The operator's ruling on a decision already recorded. **This is the
+    /// label**, and it never touches `model_verdict`: a row where the two differ
+    /// is the row a fine-tune is for, and overwriting one with the other would
+    /// destroy exactly the signal being collected.
+    ///
+    /// Only fills columns that are NULL. An operator who rules twice on one
+    /// request keeps the first ruling, because the first is the one the session
+    /// acted on.
+    pub fn record_operator_ruling(
+        &self,
+        request_id: &str,
+        kind: &str,
+        note: &str,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let n = self.conn.execute(
+            "UPDATE adjudication
+                SET operator_kind = ?2,
+                    operator_note = ?3,
+                    operator_ms = ?4,
+                    -- Computed from the row's own `decided_ms` rather than passed
+                    -- in: the caller does not reliably know when the gate decided,
+                    -- and a latency measured against the wrong zero is worse than
+                    -- none.
+                    operator_latency_ms = ?4 - decided_ms
+              WHERE request_id = ?1 AND operator_kind IS NULL",
+            rusqlite::params![request_id, kind, note, now],
+        )?;
+
+        Ok(n > 0)
+    }
+
+    /// The corpus, newest first. `only_labelled` narrows to rows the operator
+    /// ruled on — the labelled set — because "every decision" and "every
+    /// decision a human checked" are different datasets and a caller must say
+    /// which it wants.
+    pub fn corpus(&self, only_labelled: bool, limit: usize) -> Result<Vec<StoredAdjudication>> {
+        const COLS: &str = "request_id, session_id, turn_id, decided_ms, action, baseline,
+                    tier, trail_json, shown, tool, arguments_json, mode, options_json,
+                    agent, model_verdict, verdict, verdict_by, verdict_basis, p_allow,
+                    oracle_ms, oracle_model, brief_sha, effect, asked, operator_kind,
+                    operator_note, operator_latency_ms, corpus_version";
+        let sql = if only_labelled {
+            format!(
+                "SELECT {COLS} FROM adjudication WHERE operator_kind IS NOT NULL
+                  ORDER BY decided_ms DESC LIMIT ?1"
+            )
+        } else {
+            format!("SELECT {COLS} FROM adjudication ORDER BY decided_ms DESC LIMIT ?1")
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([limit as i64], |r| {
+                Ok(StoredAdjudication {
+                    request_id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    turn_id: r.get(2)?,
+                    decided_ms: r.get(3)?,
+                    action: r.get(4)?,
+                    baseline: r.get(5)?,
+                    tier: r.get(6)?,
+                    trail_json: r.get(7)?,
+                    shown: r.get(8)?,
+                    tool: r.get(9)?,
+                    arguments_json: r.get(10)?,
+                    mode: r.get(11)?,
+                    options_json: r.get(12)?,
+                    agent: r.get(13)?,
+                    model_verdict: r.get(14)?,
+                    verdict: r.get(15)?,
+                    verdict_by: r.get(16)?,
+                    verdict_basis: r.get(17)?,
+                    p_allow: r.get(18)?,
+                    oracle_ms: r.get(19)?,
+                    oracle_model: r.get(20)?,
+                    brief_sha: r.get(21)?,
+                    effect: r.get(22)?,
+                    asked: r.get::<_, i64>(23)? != 0,
+                    operator_kind: r.get(24)?,
+                    operator_note: r.get(25)?,
+                    operator_latency_ms: r.get(26)?,
+                    corpus_version: r.get(27)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    /// Counts for the startup disclosure: a corpus nobody can see the size of is
+    /// a corpus nobody maintains.
+    pub fn corpus_counts(&self) -> Result<CorpusCounts> {
+        let one = |sql: &str| -> Result<u64> {
+            let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
+            Ok(n as u64)
+        };
+        Ok(CorpusCounts {
+            total: one("SELECT COUNT(*) FROM adjudication")?,
+            decided_by_operator: one("SELECT COUNT(*) FROM adjudication WHERE asked = 1")?,
+            // `verdict` is NULL only where nothing answered at all; a short-circuit
+            // that never reached an oracle writes the row with no `model_verdict`,
+            // so this counts rows an oracle actually spoke on.
+            measured: one(
+                "SELECT COUNT(*) FROM adjudication
+                  WHERE model_verdict IS NOT NULL AND verdict_by IS NOT NULL",
+            )?,
+            disagreements: one(
+                "SELECT COUNT(*) FROM adjudication
+                  WHERE operator_kind IN ('granted', 'revoked')",
+            )?,
+        })
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
@@ -1434,5 +1832,195 @@ mod tests {
         // An empty write clears; the row remains and answers empty.
         s.put_todos("sess-1", &[]).unwrap();
         assert!(s.todos("sess-1").unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod corpus_tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open_in_memory().expect("in-memory store")
+    }
+
+    fn a_session(s: &Store) -> String {
+        let id = "s-corpus-1".to_string();
+        s.put_session(&SessionRecord {
+            id: id.clone(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/tmp".into(),
+            owner: "op".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("session");
+        id
+    }
+
+    fn a_decision(request_id: &str, session_id: &str) -> NewAdjudication {
+        NewAdjudication {
+            request_id: request_id.into(),
+            session_id: session_id.into(),
+            turn_id: "t-1".into(),
+            action: "destroy /p/target".into(),
+            baseline: "ask — destruction".into(),
+            tier: "AlwaysAsk".into(),
+            trail_json: "{}".into(),
+            tool: "bash".into(),
+            arguments_json: r#"{"command":"rm -rf /p/target"}"#.into(),
+            mode: "always-ask".into(),
+            options_json: "[]".into(),
+            agent: "coder".into(),
+            effect: "refuse".into(),
+            ..Default::default()
+        }
+    }
+
+    /// The property the whole table exists for: the model's verdict and the
+    /// operator's ruling are separate columns, and recording the ruling does not
+    /// touch the verdict. A row where they differ is the training example.
+    #[test]
+    fn an_operator_ruling_never_overwrites_the_model_verdict() {
+        let s = store();
+        let sid = a_session(&s);
+
+        s.record_adjudication(&NewAdjudication {
+            shown: Some("<brief bytes>".into()),
+            model_verdict: Some("authorised by model-oracle".into()),
+            verdict: Some("allow".into()),
+            verdict_by: Some("model-oracle".into()),
+            p_allow: Some(0.87),
+            oracle_ms: Some(310),
+            asked: true,
+            ..a_decision("req-1", &sid)
+        })
+        .expect("record");
+
+        assert!(s.record_operator_ruling("req-1", "revoked", "no, not that one").expect("rule"));
+
+        let row = &s.corpus(false, 10).expect("corpus")[0];
+        assert_eq!(row.model_verdict.as_deref(), Some("authorised by model-oracle"));
+        assert_eq!(row.operator_kind.as_deref(), Some("revoked"));
+        assert_eq!(row.operator_note.as_deref(), Some("no, not that one"));
+        assert_eq!(row.shown.as_deref(), Some("<brief bytes>"));
+        assert_eq!(row.p_allow, Some(0.87));
+        assert!(row.asked);
+        assert_eq!(row.corpus_version, CORPUS_VERSION);
+        // The un-normalised input survives, so the row can be re-featurised when
+        // layer A changes -- which is the reason for collecting it at all.
+        assert_eq!(row.tool, "bash");
+        assert!(row.arguments_json.contains("rm -rf"));
+        // The latency is measured against the row's own decision time.
+        assert!(row.operator_latency_ms.is_some_and(|ms| ms >= 0));
+    }
+
+    /// A decision with no oracle is still a corpus row. "Nobody asked a model"
+    /// is a fact about the decision, not a reason to drop it -- those rows are
+    /// what an unsure-then-human loop produces.
+    #[test]
+    fn a_human_only_decision_is_recorded_with_no_verdict() {
+        let s = store();
+        let sid = a_session(&s);
+
+        s.record_adjudication(&NewAdjudication {
+            asked: true,
+            ..a_decision("req-2", &sid)
+        })
+        .expect("record");
+        s.record_operator_ruling("req-2", "upheld", "correct to ask").expect("rule");
+
+        let row = &s.corpus(true, 10).expect("corpus")[0];
+        assert!(row.shown.is_none());
+        assert!(row.model_verdict.is_none());
+        assert!(row.p_allow.is_none());
+        assert!(row.asked);
+        assert_eq!(row.operator_kind.as_deref(), Some("upheld"));
+    }
+
+    /// Writing twice for one request must not double-count, and must not erase a
+    /// ruling that arrived between the two writes.
+    #[test]
+    fn a_repeated_write_neither_duplicates_nor_clobbers() {
+        let s = store();
+        let sid = a_session(&s);
+
+        s.record_adjudication(&a_decision("req-3", &sid)).expect("first");
+        s.record_operator_ruling("req-3", "granted", "yes").expect("rule");
+        s.record_adjudication(&a_decision("req-3", &sid)).expect("second");
+
+        let rows = s.corpus(false, 10).expect("corpus");
+        assert_eq!(rows.len(), 1, "one decision is one row");
+        assert_eq!(rows[0].operator_kind.as_deref(), Some("granted"));
+
+        // And a second ruling keeps the first: the session acted on the first.
+        assert!(!s.record_operator_ruling("req-3", "revoked", "changed mind").expect("again"));
+        assert_eq!(
+            s.corpus(false, 10).expect("corpus")[0].operator_kind.as_deref(),
+            Some("granted")
+        );
+    }
+
+    /// **Who decided and what it was measured against are independent counts.**
+    ///
+    /// The earlier version of this reported one number for both, so a session at
+    /// `always-ask` where the operator personally answered every call read as
+    /// "0 ruled on". Every one of those was a decision a human made.
+    #[test]
+    fn counts_separate_who_decided_from_what_was_measured() {
+        let s = store();
+        let sid = a_session(&s);
+        let add = |id: &str, asked: bool, verdict: Option<&str>, rule: Option<&str>| {
+            s.record_adjudication(&NewAdjudication {
+                asked,
+                model_verdict: verdict.map(str::to_string),
+                verdict_by: verdict.map(|_| "model:test".to_string()),
+                ..a_decision(id, &sid)
+            })
+            .expect("record");
+            if let Some(k) = rule {
+                s.record_operator_ruling(id, k, "").expect("rule");
+            }
+        };
+
+        // always-ask: the operator answered, no oracle existed.
+        add("a1", true, None, None);
+        add("a2", true, None, None);
+        // automode: an oracle decided, nobody was asked.
+        add("m1", false, Some("admit by model:test"), None);
+        // supervised: both, and they agreed.
+        add("s1", true, Some("admit by model:test"), Some("upheld"));
+        // supervised: both, and they did not.
+        add("s2", true, Some("admit by model:test"), Some("revoked"));
+        // a rule settled it, nobody asked and no model was reachable.
+        add("r1", false, None, None);
+
+        let c = s.corpus_counts().expect("counts");
+        assert_eq!(c.total, 6);
+        assert_eq!(c.decided_by_operator, 4, "a1 a2 s1 s2 — every call a person answered");
+        assert_eq!(c.measured, 3, "m1 s1 s2 — every call an oracle spoke on");
+        assert_eq!(c.disagreements, 1, "s2 alone; an upheld is agreement");
+        // The two always-ask rows are in neither `measured` nor `disagreements` and
+        // are still the primary dataset: input → the operator's decision.
+        assert_eq!(c.total - c.decided_by_operator, 2, "m1 and r1: nobody was asked");
+    }
+
+    /// A store written before this table existed is carried forward, not rebuilt.
+    #[test]
+    fn a_v4_store_migrates_and_accepts_rows() {
+        let s = store();
+        s.connection()
+            .execute_batch("DROP TABLE adjudication; DELETE FROM schema_version;")
+            .expect("unwind to v4");
+        s.connection()
+            .execute("INSERT INTO schema_version (version) VALUES (4)", [])
+            .expect("stamp v4");
+        let s = Store::from_connection(s.conn).expect("migrate");
+
+        let sid = a_session(&s);
+        s.record_adjudication(&a_decision("after-migration", &sid)).expect("record");
+        assert_eq!(s.corpus_counts().expect("counts").total, 1);
     }
 }

@@ -833,6 +833,24 @@ impl<'a> Harness<'a> {
                     .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
             ),
         };
+        // Opened from the path rather than shared with `store` above: `Store` holds a
+        // `rusqlite::Connection`, which is `Send` and not `Sync`, and a corpus sink is
+        // shared for the life of the gate. Two connections is the store's declared
+        // shape — WAL, a 5 s busy timeout — not a workaround for one.
+        //
+        // A store that opens for the session and not for the corpus is a real
+        // possibility (a read-only mount, a full disk), and it is reported as
+        // "not kept" rather than failing the session: a harness that will not start
+        // because its telemetry will not start is a worse harness.
+        let opened_corpus = cfg
+            .store
+            .as_ref()
+            .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
+            .map(std::sync::Arc::new);
+        // As the table holds it, including every earlier run's rows.
+        let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
+        let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> = opened_corpus
+            .map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
         let stored = match &store {
             None => None,
             Some(s) => s
@@ -1383,6 +1401,22 @@ impl<'a> Harness<'a> {
                     (None, AdjudicatorChoice::Console) => {
                         Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
                     }
+                    (None, AdjudicatorChoice::Model) => model_adjudicator(&cfg, "`--adjudicator model`")?,
+                };
+                // **The guard model, attached whenever there is one to attach.**
+                //
+                // Built from `--oracle` alone and NOT from the mode, which is what
+                // makes `/supervise` a toggle: the expensive half of supervision is
+                // having a model reachable, and that is settled when the session
+                // opens because the endpoint is a daemon argument. Whether it gets a
+                // turn is a bool the operator moves whenever they like.
+                //
+                // `None` is not a failure. A session started without `--oracle` runs
+                // exactly as it did before and `/supervise` refuses by name, which is
+                // a better answer than refusing to start.
+                let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match &cfg.oracle {
+                    Some(_) => Some(model_adjudicator(&cfg, "`--oracle`")?.into()),
+                    None => None,
                 };
                 let trail_for_gate = trail.clone();
                 let g = AdjudicatedGate::new(adj)
@@ -1418,6 +1452,18 @@ impl<'a> Harness<'a> {
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())
                     // §4b. Without this a denial reaches the model and stops there.
                     .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
+                let g = match advisor {
+                    Some(a) => g.with_advisor(a).start_supervised(cfg.supervise),
+                    None => g,
+                };
+                // **The corpus.** Without this the gate's rows are a `Vec` that dies
+                // with the daemon, and every decision ever made here is gone —
+                // including the labelled ones, which are the expensive kind. A second
+                // connection to the session store, by its own design.
+                let g = match corpus_sink.clone() {
+                    Some(sink) => g.with_corpus_sink(sink),
+                    None => g,
+                };
                 (Box::new(g), true, true)
             }
         };
@@ -1459,6 +1505,11 @@ impl<'a> Harness<'a> {
             // [`Harness::declare_monitor_wake`] when it arms — a harness driven
             // directly by a test has no daemon and honestly says `false`.
             monitor_wake: false,
+            // **Read from the sink, not from the config.** `--store` being set is
+            // not the same fact as a corpus connection having opened, and the
+            // counts come from the table rather than from a count this process
+            // kept — which would read as zero on a store full of earlier runs.
+            corpus: corpus_counts,
         };
 
         let spiller = build_spiller(&cfg)?;
@@ -1777,6 +1828,70 @@ impl<'a> Harness<'a> {
     /// started in. The `/mode` command keys the per-project store on it.
     pub fn workspace(&self) -> &std::path::Path {
         &self.cfg.workspace
+    }
+
+    /// **Turn the guard model on or off, now, on the running session.**
+    ///
+    /// > *"I want to start leticode, do /supervise, and move on."*
+    ///
+    /// Reaches the live gate rather than persisting a setting for next time, which is
+    /// the difference between this and `/mode`: a mode decides which tools are seated
+    /// and what asks, so it is fixed when a session opens; supervision decides only
+    /// whether the model gets a turn before the answer, and nothing seated depends on
+    /// that.
+    ///
+    /// Returns the gate's own sentence, refusal included. A session with no
+    /// `--oracle` gets a refusal naming the flag — never a quiet success.
+    /// Whether the guard model currently gets a turn. Read off the gate, never off
+    /// the config that asked for it.
+    pub fn supervising(&self) -> bool {
+        self.runtime.gate.supervising()
+    }
+
+    /// Point this session's guard at `endpoint`, build it and attach it.
+    ///
+    /// For `/supervise HOST:PORT`, which is the override and not the normal path —
+    /// the normal path is `[gatekeeper] endpoint` in the operator's config, read at
+    /// daemon start. Nothing is written here: config is the operator's file to edit,
+    /// and a harness that rewrote it behind them would make a one-off override
+    /// permanent without being asked.
+    pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
+        self.cfg.oracle = Some(endpoint.clone());
+        let advisor = model_adjudicator(&self.cfg, "`/supervise`").map_err(|e| e.to_string())?;
+        self.runtime
+            .gate
+            .attach_advisor(std::sync::Arc::from(advisor))?;
+        Ok(format!(
+            "guard model at {} for this session. To make it the default, put it in \
+             {}:\n  [gatekeeper]\n  endpoint = \"{}\"",
+            endpoint.authority(),
+            letibot_provider::keys::config_file().display(),
+            endpoint.authority()
+        ))
+    }
+
+    pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {
+        // **Attach on demand.** `/supervise` on a session that opened with no
+        // `--oracle` is the ordinary case, not the exceptional one: nobody types
+        // daemon flags. If an address is known from anywhere, use it rather than
+        // refusing and sending the operator to restart a daemon.
+        if on && !self.runtime.gate.supervising() {
+            let known = self.cfg.oracle.clone().or_else(|| {
+                letibot_provider::gatekeeper(None)
+                    .endpoint
+                    .as_deref()
+                    .and_then(|s| Endpoint::parse(s).ok())
+            });
+            if let Some(ep) = known {
+                self.attach_oracle(ep)?;
+            }
+        }
+        let said = self.runtime.gate.set_supervision(on)?;
+        // The banner is read after this, and a disclosure that still said
+        // `--adjudicator head` about a supervised session would be the constant-banner
+        // defect `GateWiring` exists to prevent.
+        self.wiring.adjudicator = self.runtime.gate.describe();
+        Ok(said)
     }
 
     /// What this session actually wired. The adjudication disclosure is computed
@@ -3497,4 +3612,43 @@ mod tests {
             "the notice must distinguish a firing from a watch that merely ended: {text}"
         );
     }
+}
+
+/// **The model half of layer B**, built from the config, or a refusal that names the
+/// missing piece.
+///
+/// One function because two points need it and they must not diverge:
+/// `--adjudicator model` puts it in front of the gate alone, and `/mode supervised`
+/// puts it in front of a person. A second copy is a second place for the baseline
+/// closure to be written slightly differently, and that closure is layer A — the
+/// classification the oracle's whole answer is about.
+///
+/// `asked_by` names whichever of the two asked, so the refusal says which flag or
+/// which mode is missing an `--oracle` rather than naming one of them for both.
+fn model_adjudicator(cfg: &Config, asked_by: &str) -> Result<Box<dyn Adjudicator>, HarnessError> {
+    let Some(ep) = cfg.oracle.clone() else {
+        return Err(HarnessError::Setup(format!(
+            "{asked_by} needs `--oracle HOST:PORT`: ModelAdjudicator takes an \
+             AuthorisationOracle and there is nothing to put behind it. This refuses \
+             rather than falling back to a person, because a session that asked for \
+             layer B and silently got always-ask is the lie `automode`'s Oracle \
+             prerequisite exists to prevent."
+        )));
+    };
+    let oracle = crate::oracle::HttpOracle::new(ep, cfg.model.clone(), cfg.oracle_budget);
+    // Layer A, re-derived per request from the command as the program will receive
+    // it. Not copied from the request's own `baseline` string: that is prose for a
+    // human, and the adjudicator needs the classification.
+    let surroundings = letibot_tools::intent::Surroundings::default();
+    Ok(Box::new(letibot_tools::ModelAdjudicator::new(
+        Box::new(oracle),
+        move |req: &letibot_tools::AdjudicationRequest| {
+            let cmd = req
+                .arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            letibot_tools::intent::Baseline::of_command(cmd, &surroundings)
+        },
+    )))
 }

@@ -153,6 +153,30 @@ pub struct Timings {
 /// ACP's vocabulary, as §13.4 requires: the adapter is then a mapping and not a
 /// translation. `PermissionOption{option_id, label, kind}` with
 /// `PermissionOptionKind in AllowOnce | AllowAlways | RejectOnce | RejectAlways`.
+/// The model's verdict on a permission, carried to the person answering it.
+///
+/// The wire twin of `letibot_tools::adjudicate::ModelAdvice`. Separate because this
+/// crate is the protocol and must not depend on the tool crate — the same split
+/// `DecisionOption` and `OptionKind` already have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelAdvice {
+    /// `admit`, `refuse`, `ask` or `unavailable` — what the model's answer would
+    /// have done on its own.
+    pub would: String,
+    /// Which oracle, in its own words.
+    pub by: String,
+    /// Why, in one or two sentences. Shown to the person; never parsed.
+    pub basis: String,
+    /// Which of the operator's own utterances it relied on. **Empty is loud**: an
+    /// authorisation that cites nothing is one the oracle could not ground, and a
+    /// head should render the emptiness rather than the absence of a list.
+    #[serde(default)]
+    pub cites: Vec<String>,
+    /// How long it took, in milliseconds. A verdict that spent its whole budget is
+    /// a different fact from one that came back in 40 ms.
+    pub latency_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionOption {
     pub option_id: String,
@@ -387,6 +411,23 @@ pub enum SessionEvent {
         /// [`crate::hub::Hub`]'s `shown` field exists to avoid one layer down.
         #[serde(default)]
         because: String,
+        /// **What the model already said about this**, at `/mode supervised`.
+        ///
+        /// The payload of *"ask model and ask me if i agree or not"*: a head renders
+        /// it above the options so the person is agreeing or disagreeing rather than
+        /// deciding cold. Empty at every other point — at `automode` the model is the
+        /// decider and there is nobody to advise, at `always-ask` no model was asked.
+        ///
+        /// Advice and never an answer. A head must not preselect an option from it,
+        /// and must not shorten the deadline because it arrived: the whole value of
+        /// the point is a judgement the person actually made.
+        ///
+        /// No `PROTOCOL_VERSION` bump. It is an added, defaulted field on an existing
+        /// event — serde ignores it on an older head, which then renders exactly what
+        /// it rendered before and answers exactly as well. The bumps in this file are
+        /// for new frames and new variants, which an old peer cannot parse at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        advice: Option<ModelAdvice>,
         /// Unix millis. `None` means §11.5's "wait forever", which is a policy a
         /// human head may choose and an automated one may not.
         deadline: Option<u64>,

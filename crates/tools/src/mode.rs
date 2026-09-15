@@ -191,9 +191,17 @@ impl Prereq {
                  on its stdin"
             }
             Prereq::Oracle => {
-                "nothing in this build supplies one. `ModelAdjudicator` takes an \
-                 `AuthorisationOracle` and refuses by name until something does; the \
-                 weights are on the box and the seam is not wired"
+                // Was "nothing in this build supplies one ... the seam is not wired".
+                // That was true and stopped being true when `HttpOracle` landed, and a
+                // prerequisite that reports a missing CAPABILITY when what is missing
+                // is a FLAG sends the operator to look for the wrong thing. The
+                // message has to move with the build, which is why it names the flag
+                // rather than the state of the code.
+                "put the guard's address in ~/.config/letibot/providers.toml under \
+                 `[gatekeeper] endpoint = \"HOST:PORT\"` — a llama.cpp `/completion` \
+                 endpoint that answers `did the operator ask for this`. Its own \
+                 endpoint, not `--endpoint`: the guard need not be the model doing \
+                 the work. `--oracle HOST:PORT` overrides it for one run"
             }
             Prereq::Confinement => {
                 "exec needs a cgroup v2 subtree and a usable unprivileged namespace; \
@@ -632,7 +640,10 @@ mod tests {
             rule: crate::adjudicate::FlowRule::SecretToTranscript,
             evidence: "test".into(),
         };
-        for m in Mode::NAMED.iter().filter(|m| m.boundary == Boundary::Operator) {
+        for m in Mode::NAMED
+            .iter()
+            .filter(|m| m.boundary == Boundary::Operator)
+        {
             assert_ne!(m.name, "allow-all");
             for access in [Access::Read, Access::Write, Access::Exec, Access::Network] {
                 assert!(
@@ -668,7 +679,10 @@ mod tests {
         for access in [Access::Write, Access::Exec, Access::Network] {
             assert!(Mode::ALLOW_ALL.admits_unasked(&ask, access), "{access:?}");
             // A secret across the boundary is layer A's refusal, before any point.
-            assert!(!Mode::ALLOW_ALL.admits_unasked(&never, access), "{access:?}");
+            assert!(
+                !Mode::ALLOW_ALL.admits_unasked(&never, access),
+                "{access:?}"
+            );
         }
         // The same coordinate on the operator's box is not allow-all, whatever it
         // is called: the boundary axis is what admits, not the name.
@@ -778,8 +792,10 @@ mod tests {
             e.contains("refuses by name") || e.contains("weaker mode"),
             "{e}"
         );
-        // And it says how, not only what.
-        assert!(e.contains("ModelAdjudicator"), "{e}");
+        // And it says how, not only what — which today is a flag, not a build
+        // state: the oracle seam exists, so "nothing supplies one" would send the
+        // operator to read code instead of passing an argument.
+        assert!(e.contains("gatekeeper"), "{e}");
 
         // Everything present is fine.
         assert!(

@@ -81,6 +81,23 @@ fn usage() -> String {
      \x20                           no `none`: a role with nobody to decide refuses to\n\
      \x20                           start, because --role orchestrator is the honest\n\
      \x20                           spelling of a session that cannot write\n\
+     \x20 --oracle HOST:PORT        layer B: a llama.cpp /completion endpoint that\n\
+     \x20                           answers `did the operator ask for this`. Its own\n\
+     \x20                           flag, not --endpoint: the guard need not be the\n\
+     \x20                           model doing the work. Required by\n\
+     \x20                           --adjudicator model and by /mode supervised;\n\
+     \x20                           both refuse by name without it\n\
+     \x20 --supervise               start with the guard model consulted on every\n\
+     \x20                           gated call: it answers, then you do, and both\n\
+     \x20                           verdicts land on one corpus row. `/supervise`\n\
+     \x20                           turns it on and off mid-session -- this is only\n\
+     \x20                           the starting value. Needs --oracle\n\
+     \x20 --oracle-budget-ms 400    how long the gate waits for that answer before\n\
+     \x20                           giving up and failing closed. 400 was measured\n\
+     \x20                           against a 4B on THIS box's CPU and says nothing\n\
+     \x20                           about an oracle across the LAN -- measure before\n\
+     \x20                           raising it, and know that every gated call blocks\n\
+     \x20                           for up to this long\n\
      \x20 --intent-prose            also read the assistant's prose for commitments\n\
      \x20                           it did not act on. The tool-declared half is\n\
      \x20                           always on; this half has false positives\n\
@@ -142,6 +159,23 @@ fn main() {
 fn run() -> Result<i32, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut cfg = Config::for_this_box(cwd);
+    // **The guard model comes from config, not from a flag.**
+    //
+    // `[gatekeeper] endpoint = "HOST:PORT"` in `~/.config/letibot/providers.toml`,
+    // beside the provider keys, because an endpoint is a property of the box and not
+    // of an invocation. `--oracle` still overrides it below, for a one-off. A
+    // missing section, an unreadable file and a malformed address are all "no
+    // guard" — this is read at startup and must never be a reason a daemon does not
+    // start.
+    {
+        let gk = letibot_provider::gatekeeper(None);
+        if let Some(ep) = gk.endpoint.as_deref().and_then(|s| Endpoint::parse(s).ok()) {
+            cfg.oracle = Some(ep);
+        }
+        if let Some(ms) = gk.budget_ms {
+            cfg.oracle_budget = std::time::Duration::from_millis(ms);
+        }
+    }
     let mut prompts: Vec<String> = Vec::new();
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
@@ -204,6 +238,35 @@ fn run() -> Result<i32, String> {
             "--grant-ro" => cfg.grants_ro.push(PathBuf::from(next()?)),
             "--bash" => cfg.allow_bash = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
+            // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
+            // have to be the model doing the work, and on this fleet it should not
+            // be — a 4B on the CPU beside a 27B on a GPU, or a second box entirely.
+            // One flag for both would make the guard follow every model change.
+            // Start supervised. Equivalent to typing `/supervise` as the first thing
+            // in the session, and there so a script does not have to.
+                    "--supervise" => cfg.supervise = true,
+            "--oracle" => {
+                let v = next()?;
+                let (h, p) = v.rsplit_once(':').ok_or("--oracle wants HOST:PORT")?;
+                cfg.oracle = Some(Endpoint::new(
+                    h,
+                    p.parse().map_err(|e| format!("oracle port: {e}"))?,
+                ));
+            }
+            // The budget `ModelAdjudicator` enforces. A knob because it decides which
+            // models can hold the seat at all, and the answer is different for an
+            // oracle on this box and one across the LAN: the default 400 ms was
+            // measured against a local 4B on CPU and says nothing about a remote one.
+            //
+            // Raising it is a real decision with a cost — the gate blocks for this
+            // long on every gated call — so it is typed rather than inferred from
+            // whether the endpoint looks remote.
+            "--oracle-budget-ms" => {
+                let v = next()?;
+                cfg.oracle_budget = std::time::Duration::from_millis(
+                    v.parse().map_err(|e| format!("--oracle-budget-ms: {e}"))?,
+                );
+            }
             "--intent-prose" => cfg.intent_prose = true,
             "--provider" => {
                 cfg.provider.get_or_insert_with(Default::default).name = next()?;

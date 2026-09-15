@@ -216,11 +216,27 @@ impl HeadClient {
 
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
+        self.answer_with(req_id, option_id, None)
+    }
+
+    /// The same, with the operator's own glob for an *always allow*.
+    ///
+    /// Separate rather than a fourth argument on `answer`, because every caller that
+    /// is not offering a pattern should keep saying so by not passing one — a
+    /// `None` threaded through a dozen call sites is a `Some` waiting to be typed by
+    /// mistake.
+    pub fn answer_with(
+        &mut self,
+        req_id: &str,
+        option_id: &str,
+        pattern: Option<&str>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Answer {
             client_request_id: client_request_id.clone(),
             req_id: req_id.to_string(),
             option_id: option_id.to_string(),
+            pattern: pattern.map(str::to_string),
         })?;
         Ok(client_request_id)
     }

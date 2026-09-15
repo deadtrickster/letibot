@@ -85,6 +85,8 @@
 //! vocabulary id where the boundary still exists. The live view and the stored
 //! view carry the same bytes, on channels that agree.
 
+pub mod corpus;
+pub mod oracle;
 pub mod answers;
 pub mod slash;
 pub mod sudo;
