@@ -2098,9 +2098,14 @@ impl AdjudicatedGate {
                 continue;
             }
             out.push(crate::authorise::DecisionExample {
-                // The normalised reading, never the raw arguments — the same rule
-                // that keeps the command out of the brief keeps it out of here.
-                action: row.request.baseline.clone(),
+                // **What was decided, not how layer A read it.** This was
+                // `request.baseline` — "ask — intents [read_file unknown] over
+                // [host_other]" — which says what class of thing it was and nothing
+                // about what it WAS, so six examples rendered as six copies of the
+                // same sentence. The tool and its target is the smallest thing that
+                // makes an example an example. Still not the raw arguments: the rule
+                // that keeps a command out of the brief keeps it out of here.
+                action: format!("{} {}", row.request.tool, row.request.target),
                 verdict: if row.effect == "admit" { "allowed" } else { "refused" },
                 turns_ago: match (now_turn, turn_seq(&row.request.turn_id)) {
                     (Some(n), Some(t)) => Some(n.saturating_sub(t)),

@@ -73,6 +73,11 @@ pub struct Replayed {
     /// The guard's own words, for the row the operator reads.
     pub guard_said: String,
     pub ms: u64,
+    /// The bytes the guard was actually given for this row. Captured from the
+    /// adjudicator rather than read from the corpus: the store's `shown` column
+    /// holds whatever adjudicator ANSWERED, and for a row the operator answered
+    /// that is the head's brief, not the oracle's.
+    pub brief: Option<String>,
 }
 
 impl Replayed {
@@ -369,6 +374,7 @@ pub fn replay_arm(
         let _ = adjudicator.decide(&req);
         let advice = adjudicator.last_advice();
         let ms = started.elapsed().as_millis() as u64;
+        let brief = adjudicator.last_brief();
         let guard_allowed = advice.as_ref().is_some_and(|a| a.consulted && a.would == "admit");
         let guard_said = advice
             .as_ref()
@@ -385,6 +391,7 @@ pub fn replay_arm(
             guard_allowed,
             guard_said,
             ms,
+            brief,
         };
         for i in &intents {
             let t = report.per_intent.entry(i.as_str()).or_default();
@@ -606,6 +613,7 @@ mod tests {
             guard_allowed: guard,
             guard_said: String::new(),
             ms: 1,
+            brief: None,
         }
     }
 

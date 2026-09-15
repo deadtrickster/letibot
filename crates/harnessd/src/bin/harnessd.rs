@@ -238,6 +238,10 @@ fn run() -> Result<i32, String> {
             // Run every arm over the same rows and print them side by side. A
             // prompt change to this seam is a hypothesis until this says otherwise.
             "--compare" => query = Some(Query::Compare),
+            // Print the bytes the guard is actually handed for a call it could not
+            // answer. "Look at what it is shown" — the only way to tell a prompt
+            // problem from a evidence problem.
+            "--show-brief" => query = Some(Query::ShowBrief),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
@@ -768,6 +772,7 @@ enum Query {
     Calibrate { write: bool },
     RepairPrefixes,
     Compare,
+    ShowBrief,
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -850,6 +855,27 @@ fn run_query(
             println!(
                 "repaired {fixed} prefix row(s); the transcripts on them resume again."
             );
+            Ok(0)
+        }
+        Query::ShowBrief => {
+            drop(store);
+            let r = letibot_harnessd::calibrate::replay(cfg, path, 10_000)?;
+            let pick = r
+                .rows
+                .iter()
+                .find(|x| !x.guard_allowed && x.operator_admitted && x.brief.is_some())
+                .or_else(|| r.rows.iter().find(|x| x.brief.is_some()));
+            match pick {
+                Some(row) => {
+                    println!(
+                        "a call YOU allowed and the guard would not, and everything it \
+                         had to go on:\n\n  verdict: {}\n\n{}",
+                        row.guard_said,
+                        row.brief.as_deref().unwrap_or("")
+                    );
+                }
+                None => println!("no row was replayed with a brief to show."),
+            }
             Ok(0)
         }
         Query::Compare => {
