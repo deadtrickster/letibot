@@ -149,7 +149,7 @@ impl Tool for Edit {
                  was written.",
             );
         }
-        if let Some(refusal) = read_before_write(ctx, path, &file, &bytes) {
+        if let Some(refusal) = read_before_write(ctx, path, &file, &bytes, old) {
             return refusal;
         }
 
@@ -425,12 +425,17 @@ fn read_before_write(
     path: &str,
     file: &FileText,
     bytes: &[u8],
+    old: &str,
 ) -> Option<Invocation> {
     let seen = ctx.files.seen(path);
     let now = crate::spill::content_hash(bytes);
 
     let Some(seen) = seen else {
-        ctx.files.record(path, bytes, true);
+        // Same ceiling, same reason, same honesty about what was shown — see
+        // `PASTE_CEILING`. A file this session has never read is the commoner of
+        // the two refusals and the likelier to be large.
+        let whole = file.lf.len() <= PASTE_CEILING;
+        ctx.files.record(path, bytes, whole);
         let read = ctx.files.paths();
         let also = if read.len() > 1 {
             format!(
@@ -447,14 +452,29 @@ fn read_before_write(
         return Some(
             Invocation::failed(
                 format!("this session has not read `{path}`"),
-                format!(
-                    "an edit may only land on content this session has been shown, so that \
-                     a write can never be aimed at a file the model is remembering rather \
-                     than reading. `{path}` is below, in full, and it is now recorded as \
-                     read — call `edit` again with the same arguments and it will \
-                     proceed.{also}\n{}",
-                    numbered(&file.lf)
-                ),
+                if whole {
+                    format!(
+                        "an edit may only land on content this session has been shown, so \
+                         that a write can never be aimed at a file the model is remembering \
+                         rather than reading. `{path}` is below, in full, and it is now \
+                         recorded as read — call `edit` again with the same arguments and \
+                         it will proceed.{also}\n{}",
+                        numbered(&file.lf)
+                    )
+                } else {
+                    format!(
+                        "an edit may only land on content this session has been shown, so \
+                         that a write can never be aimed at a file the model is remembering \
+                         rather than reading.\n\n`{path}` is too large to paste back in \
+                         full ({} bytes, over the {PASTE_CEILING} byte ceiling), so an \
+                         excerpt around your target is below and the file is recorded as \
+                         read — `edit` will proceed on the next call. Read more of it \
+                         first if your `old_string` needs surrounding context to be \
+                         unambiguous.{also}\n\n{}",
+                        bytes.len(),
+                        excerpt(&file.lf, old)
+                    )
+                },
             )
             .with_note(format!(
                 "nothing was written. `{path}` is {} bytes, {} line(s).",
@@ -465,23 +485,47 @@ fn read_before_write(
     };
 
     if seen.digest != now {
-        ctx.files.record(path, bytes, true);
-        return Some(
-            Invocation::failed(
-                format!("`{path}` changed since this session read it"),
-                format!(
-                    "the file was {} bytes when it was read and is {} bytes now, so \
-                     somebody else — the operator, a formatter, a build — has written to \
-                     it. An edit aimed at the old contents could land in the wrong place. \
-                     The current contents are below and are now recorded as read; check \
-                     that your `old_string` is still what you want and call `edit` \
-                     again.\n\n{}",
-                    seen.bytes,
-                    bytes.len(),
-                    numbered(&file.lf)
-                ),
+        // Whether the whole file goes back depends on its size, and so does what
+        // may be claimed about it: `record(.., true)` asserts the model has been
+        // shown the WHOLE file, and asserting that after pasting forty lines of it
+        // would be the read-before-write rule lying on its own behalf. The
+        // digest is recorded either way, which is what licenses the retry —
+        // `edit` gates on the content being current, and verifies the target by
+        // matching `old_string` against the real bytes.
+        let whole = file.lf.len() <= PASTE_CEILING;
+        ctx.files.record(path, bytes, whole);
+        let body = if whole {
+            format!(
+                "the file was {} bytes when it was read and is {} bytes now, so \
+                 somebody else — the operator, a formatter, a build — has written to \
+                 it. An edit aimed at the old contents could land in the wrong place. \
+                 The current contents are below and are now recorded as read; check \
+                 that your `old_string` is still what you want and call `edit` \
+                 again.\n\n{}",
+                seen.bytes,
+                bytes.len(),
+                numbered(&file.lf)
             )
-            .with_note("nothing was written."),
+        } else {
+            format!(
+                "the file was {} bytes when it was read and is {} bytes now, so \
+                 somebody else — the operator, a formatter, a build — has written to \
+                 it. An edit aimed at the old contents could land in the wrong place.\n\n\
+                 It is too large to paste back in full ({} bytes, over the {PASTE_CEILING} \
+                 byte ceiling), and pasting it would cost more context than the edit is \
+                 worth, so an excerpt around your target is below. The CURRENT contents \
+                 are recorded as read, so `edit` will proceed on the next call — but \
+                 check the excerpt first, and `read` more of the file if your \
+                 `old_string` needs surrounding context to be unambiguous.\n\n{}",
+                seen.bytes,
+                bytes.len(),
+                bytes.len(),
+                excerpt(&file.lf, old)
+            )
+        };
+        return Some(
+            Invocation::failed(format!("`{path}` changed since this session read it"), body)
+                .with_note("nothing was written."),
         );
     }
     None
@@ -533,6 +577,77 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
 
 /// A file, numbered the way `read` numbers it, so two tools do not teach the
 /// model two formats for one thing.
+/// The most text either refusal below will paste in to re-establish the read.
+///
+/// **Measured 2026-09-15, and this is why the constant exists.** A `--supervise`
+/// session edited `crates/tui/src/app.rs` while another session was writing the
+/// same file; the staleness guard fired and pasted the file in full, and that one
+/// tool result was **123,648 tokens** — for an edit whose target had moved by
+/// 1,283 bytes. The guard was right and the recovery was ruinous: it spent a
+/// third of a context window to say "try again".
+///
+/// Below the ceiling the whole file still goes in, because for an ordinary source
+/// file that is the cheapest possible retry — one call instead of a read and a
+/// call. Above it, an excerpt around the target goes in instead and the model is
+/// told to read what it still needs. 32 KiB is roughly 8k tokens: large enough
+/// that almost every file in this tree takes the fast path, small enough that the
+/// slow one cannot cost a context window.
+const PASTE_CEILING: usize = 32 * 1024;
+
+/// Lines around the first occurrence of `needle`, numbered, with what was left
+/// out named rather than silently dropped.
+///
+/// The target is what the caller needs to look at: it is deciding whether its
+/// `old_string` is still the text it meant. When the needle is gone — which is
+/// the usual reason an edit went stale — the head of the file is shown and the
+/// result says the needle is no longer there, which is itself the answer.
+fn excerpt(text: &str, needle: &str) -> String {
+    const RADIUS: usize = 40;
+    let lines: Vec<&str> = text.lines().collect();
+    let first = needle.lines().next().unwrap_or("").trim();
+    let hit = if first.is_empty() {
+        None
+    } else {
+        lines.iter().position(|l| l.contains(first))
+    };
+    let (start, why) = match hit {
+        Some(i) => (
+            i.saturating_sub(RADIUS),
+            format!(
+                "the first line of your `old_string` still occurs, at line {}; \
+                 lines {}-{} are below",
+                i + 1,
+                i.saturating_sub(RADIUS) + 1,
+                (i + RADIUS + 1).min(lines.len())
+            ),
+        ),
+        None => (
+            0,
+            format!(
+                "the first line of your `old_string` does NOT occur in the file any \
+                 more, so the text you meant to replace is gone; the first {} lines \
+                 are below for orientation",
+                RADIUS * 2
+            ),
+        ),
+    };
+    let end = (start + RADIUS * 2).min(lines.len());
+    let mut out = format!("{why}.\n\n");
+    if start > 0 {
+        out.push_str(&format!("       … {start} earlier line(s) not shown\n"));
+    }
+    for (n, l) in lines[start..end].iter().enumerate() {
+        out.push_str(&format!("{:>6}| {l}\n", start + n + 1));
+    }
+    if end < lines.len() {
+        out.push_str(&format!(
+            "       … {} later line(s) not shown\n",
+            lines.len() - end
+        ));
+    }
+    out
+}
+
 fn numbered(text: &str) -> String {
     let mut out = String::new();
     for (i, l) in text.lines().enumerate() {
@@ -595,6 +710,82 @@ fn lines_containing(file: &FileText, token: &str) -> Vec<(usize, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A refusal must not cost a context window. Measured 2026-09-15: a stale
+    /// `edit` on a 345 KB file pasted it back in full — 123,648 tokens in one
+    /// tool result, to say "the file moved, try again".
+    ///
+    /// Both halves matter. The refusal still has to be ACTIONABLE (the retry must
+    /// work, so the current digest is recorded), and it has to be BOUNDED (an
+    /// excerpt, not the file). A fix that only did the second would trade a huge
+    /// refusal for an infinite loop of small ones.
+    #[test]
+    fn a_stale_edit_on_a_large_file_is_bounded_and_still_lets_the_retry_through() {
+        let mut h = crate::testing::writable_harness();
+        let filler = "// a line of perfectly ordinary source\n".repeat(2_000);
+        let body = format!("{filler}pub fn target() {{}}\n{filler}");
+        assert!(
+            body.len() > super::PASTE_CEILING * 2,
+            "fixture must exceed the ceiling"
+        );
+        h.write_file("big.rs", &body);
+
+        // Read it, so the session has seen it...
+        let _ = h.call("read", r#"{"path":"big.rs"}"#);
+        // ...then have somebody else change it underneath.
+        h.write_file("big.rs", &format!("{body}// somebody else appended this\n"));
+
+        let r = h.call("edit", r#"{"path":"big.rs","old_string":"pub fn target() {}","new_string":"pub fn target(x: u8) {}"}"#);
+        assert!(!r.is_grounded(), "a stale edit must refuse: {}", r.render());
+        // BOUNDED: nothing close to the whole file.
+        assert!(
+            r.payload.len() < super::PASTE_CEILING,
+            "the refusal pasted {} bytes for a {} byte file — this is the 123k-token bug",
+            r.payload.len(),
+            body.len()
+        );
+        // ACTIONABLE: it points at the target rather than the top of the file.
+        assert!(r.payload.contains("pub fn target()"), "{}", r.payload);
+        assert!(r.payload.contains("still occurs, at line"), "{}", r.payload);
+        assert!(
+            r.payload.contains("not shown"),
+            "the elision must be named: {}",
+            r.payload
+        );
+
+        // And the retry goes through, which is what the recorded digest buys.
+        let again = h.call("edit", r#"{"path":"big.rs","old_string":"pub fn target() {}","new_string":"pub fn target(x: u8) {}"}"#);
+        assert!(
+            again.is_grounded(),
+            "the retry must proceed: {}",
+            again.render()
+        );
+    }
+
+    /// The fast path is untouched: an ordinary file still comes back whole, which
+    /// is what makes the common retry one call instead of two.
+    #[test]
+    fn a_stale_edit_on_an_ordinary_file_still_pastes_it_in_full() {
+        let mut h = crate::testing::writable_harness();
+        h.write_file("small.rs", "pub fn a() {}\npub fn b() {}\n");
+        let _ = h.call("read", r#"{"path":"small.rs"}"#);
+        h.write_file("small.rs", "pub fn a() {}\npub fn b() {}\n// changed\n");
+        let r = h.call(
+            "edit",
+            r#"{"path":"small.rs","old_string":"pub fn a() {}","new_string":"pub fn a(x: u8) {}"}"#,
+        );
+        assert!(!r.is_grounded());
+        assert!(
+            r.payload.contains("// changed"),
+            "the whole file is shown: {}",
+            r.payload
+        );
+        assert!(
+            !r.payload.contains("not shown"),
+            "no elision for a small file: {}",
+            r.payload
+        );
+    }
     use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]
