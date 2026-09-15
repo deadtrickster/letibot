@@ -1657,13 +1657,51 @@ impl App {
                 } else {
                     String::new()
                 };
-                self.note(Note::Warned(Warned {
-                    code: format!("denied:{request_id}"),
-                    detail: format!(
-                        "REFUSED {tool} — {summary}. {outcome} by {by}: {basis}{repeat}. {grant}"
-                    ),
-                    ts,
-                }));
+                // **A refusal the harness made is not a question for the operator.**
+                //
+                // `boundary:` signs the deterministic ones — the normaliser could not
+                // read the command, the host boundary refused it. Nobody was asked,
+                // no grant lifts it, and the whole explanation is already on the
+                // screen as the tool's own result one row above. Rendering it again
+                // in red, in full, is the same wall twice: measured at 20 lines for
+                // one shell one-liner, and the operator's answer to it was *"it just
+                // throws up on my chat"*.
+                //
+                // A refusal somebody DECIDED still gets the loud register and the
+                // request id, because granting it is a thing the operator can do.
+                if by.starts_with("boundary:") {
+                    // **And only when it has something the row does not.**
+                    //
+                    // The refused call is already a row in the transcript, one line
+                    // below this, carrying the same first sentence — so on a single
+                    // refusal this note is the same words twice, which is the noise
+                    // it was just cut down from. What the row cannot say is that
+                    // this is the SECOND attempt at the same direction, or that the
+                    // breaker has closed the direction for the session: that is a
+                    // fact about the shape of the session and not about one call,
+                    // and it is the one an operator wants to be told.
+                    if !repeat.is_empty() {
+                        self.note(Note::NotRun(Warned {
+                            code: format!("denied:{request_id}"),
+                            // The gist, not the transcript of it: layer A's
+                            // explanation runs to a paragraph per unresolved
+                            // construct and every word of it is for the model.
+                            detail: format!(
+                                "{tool} {outcome} — {}{repeat}",
+                                first_sentence(&basis)
+                            ),
+                            ts,
+                        }));
+                    }
+                } else {
+                    self.note(Note::Warned(Warned {
+                        code: format!("denied:{request_id}"),
+                        detail: format!(
+                            "REFUSED {tool} — {summary}. {outcome} by {by}: {basis}{repeat}. {grant}"
+                        ),
+                        ts,
+                    }));
+                }
                 Disposition::Rendered
             }
         }
@@ -4094,6 +4132,39 @@ fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
     }
 }
 
+/// The first sentence of a refusal's reasoning, capped.
+///
+/// Layer A's `basis` is written for the model: it names every construct it could
+/// not resolve, one indented paragraph each, and ends with the instruction to
+/// re-issue. The operator needs the first clause of that — *what happened* — and
+/// nothing else, because the rest is already in front of them as the tool result.
+///
+/// Cut at the first sentence end, then hard-capped: a "sentence" written without a
+/// full stop is still not a paragraph a status line should carry.
+fn first_sentence(basis: &str) -> String {
+    let line = basis.lines().next().unwrap_or("").trim();
+    let end = line.find(". ").map(|i| i + 1).unwrap_or(line.len());
+    let s = &line[..end];
+    const CAP: usize = 140;
+    if s.chars().count() <= CAP {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(CAP).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// A result envelope's marker line: `<<<TOOL_ERROR 5ebfdef6>>>`, `<<<END_OK …>>>`.
+///
+/// Matched by SHAPE rather than against a list of kinds, so a kind added to
+/// `letibot_tools::result::Envelope` does not start leaking here on the day it
+/// lands. A body line that happens to look like one cannot exist: the envelope
+/// rewrites every `<<<` in a payload to `< < <` precisely so its own markers are
+/// unforgeable.
+fn is_envelope(line: &str) -> bool {
+    let l = line.trim();
+    l.starts_with("<<<") && l.ends_with(">>>") && l.len() > 6
+}
+
 fn dim(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::DIM, s)
 }
@@ -5072,7 +5143,15 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             payload,
             call_id,
         } => {
-            let lines: Vec<&str> = payload.lines().collect();
+            // **The envelope is addressed to the model, not to the operator.**
+            //
+            // `<<<TOOL_ERROR 5ebfdef6>>>` and its `<<<END_…>>>` are how a result
+            // tells the model where the harness's text stops and the payload starts
+            // — a marker, with a per-call nonce so a payload cannot forge one. On a
+            // screen it is a line of noise in the middle of the two lines a folded
+            // row has, and the operator reads a random hex string where the result
+            // should be.
+            let lines: Vec<&str> = payload.lines().filter(|l| !is_envelope(l)).collect();
             let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
             let mark = if tools.is_open() { "▾" } else { "▸" };
             // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-t`, not
@@ -5191,13 +5270,36 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // a call that abstained or was refused said *why*, and that sentence
             // is the whole content of the row.
             let why = outcome_why(outcome);
+            // **A reason that is a DOCUMENT is not a sentence.**
+            //
+            // This printed the reason in full, unfoldable, on the argument that a
+            // refusal nobody can read is a refusal nobody acts on. That holds while
+            // the reason is a sentence. Layer A's is not: it names every construct
+            // it could not resolve, one indented paragraph each, and ends with the
+            // instruction to re-issue — twenty lines of prose addressed to the
+            // MODEL, which the head then painted into the operator's chat. Measured
+            // on a six-line shell loop; the operator's answer was *"i get what it
+            // tries to do, but it just throws up on my chat"*.
+            //
+            // So the first sentence stands unfolded — what happened, always visible,
+            // which is what the original rule was protecting — and the rest arrives
+            // with ctrl-t like every other long thing on this screen.
+            let mut why_folded = false;
             if let Some(why) = &why {
+                let shown = if tools.is_open() {
+                    why.clone()
+                } else {
+                    let gist = first_sentence(why);
+                    why_folded = gist.len() < why.len();
+                    gist
+                };
                 out.extend(
-                    wrap(why, w.saturating_sub(2))
+                    wrap(&shown, w.saturating_sub(2))
                         .into_iter()
                         .map(|l| p.paint(outcome_role, &format!("  {l}"))),
                 );
             }
+
             // Folded shows the first line, which is where a tool puts what it did.
             //
             // A failure used to be exempt — *an error nobody can read is an error
@@ -5228,6 +5330,12 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 ));
             } else {
                 out.extend(lines.iter().map(|l| dim(cfg, &format!("  {l}"))));
+                // The payload was short enough to show whole, but the REASON was
+                // cut — so the affordance has to be here, or the rest of it would
+                // be hidden behind a chord nothing on the row mentions.
+                if why_folded {
+                    out.push(p.paint(Role::Faint, "  … the rest of the reason · ctrl-t"));
+                }
             }
             (
                 RowClass::Activity,
@@ -5262,6 +5370,18 @@ enum Note {
     /// §18's post-flight assertions and §8.5's guards land here, and a guard
     /// nobody notices is a guard nobody wrote.
     Warned(Warned),
+    /// **A refusal nobody made.** The harness itself could not read the call — the
+    /// normaliser could not resolve the command, the host boundary refused it — so
+    /// there is nothing for the operator to answer, grant or lift, and the thing
+    /// that has to change is the model's next attempt.
+    ///
+    /// Its own variant rather than a `Warned` because the register is the message:
+    /// red with a `!` says *look at this now*, and an operator who is shown that
+    /// for something they cannot act on learns to stop reading the red lines. The
+    /// operator's report was exactly that — *"i get what it tries to do, but it
+    /// just throws up on my chat"* — about a 20-line refusal that was also already
+    /// on the screen as the tool's own result, one row up.
+    NotRun(Warned),
     /// §13.2b: a settled decision *"renders as its outcome, not as an open
     /// prompt"* — and not as nothing either, which is what it rendered as before.
     /// A tool that was refused has to look refused.
@@ -5273,6 +5393,13 @@ fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
         Note::Warned(w) => wrap(&format!("! {} — {}", w.code, w.detail), cfg.width)
             .into_iter()
             .map(|l| warn_line(cfg, &l))
+            .collect(),
+        // No `!`, no red, no request id: nothing here is answerable, and the id is
+        // only useful to somebody typing a grant. The detail that was cut is not
+        // lost — the model's own tool result carries it, folded, one row above.
+        Note::NotRun(w) => wrap(&format!("· {}", w.detail), cfg.width)
+            .into_iter()
+            .map(|l| dim(cfg, &l))
             .collect(),
         Note::Decided(d) => {
             use letibot_sessionlog::event::DecisionOutcome as O;
@@ -5445,6 +5572,106 @@ mod tests {
         );
         assert_eq!(ask_without_target("something else entirely", "ls -la"), None);
         assert_eq!(ask_without_target("`web_search` wants network access", ""), None);
+    }
+
+    /// **A refusal the harness made is one dim line, not a wall in red.**
+    ///
+    /// The operator's report, about a `bash` one-liner the normaliser could not
+    /// read: *"i get what it tries to do, but it just throws up on my chat"*. Every
+    /// word of that explanation is addressed to the model, it was already on the
+    /// screen as the tool's own result one row above, and nothing in it is
+    /// answerable — no adjudicator was consulted and no grant lifts it.
+    #[test]
+    fn a_refusal_nobody_made_is_quiet_and_one_line() {
+        let mut a = app();
+        let long = "this command's meaning does not exist yet, so nothing can decide \
+                    about it. The grammar read 315 bytes and 7 stage(s) and could not \
+                    resolve:\n  parameter_expansion at 1:2 (bytes 2..4) decides the \
+                    assignment: \"$$\"\n      `$$` decides what the variable will hold, \
+                    and its value is not in this text.";
+        let hub = Hub::new("s");
+        let att = hub.attach("tui", "test", Caps::default(), 0);
+        hub.publish(letibot_sessionlog::event::SessionEvent::DenialRaised {
+            request_id: "adj-s-1789462738453908838-0001".into(),
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            tool: "bash".into(),
+            summary: "`bash` wants exec access to `p=$$; for i in 1 2 3; do read -r ppid; done`"
+                .into(),
+            baseline: "ask — intents [execute_code]".into(),
+            by: "boundary:normaliser".into(),
+            basis: long.into(),
+            tier: "adjudicable".into(),
+            outcome: "not_run".into(),
+            repeat_count: 1,
+            breaker_open: false,
+            grant: "Nothing was executed and nothing changed. No grant applies.".into(),
+        });
+        feed(&mut a, &hub, &att.head_id);
+
+        // A first refusal says nothing here at all: the refused call is a row in
+        // the transcript one line below, with the same sentence on it.
+        assert!(
+            a.notes.is_empty(),
+            "a single refusal is stated twice: {:?}",
+            a.notes
+        );
+
+        // A SECOND attempt at the same direction is a fact about the session that
+        // the row cannot carry, so that one does speak.
+        let hub = Hub::new("s2");
+        let att = hub.attach("tui", "test", Caps::default(), 0);
+        hub.publish(letibot_sessionlog::event::SessionEvent::DenialRaised {
+            request_id: "adj-2".into(),
+            turn_id: "t1".into(),
+            call_id: "c2".into(),
+            tool: "bash".into(),
+            summary: "`bash` wants exec access to `p=$$`".into(),
+            baseline: "ask — intents [execute_code]".into(),
+            by: "boundary:normaliser".into(),
+            basis: long.into(),
+            tier: "adjudicable".into(),
+            outcome: "not_run".into(),
+            repeat_count: 2,
+            breaker_open: false,
+            grant: "No grant applies.".into(),
+        });
+        let mut a = app();
+        feed(&mut a, &hub, &att.head_id);
+        let note = a.notes.last().expect("a repeat is worth saying");
+        let lines = note_lines(&a.cfg, &note.1);
+        // One sentence, so at most a wrap of one. The thing being measured is that
+        // it is not a paragraph per unresolved construct.
+        assert!(lines.len() <= 2, "a wall again, {} lines: {lines:#?}", lines.len());
+        let l = lines.join(" ");
+        let l = &l;
+        assert!(l.contains("bash not_run"), "{l}");
+        assert!(l.contains("meaning does not exist yet"), "the gist survived: {l}");
+        // Not the paragraph, not the id, not the loud register.
+        assert!(!l.contains("parameter_expansion"), "the model's detail leaked: {l}");
+        assert!(!l.contains("adj-s-"), "an id nobody can use: {l}");
+        assert!(!l.contains('!'), "still shouting: {l}");
+    }
+
+    /// **A refusal's reasoning folds, and the envelope never shows.** Both halves
+    /// of *"it just throws up on my chat"*: layer A's reason is a document, and the
+    /// row under it was carrying the marker the model reads.
+    #[test]
+    fn a_reason_that_is_a_document_folds_to_its_first_sentence() {
+        assert!(is_envelope("<<<TOOL_ERROR 5ebfdef6>>>"));
+        assert!(is_envelope("  <<<END_TOOL_ERROR 5ebfdef6>>>  "));
+        assert!(!is_envelope("< < <TOOL_ERROR 5ebfdef6>>>"), "a neutralised body line");
+        assert!(!is_envelope("error: could not find `Cargo.toml`"));
+
+        let doc = "this command's meaning does not exist yet, so nothing can decide \
+                   about it. The grammar read 315 bytes and could not resolve:\n  \
+                   parameter_expansion at 1:2 decides the assignment";
+        let gist = first_sentence(doc);
+        assert_eq!(gist, "this command's meaning does not exist yet, so nothing can decide about it.");
+        assert!(!gist.contains("parameter_expansion"));
+        // A reason that IS a sentence is left exactly alone.
+        let one = "the workspace has no writable backend";
+        assert_eq!(first_sentence(one), one);
     }
 
     /// Type into the composer the way a person does, one key at a time. There is

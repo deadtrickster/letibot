@@ -1634,11 +1634,26 @@ impl AdjudicatedGate {
             tier: req.tier.as_str(),
             outcome,
             repeat,
-            grant: format!(
-                "grant `{}` ({}) for this session, or answer the pending decision. \
-                 Nothing was executed and nothing changed.",
-                req.id, req.tool
-            ),
+            // **Offer the remedy that exists.** A refusal the HARNESS made — the
+            // normaliser could not read the command, the host boundary refused it —
+            // is not a refusal a grant can lift: no adjudicator was consulted and
+            // none would be on a retry, so telling the operator to grant it invites
+            // them to grant something that changes nothing, and telling the MODEL to
+            // ask for one invites a retry loop around a command whose meaning still
+            // does not exist. What helps there is in the basis above: re-issue it in
+            // a form the grammar can read.
+            grant: if decision.by.starts_with("boundary:") {
+                "Nothing was executed and nothing changed. No grant applies: no \
+                 adjudicator was consulted and none would be on a retry — the \
+                 command has to be re-issued in a form that resolves."
+                    .to_string()
+            } else {
+                format!(
+                    "grant `{}` ({}) for this session, or answer the pending decision. \
+                     Nothing was executed and nothing changed.",
+                    req.id, req.tool
+                )
+            },
         };
         if let Some(sink) = &self.denials {
             sink.denied(&notice);
