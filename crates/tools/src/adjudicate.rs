@@ -1642,10 +1642,17 @@ impl AdjudicatedGate {
             // ask for one invites a retry loop around a command whose meaning still
             // does not exist. What helps there is in the basis above: re-issue it in
             // a form the grammar can read.
-            grant: if decision.by.starts_with("boundary:") {
-                "Nothing was executed and nothing changed. No grant applies: no \
-                 adjudicator was consulted and none would be on a retry — the \
-                 command has to be re-issued in a form that resolves."
+            grant: if decision.by == "boundary:normaliser" {
+                "Nothing was executed and nothing changed. No grant applies: the \
+                 refusal is before any adjudicator and a standing permission is \
+                 tested after it, so granting this changes nothing on a retry. What \
+                 lifts it is re-issuing the command in a form that resolves — the \
+                 reason above names each construct."
+                    .to_string()
+            } else if decision.by.starts_with("boundary:") {
+                "Nothing was executed and nothing changed. No grant applies and no \
+                 rewording does either: this is refused by the harness itself, \
+                 before any adjudicator and overridable by none."
                     .to_string()
             } else {
                 format!(

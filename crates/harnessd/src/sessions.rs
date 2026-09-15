@@ -743,34 +743,97 @@ impl<'a> Sessions<'a> {
     /// traffic. It goes through the same `harness()` as the worker, so a scripted
     /// run and a driven one open a session the same way.
     pub fn submit(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
+        self.run_prompt(session_id, text)
+    }
+
+    /// **One turn, and everything that has to happen around one.**
+    ///
+    /// Both ways a prompt reaches a session go through here — the scripted
+    /// `--prompt` path and the command queue a head's prompt lands on — because
+    /// they used to be two copies of this sequence and one of them was missing a
+    /// step. The missing step was the automatic compaction, and the path missing it
+    /// was the one every interactive session takes: a banner that said *"compacts
+    /// automatically with 16384 left"* to sessions where nothing called it, and an
+    /// operator who met the wall and was told a compaction had been attempted.
+    /// *"it failed to compact lol"* — it had not failed, it had not run.
+    ///
+    /// A second copy of a sequence is a second place to forget one of its steps, so
+    /// there is one.
+    fn run_prompt(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
         let hub = self.registry.get(session_id);
-        let harness = self.harness(session_id)?;
-        let out = harness.submit(text);
+        // Opened here rather than held across the tidying below: a live borrow of
+        // `self.open` would stop a compaction from re-entering it.
+        let out = match self.harness(session_id) {
+            Ok(h) => h.submit(text),
+            Err(e) => {
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "session_unavailable".into(),
+                        detail: format!(
+                            "this session could not be opened, so nothing was run: {e}"
+                        ),
+                    });
+                }
+                return Err(e);
+            }
+        };
         self.publish_title(session_id);
         self.arm_wake(session_id);
-        match out {
-            Ok(r) => {
-                self.compact_if_at_the_wall(session_id);
-                Ok(r)
+        self.after_turn(session_id, &hub, &out);
+        out
+    }
+
+    /// **Everything that follows a turn, whatever started it.**
+    ///
+    /// A prompt from a script, a prompt from a head, a monitor firing — three ways
+    /// in and one set of obligations on the way out. Kept in one place because the
+    /// last time they were in three, one of them was missing the compaction.
+    fn after_turn(
+        &mut self,
+        session_id: &str,
+        hub: &Option<std::sync::Arc<Hub>>,
+        out: &Result<Reply, HarnessError>,
+    ) {
+        // The failure reaches the head FIRST: it is the answer to what was asked,
+        // and the tidying after it is not.
+        if let Err(e) = out {
+            let turn_id = self
+                .open
+                .get(session_id)
+                .map(|h| h.last_turn_id().to_string())
+                .unwrap_or_default();
+            if let Some(hub) = &hub {
+                publish_failure(hub, &turn_id, e);
             }
-            Err(e) => {
-                // **The wall is the one failure that must still compact.** The
-                // turn stopped precisely because the context is full; returning
-                // without compacting leaves the NEXT turn to meet the same wall at
-                // round zero, and the one after that, forever. Everything the turn
-                // produced is committed, so there is nothing to lose by tidying now.
-                if matches!(e, HarnessError::ContextWall { .. }) {
-                    self.compact_if_at_the_wall(session_id);
-                }
-                let turn_id = self
-                    .open
-                    .get(session_id)
-                    .map(|h| h.last_turn_id().to_string())
-                    .unwrap_or_default();
-                if let Some(hub) = &hub {
-                    publish_failure(hub, &turn_id, &e);
-                }
-                Err(e)
+        }
+
+        // **The wall is the one failure that must still compact.** The turn stopped
+        // precisely because the context is full; returning without compacting
+        // leaves the NEXT turn to meet the same wall at round zero, and the one
+        // after that, forever. Everything the turn produced is committed, so there
+        // is nothing to lose by tidying now.
+        let wall = matches!(out, Err(HarnessError::ContextWall { .. }));
+        if out.is_ok() || wall {
+            let attempted = self.compact_if_at_the_wall(session_id);
+            // A wall that did not even reach the compaction threshold is a
+            // contradiction, and the operator should be told which of the two
+            // numbers disagreed rather than left to infer it from a silence — the
+            // wall's own message says a compaction was attempted.
+            if wall && !attempted && let Some(hub) = &hub {
+                hub.publish(SessionEvent::Warning {
+                    code: "auto_compact_skipped".into(),
+                    detail: format!(
+                        "the turn stopped at the context wall and nothing was \
+                         compacted: automatic compaction is {} for this session. \
+                         `/compact` does it by hand.",
+                        if self.base.context_window.is_none() {
+                            "not configured — no --context-window is set, so there is \
+                             no wall to measure against"
+                        } else {
+                            "off"
+                        }
+                    ),
+                });
             }
         }
     }
@@ -794,13 +857,18 @@ impl<'a> Sessions<'a> {
     /// A failure here is announced and swallowed: the turn the operator asked for
     /// SUCCEEDED, and turning its reply into an error because the tidying
     /// afterwards did not work would lose the thing they wanted.
-    fn compact_if_at_the_wall(&mut self, session_id: &str) {
+    ///
+    /// Returns whether a compaction was actually ATTEMPTED — `false` when the
+    /// session is not at the threshold, or automatic compaction is off, or no
+    /// window is configured. A caller that has just told the operator "a
+    /// compaction was attempted" needs that to be a fact rather than a hope.
+    fn compact_if_at_the_wall(&mut self, session_id: &str) -> bool {
         let resident = match self.open.get(session_id) {
             Some(h) => h.ledger_len() as u64,
-            None => return,
+            None => return false,
         };
         if !self.base.should_compact(resident) {
-            return;
+            return false;
         }
         let hub = self.registry.get(session_id);
         let window = self.base.context_window.unwrap_or(0);
@@ -890,6 +958,10 @@ impl<'a> Sessions<'a> {
                 }
             }
         }
+        // It ran. Whether it HELPED is the branch above, which says so in its own
+        // words either way; what this answers is the narrower question a caller
+        // asks before claiming an attempt was made.
+        true
     }
 
     /// Read-only access to a session's harness, for a caller that wants the ledger
@@ -1044,23 +1116,23 @@ impl<'a> Sessions<'a> {
         let Some(harness) = self.open.get_mut(session_id) else {
             return Outcome::Ignored;
         };
-        match harness.wake() {
-            Ok(None) => Outcome::Ignored,
-            Ok(Some(reply)) => {
-                self.publish_title(session_id);
-                Outcome::Replied(Box::new(reply))
-            }
-            Err(e) => {
-                let turn_id = self
-                    .open
-                    .get(session_id)
-                    .map(|h| h.last_turn_id().to_string())
-                    .unwrap_or_default();
-                if let Some(hub) = &hub {
-                    publish_failure(hub, &turn_id, &e);
-                }
-                Outcome::Failed(e.to_string())
-            }
+        let woke = harness.wake();
+        // `Ignored` is not a turn: nothing ran, nothing grew, and there is nothing
+        // to tidy after it.
+        let Some(out) = (match woke {
+            Ok(None) => None,
+            Ok(Some(reply)) => Some(Ok(reply)),
+            Err(e) => Some(Err(e)),
+        }) else {
+            return Outcome::Ignored;
+        };
+        self.publish_title(session_id);
+        // A monitor's turn is a turn: it appends rows, it can reach the wall, and a
+        // session that only ever woke would have compacted never.
+        self.after_turn(session_id, &hub, &out);
+        match out {
+            Ok(reply) => Outcome::Replied(Box::new(reply)),
+            Err(e) => Outcome::Failed(e.to_string()),
         }
     }
 
@@ -1069,43 +1141,15 @@ impl<'a> Sessions<'a> {
         let hub = self.registry.get(session_id);
         match &cmd.kind {
             CommandKind::Prompt { text } => {
-                // Opened here rather than for the whole match: only a prompt needs
-                // the harness held across the call, and a held borrow would stop a
-                // compaction from re-entering `self.open`.
-                let harness = match self.harness(session_id) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        if let Some(hub) = &hub {
-                            hub.publish(SessionEvent::Warning {
-                                code: "session_unavailable".into(),
-                                detail: format!(
-                                    "this session could not be opened, so nothing was run: {e}"
-                                ),
-                            });
-                        }
-                        return Outcome::Failed(e.to_string());
-                    }
-                };
-                let out = match harness.submit(text) {
+                // One line, because everything a turn needs around it — the title,
+                // the wake, the failure notice, the compaction at the wall — is in
+                // `run_prompt`, which the scripted path also calls. This arm used
+                // to be the second copy of that sequence, and the copy was missing
+                // the compaction.
+                match self.run_prompt(session_id, text) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
-                    Err(e) => {
-                        let turn_id = harness.last_turn_id().to_string();
-                        if let Some(hub) = &hub {
-                            publish_failure(hub, &turn_id, &e);
-                        }
-                        Outcome::Failed(e.to_string())
-                    }
-                };
-                // A session that had no name has one now, taken from the message
-                // that just opened it. The registry is what a picker is drawn from,
-                // so the name has to reach it here or the row stays an id until the
-                // daemon restarts.
-                self.publish_title(session_id);
-                // A turn is the only thing that can declare a monitor, so it is the
-                // only place worth asking whether this session now needs a waiter.
-                // Idempotent and cheap: one `HashSet` lookup on the common path.
-                self.arm_wake(session_id);
-                out
+                    Err(e) => Outcome::Failed(e.to_string()),
+                }
             }
             // A compaction is a whole-session act and runs through
             // [`Sessions::compact`], as a prompt runs through

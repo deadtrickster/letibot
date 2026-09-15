@@ -548,9 +548,54 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         !by.is_empty(),
         "a refusal that does not say who decided is the one that costs an hour"
     );
-    // The grant path arrives WITH the denial, not after the task has died: a
-    // refusal that can only be routed around teaches people to route around
-    // refusals, and one whose grant arrives late is that with an extra step.
+    // §4b's requirement: the way OUT arrives with the denial, not after the task
+    // has died — a refusal that can only be routed around teaches people to route
+    // around refusals, and one whose remedy arrives late is that with an extra
+    // step. What the way out IS depends on who refused.
+    //
+    // This call is refused by `boundary:normaliser` (the gate here declares no
+    // surroundings, so a bare `rm` is an unresolved program), and there a grant is
+    // not the remedy: the refusal happens before any adjudicator and a standing
+    // permission is tested after it, so granting it changes nothing on a retry.
+    // Offering `grant adj-N` there is offering a button that does nothing, which
+    // teaches the same lesson this assertion exists to prevent.
+    assert_eq!(by, "boundary:normaliser");
+    assert!(
+        grant.contains("re-issuing the command"),
+        "a boundary refusal must name the remedy that exists: {grant}"
+    );
+    assert!(
+        !grant.contains("adj-"),
+        "offered a grant that the gate would ignore on the retry: {grant}"
+    );
+
+    // And where a person COULD have answered, the id is there to answer it by. A
+    // `write` resolves without a declared shell, so this one reaches `NoAdjudicator`
+    // itself rather than stopping at layer A.
+    let args = serde_json::json!({"path": "/home/dead/Projects/letibot/notes.md"});
+    let _ = gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c2",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+    });
+    let adjudicable: Vec<(String, String)> = hub
+        .retained()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            SessionEvent::DenialRaised { by, grant, .. } if !by.starts_with("boundary:") => {
+                Some((by, grant))
+            }
+            _ => None,
+        })
+        .collect();
+    let (by, grant) = adjudicable
+        .last()
+        .expect("a call nobody could answer is still a refusal somebody can grant");
+    assert_eq!(by, "none", "nobody was attached, and that is who refused it");
     assert!(
         grant.contains("adj-"),
         "the operator must be able to grant it by name: {grant}"
