@@ -1331,6 +1331,8 @@ impl App {
                 kind,
                 call_id,
                 summary,
+                target,
+                detail,
                 options,
                 choices,
                 because,
@@ -1348,6 +1350,8 @@ impl App {
                     kind,
                     call_id,
                     summary,
+                    target,
+                    detail,
                     options,
                     choices,
                     because,
@@ -3622,11 +3626,42 @@ impl App {
     }
 
     fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
+        // (helper below the method, so the rendering reads top to bottom)
+        // **The question, then the thing itself, then the evidence.**
+        //
+        // One line used to carry all three — the sentence with the target
+        // interpolated into it, layer A's verdict and intent list, and the kind —
+        // and the operator's reading of it was *"no possible to see wtf was the
+        // command i supposed to approve"*. A shell line inside a sentence inside a
+        // taxonomy is not skimmable, and a permission an operator cannot evaluate is
+        // one they approve out of fatigue, which is the whole mechanism this gate
+        // exists to interrupt.
+        //
+        // So: the ask in yellow, the target alone and indented under it, the
+        // deterministic reading dim below that. The target keeps its own lines even
+        // when it wraps — a command is the one thing here worth the rows.
+        let headline = match ask_without_target(&d.summary, &d.target) {
+            Some(ask) => ask,
+            None => d.summary.clone(),
+        };
         let mut out = vec![colour(
             &self.cfg,
             sgr::YELLOW,
-            &format!("? {} [{}]", d.summary, d.kind),
+            &format!("? {headline} [{}]", d.kind),
         )];
+        if !d.target.is_empty() {
+            for l in wrap(&format!("    {}", d.target), w) {
+                // Bold rather than yellow: the question is yellow, and the thing
+                // being asked about is not a second question.
+                out.push(colour(&self.cfg, sgr::BOLD, &l));
+            }
+        }
+        if !d.detail.is_empty() {
+            for l in wrap(&format!("  {}", d.detail), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+        }
+
         // **The model's verdict, above the ladder.**
         //
         // At `/mode supervised` the question is not *should this run* but *do you
@@ -4029,6 +4064,26 @@ fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut Call
         .iter_mut()
         .rev()
         .find(|c| c.call_id == call_id && !matches!(c.state, CallState::Finished { .. }))
+}
+
+/// The ask with its target taken off the end: `` `bash` wants exec access `` from
+/// `` `bash` wants exec access to `cargo test` ``.
+///
+/// The daemon sends both the sentence and the target, and the sentence is the one
+/// every other reader of the log already has — the audit row, the denial notice, a
+/// second head. Rather than change what that sentence is, the head that wants to
+/// lay the two out separately takes the target back off. `None` when the sentence
+/// does not end in the target, which is the honest answer for a summary some other
+/// builder wrote: then the whole sentence is shown and nothing is lost.
+fn ask_without_target(summary: &str, target: &str) -> Option<String> {
+    if target.is_empty() {
+        return None;
+    }
+    let head = summary.strip_suffix(&format!("`{target}`"))?;
+    // " to " is the joint in every sentence this builder writes; trimming it is what
+    // makes the remainder read as a heading rather than as a clipped sentence.
+    let head = head.trim_end();
+    Some(head.strip_suffix(" to").unwrap_or(head).to_string())
 }
 
 fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
@@ -5270,6 +5325,8 @@ mod tests {
             kind: "permission".into(),
             call_id: None,
             summary: "edit a file".into(),
+            target: String::new(),
+            detail: String::new(),
             options: kinds
                 .iter()
                 .map(|k| DecisionOption {
@@ -5340,6 +5397,54 @@ mod tests {
             !a.decision_lines(&without, 100).iter().any(|l| l.contains("<glob>")),
             "a request with no rule to write must not advertise one"
         );
+    }
+
+    /// **The command is on a line of its own, and the taxonomy is not in front of
+    /// it.** The operator's report: *"no possible to see wtf was the command i
+    /// supposed to approve"* — because the summary carried the target inside a
+    /// sentence, layer A's reading was appended to that sentence, and a long
+    /// command was then wrapped into the middle of the wall.
+    #[test]
+    fn the_command_being_approved_gets_its_own_line() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        let cmd = "cargo test -p letibot-tools --test clauses -- --nocapture";
+        d.summary = format!("`bash` wants exec access to `{cmd}`");
+        d.target = cmd.to_string();
+        d.detail = "ask — intents [execute_code] over [host_other]".into();
+        let lines = a.decision_lines(&d, 100);
+
+        // The command, alone on its line, indented — not embedded in the question.
+        let own = lines
+            .iter()
+            .find(|l| l.contains(cmd))
+            .unwrap_or_else(|| panic!("the command is not shown at all: {lines:#?}"));
+        assert_eq!(own.trim(), cmd, "the command shares its line with prose");
+
+        // The question above it names the tool and the access, and does NOT repeat
+        // the command or carry layer A's vocabulary.
+        assert!(lines[0].contains("`bash` wants exec access"), "{}", lines[0]);
+        assert!(!lines[0].contains(cmd), "the command is back in the headline: {}", lines[0]);
+        assert!(!lines[0].contains("intents"), "the taxonomy is back on top: {}", lines[0]);
+
+        // And layer A is still there, under it, for whoever wants it.
+        assert!(
+            lines.iter().any(|l| l.contains("intents [execute_code]")),
+            "the deterministic reading was dropped rather than demoted: {lines:#?}"
+        );
+    }
+
+    /// A summary some other builder wrote is shown whole rather than mangled: the
+    /// head takes the target off the end only when the end IS the target.
+    #[test]
+    fn a_summary_that_does_not_end_in_its_target_is_left_alone() {
+        assert_eq!(
+            ask_without_target("`bash` wants exec access to `ls -la`", "ls -la").as_deref(),
+            Some("`bash` wants exec access")
+        );
+        assert_eq!(ask_without_target("something else entirely", "ls -la"), None);
+        assert_eq!(ask_without_target("`web_search` wants network access", ""), None);
     }
 
     /// Type into the composer the way a person does, one key at a time. There is

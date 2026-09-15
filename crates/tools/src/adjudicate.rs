@@ -602,6 +602,13 @@ pub struct AdjudicationRequest {
     pub class: ActionClass,
     /// One line a human can decide from without reading the arguments.
     pub summary: String,
+    /// **The one thing the decision is about**, alone and unquoted: the command a
+    /// `bash` call would run, the path a write would take, the URL a fetch reaches.
+    ///
+    /// Carried beside `summary` rather than only inside it, because a head has to be
+    /// able to put it where the eye lands — and because a sentence with a shell line
+    /// interpolated into the middle of it is the one shape a person cannot skim.
+    pub target: String,
     pub arguments: Value,
     pub arguments_digest: String,
     /// What the backend can truthfully say about where this lands.
@@ -1800,6 +1807,7 @@ impl AdjudicatedGate {
                 call.name,
                 call.access.as_str()
             ),
+            target: target.clone(),
             arguments: call.args.clone(),
             arguments_digest: digest,
             boundary_facts: facts,
@@ -2766,7 +2774,12 @@ fn startup_disclosure_inner(
 /// argument"* on a `web_search` describes the request by something it was never
 /// going to have.
 fn target_of(args: &Value) -> String {
-    for key in ["path", "url", "query", "repo", "server", "pattern"] {
+    // `command` is first because for `bash` it IS the call: a shell line is more
+    // concrete than any path inside it, and the paths are usually not arguments at
+    // all. Its absence from this list is why an operator was shown *"`bash` wants
+    // exec access to `<no target argument>`"* and had to approve a command the
+    // prompt would not name — the one field the decision is actually about.
+    for key in ["command", "path", "url", "query", "repo", "server", "pattern"] {
         if let Some(v) = args.get(key).and_then(|v| v.as_str())
             && !v.trim().is_empty()
         {
@@ -2816,6 +2829,25 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// **A `bash` call is about its command**, and the prompt has to be able to say
+    /// so. Measured 2026-09-15: every exec permission the operator was shown read
+    /// *"`bash` wants exec access to `<no target argument>`"* — the placeholder for
+    /// a call that names nothing, on the one tool whose whole argument is the
+    /// thing being decided. `command` was simply not in the list.
+    #[test]
+    fn the_thing_a_call_is_about_includes_a_shell_command() {
+        use serde_json::json;
+        assert_eq!(
+            super::target_of(&json!({"command": "cargo test -p letibot-tools"})),
+            "cargo test -p letibot-tools"
+        );
+        // Still the most concrete argument first for the file tools.
+        assert_eq!(super::target_of(&json!({"path": "src/main.rs"})), "src/main.rs");
+        // And a call that genuinely names nothing still says so rather than
+        // borrowing a word it never had.
+        assert_eq!(super::target_of(&json!({"limit": 5})), "<no target argument>");
+    }
+
     /// `Gate::describe` defaults to naming the absence, and an attached gate names
     /// its adjudicator. The daemon's banner is computed from this, so a gate that
     /// answered vaguely would put a vague sentence in front of the operator.

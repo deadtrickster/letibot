@@ -1643,6 +1643,7 @@ mod tests {
             tool: "bash".into(),
             class: ActionClass::host(Access::Exec, true, false),
             summary: format!("`bash` wants exec access to `{command}`"),
+            target: command.to_string(),
             arguments: json!({ "command": command }),
             arguments_digest: "d".into(),
             boundary_facts: vec![],

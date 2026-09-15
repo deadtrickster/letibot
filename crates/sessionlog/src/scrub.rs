@@ -314,6 +314,8 @@ mod tests {
             kind: "exec".into(),
             call_id: None,
             summary: "run it".into(),
+            target: String::new(),
+            detail: String::new(),
             options: vec![],
             choices: vec![],
             because: String::new(),

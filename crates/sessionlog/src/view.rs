@@ -84,6 +84,14 @@ pub struct OpenDecision {
     pub kind: String,
     pub call_id: Option<String>,
     pub summary: String,
+    /// The one thing being decided about — the command, the path, the URL — so a
+    /// head can put it on its own line. See the event for why it is not left inside
+    /// `summary`.
+    #[serde(default)]
+    pub target: String,
+    /// Layer A's reading, for the dim line under the question.
+    #[serde(default)]
+    pub detail: String,
     /// The allow/deny ladder, for a permission. Empty for a question.
     pub options: Vec<DecisionOption>,
     /// The model's own plain-text choices, for a question (T25/D10). Empty for a
@@ -377,6 +385,8 @@ impl SessionView {
                 kind,
                 call_id,
                 summary,
+                target,
+                detail,
                 options,
                 choices,
                 because,
@@ -390,6 +400,8 @@ impl SessionView {
                     kind: kind.clone(),
                     call_id: call_id.clone(),
                     summary: summary.clone(),
+                    target: target.clone(),
+                    detail: detail.clone(),
                     options: options.clone(),
                     choices: choices.clone(),
                     because: because.clone(),

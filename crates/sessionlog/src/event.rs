@@ -380,6 +380,28 @@ pub enum SessionEvent {
         kind: String,
         call_id: Option<String>,
         summary: String,
+        /// **The one thing being decided about**, on its own: the command a `bash`
+        /// call would run, the path a write would take, the URL a fetch would reach.
+        ///
+        /// Separate from `summary` because a head has to be able to put it where the
+        /// eye lands. It used to be interpolated into the sentence and the sentence
+        /// was then joined to layer A's reading, so the line an operator decided
+        /// from read *"`bash` wants exec access to `<no target argument>` — ask —
+        /// intents [read_file write_file execute_code] over [host_other]"* — a
+        /// taxonomy wrapped around a blank where the command should have been.
+        ///
+        /// `#[serde(default)]` for logs recorded before this existed; empty means
+        /// the call named nothing, which is a fact about `web_search` and a bug
+        /// about `bash`.
+        #[serde(default)]
+        target: String,
+        /// Layer A's deterministic reading — verdict, intents, regions, tier.
+        ///
+        /// Evidence, not the question. It belongs under the question in the dim
+        /// register rather than appended to it: an operator reads this line SECOND,
+        /// if at all, and it was pushing the command off the first one.
+        #[serde(default)]
+        detail: String,
         /// **The adjudication ladder**, for a permission: allow once, allow for the
         /// session, allow for the project, deny. Empty for a question, which does not
         /// have a ladder — it has choices.

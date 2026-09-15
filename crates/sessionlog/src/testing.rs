@@ -80,6 +80,8 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
         kind: "permission".into(),
         call_id: Some("c1".into()),
         summary: summary.into(),
+        target: String::new(),
+        detail: String::new(),
         options: vec![
             DecisionOption {
                 option_id: "allow".into(),
@@ -108,6 +110,8 @@ pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> Sessi
         kind: "question".into(),
         call_id: Some("c1".into()),
         summary: text.into(),
+        target: String::new(),
+        detail: String::new(),
         options: Vec::new(),
         choices: choices.iter().map(|c| (*c).into()).collect(),
         because: because.into(),

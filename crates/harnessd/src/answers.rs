@@ -327,7 +327,18 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
         // The one line a person decides from, and then what layer A read, because a
         // permission the operator cannot evaluate is one they will approve out of
         // fatigue — which is the mechanism behind the 67% in §1.
-        summary: format!("{} — {}", req.summary, req.baseline),
+        // **The question, and nothing else, on the line the operator reads first.**
+        //
+        // These three used to be one string — the sentence, then layer A's reading,
+        // joined with an em dash — and the head then appended `[permission]` to it.
+        // What that produced was *"`bash` wants exec access to `<no target
+        // argument>` — ask — intents [read_file write_file execute_code] over
+        // [host_other] [permission]"*: four registers in one line, the command
+        // missing from the middle of it, and the taxonomy taking the space the
+        // command needed. Now the head gets the parts and decides where each goes.
+        summary: req.summary.clone(),
+        target: req.target.clone(),
+        detail: req.baseline.clone(),
         options: req.options.iter().map(wire_option).collect(),
         // A permission has no plain-text choices. `ask_user_question` fills these,
         // and it goes through the same seam.
@@ -506,6 +517,7 @@ mod tests {
             call_id: "c1".into(),
             agent: "a".into(),
             tool: "write".into(),
+            target: "src/main.rs".into(),
             class: ActionClass::host(Access::Write, true, false),
             summary: "`write` wants write access to `src/main.rs`".into(),
             arguments: serde_json::json!({"path": "src/main.rs"}),
