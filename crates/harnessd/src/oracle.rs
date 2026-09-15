@@ -15,10 +15,12 @@
 //! `Timeout`, which fails closed. That rules out an oracle that explains itself.
 //! Measured on the guard model here (Qwen3-4B-Instruct Q6_K, CPU only):
 //!
-//!     n_predict   warm latency
-//!             1         85 ms
-//!             4        296 ms      <- fits
-//!            16      1,143 ms      <- does not
+//! ```text
+//! n_predict   warm latency
+//!         1         85 ms
+//!         4        296 ms      <- fits
+//!        16      1,143 ms      <- does not
+//! ```
 //!
 //! So the answer is a VERDICT, not prose: a word and, when it authorises, the
 //! trail indices it relies on. The explanation a human reads is generated later,

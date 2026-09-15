@@ -182,6 +182,54 @@ pub struct Artifact {
     pub updated: String,
 }
 
+/// What `GET /api/nag` answers: the seat's board state, as counts with the ids
+/// behind them.
+///
+/// **Read off the node, not off the docs** (build `0.8.0+d1f2415`, 2026-09-15).
+/// A note asking for this work said `stale` was the one count with no `_ids`
+/// companion; the node returns `stale_ids` like every other. Field names here
+/// were taken from an actual response body, because the only in-tree mention of
+/// them describes the CLI rather than the API.
+///
+/// Every field is `#[serde(default)]`: a node that grows a count must not break
+/// a seat, and one that drops a count must leave the seat reading zero rather
+/// than failing to parse.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct Nag {
+    /// Open rows assigned to this seat.
+    #[serde(default)]
+    pub mine: i64,
+    #[serde(default)]
+    pub open: i64,
+    #[serde(default)]
+    pub unowned: i64,
+    /// Assigned to me and still to do — the bucket a seat is nagged about.
+    #[serde(default)]
+    pub mine_todo: i64,
+    #[serde(default)]
+    pub mine_todo_ids: Vec<String>,
+    #[serde(default)]
+    pub mine_waiting: i64,
+    #[serde(default)]
+    pub mine_waiting_ids: Vec<String>,
+    /// Questions this seat owes somebody an answer to.
+    #[serde(default)]
+    pub answers_owed: i64,
+    #[serde(default)]
+    pub answers_owed_ids: Vec<String>,
+    #[serde(default)]
+    pub unowned_waiting: i64,
+    #[serde(default)]
+    pub unowned_waiting_ids: Vec<String>,
+    /// Mine, untouched for longer than `stale_after_seconds`.
+    #[serde(default)]
+    pub stale: i64,
+    #[serde(default)]
+    pub stale_ids: Vec<String>,
+    #[serde(default)]
+    pub stale_after_seconds: i64,
+}
+
 /// What the server-side filter is asked for on a poll: flowy's own three
 /// levels, sent as its two flags. The seat sends the LOOSEST level any attached
 /// session wants, and [`crate::attention`] narrows per room after delivery.
@@ -304,6 +352,18 @@ impl Node {
     /// `GET /api/node`: the build and the route table.
     pub fn node(&self) -> Result<Value, NodeError> {
         self.get("/api/node")
+    }
+
+    /// `GET /api/nag`: the seat's own board STATE — what is assigned, waiting,
+    /// owed and stale right now.
+    ///
+    /// The one read in this client that is not about something that HAPPENED.
+    /// `inbox_wait` answers *what was said since my cursor*; this answers *what
+    /// is true about my queue*, and a queue that has been full for an hour
+    /// generates no events at all. See [`crate::seat::NagState`] for why that
+    /// distinction is the whole point.
+    pub fn nag(&self) -> Result<Nag, NodeError> {
+        parse(self.get("/api/nag")?)
     }
 
     pub fn readers(&self) -> Result<Vec<Reader>, NodeError> {

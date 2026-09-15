@@ -993,9 +993,15 @@ impl Config {
             )),
             (Some(_), true) => out.push(Disclosure::on(
                 "flowy",
-                "a message for the seat arrives as a firing of the `flowy` monitor; \
-                 the `flowy` tool sets attention per room, subscribes to rows and \
-                 threads, and speaks as the seat.",
+                "a message for the seat — AND a change on its board — arrives as a \
+                 firing of the `flowy` monitor; the two are one stream and one \
+                 watcher, so a row assigned to you wakes this session exactly as \
+                 something said to you does. The board is sampled beside each inbox \
+                 poll and delivered on its EDGES: a line when a row arrives in one of \
+                 your buckets and one when a bucket empties, silence while the level \
+                 holds. `flowy nag` reads the level itself at any time. The `flowy` \
+                 tool sets attention per room, subscribes to rows and threads, and \
+                 speaks as the seat.",
             )),
             (Some(_), false) => out.push(Disclosure::off(
                 "flowy",

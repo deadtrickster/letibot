@@ -610,3 +610,60 @@ fn two_sessions_on_one_seat_talk_through_the_daemon_with_the_room_as_the_record(
     assert_eq!(said[2]["to"], "other-seat");
     assert_eq!(said[2]["body"], "@other-seat/s-9 over to you");
 }
+
+/// A nag is LEVEL-triggered; the seat delivers its EDGES. The four things that
+/// must all hold, and the reason each was easy to get wrong:
+///   * an unchanged level is silent (else the same line every 20 s, forever);
+///   * a NEW id in an unchanged count still speaks (one row done, one arrived —
+///     a count-only check would never mention the second);
+///   * a bucket emptying speaks once (else the seat's last word on a bucket is
+///     the arrival, and "is it still open?" is unanswerable);
+///   * the first reading is a standing total, not N arrivals.
+#[test]
+fn the_board_is_sampled_as_a_level_and_delivered_as_edges() {
+    use letibot_flowy::client::Nag;
+    use letibot_flowy::seat::NagState;
+
+    let nag = |ids: &[&str]| Nag {
+        mine_todo: ids.len() as i64,
+        mine_todo_ids: ids.iter().map(|s| s.to_string()).collect(),
+        ..Nag::default()
+    };
+    let mut st = NagState::default();
+
+    // First reading: what is true, stated once, as a total.
+    let first = st.diff(&nag(&["a", "b"])).expect("a standing total");
+    assert!(first.contains("2 assigned to you"), "{first}");
+    assert!(
+        !first.contains("new"),
+        "the baseline must not read as arrivals: {first}"
+    );
+
+    // Unchanged level: silent. This is the whole point.
+    assert_eq!(st.diff(&nag(&["a", "b"])), None);
+    assert_eq!(st.diff(&nag(&["a", "b"])), None);
+
+    // One finished, one arrived — the COUNT is unchanged at 2 and the seat must
+    // still say so, because the id set moved.
+    let moved = st.diff(&nag(&["a", "c"])).expect("a new id is an edge");
+    assert!(moved.contains("1 new assigned to you"), "{moved}");
+    assert!(moved.contains('c'), "{moved}");
+    assert!(!moved.contains("\"b\""), "{moved}");
+
+    // Emptying speaks once, then goes quiet.
+    let cleared = st.diff(&nag(&[])).expect("a clear is an edge");
+    assert!(
+        cleared.contains("nothing assigned to you any more"),
+        "{cleared}"
+    );
+    assert_eq!(st.diff(&nag(&[])), None, "and only once");
+
+    // A different bucket is tracked independently.
+    let owed = Nag {
+        answers_owed: 1,
+        answers_owed_ids: vec!["q1".into()],
+        ..Nag::default()
+    };
+    let o = st.diff(&owed).expect("answers owed is its own bucket");
+    assert!(o.contains("waiting on an answer from you"), "{o}");
+}

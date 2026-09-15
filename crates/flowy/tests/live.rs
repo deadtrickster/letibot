@@ -172,3 +172,45 @@ fn the_fabric_block_reads_live_then_serves_the_cache_labelled_stale() {
     assert!(matches!(src3, FabricSource::Unreachable { .. }));
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+/// The board, read off the real node. Guards the field names, which are the one
+/// thing a fake cannot check: they were taken from a response body because the
+/// only in-tree mention of them describes the CLI.
+#[test]
+fn the_real_node_answers_nag_with_the_fields_this_struct_names() {
+    if std::env::var("FLOWY_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("SKIPPED: FLOWY_LIVE is not 1 — the check did not run and this is not a pass");
+        return;
+    }
+    let creds = discover(&Onboarding::usual()).expect("a seat on the usual path");
+    let node = letibot_flowy::client::Node::new(creds.endpoint.clone(), &creds.agent, &creds.token);
+    let nag = node.nag().expect("GET /api/nag");
+    // Not asserting values — they are whatever the board says today. Asserting
+    // that the SHAPE parsed: a node answering `{}` would deserialize to all
+    // zeros and look identical to an empty board, so check a field the node
+    // always sets.
+    assert!(
+        nag.stale_after_seconds > 0,
+        "stale_after_seconds came back {} — either the node does not send it or \
+         the field name is wrong, and an all-default Nag is indistinguishable \
+         from an empty board",
+        nag.stale_after_seconds
+    );
+    assert!(
+        nag.open >= nag.mine,
+        "open {} < mine {}",
+        nag.open,
+        nag.mine
+    );
+    // Every count with ids agrees with its ids.
+    assert_eq!(nag.mine_todo as usize, nag.mine_todo_ids.len(), "mine_todo");
+    assert_eq!(
+        nag.stale as usize,
+        nag.stale_ids.len(),
+        "stale — the note said this one had no _ids companion"
+    );
+    eprintln!(
+        "live nag: mine_todo {} stale {} answers_owed {}",
+        nag.mine_todo, nag.stale, nag.answers_owed
+    );
+}

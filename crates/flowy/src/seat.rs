@@ -141,6 +141,8 @@ pub(crate) struct Shared {
     _claim: Mutex<Option<WaiterClaim>>,
     entities: Arc<EntityWatch>,
     proc: WaiterProcess,
+    /// The last board reading, for edge detection. See [`NagState`].
+    nag: Mutex<NagState>,
 }
 
 /// The daemon's handle. Cheap to clone; the loop thread holds a `Weak`, so
@@ -190,6 +192,7 @@ impl Seat {
         Ok(Seat {
             shared: Arc::new(Shared {
                 entities: EntityWatch::new(node.clone()),
+                nag: Mutex::new(NagState::default()),
                 node: Mutex::new(node),
                 creds,
                 me: Mutex::new(me),
@@ -466,10 +469,13 @@ impl Seat {
     /// The fabric block for this seat: live, cached with its age, or
     /// unreachable — see [`crate::context`]. `None` in the first slot means no
     /// copy at all; the source says why.
-    pub fn fabric(&self) -> (Option<crate::context::FabricContext>, crate::context::Source) {
-        let project = self
-            .identity_focus()
-            .unwrap_or_default();
+    pub fn fabric(
+        &self,
+    ) -> (
+        Option<crate::context::FabricContext>,
+        crate::context::Source,
+    ) {
+        let project = self.identity_focus().unwrap_or_default();
         crate::context::FabricContext::read(&self.node(), self.name(), &project, None)
     }
 
@@ -662,6 +668,24 @@ impl Seat {
     }
 
     /// One poll. Public so a test can drive the loop by hand.
+    /// Sample the board and return a line when something CHANGED, else `None`.
+    ///
+    /// A nag is LEVEL-triggered — `mine_todo` stays 4 for as long as four rows
+    /// are yours, and firecode's `board-nag.sh` paid for the rule that it must
+    /// not be given a floor, because working is what turns it off. A poll loop
+    /// that fanned the level out every window would say the same sentence every
+    /// 20 seconds forever; one that suppressed it would be the silence this
+    /// whole change exists to remove.
+    ///
+    /// So the level is kept and the EDGES are delivered: a line when an id
+    /// appears in a bucket, and one line when a bucket empties. `None` while
+    /// nothing moves, which is most of the time.
+    fn sample_nag(&self) -> Option<String> {
+        let nag = self.node().nag().ok()?;
+        let mut last = self.shared.nag.lock().unwrap_or_else(|e| e.into_inner());
+        last.diff(&nag)
+    }
+
     pub fn poll_once(&self) -> PollOutcome {
         // A re-mint: the file changed under us.
         if let Some(file) = &self.shared.creds.token_file
@@ -742,6 +766,18 @@ impl Seat {
                 }
                 let n = page.events.len();
                 self.fan_out_all(page.events.into_iter().map(Delivery::Message).collect());
+                // **Board state, in the same loop and the same stream.** Not a
+                // second watcher: the operator's rule, 2026-09-15 — *"I don't
+                // want that many watchers, or separate watchers for that matter
+                // … I don't see any distinction between a chat message and a
+                // todo update."* A seat is one poll loop and one queue; a row
+                // assigned to you arrives beside what somebody said, through the
+                // same `Condition`, and a session that is awake for one is awake
+                // for the other. `inbox_wait` has just returned, so this is
+                // sampled at most once per window and costs one cheap GET.
+                if let Some(notice) = self.sample_nag() {
+                    self.fan_out(Delivery::Notice(notice));
+                }
                 self.renew_monitors();
                 PollOutcome::Delivered(n)
             }
@@ -939,3 +975,89 @@ mod tests {
     }
 }
 
+/// The last board reading, so the poll loop can tell an edge from a level.
+///
+/// Four buckets, each `(count, ids)` from `GET /api/nag`. The ids are what make
+/// this honest: a count going 4 → 4 can still mean one row finished and another
+/// arrived, and a seat told "4 rows" twice would never learn about the second.
+/// So the comparison is on the id SET, and the count only decorates the line.
+///
+/// `stale` is included and has `stale_ids` like the rest — checked against the
+/// node rather than taken from a note that said it was the exception.
+#[derive(Debug, Default)]
+pub struct NagState {
+    seen: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
+    /// Nothing has been sampled yet, so the first reading is the baseline and
+    /// its contents are reported as a standing total rather than as N arrivals.
+    started: bool,
+}
+
+/// The buckets worth waking a seat for, and how a line about each one reads.
+const BUCKETS: &[(&str, &str)] = &[
+    ("mine_todo", "assigned to you"),
+    ("answers_owed", "waiting on an answer from you"),
+    ("stale", "stale"),
+    ("mine_waiting", "yours, blocked"),
+];
+
+impl NagState {
+    fn bucket<'a>(nag: &'a crate::client::Nag, key: &str) -> (i64, &'a [String]) {
+        match key {
+            "mine_todo" => (nag.mine_todo, &nag.mine_todo_ids),
+            "answers_owed" => (nag.answers_owed, &nag.answers_owed_ids),
+            "stale" => (nag.stale, &nag.stale_ids),
+            "mine_waiting" => (nag.mine_waiting, &nag.mine_waiting_ids),
+            _ => (0, &[]),
+        }
+    }
+
+    /// The line to deliver, or `None` when nothing moved.
+    pub fn diff(&mut self, nag: &crate::client::Nag) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        for (key, label) in BUCKETS {
+            let (count, ids) = Self::bucket(nag, key);
+            let now: std::collections::BTreeSet<String> = ids.iter().cloned().collect();
+            let before = self.seen.entry(key).or_default();
+            if !self.started {
+                // Baseline: state what is true, once, without pretending it
+                // just arrived.
+                if count > 0 {
+                    parts.push(format!("{count} {label}"));
+                }
+            } else {
+                let new: Vec<&String> = now.difference(before).collect();
+                if !new.is_empty() {
+                    parts.push(format!(
+                        "{} new {label} ({}){}",
+                        new.len(),
+                        new.iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        if count as usize > new.len() {
+                            format!("; {count} in that bucket now")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                } else if !before.is_empty() && now.is_empty() {
+                    // The clear is an edge too, and the only one that says the
+                    // nag is over. Without it a seat's last word on a bucket is
+                    // the arrival.
+                    parts.push(format!("nothing {label} any more"));
+                }
+            }
+            *before = now;
+        }
+        let first = !self.started;
+        self.started = true;
+        if parts.is_empty() {
+            return None;
+        }
+        Some(if first {
+            format!("board: {}. `flowy nag` for the detail", parts.join(", "))
+        } else {
+            format!("board: {}", parts.join(", "))
+        })
+    }
+}
