@@ -1243,6 +1243,24 @@ impl<'a> Harness<'a> {
         // it. A harness opened without `Sessions` — a test, a one-off — still has
         // roles that name the tool, so it gets the door with nothing behind it:
         // the tool then says "no seat" and names `/flowy login`, which is true.
+        // **The session can see the harness it is inside.** Read-only: it reports
+        // the banner, the `!` warnings, the turn and the attached heads, so a
+        // model stops asking the operator to describe their own terminal. Seated
+        // for every session including subagents — a subagent that cannot see its
+        // own mode is the one most likely to guess at it — and registered here
+        // because this is the layer that holds both the hub and the disclosures.
+        let disclosure_slot: crate::facts::DisclosureSlot = Default::default();
+        if registry.get("harness").is_none() {
+            let facts = std::sync::Arc::new(crate::facts::DaemonFacts::new(
+                hub.clone(),
+                disclosure_slot.clone(),
+            ));
+            registry
+                .register(Box::new(
+                    letibot_tools::builtins::harness_view::HarnessView::new(facts),
+                ))
+                .map_err(|e| HarnessError::Setup(format!("registering the harness view: {e}")))?;
+        }
         if cfg.parent_session_id.is_none()
             && cfg.seat != Seat::Runner
             && registry.get("flowy").is_none()
@@ -1774,6 +1792,15 @@ impl<'a> Harness<'a> {
             None => None,
             Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
         };
+        // **Fill the harness view's slot, now that there is something to disclose.**
+        // The tool was registered before the gate and the backend existed — it had
+        // to be, to be in the prompt — and this is the first point where the
+        // disclosures it reports can be computed.
+        *disclosure_slot.lock().unwrap_or_else(|e| e.into_inner()) = cfg
+            .disclosures(&wiring)
+            .into_iter()
+            .map(|d| (d.subject, d.state, d.detail))
+            .collect();
         let h = Harness {
             wiring,
             cfg,

@@ -43,6 +43,7 @@ pub mod lsp;
 pub mod monitor;
 pub mod outline;
 pub mod pattern;
+pub mod harness_view;
 pub mod pkill;
 pub mod ps;
 pub mod read;

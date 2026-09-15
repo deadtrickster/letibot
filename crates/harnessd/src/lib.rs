@@ -91,6 +91,7 @@ pub mod answers;
 pub mod slash;
 pub mod sudo;
 pub mod config;
+pub mod facts;
 pub mod daemon;
 pub mod dialect;
 pub mod harness;
