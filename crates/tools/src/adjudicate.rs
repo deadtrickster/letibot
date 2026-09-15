@@ -679,6 +679,11 @@ pub struct AdjudicationRequest {
     /// for a tier or an admission: the four inputs history feeds is the *brief*,
     /// and the tier is layer A's alone.
     pub prior: Vec<PriorAnswer>,
+    /// **What this operator answered themselves, earlier in this session.** The
+    /// action and the verdict, not a count — so the guard has worked examples of
+    /// this person's judgement rather than a tally. Filled here, from the audit
+    /// log, exactly as `prior` is; see [`crate::authorise::DecisionExample`].
+    pub examples: Vec<crate::authorise::DecisionExample>,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1860,6 +1865,7 @@ impl AdjudicatedGate {
             tool: call.name.to_string(),
             class,
             prior,
+            examples: Self::operator_examples(&self.log, turn_seq(call.turn_id)),
             // Filled by `SupervisedAdjudicator` between the model's answer and the
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
@@ -2065,6 +2071,44 @@ impl AdjudicatedGate {
     /// to the decision, not substituted for it** (this returns data for a brief;
     /// nothing here touches `tier`, `options` or the admit path), and **denials
     /// are history too** (the filter is the direction, never the outcome).
+    /// **The last few calls this operator answered themselves**, newest first.
+    ///
+    /// Not filtered to the shape of the call being decided, which is what `prior`
+    /// does: the point is to show what this person is LIKE, and a tally of the same
+    /// shape says nothing about that. It is bounded because a brief is a prompt —
+    /// the operator's own rule about capping a corrective body applies to evidence
+    /// too, and an unbounded list would push the trail out of the model's attention.
+    ///
+    /// Only rows a human actually answered. A gate:mode admit is the mode's
+    /// judgement, not theirs, and showing it as "they allowed" would put words in
+    /// their mouth.
+    fn operator_examples(
+        log: &[AdjudicationRow],
+        now_turn: Option<u64>,
+    ) -> Vec<crate::authorise::DecisionExample> {
+        const MAX: usize = 6;
+        let mut out: Vec<crate::authorise::DecisionExample> = Vec::new();
+        for row in log.iter().rev() {
+            if !row.decision.by.starts_with("human") {
+                continue;
+            }
+            out.push(crate::authorise::DecisionExample {
+                // The normalised reading, never the raw arguments — the same rule
+                // that keeps the command out of the brief keeps it out of here.
+                action: row.request.baseline.clone(),
+                verdict: if row.effect == "admit" { "allowed" } else { "refused" },
+                turns_ago: match (now_turn, turn_seq(&row.request.turn_id)) {
+                    (Some(n), Some(t)) => Some(n.saturating_sub(t)),
+                    _ => None,
+                },
+            });
+            if out.len() >= MAX {
+                break;
+            }
+        }
+        out
+    }
+
     fn prior_answers(
         log: &[AdjudicationRow],
         key: &str,
@@ -2160,6 +2204,9 @@ impl Gate for AdjudicatedGate {
             target: path.display().to_string(),
             class: ActionClass::host(Access::Read, false, false),
             prior: Vec::new(),
+            // A path is not a tool call, so this session's record of tool calls is
+            // not evidence about it; an empty list here says exactly that.
+            examples: Vec::new(),
             advice: None,
             summary: format!(
                 "`{tool}` named `{}`, which is outside this session's filesystem view",

@@ -404,15 +404,36 @@ fn run() -> Result<i32, String> {
         return run_query(&cfg, q, scope.as_deref(), tsv);
     }
 
-    // **A measurement beats a grant.** `[gatekeeper]` above is what the operator
-    // DECLARED; this is what a corpus replay EARNED, written beside the store by
-    // `--calibrate-write`. When both exist the earned one wins — it is the same
-    // authority with numbers behind it instead of a promise — and the banner says
-    // EARNED, carrying those numbers. Read here, after `--store` is known, and
+    // **What a corpus replay measured**, written beside the store by
+    // `--calibrate-write`. Read here, after `--store` is known, and
     // absent/malformed is silently the declared scope, the same fail-open a
     // startup read must have.
     if let Some(earned) = letibot_harnessd::calibrate::read_calibration(&cfg) {
-        cfg.oracle_scope = Some(earned);
+        // **A measurement ADDS to a declaration; it never shrinks one.**
+        //
+        // Replacing outright was wrong, and the way it was wrong is the way that
+        // matters: a replay recommends only what it has rows for, so on this box it
+        // earned five intents and a reach of `host_project` — while the operator
+        // had set `host_other` in providers.toml, which is what their work outside the project
+        // needs. Taking the earned scope whole would have widened the intents and
+        // silently revoked the reach, in the name of evidence that never said
+        // anything about it.
+        //
+        // Both halves are the operator's own authority: one they typed, one
+        // measured from calls they answered themselves. Neither gets to quietly
+        // undo the other, so the intents are the union and the reach is the further
+        // of the two, and the evidence says it is both.
+        cfg.oracle_scope = Some(match cfg.oracle_scope.take() {
+            None => earned,
+            Some(declared) => letibot_tools::authorise::OracleScope::earned(
+                declared.intents.union(&earned.intents).copied().collect(),
+                declared.max_scope.max(earned.max_scope),
+                format!(
+                    "{} — combined with what the operator declared in providers.toml,                      which a measurement adds to and never shrinks",
+                    earned.evidence
+                ),
+            ),
+        });
     }
 
     let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
@@ -837,10 +858,11 @@ fn run_query(
                 (true, Some(scope)) => {
                     let file = letibot_harnessd::calibrate::write_calibration(cfg, &scope)?;
                     println!(
-                        "\nrecorded in {} — the guard opens with this scope from the \
-                         next daemon start, labelled EARNED with the numbers above. \
-                         Delete the file to go back to the built-in floor, or to \
-                         whatever `[gatekeeper]` in providers.toml declares.",
+                        "\nrecorded in {} — from the next daemon start the guard may \
+                         answer about this much, and the banner cites the numbers \
+                         above when it says why. Delete the file to undo it; whatever \
+                         `[gatekeeper]` sets in providers.toml still applies either \
+                         way, and this only ever adds to it.",
                         file.display()
                     );
                 }

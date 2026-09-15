@@ -3698,7 +3698,7 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// workspace root and `$HOME`, both of which layer A needs to place a path.
 /// [`letibot_tools::Surroundings::from_env`] is the constructor that says
 /// reading the environment is a decision at a call site.
-fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
+pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
     // The shell is pinned whenever the backend can start a process. Both the
     // confined backend (coder/runner) and the unconfined leticode one (`--bash`)

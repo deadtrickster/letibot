@@ -42,9 +42,9 @@
 //!
 //! It does not widen anything by itself. It prints what the evidence supports and
 //! writes it, on `--write`, to a file the daemon reads and the operator can delete.
-//! The scope that comes from that file is labelled EARNED and carries the numbers;
-//! the one in `providers.toml` is labelled DECLARED and says no corpus was replayed.
-//! Those are different claims and the banner makes exactly one of them.
+//! The banner then says where the guard's authority came from in one sentence —
+//! these numbers, the `[gatekeeper]` lines, or both — rather than in a vocabulary
+//! of its own.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -217,6 +217,10 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         store: store.display().to_string(),
     };
 
+    // Oldest first, so each row is measured against the answers that preceded it.
+    let mut answered: Vec<StoredAdjudication> = answered;
+    answered.reverse();
+    let mut answered_before: Vec<letibot_tools::authorise::DecisionExample> = Vec::new();
     for row in answered {
         let Some(acc) = access.get(row.tool.as_str()).copied() else {
             report.skipped.push((
@@ -260,11 +264,32 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
         };
         let mode = letibot_tools::mode::Mode::parse(&row.mode).unwrap_or(cfg.mode);
 
-        let mut gate = AdjudicatedGate::closed().with_mode(mode).with_trail_source({
-            let trail = trail.clone();
-            move |_call: &GateCall<'_>| trail.clone()
-        });
-        let req = gate.request_for(&GateCall {
+        // **The surroundings a real session declares.** Without them the shell is
+        // `ShellTrust::Unknown`, under which a bare command name does not resolve —
+        // and an unresolved action short-circuits before the oracle, so the guard
+        // is never asked and the replay measures nothing at all. Measured: 26 of 28
+        // rows came back "the action did not resolve … No oracle was consulted",
+        // which is why no change to the guard's prompt moved a single verdict.
+        //
+        // Built from the same function `Harness::open` uses, so the replay asks the
+        // question a live session asks rather than a stricter one.
+        // Pinned outright, rather than derived from THIS invocation's seat: the
+        // `--calibrate` process has no exec backend of its own, so
+        // `surroundings_for` would call the shell `Unknown` and every command would
+        // fail to resolve again. The claim being made is about the session the row
+        // came FROM, which did spawn through `HostProcesses` — every one of these
+        // commands actually ran there.
+        let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
+            "replaying a command that already ran in a session whose exec backend              spawns /bin/sh -c with the environment cleared and PATH fixed at seat              time",
+        );
+        let mut gate = AdjudicatedGate::closed()
+            .with_mode(mode)
+            .with_surroundings(sur)
+            .with_trail_source({
+                let trail = trail.clone();
+                move |_call: &GateCall<'_>| trail.clone()
+            });
+        let mut req = gate.request_for(&GateCall {
             name: &row.tool,
             access: acc,
             args: &args,
@@ -273,6 +298,25 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
             workspace: &workspace,
             target_exists: None,
         });
+        // **The examples the guard would have had AT THIS POINT**, and not one
+        // answer later.
+        //
+        // A live gate builds these from its own audit log; a replay opens a fresh
+        // gate per row, so without this the brief carries none and the measurement
+        // is blind to exactly the thing in-context examples are supposed to change.
+        // Feeding it every answer in the corpus would be worse than blind — it
+        // would show the guard answers the operator had not given yet, and a
+        // calibration fitted on the future measures nothing.
+        req.examples = answered_before.clone();
+        answered_before.insert(
+            0,
+            letibot_tools::authorise::DecisionExample {
+                action: req.baseline.clone(),
+                verdict: if row.effect == "admit" { "allowed" } else { "refused" },
+                turns_ago: None,
+            },
+        );
+        answered_before.truncate(6);
 
         let started = std::time::Instant::now();
         let _ = adjudicator.decide(&req);
@@ -414,6 +458,25 @@ impl Report {
             }
             o.push('\n');
         }
+        // **Why it declined**, for the rows where the operator said yes and the
+        // guard would not. Those are the prompts a wider scope does NOT remove, so
+        // a report that only counted them would leave the reader guessing at the
+        // one thing they can act on.
+        let mut declined: Vec<&Replayed> = self
+            .rows
+            .iter()
+            .filter(|r| !r.guard_allowed && r.operator_admitted)
+            .collect();
+        declined.truncate(4);
+        if !declined.is_empty() {
+            let _ = writeln!(o, "  why it would still have asked you (first {}):", declined.len());
+            for r in declined {
+                let why = r.guard_said.splitn(2, ' ').nth(1).unwrap_or(&r.guard_said);
+                let why: String = why.chars().take(150).collect();
+                let _ = writeln!(o, "    {} — {}", r.tool, why.trim());
+            }
+            o.push('\n');
+        }
         match self.earned_scope() {
             Some(s) => {
                 let _ = writeln!(o, "  earns: intents [{}] up to `{}`",
@@ -473,9 +536,9 @@ pub fn read_calibration(cfg: &Config) -> Option<OracleScope> {
         return None;
     }
     let max_scope = EffectScope::parse(&on.max_scope)?;
-    // EARNED, and carrying the evidence it was written with — the replay's own
-    // numbers. This is the one path that produces an earned scope; everything else
-    // is the floor or a declaration.
+    // Carries the evidence it was written with — the replay's own numbers, which
+    // is what the banner shows when somebody asks why the guard may answer about
+    // this much.
     Some(OracleScope::earned(intents, max_scope, on.evidence))
 }
 
