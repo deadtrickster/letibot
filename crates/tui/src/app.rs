@@ -721,6 +721,18 @@ pub struct App {
     /// of a log recorded elsewhere), and the card then shows no duration rather
     /// than a fabricated one, which is the same rule as `card::Phase::Replayed`.
     call_ms: std::collections::HashMap<String, u64>,
+    /// Both sides of the file a settled `edit`/`write` row changed, by **item
+    /// id** — carried across the takeover exactly as `call_ms` is, and for the
+    /// same reason: the transcript row has the tool's prose and not the pair.
+    ///
+    /// This is what puts a diff on the screen at all. The two-panel view used to
+    /// be drawn only by the LIVE card, and the transcript takes a call over the
+    /// moment its result row lands — so the diff existed for the milliseconds
+    /// between `ToolFinished` and `TranscriptAppended`, and the operator, who
+    /// asked for it twice, reported *"nothing really shown"*. Absent for a row
+    /// this head did not watch run, and the row then shows the tool's own
+    /// text, which is the `Replayed` rule again.
+    call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
     /// Where the terminal's caret belongs, from the last frame.
@@ -856,6 +868,7 @@ impl App {
             model: String::new(),
             call_targets: std::collections::HashMap::new(),
             call_ms: std::collections::HashMap::new(),
+            call_edits: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             raw_calls: false,
@@ -1160,6 +1173,8 @@ impl App {
         // with the wrong facts attached to it.
         if self.session_id != s.session_id {
             self.call_targets.clear();
+            self.call_ms.clear();
+            self.call_edits.clear();
             self.usage = None;
             self.last_timings = None;
             self.model.clear();
@@ -1716,19 +1731,28 @@ impl App {
                 // is carried across here because it is the only fact the live card
                 // had that the row does not.
                 let mut carried: Option<u64> = None;
+                let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
                     if kind == "tool_result" {
-                        carried = t
-                            .calls
-                            .get(t.settled_calls)
+                        let c = t.calls.get(t.settled_calls);
+                        carried = c
                             .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
                             .map(|c| c.ended_ms - c.started_ms);
+                        // The pair rides across with the duration: same card, same
+                        // moment, same positional match.
+                        carried_edit = c.and_then(|c| match &c.state {
+                            CallState::Finished { edit: Some(e), .. } => Some(e.clone()),
+                            _ => None,
+                        });
                         t.settled_calls += 1;
                     }
                 }
                 if let Some(ms) = carried {
                     self.call_ms.insert(item_id.clone(), ms);
+                }
+                if let Some(e) = carried_edit {
+                    self.call_edits.insert(item_id.clone(), e);
                 }
                 self.items.push(SnapshotItem {
                     item_id,
@@ -2735,6 +2759,10 @@ impl App {
             }
             "diff" => {
                 self.diff_split = !self.diff_split;
+                // The settled rows are cached; a toggle that changes how they
+                // draw has to say so or it only reaches the live pane.
+                self.invalidate_history();
+                self.redraw = true;
                 self.say(&format!(
                     "file edits render {}",
                     if self.diff_split { "side by side (unified below 100 columns)" } else { "as a unified diff" }
@@ -3485,10 +3513,13 @@ impl App {
                 notes,
                 call_targets,
                 call_ms,
+                call_edits,
                 hist_class,
                 hist_renders,
+                diff_split,
                 ..
             } = self;
+            let diff_split = *diff_split;
             loop {
                 let note_next = notes
                     .get(*note_upto)
@@ -3551,6 +3582,8 @@ impl App {
                             answered: &answered,
                             drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
                             elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                            edit: call_edits.get(&items[*hist_upto].item_id),
+                            diff_split,
                         },
                     );
                     // A row that rendered nothing gets no separator either. An
@@ -5334,10 +5367,9 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
     // reason); every other case keeps exactly what the card already said,
     // which is what makes the toggle safe to flip at any width.
     if matches!(card.verb, card::Verb::Edit | card::Verb::Write)
-        && diff_split
-        && cfg.width >= sidediff::MIN_SPLIT_WIDTH
         && let Some(e) = edit_excerpt
     {
+        let view = sidediff::edit_view(diff_split, cfg.width.saturating_sub(2));
         let dcfg = DiffConfig {
             // The card indents its body by two, so the panels are built for
             // the width the body actually has, or the card truncates the
@@ -5351,7 +5383,9 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             intra_line: false,
             max_rows: 60,
         };
-        body = sidediff::render_edit(&e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg);
+        body = sidediff::render_edit_view(
+            &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
+        );
         if e.truncated {
             body.push(cfg.palette().paint(
                 Role::Faint,
@@ -5789,6 +5823,11 @@ struct ItemCtx<'a> {
     drawn_live: bool,
     /// How long this row's call took, when this head watched it run.
     elapsed_ms: Option<u64>,
+    /// Both sides of the file this row's call changed, when this head watched
+    /// it run. See `App::call_edits`.
+    edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
+    /// The operator's `/diff` choice; the width decides the rest.
+    diff_split: bool,
 }
 
 fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
@@ -5798,6 +5837,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         tools,
         raw,
         targets,
+        edit,
+        diff_split,
         answered,
         drawn_live,
         elapsed_ms,
@@ -6112,6 +6153,46 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // whole `<<<TOOL_ERROR>>>` envelope, in which the reason appears twice
             // more. So the exemption now applies only when there is **no** reason
             // to have printed: a timeout, where the payload is all there is.
+            // **A file edit draws its diff, not the tool's prose.** The tool's
+            // payload is addressed to the model — "path: 1 replacement(s)" and a
+            // window of the new file — and a folded row showed two lines of it.
+            // When this head watched the call run it holds both sides, and the
+            // operator's question about an edit is "what changed", which is a
+            // diff in whichever of the two shapes fits (`sidediff::edit_view`).
+            // Folded keeps the first hunk's opening rows so the change is on the
+            // screen without the fold; open shows it whole, up to the diff's own
+            // cap. A row this head did not watch run has no pair and keeps the
+            // prose, which is the `Replayed` rule.
+            if let Some(e) = edit
+                && matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
+                && !bad
+            {
+                let dcfg = DiffConfig {
+                    width: w.saturating_sub(2),
+                    palette: p,
+                    context: 3,
+                    line_numbers: true,
+                    intra_line: false,
+                    max_rows: 60,
+                };
+                let view = sidediff::edit_view(diff_split, w.saturating_sub(2));
+                let mut rows = sidediff::render_edit_view(
+                    &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
+                );
+                if e.truncated {
+                    rows.push(p.paint(
+                        Role::Faint,
+                        &format!("… the excerpt was capped; the file is {} lines now", e.after_lines),
+                    ));
+                }
+                let keep = if tools.is_open() { rows.len() } else { 8.min(rows.len()) };
+                let hidden = rows.len() - keep;
+                out.extend(rows.into_iter().take(keep).map(|l| format!("  {l}")));
+                if hidden > 0 {
+                    out.push(p.paint(Role::Faint, &format!("  … +{hidden} diff rows · ctrl-t")));
+                }
+                return (RowClass::Activity, step_in(out, ind));
+            }
             let limit = if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
             } else {
@@ -9438,18 +9519,25 @@ mod tests {
         );
     }
 
+    /// The fallback is a UNIFIED diff, not the byte count. The toggle's own
+    /// message promised "unified below 100 columns" while the card drew the
+    /// old body there — measured by the operator as *"even unified claude-code
+    /// style edit panes are not here"*.
     #[test]
     fn the_diff_toggle_and_a_narrow_pane_both_fall_back_to_unified() {
         let off = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, false);
-        assert!(!off.join("\n").contains('│'), "switched off: {off:?}");
+        let text = off.join("\n");
+        assert!(!text.contains('│'), "switched off: {off:?}");
+        assert!(text.contains("+    x();") || text.contains("+x();"), "no unified diff: {off:?}");
+        assert!(!text.contains("64 B"), "the byte count came back instead of a diff: {off:?}");
 
         // opencode's gate: under 100 columns the panels cannot hold code and
-        // gutters, so the switch being on is not enough.
+        // gutters, so the switch being on is not enough — and the answer is
+        // still a diff.
         let narrow = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(80), 0, Fold::Open, true);
-        assert!(!narrow.join("\n").contains('│'), "narrow pane: {narrow:?}");
-
-        // And the fallback is the card's old body, not an empty one.
-        assert!(off.iter().any(|r| r.contains("64 B")), "{off:?}");
+        let text = narrow.join("\n");
+        assert!(!text.contains('│'), "narrow pane: {narrow:?}");
+        assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
     }
 
     #[test]
@@ -9509,12 +9597,75 @@ mod tests {
         // so the separator proves nothing; the code does.)
         assert!(screen.contains("x();"), "{screen}");
         assert!(screen.contains("fn a() {}"), "{screen}");
-        // And the toggle the command flips is the one the card reads: the
-        // body falls back to the byte count the card always showed.
+        // And the toggle the command flips is the one the card reads: off, the
+        // same change is drawn as a unified diff — signed, still there.
         a.command("diff");
         let screen = a.screen(120, 24).join("\n");
-        assert!(screen.contains("64 B"), "{screen}");
-        assert!(!screen.contains("x();"), "{screen}");
+        assert!(screen.contains("x();"), "{screen}");
+        assert!(screen.contains("+"), "{screen}");
+        assert!(!screen.contains("64 B"), "the byte count came back: {screen}");
+    }
+
+    /// **The bug the operator reported.** The diff was drawn only by the live
+    /// card, and the transcript takes a call over the moment its result row
+    /// lands — so the diff existed for the gap between `ToolFinished` and
+    /// `TranscriptAppended`, which is to say never. The settled row must draw
+    /// it, folded and open, and must keep drawing it after the next turn starts.
+    #[test]
+    fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::proposed("t1", "c1", "edit"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "fnv1a:1".into(),
+                inline_bytes: 64,
+                full_bytes: 64,
+                spill: None,
+                repairs: 0,
+                edit: Some(edit_excerpt()),
+            },
+        )));
+        // The transcript takes the call over: the row lands, then its body.
+        a.apply(ServerFrame::Event(env(4, testing::appended("t1.r1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::TranscriptContent {
+                item_id: "t1.r1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "edit".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "a.rs: 1 replacement(s). lines 1-3\n\n     1| fn a() {\n     2|     x();\n     3| }\n".into(),
+                }),
+            },
+        )));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("x();"), "settled row lost the diff:\n{screen}");
+        assert!(!screen.contains("1 replacement(s)"), "the tool's prose was drawn instead of the diff:\n{screen}");
+
+        // The next turn takes the pane away; the settled row still has its pair.
+        a.apply(ServerFrame::Event(env(6, testing::turn_started("t2"))));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("x();"), "the diff vanished when the next turn started:\n{screen}");
+
+        // Narrow: unified, and still the change.
+        let screen = a.screen(80, 30).join("\n");
+        assert!(screen.contains("x();"), "narrow settled row lost the change:\n{screen}");
+        // The toggle reaches the settled row too, not only the live pane.
+        let split = a.screen(120, 30).join("\n");
+        assert!(split.contains('│') && split.contains("1 - fn a() {}"), "{split}");
+        a.command("diff");
+        let unified = a.screen(120, 30).join("\n");
+        assert!(unified.contains("-fn a() {}") || unified.contains("- fn a() {}"), "{unified}");
+        assert!(!unified.contains("1 - fn a() {}                                          │"), "still split after /diff:\n{unified}");
+        if std::env::var("LETIBOT_SHOW").is_ok() {
+            eprintln!("=== 120 unified ===\n{unified}");
+        }
     }
 
     // -- background jobs -----------------------------------------------------

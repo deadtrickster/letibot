@@ -434,6 +434,50 @@ pub fn render_edit(
     render_split(&old, &new, &sc)
 }
 
+/// Which of the two shapes a file edit is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditView {
+    /// opencode's two panels, before left and after right.
+    Split,
+    /// One panel, `-`/`+` signed, the file's own line numbers in the gutter —
+    /// the shape claude code draws its edits in.
+    Unified,
+}
+
+/// The view an edit gets, from what the operator asked for and what fits:
+/// split when it is wanted AND the row is at least [`MIN_SPLIT_WIDTH`], and
+/// unified otherwise. This is the whole gate — the caller should not keep a
+/// copy of it, which is how a `/diff` toggle came to promise "unified below
+/// 100 columns" while the code drew nothing there at all.
+pub fn edit_view(split_wanted: bool, width: usize) -> EditView {
+    if split_wanted && width >= MIN_SPLIT_WIDTH {
+        EditView::Split
+    } else {
+        EditView::Unified
+    }
+}
+
+/// [`render_edit`] in whichever view [`edit_view`] picks. There is always a
+/// drawing: an edit the operator cannot see is an edit they did not approve.
+pub fn render_edit_view(
+    path: &str,
+    before: &str,
+    after: &str,
+    before_start: usize,
+    after_start: usize,
+    cfg: &DiffConfig,
+    view: EditView,
+) -> Vec<String> {
+    match view {
+        EditView::Split => render_edit(path, before, after, before_start, after_start, cfg),
+        EditView::Unified => {
+            let old: Vec<&str> = before.lines().collect();
+            let new: Vec<&str> = after.lines().collect();
+            crate::diff::render_from(&old, &new, cfg, before_start, after_start)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

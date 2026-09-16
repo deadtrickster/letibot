@@ -340,6 +340,24 @@ impl Default for DiffConfig {
 /// the truncated part is where the change is. Unified degrades to a narrow
 /// terminal by wrapping, which loses alignment but no content.
 pub fn render(old: &[&str], new: &[&str], cfg: &DiffConfig) -> Vec<String> {
+    render_from(old, new, cfg, 1, 1)
+}
+
+/// [`render`] for an **excerpt**: `old_start` / `new_start` are the 1-based
+/// lines of the whole files the two slices begin at, so the gutter and the hunk
+/// headers number the file and not the excerpt. A `ToolFinished` event carries
+/// exactly this — the changed region plus context, with both starts — and a
+/// diff of it numbered from 1 would tell the reader line 4 changed when it was
+/// line 312.
+pub fn render_from(
+    old: &[&str],
+    new: &[&str],
+    cfg: &DiffConfig,
+    old_start: usize,
+    new_start: usize,
+) -> Vec<String> {
+    let old_base = old_start.saturating_sub(1);
+    let new_base = new_start.saturating_sub(1);
     let d = diff_lines(old, new);
     let hs = hunks(&d, cfg.context);
     let mut out = Vec::new();
@@ -355,7 +373,7 @@ pub fn render(old: &[&str], new: &[&str], cfg: &DiffConfig) -> Vec<String> {
         ));
     }
     let numw = if cfg.line_numbers {
-        let m = old.len().max(new.len()).max(1);
+        let m = (old_base + old.len()).max(new_base + new.len()).max(1);
         m.to_string().len()
     } else {
         0
@@ -378,9 +396,9 @@ pub fn render(old: &[&str], new: &[&str], cfg: &DiffConfig) -> Vec<String> {
                 Role::Faint,
                 &format!(
                     "@@ -{},{} +{},{} @@",
-                    h.old_start + 1,
+                    old_base + h.old_start + 1,
                     count_old,
-                    h.new_start + 1,
+                    new_base + h.new_start + 1,
                     count_new
                 ),
             ));
@@ -397,7 +415,7 @@ pub fn render(old: &[&str], new: &[&str], cfg: &DiffConfig) -> Vec<String> {
             }
             rows_left -= 1;
             let emph: Option<&Spans> = paired.get(ri).and_then(|p| p.as_ref());
-            out.extend(row_lines(r, old, new, cfg, numw, emph));
+            out.extend(row_lines(r, old, new, cfg, numw, emph, old_base, new_base));
         }
     }
     if dropped > 0 {
@@ -409,6 +427,7 @@ pub fn render(old: &[&str], new: &[&str], cfg: &DiffConfig) -> Vec<String> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_lines(
     r: &Row,
     old: &[&str],
@@ -416,25 +435,27 @@ fn row_lines(
     cfg: &DiffConfig,
     numw: usize,
     emph: Option<&Spans>,
+    old_base: usize,
+    new_base: usize,
 ) -> Vec<String> {
     let (sign, role, text, num) = match *r {
         Row::Context { a, b } => (
             " ",
             Role::Plain,
             old.get(a).copied().unwrap_or(""),
-            (Some(a + 1), Some(b + 1)),
+            (Some(old_base + a + 1), Some(new_base + b + 1)),
         ),
         Row::Removed { a } => (
             "-",
             Role::Removed,
             old.get(a).copied().unwrap_or(""),
-            (Some(a + 1), None),
+            (Some(old_base + a + 1), None),
         ),
         Row::Added { b } => (
             "+",
             Role::Added,
             new.get(b).copied().unwrap_or(""),
-            (None, Some(b + 1)),
+            (None, Some(new_base + b + 1)),
         ),
     };
     let gutter = if cfg.line_numbers {
@@ -641,6 +662,25 @@ pub fn expand_tabs(s: &str, stop: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An excerpt of lines 310..314 must be numbered 310..314, not 1..5: the
+    /// pair a `ToolFinished` carries is a window, and a diff numbered from 1
+    /// tells the reader line 4 changed when it was line 313.
+    #[test]
+    fn an_excerpt_is_numbered_from_where_it_starts_in_the_file() {
+        let cfg = DiffConfig { width: 80, palette: Palette::None, context: 1, line_numbers: true, intra_line: false, max_rows: 60 };
+        let old = ["a", "b", "c"];
+        let new = ["a", "B", "c"];
+        let rows = render_from(&old, &new, &cfg, 310, 310);
+        let text = rows.join("\n");
+        assert!(text.contains("311     -b") || text.contains("311      -b"), "{text}");
+        assert!(text.contains("    311 +B"), "{text}");
+        assert!(!text.contains(" 1 "), "numbered from 1: {text}");
+        // `render` is the same thing from line 1.
+        let from_one = render(&old, &new, &cfg).join("\n");
+        assert!(from_one.contains("2   -b") || from_one.contains("2  -b"), "{from_one}");
+    }
+
 
     fn lines(s: &str) -> Vec<&str> {
         s.lines().collect()
