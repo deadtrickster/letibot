@@ -245,6 +245,9 @@ fn run() -> Result<i32, String> {
             // Recover shapes for decisions the operator already made, so the shape
             // cache does not start cold on a store full of their own approvals.
             // Re-derived with today's classifier, never reinstated from the row.
+            // Cross every command in the etalon with layer A as it is now: what
+            // would prompt, what would be caught, what cannot be read. Plan §2.
+            "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
             "--backfill-shapes" => query = Some(Query::Backfill { write: false }),
             "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
@@ -776,6 +779,7 @@ enum Query {
     Delete(String),
     Calibrate { write: bool },
     Backfill { write: bool },
+    Etalon(PathBuf),
     RepairPrefixes,
     Compare,
     ShowBrief,
@@ -913,6 +917,19 @@ fn run_query(
                  what you refused — the only column that is a fault, and the one a \
                  wording change must not raise."
             );
+            Ok(0)
+        }
+        Query::Etalon(file) => {
+            drop(store);
+            // The transcripts' commands ran under a fixed shell — Claude Code's,
+            // opencode's, letibot's own — so layer A reads them as it reads a
+            // live leticode session, with the shell declared. Left undeclared,
+            // 88% of the corpus is refused at "bare name under an unknown
+            // shell" (measured 2026-09-16) and the table says nothing.
+            let env = letibot_harnessd::harness::surroundings_for(cfg)
+                .with_pinned_shell("the etalon: the harness that recorded it ran a fixed shell");
+            let r = letibot_harnessd::etalon::report(&file, &env, 1_000_000)?;
+            print!("{}", r.render());
             Ok(0)
         }
         Query::Backfill { write } => {

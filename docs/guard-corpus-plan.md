@@ -64,6 +64,29 @@ Layer A changes are measured as: **rows in the store that would now be `always_a
 approved by a human** (false prompts) and **rows a human refused that would now be caught before
 the model** (true catches). A rule that adds the first without the second does not land.
 
+**Baseline, 2026-09-16** (`harnessd --etalon ~/.local/share/letibot/etalon.jsonl`, layer A at
+`f015aaa`, shell pinned, scope judged in each row's own `cwd`), over 40,740 rows / 36,759 bash
+commands from lab2x1 and lubuntu3 (Claude Code, opencode, letibot):
+
+| | |
+|---|---|
+| ran × always_ask — would prompt now | **3,110 of 36,014 (8.6%)** |
+| refused × always_ask — caught before the model | **4 of 50 (8.0%)** |
+| not_run — layer A cannot read it | **6,943 of 36,759 (18.9%)**, all "meaning does not exist yet" |
+
+Prompts on rows that ran, by rule: `network_egress_to_an_unseen_host` 1,828 ·
+`secret_off_box` 667 (`. ~/.config/flowy/env-… && flowy say`, the fleet's own heartbeat) ·
+`destruction_outside_the_project` 262 · `credential_use` 124 (`find ~ -name x.go` — a name
+match) · `secret_to_transcript` 99 · `changes_its_own_rules` 50 · `privilege_escalation` 42 ·
+`secret_to_weaker_location` 34. Catches: `network_egress_to_an_unseen_host` 2,
+`destruction_outside_the_project` 1, `secret_flow_unknown` 1.
+
+What this says about the order of work: **our own rules cost the operator more than the CARE
+port would save.** The first three rules and the unreadable 19% are where the hours are; the port
+(step 2) adds catches on a class the corpus barely contains (four of fifty refusals were
+layer-A-shaped at all). So step 2 is preceded by a step 2a: bring the false-prompt rate down on
+the three rules above and read the `not_run` fifth, each measured with the same command.
+
 ## 3. Step 1 — the prompt, before any port or finetune
 
 *Source: TraceGuard §4 (dimensions), BashArena §6 (ensemble).*
