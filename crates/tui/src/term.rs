@@ -640,6 +640,14 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlO);
                 i += 1;
             }
+            // The background-jobs pane. Ctrl+Q is XON, dead the same way Ctrl+S's
+            // XOFF would be — and fixed the same way: `cfmakeraw` clears IXON, so
+            // nothing is listening for flow control and the byte arrives like any
+            // other. J would have been the mnemonic; it is line-feed.
+            0x11 => {
+                out.push(Key::CtrlQ);
+                i += 1;
+            }
             // Tab: the composer's slash-command completion. A plain 0x09 used to
             // fall through the `c >= 0x20` arm and vanish — a byte the head eats
             // silently is a key nobody can learn.

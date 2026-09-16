@@ -278,6 +278,12 @@ pub struct Job {
     pub state: Mutex<JobState>,
     pub finished: Condvar,
     pub capture: Mutex<Capture>,
+    /// When [`Job::settle`] recorded the terminal state, or `None` while it is
+    /// running. Stamped **at the settle**, not read afterwards: `elapsed` is
+    /// `started.elapsed()` and keeps counting after death, so a settlement
+    /// reported an hour later from this field is the job's real runtime, and one
+    /// reconstructed from a later clock is a guess with a decimal point.
+    settled_at: Mutex<Option<SystemTime>>,
 }
 
 impl Job {
@@ -299,6 +305,7 @@ impl Job {
             state: Mutex::new(JobState::Running),
             finished: Condvar::new(),
             capture: Mutex::new(Capture::new(capture_bytes)),
+            settled_at: Mutex::new(None),
         }
     }
 
@@ -331,12 +338,32 @@ impl Job {
     }
 
     pub fn settle(&self, state: JobState) {
+        if !state.is_running() {
+            *self.settled_at.lock().expect("job settled_at") = Some(SystemTime::now());
+        }
         *self.state.lock().expect("job state") = state;
         self.finished.notify_all();
     }
 
+    /// When the job settled, or `None` while it is running.
+    pub fn settled_at(&self) -> Option<SystemTime> {
+        *self.settled_at.lock().expect("job settled_at")
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started.elapsed().unwrap_or(Duration::ZERO)
+    }
+
+    /// How long the job ran, from its own stamps. `None` while it is running, and
+    /// **this** is the number a settlement reports — not [`Job::elapsed`], which
+    /// is a live clock and keeps running after the job does not.
+    pub fn ran_for(&self) -> Option<Duration> {
+        let settled = self.settled_at()?;
+        Some(
+            settled
+                .duration_since(self.started)
+                .unwrap_or(Duration::ZERO),
+        )
     }
 }
 

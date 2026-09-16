@@ -125,6 +125,10 @@ pub struct JobView {
     pub background: Option<Backgrounding>,
     pub state: JobState,
     pub elapsed: Duration,
+    /// How long the job ran, from its own stamps, or `None` while it is running.
+    /// **This** is the number a settlement reports — `elapsed` is a live clock and
+    /// keeps counting after the job does not.
+    pub ran_for: Option<Duration>,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
 }
@@ -665,6 +669,7 @@ impl HostProcesses {
             background: life.background,
             state: job.state(),
             elapsed: job.elapsed(),
+            ran_for: job.ran_for(),
             produced: cap.produced(),
             since_last_output: cap.since_last(),
         }

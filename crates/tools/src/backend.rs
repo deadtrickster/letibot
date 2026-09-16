@@ -145,6 +145,14 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The same host as an **owned** handle, for a watcher that has to outlive the
+    /// call that noticed the job: a background job settles between turns, when no
+    /// invocation is in scope to borrow through. `None` when this backend cannot
+    /// start processes — no host, no jobs, no watcher.
+    fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+        None
+    }
+
     /// A tool's `cwd` argument — relative to where the session sits — in the form
     /// [`crate::exec::ProcessHost::spawn`] wants it: relative to the root. The
     /// identity by default; a backend whose root and workspace differ maps it.
@@ -848,6 +856,12 @@ impl ExecBackend for HostBackend {
         self.processes
             .as_ref()
             .map(|p| p.as_ref() as &dyn crate::exec::ProcessHost)
+    }
+
+    fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+        self.processes
+            .clone()
+            .map(|p| p as std::sync::Arc<dyn crate::exec::ProcessHost>)
     }
 
     /// The request's `cwd` is relative to where the session sits, the same as

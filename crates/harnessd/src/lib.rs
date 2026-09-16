@@ -96,6 +96,7 @@ pub mod facts;
 pub mod daemon;
 pub mod dialect;
 pub mod harness;
+pub mod jobwatch;
 pub mod modes;
 pub mod progress;
 pub mod sessions;

@@ -272,6 +272,12 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             prompt: "summarize ~/bin/letibot".into(),
             role: "coder".into(),
         },
+        SessionEvent::JobSettled {
+            job: "j7".into(),
+            state: "exited 0".into(),
+            produced: 41_392,
+            elapsed_ms: 74_206,
+        },
     ]
 }
 

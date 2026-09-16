@@ -810,6 +810,51 @@ pub enum SessionEvent {
         prompt: String,
         role: String,
     },
+
+    /// A background job this session started has stopped running.
+    /// `PROTOCOL_VERSION` 15.
+    ///
+    /// The **start** of a background job needs no event of its own: a backgrounded
+    /// `bash` call finishes as `ToolOutcome::Backgrounded`, whose `handle` *is* the
+    /// job id, and a head folding tool events already knows the job exists. What
+    /// nothing carried was the **end**. A session-scoped job outlives the turn that
+    /// started it — usually by design; that is what background is for — so its
+    /// settlement happens when no turn is running, and the only events a hub
+    /// publishes between turns are the ones the daemon publishes itself. Without
+    /// this variant every head's picture of a background job was frozen at
+    /// "running" forever: a panel built from the tool events alone would still show
+    /// a build as running an hour after it exited, which is the exact lie
+    /// `scrub::is_interactive` keeps off the wire — a progress frame from four
+    /// minutes ago is a lie about now.
+    ///
+    /// # Why the daemon publishes it, and not the runtime
+    ///
+    /// The runtime reaps a job when somebody asks — `job_wait`, or turn-end scope
+    /// reaping — and nobody asks between turns. The daemon runs a watcher per
+    /// session that notices the transition and publishes here. The event is the
+    /// record; the watcher is only how it comes to be published the moment it
+    /// becomes true.
+    ///
+    /// # Why the fields are flat scalars
+    ///
+    /// Same reason as [`SessionEvent::DenialRaised`]: `letibot-tools` is an
+    /// **optional** dependency of this crate, so `JobState` cannot appear here even
+    /// by reference. `state` is the word a job listing shows — `exited 0`,
+    /// `signalled 15`, `killed by job_kill` — deliberately not "ok"/"error": what
+    /// happened to the *process* is the fact, and success is a property of the
+    /// command's own exit code. `produced` is the bytes the job wrote, the same
+    /// number a `job_output` denominator counts; `elapsed_ms` is wall time from
+    /// spawn to settlement.
+    JobSettled {
+        /// The job's handle, as the backgrounded result already printed it.
+        job: String,
+        /// What happened to the process, as a listing words it.
+        state: String,
+        /// Bytes the job produced, all streams together.
+        produced: u64,
+        /// Wall time from spawn to settlement.
+        elapsed_ms: u64,
+    },
 }
 
 impl SessionEvent {
@@ -842,6 +887,7 @@ impl SessionEvent {
             SessionEvent::CommandIssued { .. } => "CommandIssued",
             SessionEvent::DenialRaised { .. } => "DenialRaised",
             SessionEvent::Subagent { .. } => "Subagent",
+            SessionEvent::JobSettled { .. } => "JobSettled",
         }
     }
 }

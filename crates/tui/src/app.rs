@@ -187,6 +187,8 @@ pub enum Key {
     /// Move the running command to the background (Ctrl+O, like Claude Code's
     /// Ctrl+B — B is the readline left-arrow here).
     CtrlO,
+    /// Open or close the background-jobs pane: the jobs this session started.
+    CtrlQ,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -238,6 +240,7 @@ impl Key {
             | Key::CtrlP
             | Key::CtrlG
             | Key::CtrlO
+            | Key::CtrlQ
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -298,6 +301,32 @@ struct SubagentState {
     /// The subtask's first line, the same derivation the subagent's title uses.
     prompt: String,
     role: String,
+}
+
+/// A background job this session started, as the events report it.
+///
+/// The **start** comes off the `bash` call's own finish — a `ToolOutcome::
+/// Backgrounded` names the handle as a field, not as text to parse — and the
+/// command shown is the call's §4.1 display target, joined at draw time through
+/// the call id, because the arguments reach a head with the transcript and not
+/// with the event. The **end** comes off the durable `JobSettled` event the
+/// daemon publishes when the job settles between turns. A row with no
+/// settlement yet is running; that is the whole reason the event exists.
+#[derive(Debug, Clone)]
+struct JobRow {
+    job: String,
+    /// The call that backgrounded it, for the join to the command text. Empty
+    /// when the start is beyond this head's window and only the settlement
+    /// replayed — the row then says the command is unknown rather than guessing.
+    call_id: String,
+    /// How it came to be in the background: `asked`, `promoted`, or
+    /// `promoted by NAME`. Empty on a settlement-only row, for the same reason.
+    how: String,
+    /// `JobState::word` once settled — `exited 0`, `killed by job_kill` — and
+    /// empty while running. Deliberately the process's word, never "ok"/"error".
+    state: String,
+    produced: u64,
+    elapsed_ms: u64,
 }
 
 /// line. See `crates/ui/DESIGN.md` §2.3.
@@ -412,6 +441,10 @@ pub struct App {
     /// Subagents this session has spawned, folded from the durable `Subagent`
     /// events. Keyed by session id: a `running` row becomes its `done` row.
     subagents: Vec<SubagentState>,
+    /// Background jobs this session started, folded from the `Backgrounded`
+    /// outcome on a tool finish and the durable `JobSettled` event. In the order
+    /// they were backgrounded; a settlement folds into its row.
+    jobs: Vec<JobRow>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -574,6 +607,9 @@ pub struct App {
     /// The subagent tree pane, a screen like `todos`: the subagents this session
     /// spawned, their state and their prompt. `ctrl-g`.
     subagents_pane: bool,
+    /// The background-jobs pane, a screen like the other two: the jobs this
+    /// session started, running and settled. `ctrl-q`.
+    jobs_pane: bool,
     /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
     /// subagent's session — the same two acts the picker keeps separate.
     subagents_sel: usize,
@@ -733,6 +769,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
     ("diff", "toggle the two-panel file-edit diff"),
+    ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
     ("reseat", "rebuild the prompt from the tools seated now"),
@@ -752,6 +789,7 @@ impl App {
             wiring: SessionWiring::default(),
             sessions: Vec::new(),
             subagents: Vec::new(),
+            jobs: Vec::new(),
             picker_sel: 0,
             picker_rows_drawn: 0,
             screen_rows: 0,
@@ -798,6 +836,7 @@ impl App {
             picker: false,
             todos_pane: false,
             subagents_pane: false,
+            jobs_pane: false,
             subagents_sel: 0,
             todos: Vec::new(),
             repo_todos: None,
@@ -1231,6 +1270,35 @@ impl App {
                 self.redraw = true;
                 Disposition::Filtered
             }
+            // A background job settled — the daemon publishes this between turns,
+            // which is exactly when nothing else could say it. Fold into the row
+            // the backgrounded finish pushed; a settlement whose start is beyond
+            // this head's window still gets its row, with the command unknown,
+            // because a job that ran is a fact even when its beginning scrolled
+            // off.
+            SessionEvent::JobSettled {
+                job,
+                state,
+                produced,
+                elapsed_ms,
+            } => {
+                if let Some(row) = self.jobs.iter_mut().find(|j| j.job == job) {
+                    row.state = state;
+                    row.produced = produced;
+                    row.elapsed_ms = elapsed_ms;
+                } else {
+                    self.jobs.push(JobRow {
+                        job,
+                        call_id: String::new(),
+                        how: String::new(),
+                        state,
+                        produced,
+                        elapsed_ms,
+                    });
+                }
+                self.redraw = true;
+                Disposition::Filtered
+            }
             SessionEvent::TurnStarted {
                 turn_id,
                 model,
@@ -1389,6 +1457,23 @@ impl App {
                 edit,
                 ..
             } => {
+                // A backgrounded call leaves a job behind, and the row the jobs
+                // pane shows starts here: the handle is the outcome's own field,
+                // not a parse of the result text. The command joins at draw time,
+                // through the call's §4.1 target.
+                if let letibot_transcript::ToolOutcome::Backgrounded { handle, how, .. } = &outcome
+                {
+                    self.jobs.retain(|j| j.job != *handle);
+                    self.jobs.push(JobRow {
+                        job: handle.clone(),
+                        call_id: call_id.clone(),
+                        how: how_word(how),
+                        state: String::new(),
+                        produced: 0,
+                        elapsed_ms: 0,
+                    });
+                    self.redraw = true;
+                }
                 if let Some(t) = self.turn.as_mut()
                     && let Some(c) = open_call(&mut t.calls, &call_id)
                 {
@@ -1936,6 +2021,15 @@ impl App {
                 self.redraw = true;
                 return None;
             }
+            // Ctrl+Q for the background jobs. J would have been the mnemonic and
+            // is line-feed; Q is XON, dead the same way Ctrl+S's XOFF would be —
+            // and fixed the same way: cfmakeraw clears IXON, so nothing is
+            // listening for flow control and the byte arrives like any other.
+            Key::CtrlQ => {
+                self.jobs_pane = !self.jobs_pane;
+                self.redraw = true;
+                return None;
+            }
             // Ctrl+O: move the running command to the background. Meaningless when
             // nothing is running, so a bare press says so rather than asking.
             Key::CtrlO => {
@@ -1970,7 +2064,8 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
-        if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane)
+        if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
+            || self.jobs_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
@@ -1978,6 +2073,7 @@ impl App {
             self.stats = false;
             self.todos_pane = false;
             self.subagents_pane = false;
+            self.jobs_pane = false;
             self.redraw = true;
             return None;
         }
@@ -2523,6 +2619,11 @@ impl App {
                 ));
                 None
             }
+            "jobs" => {
+                self.jobs_pane = !self.jobs_pane;
+                self.redraw = true;
+                None
+            }
             "interrupt" | "i" => Some(Action::Interrupt("operator typed /interrupt".into())),
             "compact" => {
                 // The session this head is **in**, for the same reason /rename
@@ -3026,6 +3127,10 @@ impl App {
             let mut rows = self.subagents_lines(w);
             rows.truncate(room);
             rows
+        } else if self.jobs_pane {
+            let mut rows = self.jobs_lines(w);
+            rows.truncate(room);
+            rows
         } else {
             self.body_window(room)
         };
@@ -3179,10 +3284,12 @@ impl App {
             "the model's plan above, the repo's queue below · esc closes"
         } else if self.subagents_pane {
             "subagents this session spawned · esc closes"
+        } else if self.jobs_pane {
+            "background jobs this session started · esc closes"
         } else if !self.open.is_empty() {
             "type an option above to answer · /help"
         } else {
-            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · tab completes /commands · /help"
+            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · ctrl-q jobs · tab completes /commands · /help"
         };
         s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
         trim_to(&s, w)
@@ -3765,6 +3872,71 @@ impl App {
         out.push(dim(
             &self.cfg,
             "    arrows move, Enter switches into the subagent — subagents are hidden from ctrl-s.",
+        ));
+        out.into_iter()
+            .map(|l| trim_to(&l, w))
+            .collect()
+    }
+
+    fn jobs_lines(&self, w: usize) -> Vec<String> {
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "background jobs")];
+        out.push(String::new());
+        if self.jobs.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "    none. The model backgrounds a command with bash's `background: \
+                 true`; ctrl-o moves the running one.",
+            ));
+        }
+        for j in &self.jobs {
+            let (mark, state_colour) = if j.state.is_empty() {
+                ("[~]", sgr::YELLOW)
+            } else if j.state.starts_with("exited 0") {
+                ("[x]", sgr::GREEN)
+            } else {
+                ("[!]", sgr::RED)
+            };
+            // The command is the call's §4.1 display target, joined at draw time:
+            // the arguments reach a head with the transcript, which for a
+            // backgrounded call is the same moment as the finish. A settlement
+            // replayed without its start has no call to join, and the row then
+            // says so rather than guessing.
+            let command = self
+                .turn
+                .as_ref()
+                .and_then(|t| t.calls.iter().find(|c| c.call_id == j.call_id))
+                .map(|c| c.target.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "(command not in this head's window)".to_string());
+            out.push(format!(
+                "{} {} {}",
+                colour(&self.cfg, state_colour, mark),
+                j.job,
+                command
+            ));
+            let tail = if j.state.is_empty() {
+                "running".to_string()
+            } else {
+                format!(
+                    "{} · {} out · ran {}.{:01}s",
+                    j.state,
+                    bytes_human(j.produced),
+                    j.elapsed_ms / 1000,
+                    (j.elapsed_ms % 1000) / 100,
+                )
+            };
+            let how = if j.how.is_empty() {
+                "how: not in this head's window".to_string()
+            } else {
+                j.how.clone()
+            };
+            out.push(dim(&self.cfg, &format!("       {} · {}", how, tail)));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "    a job still shows running until the daemon says it settled — between \
+             turns, that saying is the daemon's alone.",
         ));
         out.into_iter()
             .map(|l| trim_to(&l, w))
@@ -4385,6 +4557,19 @@ fn ask_without_target(summary: &str, target: &str) -> Option<String> {
     // makes the remainder read as a heading rather than as a clipped sentence.
     let head = head.trim_end();
     Some(head.strip_suffix(" to").unwrap_or(head).to_string())
+}
+
+/// The pane's word for how a job came to be in the background — the three causes
+/// `Backgrounding` names, as a person reads them. The distinction is the one the
+/// outcome already draws: who wanted it there.
+fn how_word(how: &letibot_transcript::Backgrounding) -> String {
+    match how {
+        letibot_transcript::Backgrounding::Asked => "asked".into(),
+        letibot_transcript::Backgrounding::Promoted => "promoted".into(),
+        letibot_transcript::Backgrounding::Operator { identity } => {
+            format!("promoted by {identity}")
+        }
+    }
 }
 
 fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
@@ -8845,5 +9030,125 @@ mod tests {
         let screen = a.screen(120, 24).join("\n");
         assert!(screen.contains("64 B"), "{screen}");
         assert!(!screen.contains("x();"), "{screen}");
+    }
+
+    // -- background jobs -----------------------------------------------------
+
+    /// A finished `bash` call that left a job behind: the outcome names the
+    /// handle, the way the runtime builds it.
+    fn backgrounded_finished(handle: &str, call_id: &str) -> SessionEvent {
+        SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: call_id.into(),
+            outcome: letibot_transcript::ToolOutcome::Backgrounded {
+                handle: handle.into(),
+                ran_for_ms: 0,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "job_wait".into(),
+            },
+            payload_digest: "fnv1a:1".into(),
+            inline_bytes: 0,
+            full_bytes: 0,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        }
+    }
+
+    fn proposed_bash(call_id: &str, target: &str) -> SessionEvent {
+        SessionEvent::ToolCallProposed {
+            turn_id: "t1".into(),
+            call_id: call_id.into(),
+            name: "bash".into(),
+            args_digest: "fnv1a:2".into(),
+            target: target.into(),
+        }
+    }
+
+    #[test]
+    fn a_backgrounded_finish_pushes_a_job_row_and_a_settlement_settles_it() {
+        let mut a = App::new(plain_cfg(80));
+        a.apply(ServerFrame::Event(env(
+            1,
+            proposed_bash("c1", "\"cargo test --workspace\""),
+        )));
+        a.apply(ServerFrame::Event(env(2, backgrounded_finished("j1", "c1"))));
+        assert_eq!(a.jobs.len(), 1);
+        assert_eq!(a.jobs[0].job, "j1");
+        assert_eq!(a.jobs[0].call_id, "c1");
+        assert_eq!(a.jobs[0].how, "asked");
+        assert!(a.jobs[0].state.is_empty(), "no settlement yet: it is running");
+
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::JobSettled {
+                job: "j1".into(),
+                state: "exited 0".into(),
+                produced: 512,
+                elapsed_ms: 1_400,
+            },
+        )));
+        assert_eq!(a.jobs.len(), 1, "the settlement folds into the row");
+        assert_eq!(a.jobs[0].state, "exited 0");
+        assert_eq!(a.jobs[0].produced, 512);
+        assert_eq!(a.jobs[0].elapsed_ms, 1_400);
+    }
+
+    #[test]
+    fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
+        let mut a = App::new(plain_cfg(80));
+        // The command joins through the call row, which lives on the turn: a
+        // backgrounded call is always mid-turn, and the test is honest about it.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            proposed_bash("c1", "\"cargo test --workspace\""),
+        )));
+        a.apply(ServerFrame::Event(env(3, backgrounded_finished("j1", "c1"))));
+        let lines = a.jobs_lines(100).join("\n");
+        assert!(lines.contains("j1"), "{lines}");
+        assert!(lines.contains("cargo test --workspace"), "{lines}");
+        assert!(lines.contains("running"), "{lines}");
+        assert!(lines.contains("asked"), "{lines}");
+    }
+
+    #[test]
+    fn a_settlement_without_its_start_still_gets_a_row_that_says_what_it_knows() {
+        // A head that attaches late replays the durable settlement but not a
+        // start that scrolled off. The job ran; the row says so, and says what
+        // it does not know rather than inventing it.
+        let mut a = App::new(plain_cfg(80));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::JobSettled {
+                job: "j9".into(),
+                state: "killed by job_kill".into(),
+                produced: 0,
+                elapsed_ms: 40_000,
+            },
+        )));
+        assert_eq!(a.jobs.len(), 1);
+        assert!(a.jobs[0].call_id.is_empty());
+        let lines = a.jobs_lines(100).join("\n");
+        assert!(lines.contains("j9"), "{lines}");
+        assert!(lines.contains("killed by job_kill"), "{lines}");
+        assert!(
+            lines.contains("not in this head's window"),
+            "an unknown command says so: {lines}"
+        );
+    }
+
+    #[test]
+    fn ctrl_q_and_slash_jobs_toggle_the_pane_and_esc_closes_it() {
+        let mut a = App::new(plain_cfg(80));
+        assert_eq!(a.key(Key::CtrlQ), None);
+        assert!(a.jobs_pane);
+        assert_eq!(a.key(Key::CtrlQ), None);
+        assert!(!a.jobs_pane);
+
+        a.command("jobs");
+        assert!(a.jobs_pane);
+        a.key(Key::Esc);
+        assert!(!a.jobs_pane, "esc closes the pane like the other screens");
     }
 }

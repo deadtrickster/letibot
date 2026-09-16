@@ -635,6 +635,10 @@ impl SessionView {
             // rebuilds the tree from the replayed events and the session list, so
             // there is nothing to fold into the turn view here.
             SessionEvent::Subagent { .. } => {}
+            // Same shape: a job's start is the `bash` call's own `Backgrounded`
+            // finish, which the call view already folds, and its end is carried by
+            // the durable `JobSettled` event. The jobs pane folds both itself.
+            SessionEvent::JobSettled { .. } => {}
         }
     }
 

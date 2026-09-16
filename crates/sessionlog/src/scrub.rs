@@ -110,7 +110,12 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: "this session spawned a subagent and it is running/done/failed"
         // stays true, and a head replaying the backlog keeps the latest state for
         // each subagent, which is exactly what a tree is drawn from.
-        | SessionEvent::Subagent { .. } => false,
+        | SessionEvent::Subagent { .. }
+        // Durable, and the *point* of it: a background job settles between turns,
+        // when nobody else is publishing, and the settlement is a fact about the
+        // process that does not stop being true. Scrubbing it would put every
+        // head's picture of the job back at "running" forever.
+        | SessionEvent::JobSettled { .. } => false,
     }
 }
 
@@ -272,6 +277,30 @@ mod tests {
         let (kept, report) = scrub_replay(log.retained(), &window);
         assert_eq!(kept.len(), 1);
         assert_eq!(report.settled_decisions, 0);
+    }
+
+    #[test]
+    fn a_job_settlement_survives_the_scrub_because_it_is_the_only_record_of_it() {
+        // A background job settles between turns, when nothing else is publishing.
+        // The settlement is a fact about a process that already happened; scrubbing
+        // it would put every head's picture of the job back at "running" forever,
+        // which is the lie about now this module exists to keep off the wire.
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(SessionEvent::JobSettled {
+            job: "j3".into(),
+            state: "exited 0".into(),
+            produced: 512,
+            elapsed_ms: 1_400,
+        });
+        let window: Vec<_> = log.retained().cloned().collect();
+        let (kept, report) = scrub_replay(log.retained(), &window);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(report.is_empty(), "{report:?}");
+        assert!(
+            matches!(&kept[0].event, SessionEvent::JobSettled { job, state, .. } if job == "j3" && state == "exited 0"),
+            "{:?}",
+            kept[0].event
+        );
     }
 
     #[test]

@@ -155,7 +155,17 @@ use crate::view::Snapshot;
 /// session's prefix is fixed when it is created: a conversation opened by a daemon
 /// with no shell could never call one, however the daemon that reopened it was
 /// seated, and the banner — computed from the registry — said otherwise.
-pub const PROTOCOL_VERSION: u32 = 14;
+///
+/// # 15: a background job's end is an event
+///
+/// [`crate::SessionEvent::JobSettled`] is a new event, so a version-14 head
+/// receiving one mid-session would fail to parse it — the version-4 argument, and
+/// the same ATTACH-time refusal. The **start** of a background job never needed an
+/// event: the `bash` call finishes as `ToolOutcome::Backgrounded` and its `handle`
+/// is the job id. The **end** did: a session-scoped job settles between turns,
+/// when the only events a hub publishes are the daemon's, and without it every
+/// head's picture of a background job was frozen at "running" forever.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.

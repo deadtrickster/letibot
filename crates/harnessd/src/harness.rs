@@ -67,6 +67,7 @@ use letibot_turn::{
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
 use crate::dialect::Wiring;
+use crate::jobwatch::{JobWatchSink, JobWatchers};
 // `is_writable` is a trait method; the backend's own answer is only reachable
 // with the trait in scope.
 use letibot_tools::ExecBackend as _;
@@ -761,7 +762,11 @@ pub struct Harness<'a> {
     /// The tool event sink, wrapped in the intent encoder. One for the session
     /// rather than one per round: constructing the decorator is what declares the
     /// encoder, and the call_id→name map inside it spans a turn.
-    tool_sink: IntentSink<ToolLogSink>,
+    tool_sink: JobWatchSink<IntentSink<ToolLogSink>>,
+    /// The session's background-job watcher, when the backend can start
+    /// processes. Fed by the sink as backgrounded results pass; stopped when the
+    /// backend closes.
+    job_watch: Option<Arc<JobWatchers>>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
@@ -1683,7 +1688,16 @@ impl<'a> Harness<'a> {
         // was wired" cannot be two different facts. It lives on the harness rather
         // than being rebuilt per round so that it is attached *before* the banner is
         // read, and so the call_id→name map it keeps spans a whole turn.
-        let tool_sink = IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone()));
+        // The background-job watcher: a job backgrounded this session settles
+        // between turns, when nobody else is publishing, so the daemon watches
+        // each one and publishes the settlement. `None` when the backend cannot
+        // start processes — no host, no jobs, no threads. The sink is the hook
+        // because the `Backgrounded` result is where a job id first exists.
+        let job_watch = backend.processes_arc().map(|h| JobWatchers::new(&h, &hub));
+        let tool_sink = JobWatchSink::new(
+            IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
+            job_watch.clone(),
+        );
 
         // Read, never asserted. `is_writable` is the backend's own answer,
         // `describe` is the backend's own words, `Gate::describe` is the gate's, and
@@ -2056,6 +2070,7 @@ impl<'a> Harness<'a> {
             monitors,
             monitor_cursor,
             tool_sink,
+            job_watch,
             provider,
         };
         if h.resumed.is_some() {
@@ -2366,6 +2381,12 @@ impl<'a> Harness<'a> {
     /// its work went. A host backend says nothing; a firecode one brings its VM
     /// down and names the sibling directory.
     pub fn close_backend(&self) -> Option<String> {
+        // The watchers first: their threads hold weak handles and re-check this
+        // flag at most one wait chunk after close, so a session that closes does
+        // not keep its host — or its cgroups — alive behind a blocked thread.
+        if let Some(w) = &self.job_watch {
+            w.stop();
+        }
         self.runtime.backend.close()
     }
 
