@@ -251,6 +251,10 @@ fn run() -> Result<i32, String> {
             // Cross every command in the etalon with layer A as it is now: what
             // would prompt, what would be caught, what cannot be read. Plan §2.
             "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
+            // The guard itself over an etalon-shaped JSONL — an attack set, with
+            // the main task as the operator's ask. Plan §1 (BashArena). Needs
+            // --oracle. Rows are seated in a scratch copy of the store.
+            "--etalon-oracle" => query = Some(Query::EtalonOracle(PathBuf::from(next()?))),
             // Every command's tree-sitter shape, aggregated and laid out on a
             // self-organising map; writes the JSON the map page draws. Plan §7.
             "--etalon-map" => {
@@ -798,6 +802,7 @@ enum Query {
     Calibrate { write: bool },
     Backfill { write: bool },
     Etalon(PathBuf),
+    EtalonOracle(PathBuf),
     EtalonMap(PathBuf, PathBuf),
     RepairPrefixes,
     Compare,
@@ -949,6 +954,19 @@ fn run_query(
                 .with_pinned_shell("the etalon: the harness that recorded it ran a fixed shell");
             let r = letibot_harnessd::etalon::report(&file, &env, 1_000_000)?;
             print!("{}", r.render());
+            Ok(0)
+        }
+        Query::EtalonOracle(file) => {
+            drop(store);
+            // The best arm `--compare` found: the fullest brief, the verdict
+            // question. Measured 2026-09-16 at 52/11 on the store's rows.
+            let arm = letibot_harnessd::calibrate::ARMS
+                .iter()
+                .find(|a| a.claim && a.examples && matches!(a.question, letibot_harnessd::oracle::Question::Verdict))
+                .copied()
+                .ok_or("no claim arm in ARMS")?;
+            let o = letibot_harnessd::etalon_oracle::measure(cfg, path, &file, arm, 100_000)?;
+            print!("{}", letibot_harnessd::etalon_oracle::render(&o, &arm));
             Ok(0)
         }
         Query::EtalonMap(file, out) => {

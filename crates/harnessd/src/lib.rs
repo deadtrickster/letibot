@@ -91,6 +91,7 @@ pub mod answers;
 pub mod backfill;
 pub mod etalon;
 pub mod etalon_map;
+pub mod etalon_oracle;
 pub mod calibrate;
 pub mod slash;
 pub mod sudo;
