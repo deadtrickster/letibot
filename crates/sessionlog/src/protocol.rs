@@ -165,7 +165,19 @@ use crate::view::Snapshot;
 /// is the job id. The **end** did: a session-scoped job settles between turns,
 /// when the only events a hub publishes are the daemon's, and without it every
 /// head's picture of a background job was frozen at "running" forever.
-pub const PROTOCOL_VERSION: u32 = 15;
+///
+/// # 16: a head can read a session it is not attached to
+///
+/// [`ClientFrame::Peek`] is a new client frame, so a version-15 daemon would fail
+/// to parse it — the version-4 argument, and the same ATTACH-time refusal. It is
+/// answered with [`ServerFrame::Peeked`]: another session's retained scrollback,
+/// scrubbed exactly as a replay is and capped exactly as the daemon's ring is,
+/// delivered **without moving the connection**. The subagent tree names child
+/// sessions a head is not in, and reading one used to mean a `Switch` — which
+/// rebuilds the head twice and blinds it to the parent's live events for the
+/// whole read. Lazy by construction: nothing is read until the head asks, and
+/// asking again is a fresh read.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -460,6 +472,16 @@ pub enum ClientFrame {
         /// is coming *back* to a session it was watching sends the seq it had.
         since_seq: u64,
     },
+    /// Read another session's retained scrollback **without moving there**.
+    ///
+    /// The subagent tree names child sessions, and a row's Enter should show what
+    /// that subagent produced while the head stays in the session it is in — a
+    /// [`ClientFrame::Switch`] would do the reading and lose the room: the head
+    /// rebuilds itself twice and is attached to the child for the whole read.
+    /// Answered with [`ServerFrame::Peeked`] on the same stream; the connection's
+    /// seat, its acks and its live events are untouched. Lazy by construction:
+    /// nothing is read until this is sent, and sending it again is a fresh read.
+    Peek { session_id: String },
     /// A clean goodbye. **Not** required: TCP close is detach too, and detach is
     /// never abort (§13.2).
     Detach,
@@ -557,6 +579,16 @@ pub enum ServerFrame {
     Todos {
         session_id: String,
         todos: Vec<crate::event::TodoEntry>,
+    },
+    /// The answer to [`ClientFrame::Peek`]: the named session's retained
+    /// scrollback, scrubbed exactly as a replay is. `dropped` is what fell off the
+    /// daemon's ring before the peek — the same disclosure a `Hello` makes. The
+    /// connection's own session is untouched; these events are for reading, not
+    /// for folding into the head's state.
+    Peeked {
+        session_id: String,
+        dropped: u64,
+        events: Vec<Envelope>,
     },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),

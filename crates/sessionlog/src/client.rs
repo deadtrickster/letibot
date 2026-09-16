@@ -352,6 +352,16 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Read another session's scrollback without leaving this one. Answered with
+    /// a `Peeked` frame on the pump, like every other ask — a head that stopped
+    /// to wait for it would stop rendering the turn it is watching.
+    pub fn peek(&mut self, session_id: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Peek {
+            session_id: session_id.to_string(),
+        })?;
+        Ok(())
+    }
+
     /// Take the head id from a `Hello` the caller pumped off the socket.
     ///
     /// Not folded into `switch`: the `Hello` arrives on the reader thread, and a

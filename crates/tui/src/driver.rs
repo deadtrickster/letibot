@@ -143,6 +143,11 @@ pub fn tick(
             // here: the switch happens inside the daemon, on this same socket, so
             // there is no window in which this head is attached to nothing.
             Action::Switch(id) => client.switch(&id, 0)?,
+            // A read, not a move: the answer arrives as a `Peeked` frame on the
+            // pump and the output pane is built from it. Nothing here changes
+            // which session this connection is in, and nothing is read until the
+            // operator asked — the laziness is the point.
+            Action::Peek(id) => client.peek(&id)?,
             // Same shape as `NewSession`: the daemon answers with `Sessions` naming
             // it as `created`, and `App::apply` turns that into the `Switch`. One
             // path for "go to a session that was not here a moment ago", whether it

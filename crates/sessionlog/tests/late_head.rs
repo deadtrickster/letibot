@@ -23,9 +23,11 @@ use letibot_sessionlog::client::{HeadClient, pump};
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
-use letibot_sessionlog::server::{ServerHandle, serve};
+use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::server::{ServerHandle, serve, serve_conn};
 use letibot_sessionlog::testing::*;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
+use std::os::unix::net::UnixStream;
 
 const DELTAS: usize = 2_000;
 const END: &str = "END-OF-PRODUCTION";
@@ -409,5 +411,119 @@ fn a_head_that_falls_behind_is_demoted_and_told_where_it_now_is() {
             assert_eq!(snapshot.seq, hub.head_seq());
         }
         other => panic!("expected a resync, got {other:?}"),
+    }
+}
+
+/// A peek reads another session's scrollback and leaves the connection where it
+/// was. Those two facts are the whole feature: the child's events arrive as the
+/// answer, and the parent's next event arrives after them on the same stream —
+/// no `Hello`, no rebuild, no window in which this head is attached to the
+/// wrong session.
+#[test]
+fn a_peek_reads_another_session_without_moving_the_head() {
+    let registry = Registry::new();
+    let wiring = SessionWiring::default();
+    let parent = registry
+        .create("s-parent", "parent", wiring.clone())
+        .expect("create");
+    let child = registry.create("s-child", "child", wiring).expect("create");
+    parent.publish(turn_started("t1"));
+    child.publish(turn_started("t2"));
+    child.publish(delta("t2", "hello from the child"));
+
+    let (a, b) = UnixStream::pair().expect("pair");
+    let reg = registry.clone();
+    let _server = std::thread::spawn(move || {
+        let _ = serve_conn(reg, a);
+    });
+    let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+    let mut r = FrameReader::new(b);
+
+    w.write(&ClientFrame::Attach {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: "s-parent".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "test".into(),
+        caps: Caps::default(),
+    })
+    .expect("attach");
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("hello"),
+        ServerFrame::Hello { .. }
+    ));
+
+    w.write(&ClientFrame::Peek {
+        session_id: "s-child".into(),
+    })
+    .expect("peek");
+    match r.read::<ServerFrame>().expect("peeked") {
+        ServerFrame::Peeked {
+            session_id,
+            dropped,
+            events,
+        } => {
+            assert_eq!(session_id, "s-child");
+            assert_eq!(dropped, 0);
+            assert!(
+                events.iter().any(|e| matches!(
+                    &e.event,
+                    SessionEvent::Delta { text, .. } if text == "hello from the child"
+                )),
+                "the child's scrollback is the answer: {events:?}"
+            );
+        }
+        other => panic!("expected Peeked, got {other:?}"),
+    }
+
+    // The connection never moved: the parent's next event still arrives here.
+    parent.publish(warn("still here"));
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("parent event"),
+        ServerFrame::Event(_)
+    ));
+}
+
+/// A peek at a session this daemon does not hold is a Rejected naming it —
+/// never an empty `Peeked`, which would read as "this subagent said nothing",
+/// a lie in exactly the voice the operator cannot distinguish from the truth.
+#[test]
+fn a_peek_at_an_unknown_session_is_rejected_by_name() {
+    let registry = Registry::new();
+    let parent = registry
+        .create("s-parent", "parent", SessionWiring::default())
+        .expect("create");
+
+    let (a, b) = UnixStream::pair().expect("pair");
+    let reg = registry.clone();
+    let _server = std::thread::spawn(move || {
+        let _ = serve_conn(reg, a);
+    });
+    let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+    let mut r = FrameReader::new(b);
+
+    w.write(&ClientFrame::Attach {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: "s-parent".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "test".into(),
+        caps: Caps::default(),
+    })
+    .expect("attach");
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("hello"),
+        ServerFrame::Hello { .. }
+    ));
+
+    w.write(&ClientFrame::Peek {
+        session_id: "s-absent".into(),
+    })
+    .expect("peek");
+    match r.read::<ServerFrame>().expect("rejected") {
+        ServerFrame::Rejected { reason, .. } => {
+            assert!(reason.contains("s-absent"), "{reason}");
+        }
+        other => panic!("expected Rejected, got {other:?}"),
     }
 }

@@ -26,7 +26,7 @@
 //! rejects is counted. That is what makes the counter meaningful rather than
 //! decorative: there is a key that changes it, so the number moves.
 
-use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Timings, Usage};
+use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, Timings, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring, short_id};
 use letibot_sessionlog::view::{
@@ -108,6 +108,10 @@ pub enum Action {
     NewSession(String),
     /// Move this connection to another session.
     Switch(String),
+    /// Read a subagent's output without leaving this session: the daemon answers
+    /// with `Peeked`, and the pane the tree's Enter opens is built from it.
+    /// Lazy — nothing is read until this is sent.
+    Peek(String),
     /// Bring a session that is in the store but not in this daemon back to life.
     /// The head switches to it on the same `Sessions` reply a `NewSession` produces.
     ResumeSession(String),
@@ -327,6 +331,27 @@ struct JobRow {
     state: String,
     produced: u64,
     elapsed_ms: u64,
+}
+
+/// What one subagent's Enter opens: its tool output, read out of the subagent's
+/// own scrollback by a `Peek`, shown without moving the head out of the session
+/// it is in. The pane behaves like a terminal — the tail shows by default,
+/// arrows walk back toward the beginning — and the whole view is spilled to a
+/// file, because a cap on the pane must not be a cap on the record.
+#[derive(Debug, Clone)]
+struct SubOut {
+    session_id: String,
+    /// One line per rendered row: a `· name — outcome` header per tool result,
+    /// the payload verbatim under it, and the spill locators at the end.
+    lines: Vec<String>,
+    /// Lines hidden off the bottom. Zero is "following the tail"; the pane draw
+    /// clamps it, because only the draw knows the visible height.
+    scroll: usize,
+    /// Where the whole view was spilled, when it was written.
+    spill: Option<String>,
+    /// Events that fell off the daemon's scrollback before this read — the same
+    /// disclosure a `Hello` makes, because a peek is a replay.
+    dropped: u64,
 }
 
 /// line. See `crates/ui/DESIGN.md` §2.3.
@@ -613,6 +638,10 @@ pub struct App {
     /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
     /// subagent's session — the same two acts the picker keeps separate.
     subagents_sel: usize,
+    /// The output view one subagent's Enter opens, until Esc closes it.
+    sub_out: Option<SubOut>,
+    /// The subagent whose output was asked for and not yet answered. Esc cancels.
+    sub_out_pending: Option<String>,
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
     todos: Vec<letibot_sessionlog::event::TodoEntry>,
@@ -838,6 +867,8 @@ impl App {
             subagents_pane: false,
             jobs_pane: false,
             subagents_sel: 0,
+            sub_out: None,
+            sub_out_pending: None,
             todos: Vec::new(),
             repo_todos: None,
             stats: false,
@@ -1033,6 +1064,32 @@ impl App {
                 }
                 Disposition::Control
             }
+            // The answer to the tree's Enter: the named subagent's scrollback,
+            // scrubbed as a replay. Read, never folded — these events are not
+            // this session's history, and folding them would lie about whose
+            // turn is whose. The pane shows the tool results; the whole view is
+            // spilled to a file so no cap on the pane is a cap on the record.
+            ServerFrame::Peeked {
+                session_id,
+                dropped,
+                events,
+            } => {
+                self.sub_out_pending = None;
+                let mut lines = subagent_out_lines(&events);
+                if lines.is_empty() {
+                    lines.push("    no tool output in this subagent's scrollback.".to_string());
+                }
+                let spill = spill_sub_out(&session_id, &lines);
+                self.sub_out = Some(SubOut {
+                    session_id,
+                    lines,
+                    scroll: 0,
+                    spill,
+                    dropped,
+                });
+                self.redraw = true;
+                Disposition::Rendered
+            }
             // Only ever written to an `askpass` head; a TUI that sees one has a
             // daemon confused about who it is talking to.
             ServerFrame::Secret { .. } => Disposition::Control,
@@ -1078,6 +1135,8 @@ impl App {
                 ..
             } => {
                 // Both numbers, so the operator can see what they were looking at.
+                // A peek answered with one of these also ends its waiting.
+                self.sub_out_pending = None;
                 self.say(&format!(
                     "rejected: {reason} (you saw {expected_seq}, the session is at {actual_seq})"
                 ));
@@ -2062,6 +2121,39 @@ impl App {
             _ => {}
         }
 
+        // **The subagent output view owns the keys while it is open.** Arrows
+        // scroll it like a terminal — up toward the beginning, down back to the
+        // tail — Enter reads the same subagent again, because a running one has
+        // new output, and Esc goes back to the tree. This sits ahead of the
+        // generic Esc below on purpose: Esc here means "back to the tree", not
+        // "close everything".
+        if self.sub_out.is_some() {
+            match k {
+                Key::Up => {
+                    self.sub_out.as_mut().unwrap().scroll += 1;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    let v = self.sub_out.as_mut().unwrap();
+                    v.scroll = v.scroll.saturating_sub(1);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    let id = self.sub_out.as_ref().unwrap().session_id.clone();
+                    self.sub_out_pending = Some(id.clone());
+                    return Some(Action::Peek(id));
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.sub_out = None;
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
         if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
@@ -2074,6 +2166,7 @@ impl App {
             self.todos_pane = false;
             self.subagents_pane = false;
             self.jobs_pane = false;
+            self.sub_out_pending = None;
             self.redraw = true;
             return None;
         }
@@ -2196,6 +2289,17 @@ impl App {
                     return None;
                 }
                 Key::Enter if self.editor.text().is_empty() => {
+                    // Reading, not moving: the output pane opens on the `Peeked`
+                    // reply, and this head never leaves the session it is in.
+                    let id = self.subagents[self.subagents_sel.min(n - 1)]
+                        .session_id
+                        .clone();
+                    self.sub_out_pending = Some(id.clone());
+                    return Some(Action::Peek(id));
+                }
+                // Switching is still here, one key over: Enter reads, `o` opens
+                // the subagent's session for good.
+                Key::Char('o') if self.editor.text().is_empty() => {
                     let id = self.subagents[self.subagents_sel.min(n - 1)]
                         .session_id
                         .clone();
@@ -3123,6 +3227,10 @@ impl App {
             let mut rows = self.todos_lines(w);
             rows.truncate(room);
             rows
+        } else if self.sub_out.is_some() {
+            let mut rows = self.sub_out_lines(room);
+            rows.truncate(room);
+            rows
         } else if self.subagents_pane {
             let mut rows = self.subagents_lines(w);
             rows.truncate(room);
@@ -3871,11 +3979,56 @@ impl App {
         out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "    arrows move, Enter switches into the subagent — subagents are hidden from ctrl-s.",
+            "    arrows move, Enter reads the subagent's output, o switches into it — subagents are hidden from ctrl-s.",
         ));
         out.into_iter()
             .map(|l| trim_to(&l, w))
             .collect()
+    }
+
+    /// The output view: a terminal, not a document. The tail shows by default;
+    /// arrows walk back toward the beginning; `scroll` counts lines hidden off
+    /// the bottom and is clamped here, where the visible height is actually
+    /// known — a key handler cannot clamp what it cannot see.
+    fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
+        let Some(v) = self.sub_out.as_mut() else {
+            return Vec::new();
+        };
+        let mut out = vec![colour(
+            &self.cfg,
+            sgr::BOLD,
+            &format!("subagent output — {}", short_id(&v.session_id)),
+        )];
+        if v.dropped > 0 {
+            out.push(dim(
+                &self.cfg,
+                &format!(
+                    "    {} earlier event{} fell off the daemon's scrollback before this read",
+                    v.dropped,
+                    if v.dropped == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        out.push(String::new());
+        let footer = 1;
+        let visible = room.saturating_sub(out.len() + footer).max(1);
+        let max_scroll = v.lines.len().saturating_sub(visible);
+        v.scroll = v.scroll.min(max_scroll);
+        let end = v.lines.len() - v.scroll;
+        let start = end.saturating_sub(visible);
+        for l in &v.lines[start..end] {
+            out.push(l.clone());
+        }
+        while out.len() < room.saturating_sub(footer) {
+            out.push(String::new());
+        }
+        let spill = v.spill.as_deref().unwrap_or("not written");
+        out.push(dim(
+            &self.cfg,
+            &format!("    arrows scroll, Enter re-reads, Esc back — full: {spill}"),
+        ));
+        out.truncate(room);
+        out
     }
 
     fn jobs_lines(&self, w: usize) -> Vec<String> {
@@ -4626,6 +4779,62 @@ fn fold_word(f: Fold) -> &'static str {
         Fold::Folded => "folded",
         Fold::Open => "open",
     }
+}
+
+/// The output pane's lines from a peeked scrollback: one block per tool result,
+/// in order, the payload verbatim — that payload is the stdout and stderr the
+/// tool produced, as the model received it. A `ToolFinished`'s spill locator is
+/// the full output on disk when the inline payload was bounded; those paths are
+/// named at the end, because *"there is more"* without a *where* is a dead end.
+fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut spills: Vec<String> = Vec::new();
+    for env in events {
+        match &env.event {
+            SessionEvent::TranscriptContent { item, .. } => {
+                if let TranscriptItem::ToolResult {
+                    name,
+                    outcome,
+                    payload,
+                    ..
+                } = &**item
+                {
+                    out.push(format!("· {name} — {}", outcome_word(outcome)));
+                    for line in payload.lines() {
+                        out.push(format!("  {line}"));
+                    }
+                    out.push(String::new());
+                }
+            }
+            SessionEvent::ToolFinished {
+                spill: Some(path), ..
+            } => spills.push(path.clone()),
+            _ => {}
+        }
+    }
+    if !spills.is_empty() {
+        out.push("full output on disk:".to_string());
+        for s in spills {
+            out.push(format!("  {s}"));
+        }
+        out.push(String::new());
+    }
+    out
+}
+
+/// The whole view, spilled: the pane caps like a terminal, the file does not
+/// cap. One name per subagent, overwritten on each read, so the path is stable
+/// enough to open twice.
+fn spill_sub_out(session_id: &str, lines: &[String]) -> Option<String> {
+    let path = std::env::temp_dir().join(format!("letibot-subagent-{session_id}.log"));
+    let mut body = String::new();
+    for l in lines {
+        body.push_str(l);
+        body.push('\n');
+    }
+    std::fs::write(&path, body)
+        .ok()
+        .map(|_| path.display().to_string())
 }
 
 /// The rail every line of the model's reasoning carries.
@@ -6517,6 +6726,150 @@ mod tests {
 
         a.key(Key::Esc);
         assert!(!a.subagents_pane);
+    }
+
+    #[test]
+    fn enter_on_a_subagent_row_asks_for_its_output_instead_of_switching() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        a.key(Key::CtrlG);
+        // Enter reads; it does not move the head. The ask is remembered, so a
+        // rejection has something to end.
+        assert_eq!(a.key(Key::Enter), Some(Action::Peek("s-sub-1".into())));
+        assert_eq!(a.sub_out_pending.as_deref(), Some("s-sub-1"));
+        assert!(a.subagents_pane, "the tree stays open under the read");
+    }
+
+    #[test]
+    fn a_peeked_subagent_shows_its_tool_output_and_spills_the_whole_view() {
+        let mut a = app();
+        a.sub_out_pending = Some("s-sub-1".into());
+        a.apply(ServerFrame::Peeked {
+            session_id: "s-sub-1".into(),
+            dropped: 3,
+            events: vec![
+                env(
+                    1,
+                    SessionEvent::TranscriptContent {
+                        item_id: "i1".into(),
+                        item: Box::new(TranscriptItem::ToolResult {
+                            call_id: "c1".into(),
+                            name: "bash".into(),
+                            outcome: letibot_transcript::ToolOutcome::Ok,
+                            payload: "line one\nline two".into(),
+                        }),
+                    },
+                ),
+                env(
+                    2,
+                    SessionEvent::ToolFinished {
+                        turn_id: "t1".into(),
+                        call_id: "c1".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload_digest: "d".into(),
+                        inline_bytes: 18,
+                        full_bytes: 400,
+                        spill: Some("/spill/c1".into()),
+                        repairs: 0,
+                        edit: None,
+                    },
+                ),
+            ],
+        });
+        // The ask is answered; the view is the tool results, verbatim, with the
+        // spill locator named and the drop disclosed.
+        assert!(a.sub_out_pending.is_none());
+        let v = a.sub_out.as_ref().expect("the view opened");
+        assert_eq!(v.session_id, "s-sub-1");
+        assert_eq!(v.dropped, 3);
+        let text = v.lines.join("\n");
+        assert!(text.contains("· bash — ok"), "{text}");
+        assert!(text.contains("line one"), "{text}");
+        assert!(text.contains("line two"), "{text}");
+        assert!(text.contains("/spill/c1"), "{text}");
+        // The whole view is on disk, at a name a re-read overwrites.
+        let spill = v.spill.as_ref().expect("spilled");
+        assert!(spill.contains("letibot-subagent-s-sub-1.log"), "{spill}");
+        let on_disk = std::fs::read_to_string(spill).expect("read");
+        assert!(on_disk.contains("line two"), "{on_disk}");
+        // And the pane draws, header and disclosure included.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("subagent output"), "{screen}");
+        assert!(screen.contains("3 earlier events"), "{screen}");
+    }
+
+    #[test]
+    fn arrows_walk_the_subagent_output_back_to_its_beginning() {
+        let mut a = app();
+        let payload: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        a.apply(ServerFrame::Peeked {
+            session_id: "s-sub-1".into(),
+            dropped: 0,
+            events: vec![env(
+                1,
+                SessionEvent::TranscriptContent {
+                    item_id: "i1".into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: "c1".into(),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload,
+                    }),
+                },
+            )],
+        });
+        // A terminal: the tail shows by default, the beginning does not.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("line 49"), "{screen}");
+        assert!(!screen.contains("line 0"), "{screen}");
+        // Up walks back, and the draw clamps at the beginning — sixty ups on a
+        // fifty-line view stop at the top rather than scrolling into nothing.
+        for _ in 0..60 {
+            a.key(Key::Up);
+        }
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("line 0"), "{screen}");
+    }
+
+    #[test]
+    fn esc_leaves_the_output_and_o_still_switches_into_the_subagent() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "done".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+            },
+        )));
+        a.key(Key::CtrlG);
+        a.key(Key::Enter);
+        a.apply(ServerFrame::Peeked {
+            session_id: "s-sub-1".into(),
+            dropped: 0,
+            events: vec![],
+        });
+        // An empty scrollback says so; it does not look like a missing session.
+        let v = a.sub_out.as_ref().expect("the view opened");
+        assert!(v.lines[0].contains("no tool output"), "{}", v.lines[0]);
+        // Esc goes back to the tree — the tree, not everything closed.
+        a.key(Key::Esc);
+        assert!(a.sub_out.is_none());
+        assert!(a.subagents_pane, "back to the tree");
+        // `o` is still the way in: it switches, as Enter used to.
+        assert!(matches!(
+            a.key(Key::Char('o')),
+            Some(Action::Switch(id)) if id == "s-sub-1"
+        ));
     }
 
     #[test]

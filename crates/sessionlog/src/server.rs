@@ -485,6 +485,36 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                 }
             }
+            Ok(ClientFrame::Peek { session_id }) => {
+                // A read, not a move: the seat, its acks and its live events are
+                // untouched, and the answer is the named session's scrollback
+                // scrubbed exactly as a replay would be — a peek IS a replay, so
+                // it gets the replay's wire hygiene and the ring's cap. A session
+                // this daemon does not hold is a Rejected naming it, never an
+                // empty Peeked: an empty answer and a missing session must not
+                // look alike.
+                match registry.resolve(&session_id) {
+                    Some(hub) => {
+                        let retained = hub.retained();
+                        let (kept, _) = crate::scrub::scrub_replay(retained.iter(), &retained);
+                        let f = ServerFrame::Peeked {
+                            session_id: hub.session_id(),
+                            dropped: hub.dropped(),
+                            events: kept,
+                        };
+                        writer.lock().unwrap().write(&f)?;
+                    }
+                    None => {
+                        let f = ServerFrame::Rejected {
+                            client_request_id: format!("peek:{session_id}"),
+                            reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
+                            expected_seq: 0,
+                            actual_seq: seat.hub.head_seq(),
+                        };
+                        writer.lock().unwrap().write(&f)?;
+                    }
+                }
+            }
             Ok(ClientFrame::Prompt {
                 client_request_id,
                 expected_seq,
