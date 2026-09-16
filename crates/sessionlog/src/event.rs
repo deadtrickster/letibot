@@ -271,6 +271,12 @@ pub struct Decider {
 /// heads two different renderings of one call.
 pub const TARGET_MAX_BYTES: usize = 120;
 
+/// The keys that name a call's subject, in preference order.
+///
+/// Key names, not tools: the rule below stays derived, and a tool whose
+/// subject has another name keeps the written order.
+const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
+
 /// The display target for a tool call: the one argument a person reads.
 ///
 /// # Why it is derived and not tool-supplied
@@ -288,6 +294,14 @@ pub const TARGET_MAX_BYTES: usize = 120;
 /// `{"pattern":"home.*button","path":"src"}` reads `home.*button src`, which is
 /// what a person scans for; a tool the rule reads badly gets a slightly wrong
 /// *label*, never a wrong fact.
+///
+/// **Except when the written order hides the subject altogether.** A model
+/// composing an edit writes the content before the file it is going into, and the
+/// budget then breaks before `path` lands — the operator's card read
+/// `Edited "        let view = sidediff::edit_view…` and could not answer *which
+/// file*. So a subject key ([`SUBJECT_KEYS`]) the loop never reached is prepended:
+/// the file leads, the content head follows. An order that already shows every
+/// argument — grep's pattern, then its path — does not move.
 ///
 /// Nested values are **elided, not flattened**: `{…}` and `[…]` say there is more
 /// without pretending a JSON dump is a label.
@@ -310,8 +324,12 @@ pub fn display_target(arguments: &str) -> String {
         return truncate_target(&scalar(&v).unwrap_or_default());
     };
     let mut parts: Vec<String> = Vec::new();
-    for (_k, val) in map {
-        parts.push(match scalar(&val) {
+    let mut subject_seen = false;
+    for (_k, val) in &map {
+        if SUBJECT_KEYS.contains(&_k.as_str()) {
+            subject_seen = true;
+        }
+        parts.push(match scalar(val) {
             Some(s) => s,
             None if val.is_array() => "[…]".into(),
             None => "{…}".into(),
@@ -319,6 +337,18 @@ pub fn display_target(arguments: &str) -> String {
         if parts.iter().map(|p| p.len() + 1).sum::<usize>() > TARGET_MAX_BYTES {
             break;
         }
+    }
+    if !subject_seen
+        && let Some(val) = SUBJECT_KEYS.iter().find_map(|k| map.get(*k))
+    {
+        parts.insert(
+            0,
+            match scalar(val) {
+                Some(s) => s,
+                None if val.is_array() => "[…]".into(),
+                None => "{…}".into(),
+            },
+        );
     }
     truncate_target(parts.join(" ").trim())
 }
@@ -1027,6 +1057,28 @@ mod tests {
         assert_eq!(
             display_target(r#"{"path":"a.rs","edits":[{"old":"x"}]}"#),
             "a.rs […]"
+        );
+    }
+
+    #[test]
+    fn the_subject_the_written_order_left_past_the_budget_comes_back_in_front() {
+        // **The card the operator photographed.** A model composing an edit
+        // writes the content before the file it is going into, and the budget
+        // broke before `path` landed — the card opened with eighty bytes of
+        // old_string and could not answer *which file*. The subject the order
+        // left out is prepended; the content head follows it.
+        let args = format!(
+            r#"{{"old_string":"{}","new_string":"{}","path":"crates/tui/src/app.rs"}}"#,
+            "x".repeat(200),
+            "y".repeat(200),
+        );
+        let t = display_target(&args);
+        assert!(t.starts_with("crates/tui/src/app.rs"), "{t}");
+        // An order that already shows every argument — grep's pattern, then
+        // its path — does not move.
+        assert_eq!(
+            display_target(r#"{"pattern":"home.*button","path":"src"}"#),
+            "home.*button src"
         );
     }
 

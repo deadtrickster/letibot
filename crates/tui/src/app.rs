@@ -4082,7 +4082,7 @@ impl App {
         };
         rows.push(head(
             "diff view",
-            if self.diff_split { "split (unified below 100 columns)".into() } else { "unified".into() },
+            if self.diff_split { "split".into() } else { "unified".into() },
             ConfigEdit::Head(HeadSetting::Diff),
         ));
         rows.push(head("thinking", fold_word(self.reasoning).into(), ConfigEdit::Head(HeadSetting::Thinking)));
@@ -5680,20 +5680,25 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             }
         }
     };
-    // The two-panel before/after view. It replaces the byte-count body when
-    // this call edited a file, the operator has it switched on, and the pane
-    // is wide enough for both panels (opencode's gate, and for the same
-    // reason); every other case keeps exactly what the card already said,
-    // which is what makes the toggle safe to flip at any width.
+    // The before/after view. Split or unified is the operator's `/diff` toggle
+    // and nothing else — no width gate, because the two answers a width gate
+    // ever gave were a cramped diff or no diff at all. Every other case keeps
+    // exactly what the card already said, which is what makes the toggle safe
+    // to flip at any width.
     if matches!(card.verb, card::Verb::Edit | card::Verb::Write)
         && let Some(e) = edit_excerpt
     {
-        let view = sidediff::edit_view(diff_split, cfg.width.saturating_sub(2));
+        let view = sidediff::edit_view(diff_split);
         let dcfg = DiffConfig {
-            // The card indents its body by two, so the panels are built for
-            // the width the body actually has, or the card truncates the
-            // right panel's tail to fit and the diff lies by omission.
-            width: cfg.width.saturating_sub(2),
+            // The card indents its body by two, and the turn block steps the
+            // whole card in by the activity indent *after* the card has
+            // rendered, so the panels are built for the width the row will
+            // actually have — or the frame trims the right panel's tail off
+            // and the diff lies by omission. The transcript's own diff arm
+            // does the same arithmetic at its `let w`.
+            width: cfg
+                .width
+                .saturating_sub(2 + activity_indent(cfg.width)),
             palette: cfg.palette(),
             // The excerpt already carries ±3 lines of context around the
             // change; re-diffing with the same keeps it intact.
@@ -6477,7 +6482,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // window of the new file — and a folded row showed two lines of it.
             // When this head watched the call run it holds both sides, and the
             // operator's question about an edit is "what changed", which is a
-            // diff in whichever of the two shapes fits (`sidediff::edit_view`).
+            // diff in whichever of the two shapes the toggle picks
+            // (`sidediff::edit_view`).
             // Folded keeps the first hunk's opening rows so the change is on the
             // screen without the fold; open shows it whole, up to the diff's own
             // cap. A row this head did not watch run has no pair and keeps the
@@ -6494,7 +6500,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     intra_line: false,
                     max_rows: 60,
                 };
-                let view = sidediff::edit_view(diff_split, w.saturating_sub(2));
+                let view = sidediff::edit_view(diff_split);
                 let mut rows = sidediff::render_edit_view(
                     &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
                 );
@@ -7149,7 +7155,7 @@ mod tests {
         assert!(a.config_pane);
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("diff view"), "{screen}");
-        assert!(screen.contains("split (unified below 100 columns)"), "{screen}");
+        assert!(screen.contains("split"), "{screen}");
         assert!(screen.contains("asked the daemon; nothing back yet"), "{screen}");
 
         // Row 0 is the diff view; Enter flips it and the file says so.
@@ -9942,25 +9948,57 @@ mod tests {
         );
     }
 
-    /// The fallback is a UNIFIED diff, not the byte count. The toggle's own
-    /// message promised "unified below 100 columns" while the card drew the
-    /// old body there — measured by the operator as *"even unified claude-code
-    /// style edit panes are not here"*.
+    /// The toggle is the whole gate. Off is a unified diff at any width; on is
+    /// a split at any width — a narrow pane gets a narrow split, not the byte
+    /// count, because an edit drawn cramped is still an edit the operator can
+    /// read, and the width gate's other answer was *no diff at all*.
     #[test]
-    fn the_diff_toggle_and_a_narrow_pane_both_fall_back_to_unified() {
+    fn the_diff_toggle_alone_picks_split_or_unified_at_any_width() {
         let off = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, false);
         let text = off.join("\n");
         assert!(!text.contains('│'), "switched off: {off:?}");
         assert!(text.contains("+    x();") || text.contains("+x();"), "no unified diff: {off:?}");
         assert!(!text.contains("64 B"), "the byte count came back instead of a diff: {off:?}");
 
-        // opencode's gate: under 100 columns the panels cannot hold code and
-        // gutters, so the switch being on is not enough — and the answer is
-        // still a diff.
+        // Narrow and switched on: still a split. The panels are cramped; the
+        // renderer wraps and degrades, and the change is on the screen.
         let narrow = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(80), 0, Fold::Open, true);
         let text = narrow.join("\n");
-        assert!(!text.contains('│'), "narrow pane: {narrow:?}");
+        assert!(text.contains('│'), "narrow pane drew no split: {narrow:?}");
         assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
+    }
+
+    /// **The clip the operator photographed.** The card built its diff for the
+    /// body width, and the turn block then stepped the whole card in by the
+    /// activity indent — *after* the card had rendered — so every split row
+    /// left the frame two columns wider than the frame trims to, and a
+    /// full-width panel line lost its tail at the terminal edge. The panels
+    /// are built for the width the row will actually have, which is the
+    /// arithmetic the transcript's own diff arm already does at its `let w`.
+    #[test]
+    fn the_split_diff_fits_after_the_indent_the_caller_applies() {
+        let w = 209; // a 211-column terminal minus the gutter
+        let e = letibot_sessionlog::event::ToolEdit {
+            before: format!("{}\n", "y".repeat(300)),
+            after: format!("{}\n", "x".repeat(300)),
+            before_lines: 1,
+            after_lines: 1,
+            ..edit_excerpt()
+        };
+        let cfg = plain_cfg(w);
+        let rows = step_in(
+            call_card(&edit_row(Some(e)), &cfg, 0, Fold::Open, true),
+            activity_indent(w),
+        );
+        let joined = rows.join("\n");
+        assert!(
+            rows.iter().all(|r| r.chars().count() <= w),
+            "a diff row outgrew the frame the card is drawn in: {joined}"
+        );
+        // And the width was not paid for by the content: both panels wrap
+        // their long line whole, so the change is on the screen, not cut.
+        assert_eq!(joined.matches('x').count(), 300, "{joined}");
+        assert_eq!(joined.matches('y').count(), 300, "{joined}");
     }
 
     #[test]

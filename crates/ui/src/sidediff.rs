@@ -4,8 +4,7 @@
 //!
 //! The shape is **opencode**'s (MIT) diff viewer,
 //! `packages/tui/src/feature-plugins/system/diff-viewer.tsx` in the checkout
-//! this box carries (v1.18.29): a `split | unified` view, split only when the
-//! pane is wide enough (`MIN_SPLIT_WIDTH = 100`, unified below it), line
+//! this box carries (v1.18.29): a `split | unified` view, line
 //! numbers both sides, the change carried by the sign column rather than by
 //! repainting the line, and syntax colouring over the whole panel. What is
 //! different, and why:
@@ -15,12 +14,22 @@
 //!   [`Palette::None`] cannot spend the diff on backgrounds, so here the sign
 //!   is the carrier — a glyph, not a colour — and the code keeps its syntax
 //!   colours in both panels. The information survives a pipe to a file, which
-//!   is the same bar [`crate::diff`]'s three-glyph bar already set.
+//!   is the same bar [`crate::diff`]'s three-glyph bar already set. The
+//!   operator's trial puts the tint **on top of** the glyph for colour
+//!   terminals: the row is painted inside its own role, so an added line is
+//!   green to its full width and a removed one red, while the glyph still
+//!   carries the distinction alone when there is no palette at all.
 //! - opencode highlights with its own tree-sitter integration; this crate
 //!   embeds **rano**'s (`~/Projects/rano`, `syntax::Highlighter::classes`) and
 //!   maps its capture names onto this crate's six syntax [`Role`]s. The
 //!   capture → token decision is rano's; the capture → colour decision is
 //!   ours, because a palette is a decision about a terminal.
+//! - opencode picks split or unified from the pane's width (split only above a
+//!   hundred columns). Here the choice is the **operator's** `/diff` toggle and
+//!   nothing else — a narrow pane gets a narrow split rather than no diff,
+//!   because an edit drawn cramped is an edit the operator can still read, and
+//!   an edit not drawn is one they approved blind. The renderer degrades
+//!   gracefully under [`MIN_BODY`]; it does not refuse.
 //!
 //! # Why the panels are re-diffed from excerpts
 //!
@@ -38,7 +47,7 @@
 //! beyond a string.
 
 use crate::diff::{hunks, diff_lines, DiffConfig, Hunk, Row};
-use crate::style::{Palette, Role};
+use crate::style::{Palette, Painter, Role};
 use crate::width;
 
 /// How the two panels are coloured, and where their numbers start.
@@ -61,16 +70,9 @@ pub struct SplitConfig<'a> {
 /// The separator between the panels, and the air either side of it.
 const SEP: &str = " │ ";
 const SEP_W: usize = 3;
-/// The full-row width below which opencode's viewer falls back to unified,
-/// and so does this one: two panels of code need two gutters and two sign
-/// columns, and under a hundred columns the panels get too narrow to hold a
-/// line of code and its numbers at the same time. The caller gates on this;
-/// the renderer degrades gracefully if it forgets.
-pub const MIN_SPLIT_WIDTH: usize = 100;
 /// A panel body narrower than this cannot show code and its gutter at the
-/// same time; the caller is expected to have gated split on the full width,
-/// but a renderer that degrades rather than overprints is cheaper than a
-/// caller that forgot.
+/// same time; the renderer degrades rather than overprints, which is cheaper
+/// than a caller that has to guess whether the panels will fit.
 const MIN_BODY: usize = 8;
 /// Tabs expand to the stop [`crate::diff::expand_tabs`] uses, so a classed
 /// line and a plain line of the same source measure the same.
@@ -287,6 +289,21 @@ fn render_pair(
 /// One side of a pair: gutter, sign, code — painted, wrapped, one `String`
 /// per terminal row. An absent half renders as one blank row so the opposite
 /// side's wrap still has somewhere to go.
+///
+/// The whole cell is painted **inside the line's own role** (a
+/// [`Painter::inside`] base): gutter, sign, code and the padding to the panel
+/// edge all sit in it, so an added line is green to its full width and a
+/// removed one red, not just where its text happens to reach. Two details
+/// make the tint hold:
+///
+/// - a syntax span closes with a plain reset, which would end the background
+///   at the first keyword — rebased, every span closes back to the line's
+///   role and the tint runs on. A context row's base closes to a plain reset,
+///   so the rebase is a no-op there and the bytes are what they always were;
+/// - an SGR open never clears a background, so a cell that *ended* in its own
+///   role would paint the separator and the panel after it green too. A
+///   tinted cell therefore pads inside the role and then closes, handing the
+///   separator a clean slate.
 fn side_lines(
     half: Option<(&Half, &str, &[Role], usize)>,
     sc: &SplitConfig,
@@ -296,7 +313,10 @@ fn side_lines(
     let Some((h, text, classes, num)) = half else {
         return vec![String::new()];
     };
+    let tinted = h.role != Role::Plain && p.is_colour();
+    let q = Painter::inside(p, h.role);
     let painted = paint_classed(text, classes, p);
+    let painted = if tinted { q.rebase_resets(&painted) } else { painted };
     let mut wrapped = width::wrap(&painted, g.body_w);
     if wrapped.is_empty() {
         // An empty line is still a line: it takes a row, with its number.
@@ -310,18 +330,33 @@ fn side_lines(
                 // A continuation keeps its panel's colour and loses its
                 // number, exactly as the unified renderer's continuation
                 // loses its sign.
-                p.paint(Role::Faint, &" ".repeat(g.numw + 1))
+                q.paint(Role::Faint, &" ".repeat(g.numw + 1))
             } else if sc.cfg.line_numbers {
-                p.paint(Role::Faint, &format!("{:>numw$} ", num, numw = g.numw))
+                q.paint(Role::Faint, &format!("{:>numw$} ", num, numw = g.numw))
             } else {
                 String::new()
             };
             let sign = if k == 0 {
-                p.paint(h.role, &h.sign.to_string())
+                q.paint(h.role, &h.sign.to_string())
             } else {
                 " ".to_string()
             };
-            format!("{gutter}{sign} {body}")
+            let mut cell = String::new();
+            if tinted {
+                // The role opens before the first visible column, or the
+                // gutter's leading spaces would sit outside the tint: a dim
+                // open sets an attribute, it does not set a background.
+                cell.push_str(p.open(h.role));
+            }
+            cell.push_str(&format!("{gutter}{sign} {body}"));
+            if tinted {
+                let vis = width::width(&cell);
+                if vis < g.panel_w {
+                    cell.push_str(&" ".repeat(g.panel_w - vis));
+                }
+                cell.push_str(crate::width::RESET);
+            }
+            cell
         })
         .collect()
 }
@@ -444,13 +479,14 @@ pub enum EditView {
     Unified,
 }
 
-/// The view an edit gets, from what the operator asked for and what fits:
-/// split when it is wanted AND the row is at least [`MIN_SPLIT_WIDTH`], and
-/// unified otherwise. This is the whole gate — the caller should not keep a
-/// copy of it, which is how a `/diff` toggle came to promise "unified below
-/// 100 columns" while the code drew nothing there at all.
-pub fn edit_view(split_wanted: bool, width: usize) -> EditView {
-    if split_wanted && width >= MIN_SPLIT_WIDTH {
+/// The view an edit gets, from what the operator asked for — and from nothing
+/// else. Split when the toggle is on, unified when it is off, at any width:
+/// the width used to gate this (`MIN_SPLIT_WIDTH = 100`) and the gate's two
+/// answers were a cramped diff or no diff at all, and no diff at all is how an
+/// operator ends up approving edits blind. The renderer degrades gracefully
+/// under [`MIN_BODY`]; it does not refuse.
+pub fn edit_view(split_wanted: bool) -> EditView {
+    if split_wanted {
         EditView::Split
     } else {
         EditView::Unified
@@ -573,6 +609,55 @@ mod tests {
             for r in &rows {
                 assert!(width::width(r) <= w, "{w}: {} cols {r:?}", width::width(r));
             }
+        }
+    }
+
+    /// The operator's trial: an added line is green to its **full width** and
+    /// a removed one red — not just where its text reaches — and neither
+    /// colour leaks past its own cell into the separator or the panel after
+    /// it. The sign glyph still carries the distinction alone: under
+    /// [`Palette::None`] not one escape byte is emitted.
+    #[test]
+    fn a_changed_row_is_tinted_to_its_full_width_and_hands_the_separator_a_clean_slate() {
+        let old = ["fn a() {", "    old();", "}"];
+        let new = ["fn a() {", "    new();", "}"];
+        let rows = render_split(&old, &new, &sc(60, Palette::Colour, 1, 1));
+        let joined = rows.join("\n");
+
+        // The tint leads the cell — before the gutter, not after the text —
+        // and the sign closes back **into** it, so a syntax span or the sign
+        // itself cannot end the background mid-row.
+        let added = rows
+            .iter()
+            .find(|r| r.contains("+ new();") || r.split_once(" │ ").map_or(false, |(_, r)| r.contains("new();")))
+            .expect("the added row is shown");
+        let (_, right) = added.split_once(" │ ").expect("two panels");
+        assert!(
+            right.starts_with("\x1b[0m\x1b[32;42m"),
+            "the added cell opens with the theme's green slot as soon as the separator closes: {added:?}"
+        );
+        assert!(
+            right.contains("\x1b[32;42m+\x1b[0m\x1b[32;42m"),
+            "the sign closes back into the tint: {added:?}"
+        );
+        assert!(joined.contains("\x1b[31;41m-"), "the removed row is red: {joined:?}");
+        // The cell ends with a reset — the padding inside the tint, then a
+        // clean handoff — so the separator opens from a clean slate, not from
+        // inside the tint.
+        assert!(added.ends_with(crate::width::RESET), "{added:?}");
+        assert!(
+            added.contains("\x1b[0m\x1b[2m │ "),
+            "the separator must open from a clean slate, not from inside the tint: {added:?}"
+        );
+
+        // And a context row is untouched: its base closes to a plain reset,
+        // so its bytes are what they always were.
+        let ctx = rows.iter().find(|r| r.contains("fn a() {")).expect("context row");
+        assert!(!ctx.contains("\x1b[32;42m") && !ctx.contains("\x1b[31;41m"), "{ctx:?}");
+
+        // No palette, no bytes: the glyph alone still says which is which.
+        for r in render_split(&old, &new, &sc(60, Palette::None, 1, 1)) {
+            assert!(!r.contains('\x1b'), "{r:?}");
         }
     }
 
