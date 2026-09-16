@@ -477,9 +477,9 @@ pub struct App {
     pub cfg: RenderConfig,
     pub verbosity: Verbosity,
     /// The two-panel before/after view for file-edit cards, on when the pane
-    /// is wide enough to hold both. `/diff` flips it; the unified renderer is
-    /// the fallback at every width, which is what makes the toggle safe to
-    /// flip on a narrow terminal.
+    /// is wide enough to hold both. Set in `/config` (or `head.toml`); the
+    /// unified renderer is the fallback at every width, which is what makes it
+    /// safe to flip on a narrow terminal.
     pub diff_split: bool,
     /// The config pane (`/config`): every setting this head and its session run
     /// under, the runtime-editable ones editable in place.
@@ -850,7 +850,6 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("think", "fold or unfold the model's reasoning"),
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
-    ("diff", "toggle the file-edit diff between split and unified (persisted)"),
     ("config", "every setting, the runtime-editable ones editable in place"),
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
@@ -2829,19 +2828,6 @@ impl App {
                     "verbosity {} — {} events filtered so far",
                     self.verbosity.as_str(),
                     self.filtered
-                ));
-                None
-            }
-            "diff" => {
-                self.diff_split = !self.diff_split;
-                // The settled rows are cached; a toggle that changes how they
-                // draw has to say so or it only reaches the live pane.
-                self.invalidate_history();
-                self.redraw = true;
-                let saved = self.save_prefs();
-                self.say(&format!(
-                    "file edits render {}{saved}",
-                    if self.diff_split { "side by side (unified below 100 columns)" } else { "as a unified diff" }
                 ));
                 None
             }
@@ -6159,7 +6145,7 @@ struct ItemCtx<'a> {
     /// Both sides of the file this row's call changed, when this head watched
     /// it run. See `App::call_edits`.
     edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
-    /// The operator's `/diff` choice; the width decides the rest.
+    /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
 }
 
@@ -9906,6 +9892,16 @@ mod tests {
         }
     }
 
+    /// Flip the diff view the way the operator does now: the config pane's
+    /// first row. `/diff` is gone — one place to change a setting, not two.
+    fn flip_diff_view(a: &mut App) {
+        let was = a.config_pane;
+        a.config_pane = true;
+        a.config_sel = 0;
+        a.key(Key::Enter);
+        a.config_pane = was;
+    }
+
     fn edit_excerpt() -> letibot_sessionlog::event::ToolEdit {
         letibot_sessionlog::event::ToolEdit {
             path: "a.rs".into(),
@@ -10024,9 +10020,9 @@ mod tests {
         // so the separator proves nothing; the code does.)
         assert!(screen.contains("x();"), "{screen}");
         assert!(screen.contains("fn a() {}"), "{screen}");
-        // And the toggle the command flips is the one the card reads: off, the
+        // And the setting the pane flips is the one the card reads: off, the
         // same change is drawn as a unified diff — signed, still there.
-        a.command("diff");
+        flip_diff_view(&mut a);
         let screen = a.screen(120, 24).join("\n");
         assert!(screen.contains("x();"), "{screen}");
         assert!(screen.contains("+"), "{screen}");
@@ -10086,10 +10082,10 @@ mod tests {
         // The toggle reaches the settled row too, not only the live pane.
         let split = a.screen(120, 30).join("\n");
         assert!(split.contains('│') && split.contains("1 - fn a() {}"), "{split}");
-        a.command("diff");
+        flip_diff_view(&mut a);
         let unified = a.screen(120, 30).join("\n");
         assert!(unified.contains("-fn a() {}") || unified.contains("- fn a() {}"), "{unified}");
-        assert!(!unified.contains("1 - fn a() {}                                          │"), "still split after /diff:\n{unified}");
+        assert!(!unified.contains("1 - fn a() {}                                          │"), "still split after the flip:\n{unified}");
         if std::env::var("LETIBOT_SHOW").is_ok() {
             eprintln!("=== 120 unified ===\n{unified}");
         }
