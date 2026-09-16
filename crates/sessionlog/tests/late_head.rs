@@ -527,3 +527,63 @@ fn a_peek_at_an_unknown_session_is_rejected_by_name() {
         other => panic!("expected Rejected, got {other:?}"),
     }
 }
+
+/// A head asks for the settings its session runs under and gets what the
+/// harness last published — and nothing, honestly, for a session whose harness
+/// has not published yet. The connection does not move either way.
+#[test]
+fn settings_are_answered_from_what_the_harness_published() {
+    let registry = Registry::new();
+    let wiring = SessionWiring::default();
+    let hub = registry.create("s-1", "one", wiring).expect("create");
+    hub.publish(turn_started("t1"));
+
+    let (a, b) = UnixStream::pair().expect("pair");
+    let reg = registry.clone();
+    let _server = std::thread::spawn(move || {
+        let _ = serve_conn(reg, a);
+    });
+    let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+    let mut r = FrameReader::new(b);
+    w.write(&ClientFrame::Attach {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: "s-1".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "test".into(),
+        caps: Caps::default(),
+    })
+    .expect("attach");
+    assert!(matches!(r.read::<ServerFrame>().expect("hello"), ServerFrame::Hello { .. }));
+
+    // Nothing published yet: an empty list, not a refusal.
+    w.write(&ClientFrame::Settings).expect("settings");
+    match r.read::<ServerFrame>().expect("settings") {
+        ServerFrame::Settings { rows } => assert!(rows.is_empty()),
+        other => panic!("expected Settings, got {other:?}"),
+    }
+
+    // The harness publishes; the next ask sees it.
+    registry.set_settings(
+        "s-1",
+        vec![letibot_sessionlog::protocol::SettingRow {
+            key: "mode".into(),
+            value: "automode".into(),
+            source: "project store (modes.tsv)".into(),
+            editable: "/mode NAME".into(),
+        }],
+    );
+    w.write(&ClientFrame::Settings).expect("settings");
+    match r.read::<ServerFrame>().expect("settings") {
+        ServerFrame::Settings { rows } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].key, "mode");
+            assert_eq!(rows[0].value, "automode");
+        }
+        other => panic!("expected Settings, got {other:?}"),
+    }
+
+    // Still seated on s-1: a live event arrives on the same stream.
+    hub.publish(delta("t1", "still here"));
+    assert!(matches!(r.read::<ServerFrame>().expect("event"), ServerFrame::Event(_)));
+}

@@ -362,6 +362,13 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Ask for the settings this session runs under; answered with
+    /// `ServerFrame::Settings`.
+    pub fn settings(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Settings)?;
+        Ok(())
+    }
+
     /// Take the head id from a `Hello` the caller pumped off the socket.
     ///
     /// Not folded into `switch`: the `Hello` arrives on the reader thread, and a

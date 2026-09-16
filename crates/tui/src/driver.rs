@@ -143,6 +143,7 @@ pub fn tick(
             // here: the switch happens inside the daemon, on this same socket, so
             // there is no window in which this head is attached to nothing.
             Action::Switch(id) => client.switch(&id, 0)?,
+            Action::Settings => client.settings()?,
             // A read, not a move: the answer arrives as a `Peeked` frame on the
             // pump and the output pane is built from it. Nothing here changes
             // which session this connection is in, and nothing is read until the

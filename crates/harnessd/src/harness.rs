@@ -687,6 +687,14 @@ impl SteeringSource for HubSteering {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness<'a> {
     cfg: Config,
+    /// The daemon's session registry, kept so the settings this session runs
+    /// under can be republished on every runtime change (`/mode`, `/supervise`).
+    /// The server thread answers the head's `Settings` from the registry, so
+    /// what is running is what the pane shows.
+    session_registry: Arc<letibot_sessionlog::registry::Registry>,
+    /// Where the mode came from, for the settings row: the project store or
+    /// the daemon's flag/default. Decided at open and not kept by `Config`.
+    mode_source: String,
     engine: TurnEngine<'a>,
     session: Session,
     runtime: ToolRuntime,
@@ -1032,11 +1040,13 @@ impl<'a> Harness<'a> {
         // looked up now — longest ancestor wins inside the store. A project with no
         // row keeps the daemon's `--mode` default; one with a row takes its own, so
         // moving a project never means restarting the daemon.
+        let mut mode_source = String::from("daemon flag / default");
         {
             let store = parts.mode_store.read().unwrap();
             if store.is_set(&cfg.workspace) {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
+                mode_source = "project store (modes.tsv)".into();
                 if cfg.mode.name != before {
                     notes.push(format!(
                         "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
@@ -2077,6 +2087,8 @@ impl<'a> Harness<'a> {
             .map(|d| (d.subject, d.state, d.detail))
             .collect();
         let h = Harness {
+            session_registry: session_registry.clone(),
+            mode_source,
             wiring,
             cfg,
             engine,
@@ -2107,6 +2119,7 @@ impl<'a> Harness<'a> {
             job_watch,
             provider,
         };
+        h.publish_settings();
         if h.resumed.is_some() {
             h.republish();
         }
@@ -2237,8 +2250,20 @@ impl<'a> Harness<'a> {
             said.push_str("; the guard model now answers");
         }
         self.cfg.mode = mode;
+        self.mode_source = "/mode, this session".into();
         self.wiring.adjudicator = self.runtime.gate.describe();
+        self.publish_settings();
         Ok(said)
+    }
+
+    /// Push the settings this session runs under to the registry, where the
+    /// server answers a head's `Settings` from. On open and on every runtime
+    /// change, so the pane never shows a mode that was true a minute ago.
+    fn publish_settings(&self) {
+        self.session_registry.set_settings(
+            &self.cfg.session_id,
+            self.cfg.settings(&self.mode_source, self.runtime.gate.supervising()),
+        );
     }
 
     pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {
@@ -2262,6 +2287,7 @@ impl<'a> Harness<'a> {
         // `--adjudicator head` about a supervised session would be the constant-banner
         // defect `GateWiring` exists to prevent.
         self.wiring.adjudicator = self.runtime.gate.describe();
+        self.publish_settings();
         Ok(said)
     }
 

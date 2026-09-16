@@ -335,6 +335,11 @@ struct Entry {
     /// session. Live, alongside the stored copy, so a head's tree is drawn from the
     /// registry rather than from the store.
     parent_session_id: Option<String>,
+    /// The settings this session runs under, as its harness last published
+    /// them. Kept here because the server thread answers `Settings` and cannot
+    /// reach the harness; the harness pushes on open and on every runtime
+    /// change, so a head reads what is running and not what was flagged.
+    settings: Vec<crate::protocol::SettingRow>,
 }
 
 struct Inner {
@@ -435,6 +440,7 @@ impl Registry {
                     created_ms: now_ms(),
                     wiring: SessionWiring::default(),
                     parent_session_id: None,
+                    settings: Vec::new(),
                 },
             ));
         }
@@ -494,6 +500,7 @@ impl Registry {
                 created_ms: now_ms(),
                 wiring,
                 parent_session_id: parent,
+                settings: Vec::new(),
             },
         ));
         drop(g);
@@ -550,6 +557,7 @@ impl Registry {
                 created_ms: now_ms(),
                 wiring,
                 parent_session_id: parent,
+                settings: Vec::new(),
             },
         ));
         Ok(())
@@ -636,6 +644,25 @@ impl Registry {
 
     /// Name a session. Empty is allowed and means "no name"; a head then shows the
     /// id, which is the honest fallback.
+    /// Publish the settings a session runs under. See `Entry::settings`.
+    pub fn set_settings(&self, session_id: &str, rows: Vec<crate::protocol::SettingRow>) {
+        let mut g = self.lock();
+        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+            e.settings = rows;
+        }
+    }
+
+    /// What a session's harness last published. Empty for a session whose
+    /// harness has not opened, which the head says rather than hides.
+    pub fn settings(&self, session_id: &str) -> Vec<crate::protocol::SettingRow> {
+        let g = self.lock();
+        g.entries
+            .iter()
+            .find(|(k, _)| k == session_id)
+            .map(|(_, e)| e.settings.clone())
+            .unwrap_or_default()
+    }
+
     pub fn set_title(&self, session_id: &str, title: impl Into<String>) {
         let mut g = self.lock();
         if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {

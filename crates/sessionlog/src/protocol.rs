@@ -177,7 +177,37 @@ use crate::view::Snapshot;
 /// rebuilds the head twice and blinds it to the parent's live events for the
 /// whole read. Lazy by construction: nothing is read until the head asks, and
 /// asking again is a fresh read.
-pub const PROTOCOL_VERSION: u32 = 16;
+///
+/// # 17: a head can list the settings its session runs under
+///
+/// [`ClientFrame::Settings`] is a new client frame — the version-4 argument
+/// again, and the same refusal at ATTACH. Answered with [`ServerFrame::Settings`]:
+/// every setting the daemon resolved for this session as a [`SettingRow`] — its
+/// value, where it came from, and whether it can change now. The config pane is
+/// drawn from it. The rows that can change now are changed by the verbs that
+/// already exist (`Mode`, `/supervise`), so this adds a way to SEE and not a
+/// second way to set; a settings frame that also wrote would be a second path
+/// into the same state, and the mode store already has one.
+pub const PROTOCOL_VERSION: u32 = 17;
+
+/// One setting, as the daemon resolved it for this session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingRow {
+    /// `mode`, `oracle.budget`, `spill`, … — the flag's own name where there is
+    /// one, so an operator can find it in `harnessd --help`.
+    pub key: String,
+    /// The value, rendered. A path is a path, a duration is `2.5s`, a list is
+    /// comma-joined; a secret is never here.
+    pub value: String,
+    /// Where it came from: `flag`, `default`, `project store`, `permission.json`,
+    /// `providers.toml`, `store` (a resumed session's own row) — or empty when
+    /// the daemon does not track it, which is said rather than guessed.
+    pub source: String,
+    /// Whether this can change in the running session, and by what: the slash
+    /// verb (`/mode NAME`, `/supervise on|off`), or empty for a setting that
+    /// takes a restart.
+    pub editable: String,
+}
 
 /// A `Caps.features` string: this head can render a question with model-provided
 /// options, let a person attach a note to a choice, and let them type a free answer.
@@ -482,6 +512,9 @@ pub enum ClientFrame {
     /// seat, its acks and its live events are untouched. Lazy by construction:
     /// nothing is read until this is sent, and sending it again is a fresh read.
     Peek { session_id: String },
+    /// List the settings this session runs under. Answered with
+    /// [`ServerFrame::Settings`]; never moves the connection.
+    Settings,
     /// A clean goodbye. **Not** required: TCP close is detach too, and detach is
     /// never abort (§13.2).
     Detach,
@@ -585,6 +618,8 @@ pub enum ServerFrame {
     /// daemon's ring before the peek — the same disclosure a `Hello` makes. The
     /// connection's own session is untouched; these events are for reading, not
     /// for folding into the head's state.
+    /// The answer to [`ClientFrame::Settings`].
+    Settings { rows: Vec<SettingRow> },
     Peeked {
         session_id: String,
         dropped: u64,

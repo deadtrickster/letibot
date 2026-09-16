@@ -677,6 +677,193 @@ impl Config {
     /// Takes [`GateWiring`] rather than deciding for itself, because the config does
     /// not know which tools were seated or how the backend was opened, and a
     /// disclosure that guesses is the thing this list exists to prevent.
+    /// **Every setting this session runs under, one row each**, for the head's
+    /// config pane (`/config`). The operator's ask: *"a config pane with all
+    /// the configs and the one that can be changed at runtime editable"*.
+    ///
+    /// Three columns beside the key. `value` is rendered, never a secret.
+    /// `source` is where the value came from **when this struct knows** — the
+    /// mode carries its own provenance, the permission rules are a file, the
+    /// provider key names its own source — and is empty otherwise, because the
+    /// flags are parsed straight into fields and "flag" would be a guess for
+    /// most of them. `editable` names the verb that changes the row now, and
+    /// is empty for the rows that take a restart, which is most of them: a
+    /// dialect, a vocabulary or a socket is what the process *is*.
+    ///
+    /// `mode_source` is the daemon's note about where the mode came from —
+    /// the project store or the flag — since the struct itself does not keep it.
+    pub fn settings(&self, mode_source: &str, supervising: bool) -> Vec<letibot_sessionlog::protocol::SettingRow> {
+        use letibot_sessionlog::protocol::SettingRow;
+        let row = |key: &str, value: String, source: &str, editable: &str| SettingRow {
+            key: key.into(),
+            value,
+            source: source.into(),
+            editable: editable.into(),
+        };
+        let mut out = Vec::new();
+        // What changes now, first: it is what the pane is for.
+        out.push(row("mode", self.mode.name.to_string(), mode_source, "/mode NAME"));
+        out.push(row(
+            "supervise",
+            if supervising { "on — the guard model answers".into() } else { "off".into() },
+            "",
+            "/supervise on|off",
+        ));
+        // What the session is.
+        out.push(row("session", self.session_id.clone(), "", ""));
+        out.push(row("seat", self.seat.as_str().to_string(), "--role", ""));
+        out.push(row("workspace", self.workspace.display().to_string(), "", ""));
+        out.push(row("owner", self.owner.clone(), "", ""));
+        if let Some(p) = &self.parent_session_id {
+            out.push(row("parent", p.clone(), "", ""));
+        }
+        // The model.
+        out.push(row("model", self.model.clone(), "--model", ""));
+        out.push(row("dialect", self.dialect.name().to_string(), "--dialect", ""));
+        out.push(row("endpoint", self.endpoint.authority(), "--endpoint", ""));
+        out.push(row("vocab", self.vocab_gguf.display().to_string(), "--vocab", ""));
+        out.push(row(
+            "context",
+            match self.context_window {
+                Some(n) => format!("{n} tokens"),
+                None => "asked of the server".into(),
+            },
+            "",
+            "",
+        ));
+        out.push(row("auto-compact", self.auto_compact.to_string(), "", ""));
+        out.push(row("effort", self.effort.clone().unwrap_or_else(|| "default".into()), "--effort", ""));
+        if let Some(p) = &self.provider {
+            out.push(row(
+                "provider",
+                format!("{}{}", p.name, p.model.as_ref().map(|m| format!(" ({m})")).unwrap_or_default()),
+                "providers.toml",
+                "",
+            ));
+        }
+        // The gate.
+        out.push(row("adjudicator", self.adjudicator.as_str().to_string(), "--adjudicator", ""));
+        out.push(row(
+            "oracle",
+            self.oracle.as_ref().map(|e| e.authority()).unwrap_or_else(|| "none".into()),
+            "--oracle",
+            "/supervise HOST:PORT",
+        ));
+        out.push(row(
+            "oracle.model",
+            self.oracle_model.clone().unwrap_or_else(|| "server's default".into()),
+            "",
+            "",
+        ));
+        out.push(row(
+            "oracle.budget",
+            format!("{:.1}s", self.oracle_budget.as_secs_f64()),
+            "--oracle-budget",
+            "",
+        ));
+        out.push(row(
+            "oracle.scope",
+            match &self.oracle_scope {
+                None => "none".into(),
+                Some(s) => format!(
+                    "{} intent(s) up to {}{}",
+                    s.intents.len(),
+                    s.max_scope.as_str(),
+                    if s.is_declared() { " (declared)" } else { " (earned)" }
+                ),
+            },
+            "providers.toml [gatekeeper] / calibration",
+            "",
+        ));
+        out.push(row(
+            "permission",
+            format!("{} rule(s)", self.permission.len()),
+            "permission.json",
+            "Always allow, from a prompt",
+        ));
+        out.push(row(
+            "downgrade",
+            if self.downgrade.deny.is_empty() {
+                "none".into()
+            } else {
+                self.downgrade.deny.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(",")
+            },
+            "",
+            "",
+        ));
+        out.push(row("bash", self.allow_bash.to_string(), "--bash / --no-bash", ""));
+        out.push(row("unconfined", self.unconfined.to_string(), "", ""));
+        out.push(row(
+            "grants.ro",
+            if self.grants_ro.is_empty() {
+                "none".into()
+            } else {
+                self.grants_ro.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+            },
+            "--grant-ro",
+            "",
+        ));
+        out.push(row(
+            "placement",
+            format!("{:?}", self.placement).to_lowercase(),
+            "",
+            "",
+        ));
+        if !self.vm_args.is_empty() {
+            out.push(row("vm.args", self.vm_args.join(" "), "", ""));
+        }
+        // Tool results.
+        out.push(row(
+            "spill",
+            match self.spill {
+                SpillPolicy::Unset => "unset — nothing spills".into(),
+                SpillPolicy::Inline(n) => format!("inline budget {n} bytes"),
+            },
+            "--spill-inline",
+            "",
+        ));
+        out.push(row(
+            "spill.storage",
+            match &self.spill_storage {
+                SpillStorage::Memory => "memory".into(),
+                SpillStorage::Dir(d) => d.display().to_string(),
+            },
+            "",
+            "",
+        ));
+        out.push(row("max-tool-rounds", self.max_tool_rounds.to_string(), "", ""));
+        out.push(row("stall-rounds", self.stall_rounds.to_string(), "", ""));
+        out.push(row("intent.prose", self.intent_prose.to_string(), "", ""));
+        // The fabric.
+        out.push(row(
+            "flowy",
+            if self.flowy.is_some() { "configured".into() } else { "off".into() },
+            "",
+            "",
+        ));
+        out.push(row(
+            "fabric",
+            self.fabric.clone().unwrap_or_else(|| "none".into()),
+            "",
+            "",
+        ));
+        out.push(row(
+            "web_search",
+            if self.web_search.is_some() { "configured".into() } else { "off".into() },
+            "$BRAVE_API_KEY / providers.toml",
+            "",
+        ));
+        // The plumbing.
+        out.push(row("socket", self.socket.display().to_string(), "--socket", ""));
+        out.push(row(
+            "store",
+            self.store.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none".into()),
+            "--store",
+            "",
+        ));
+        out
+    }
+
     pub fn disclosures(&self, wiring: &GateWiring) -> Vec<Disclosure> {
         let mut out = Vec::new();
         match &self.spill {
@@ -1286,6 +1473,29 @@ pub fn now_ns() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pane's contract: the two rows that change now come first and name
+    /// their verb; every key is unique (a duplicate would be two rows that
+    /// disagree); nothing that takes a restart claims a verb.
+    #[test]
+    fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
+        let cfg = Config::for_this_box("/tmp/x");
+        let rows = cfg.settings("project store (modes.tsv)", false);
+        assert_eq!(rows[0].key, "mode");
+        assert_eq!(rows[0].editable, "/mode NAME");
+        assert_eq!(rows[0].source, "project store (modes.tsv)");
+        assert_eq!(rows[1].key, "supervise");
+        assert!(rows[1].value.starts_with("off"));
+        let mut seen = std::collections::HashSet::new();
+        for r in &rows {
+            assert!(seen.insert(r.key.clone()), "duplicate key {}", r.key);
+        }
+        assert!(rows.iter().any(|r| r.key == "oracle.budget" && r.editable.is_empty()));
+        assert!(rows.iter().any(|r| r.key == "workspace" && r.value == "/tmp/x"));
+        // Supervision on reads as on.
+        assert!(cfg.settings("x", true)[1].value.starts_with("on"));
+    }
+
 
     /// **The round count is a backstop now, not the stop.**
     ///

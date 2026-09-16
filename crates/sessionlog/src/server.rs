@@ -485,6 +485,12 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                 }
             }
+            Ok(ClientFrame::Settings) => {
+                let f = ServerFrame::Settings {
+                    rows: registry.settings(&seat.hub.session_id()),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Peek { session_id }) => {
                 // A read, not a move: the seat, its acks and its live events are
                 // untouched, and the answer is the named session's scrollback

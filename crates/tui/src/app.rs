@@ -112,6 +112,8 @@ pub enum Action {
     /// with `Peeked`, and the pane the tree's Enter opens is built from it.
     /// Lazy — nothing is read until this is sent.
     Peek(String),
+    /// Ask the daemon for the settings this session runs under (`/config`).
+    Settings,
     /// Bring a session that is in the store but not in this daemon back to life.
     /// The head switches to it on the same `Sessions` reply a `NewSession` produces.
     ResumeSession(String),
@@ -338,6 +340,36 @@ struct JobRow {
 /// it is in. The pane behaves like a terminal — the tail shows by default,
 /// arrows walk back toward the beginning — and the whole view is spilled to a
 /// file, because a cap on the pane must not be a cap on the record.
+/// One row of the config pane.
+#[derive(Debug, Clone)]
+struct ConfigRow {
+    section: &'static str,
+    key: String,
+    value: String,
+    /// Where the value came from — a path, a flag, "default" — shown under the
+    /// selected row. Empty when nobody tracks it.
+    source: String,
+    edit: ConfigEdit,
+}
+
+#[derive(Debug, Clone)]
+enum ConfigEdit {
+    /// This head's own: Enter flips it and writes `head.toml`.
+    Head(HeadSetting),
+    /// The session's, changeable now by an existing verb; `(key, how)`.
+    Session(String, String),
+    /// Not now, and why.
+    No(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HeadSetting {
+    Diff,
+    Thinking,
+    Tools,
+    RawCalls,
+}
+
 #[derive(Debug, Clone)]
 struct SubOut {
     session_id: String,
@@ -449,6 +481,15 @@ pub struct App {
     /// the fallback at every width, which is what makes the toggle safe to
     /// flip on a narrow terminal.
     pub diff_split: bool,
+    /// The config pane (`/config`): every setting this head and its session run
+    /// under, the runtime-editable ones editable in place.
+    config_pane: bool,
+    config_sel: usize,
+    /// Where the head's own choices are written. `None` is a head with no
+    /// config directory, and the pane says so instead of pretending to save.
+    prefs_path: Option<std::path::PathBuf>,
+    /// The daemon's settings, as last listed. Empty until asked.
+    settings: Vec<letibot_sessionlog::protocol::SettingRow>,
     session_id: String,
     head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
@@ -809,7 +850,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("think", "fold or unfold the model's reasoning"),
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
-    ("diff", "toggle the two-panel file-edit diff"),
+    ("diff", "toggle the file-edit diff between split and unified (persisted)"),
+    ("config", "every setting, the runtime-editable ones editable in place"),
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
@@ -824,6 +866,10 @@ impl App {
             cfg,
             verbosity: Verbosity::Normal,
             diff_split: true,
+            config_pane: false,
+            config_sel: 0,
+            prefs_path: None,
+            settings: Vec::new(),
             session_id: String::new(),
             head_id: String::new(),
             seated: None,
@@ -1082,6 +1128,11 @@ impl App {
             // this session's history, and folding them would lie about whose
             // turn is whose. The pane shows the tool results; the whole view is
             // spilled to a file so no cap on the pane is a cap on the record.
+            ServerFrame::Settings { rows } => {
+                self.settings = rows;
+                self.redraw = true;
+                Disposition::Control
+            }
             ServerFrame::Peeked {
                 session_id,
                 dropped,
@@ -2186,8 +2237,31 @@ impl App {
 
         // Help and the picker are screens, and the two keys that mean "go back"
         // close them before the composer ever sees them.
+        // The config pane owns Up/Down/Enter while it is open: arrows move,
+        // Enter changes the row under the cursor when it is one that can change
+        // now, and says why when it is not.
+        if self.config_pane {
+            match k {
+                Key::Up => {
+                    let n = self.config_rows().len().max(1);
+                    self.config_sel = if self.config_sel == 0 { n - 1 } else { self.config_sel - 1 };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    let n = self.config_rows().len().max(1);
+                    self.config_sel = (self.config_sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    return self.config_change();
+                }
+                _ => {}
+            }
+        }
         if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
-            || self.jobs_pane)
+            || self.jobs_pane || self.config_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
@@ -2196,6 +2270,7 @@ impl App {
             self.todos_pane = false;
             self.subagents_pane = false;
             self.jobs_pane = false;
+            self.config_pane = false;
             self.sub_out_pending = None;
             self.redraw = true;
             return None;
@@ -2763,10 +2838,23 @@ impl App {
                 // draw has to say so or it only reaches the live pane.
                 self.invalidate_history();
                 self.redraw = true;
+                let saved = self.save_prefs();
                 self.say(&format!(
-                    "file edits render {}",
+                    "file edits render {}{saved}",
                     if self.diff_split { "side by side (unified below 100 columns)" } else { "as a unified diff" }
                 ));
+                None
+            }
+            "config" | "settings" => {
+                self.config_pane = !self.config_pane;
+                self.config_sel = 0;
+                self.redraw = true;
+                // Opening asks the daemon for its settings; the head's own are
+                // already here. A pane drawn from the last answer would show the
+                // mode the session had when this head attached.
+                if self.config_pane && !self.session_id.is_empty() {
+                    return Some(Action::Settings);
+                }
                 None
             }
             "jobs" => {
@@ -3273,6 +3361,10 @@ impl App {
             let mut rows = self.todos_lines(w);
             rows.truncate(room);
             rows
+        } else if self.config_pane {
+            let mut rows = self.config_lines(w);
+            rows.truncate(room);
+            rows
         } else if self.sub_out.is_some() {
             let mut rows = self.sub_out_lines(room);
             rows.truncate(room);
@@ -3436,6 +3528,8 @@ impl App {
             "type a number to switch · /new [title] · esc closes"
         } else if self.todos_pane {
             "the model's plan above, the repo's queue below · esc closes"
+        } else if self.config_pane {
+            "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
             "subagents this session spawned · esc closes"
         } else if self.jobs_pane {
@@ -3941,6 +4035,245 @@ impl App {
     /// change. The second is the repo's `TODO.md`, the **operator's** queue,
     /// shown as a section map and read-only on purpose: a pane that let a model
     /// tick the operator's boxes would let a plan edit its own backlog.
+    /// Load the head's preferences from disk and apply them. Called once, before
+    /// the first frame; the notes are what could not be read, said on the screen.
+    pub fn load_prefs(&mut self) {
+        self.prefs_path = crate::prefs::path();
+        let Some(path) = self.prefs_path.clone() else {
+            return;
+        };
+        let (p, notes) = crate::prefs::load(&path);
+        self.diff_split = p.diff == crate::prefs::DiffPref::Split;
+        self.reasoning = if p.thinking == "open" { Fold::Open } else { Fold::Folded };
+        self.tools = if p.tools == "open" { Fold::Open } else { Fold::Folded };
+        self.raw_calls = p.raw_calls;
+        for n in notes {
+            self.say(&n);
+        }
+    }
+
+    /// The head's current choices, as the file holds them.
+    fn prefs(&self) -> crate::prefs::HeadPrefs {
+        crate::prefs::HeadPrefs {
+            diff: if self.diff_split {
+                crate::prefs::DiffPref::Split
+            } else {
+                crate::prefs::DiffPref::Unified
+            },
+            thinking: fold_word(self.reasoning).into(),
+            tools: fold_word(self.tools).into(),
+            raw_calls: self.raw_calls,
+        }
+    }
+
+    /// Write the head's choices. Returns the suffix for the confirmation line:
+    /// where it went, or why it did not — a change that silently failed to
+    /// persist would be found at the next start, as a surprise.
+    fn save_prefs(&self) -> String {
+        match &self.prefs_path {
+            None => " (not saved: no $HOME or $XDG_CONFIG_HOME)".into(),
+            Some(path) => match crate::prefs::save(path, &self.prefs()) {
+                Ok(()) => String::new(),
+                Err(e) => format!(" (not saved: {e})"),
+            },
+        }
+    }
+
+    /// The pane's rows, in order. Rebuilt on every draw and every key, so the
+    /// cursor and the screen can never disagree about what row N is.
+    fn config_rows(&self) -> Vec<ConfigRow> {
+        let mut rows = Vec::new();
+        let head = |key: &str, value: String, edit: ConfigEdit| ConfigRow {
+            section: "head — this window",
+            key: key.into(),
+            value,
+            source: self
+                .prefs_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "not persisted".into()),
+            edit,
+        };
+        rows.push(head(
+            "diff view",
+            if self.diff_split { "split (unified below 100 columns)".into() } else { "unified".into() },
+            ConfigEdit::Head(HeadSetting::Diff),
+        ));
+        rows.push(head("thinking", fold_word(self.reasoning).into(), ConfigEdit::Head(HeadSetting::Thinking)));
+        rows.push(head("tool output", fold_word(self.tools).into(), ConfigEdit::Head(HeadSetting::Tools)));
+        rows.push(head(
+            "raw tool calls",
+            if self.raw_calls { "shown".into() } else { "hidden".into() },
+            ConfigEdit::Head(HeadSetting::RawCalls),
+        ));
+        for r in &self.settings {
+            rows.push(ConfigRow {
+                section: "session — the daemon",
+                key: r.key.clone(),
+                value: r.value.clone(),
+                source: r.source.clone(),
+                edit: if r.editable.is_empty() {
+                    ConfigEdit::No("takes a restart of the daemon")
+                } else {
+                    ConfigEdit::Session(r.key.clone(), r.editable.clone())
+                },
+            });
+        }
+        for f in ["modes.tsv", "permission.json", "providers.toml", "sensitive.json"] {
+            let path = self
+                .prefs_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|d| d.join(f));
+            let (value, source) = match &path {
+                Some(p) if p.is_file() => {
+                    let n = std::fs::read_to_string(p).map(|t| t.lines().count()).unwrap_or(0);
+                    (format!("{n} lines"), p.display().to_string())
+                }
+                Some(p) => ("not present".into(), p.display().to_string()),
+                None => ("no config directory".into(), String::new()),
+            };
+            rows.push(ConfigRow {
+                section: "files — edit with an editor",
+                key: f.into(),
+                value,
+                source,
+                edit: ConfigEdit::No("a file the guard protects: a person edits it, not a pane"),
+            });
+        }
+        rows
+    }
+
+    /// Enter on the selected row.
+    fn config_change(&mut self) -> Option<Action> {
+        let rows = self.config_rows();
+        let Some(row) = rows.get(self.config_sel.min(rows.len().saturating_sub(1))) else {
+            return None;
+        };
+        self.redraw = true;
+        match &row.edit {
+            ConfigEdit::Head(which) => {
+                match which {
+                    HeadSetting::Diff => {
+                        self.diff_split = !self.diff_split;
+                        self.invalidate_history();
+                    }
+                    HeadSetting::Thinking => {
+                        self.reasoning = self.reasoning.flip();
+                        self.invalidate_history();
+                    }
+                    HeadSetting::Tools => {
+                        self.tools = self.tools.flip();
+                        self.invalidate_history();
+                    }
+                    HeadSetting::RawCalls => {
+                        self.raw_calls = !self.raw_calls;
+                        self.invalidate_history();
+                    }
+                }
+                let saved = self.save_prefs();
+                let rows = self.config_rows();
+                if let Some(r) = rows.get(self.config_sel) {
+                    let line = format!("{} → {}{saved}", r.key, r.value);
+                    self.say(&line);
+                }
+                None
+            }
+            ConfigEdit::Session(key, how) => {
+                // The verbs that already exist, so the pane is a way to see and
+                // not a second way to set.
+                match key.as_str() {
+                    "mode" => {
+                        const NAMES: [&str; 6] = [
+                            "read-only",
+                            "always-ask",
+                            "writes-allowed",
+                            "supervised",
+                            "automode",
+                            "allow-all",
+                        ];
+                        let cur = row.value.split_whitespace().next().unwrap_or("");
+                        let at = NAMES.iter().position(|n| *n == cur).unwrap_or(0);
+                        let next = NAMES[(at + 1) % NAMES.len()].to_string();
+                        self.say(&format!("mode → {next} (asking the daemon)"));
+                        Some(Action::Mode { name: next })
+                    }
+                    "supervise" => {
+                        let on = row.value.starts_with("on");
+                        let line = format!("supervise {}", if on { "off" } else { "on" });
+                        self.say(&format!("{line} (asking the daemon)"));
+                        Some(Action::Slash { line })
+                    }
+                    _ => {
+                        let line = format!("change it with {how}");
+                        self.say(&line);
+                        None
+                    }
+                }
+            }
+            ConfigEdit::No(why) => {
+                let line = format!("{}: {why}", row.key);
+                self.say(&line);
+                None
+            }
+        }
+    }
+
+    fn config_lines(&self, w: usize) -> Vec<String> {
+        let rows = self.config_rows();
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "config")];
+        out.push(String::new());
+        let keyw = rows.iter().map(|r| r.key.chars().count()).max().unwrap_or(8).min(28);
+        let mut section = "";
+        let sel = self.config_sel.min(rows.len().saturating_sub(1));
+        for (i, r) in rows.iter().enumerate() {
+            if r.section != section {
+                if !section.is_empty() {
+                    out.push(String::new());
+                }
+                out.push(dim(&self.cfg, &format!("  {}", r.section)));
+                section = r.section;
+            }
+            let mark = match &r.edit {
+                ConfigEdit::Head(_) | ConfigEdit::Session(..) => "✎",
+                ConfigEdit::No(_) => " ",
+            };
+            let line = format!(
+                "{} {mark} {:<keyw$}  {}",
+                if i == sel { "▸" } else { " " },
+                r.key,
+                r.value
+            );
+            let line = trim_to(&line, w.saturating_sub(2));
+            out.push(if i == sel {
+                format!("{}{}{}", sgr::REVERSE, line, sgr::RESET)
+            } else {
+                line
+            });
+            if i == sel && !r.source.is_empty() {
+                out.push(dim(&self.cfg, &format!("       from {}", r.source)));
+            }
+        }
+        if self.settings.is_empty() {
+            out.push(String::new());
+            out.push(dim(
+                &self.cfg,
+                if self.session_id.is_empty() {
+                    "  session — not attached, so nothing to list"
+                } else {
+                    "  session — asked the daemon; nothing back yet"
+                },
+            ));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "    ✎ changes now and is kept (head → head.toml, mode → project store); \
+             the rest shows its source and takes a restart",
+        ));
+        out
+    }
+
     fn todos_lines(&self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
@@ -6812,6 +7145,100 @@ mod tests {
         });
         typed(&mut a, "/compact");
         assert_eq!(a.key(Key::Enter), Some(Action::Compact));
+    }
+
+    /// `/config`: the head's rows are there at once and Enter changes one in
+    /// place and writes it down; the daemon's rows arrive on `Settings`, and
+    /// Enter on `mode` asks through the verb that already exists. A read-only
+    /// row says why it is.
+    #[test]
+    fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
+        let dir = std::env::temp_dir().join(format!("letibot-config-pane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = app();
+        a.prefs_path = Some(dir.join("head.toml"));
+        a.apply(hello("s", vec![brief("s", "one", true)], Hub::new("s").snapshot()));
+
+        assert_eq!(a.command("config"), Some(Action::Settings), "opening asks the daemon");
+        assert!(a.config_pane);
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("diff view"), "{screen}");
+        assert!(screen.contains("split (unified below 100 columns)"), "{screen}");
+        assert!(screen.contains("asked the daemon; nothing back yet"), "{screen}");
+
+        // Row 0 is the diff view; Enter flips it and the file says so.
+        assert!(a.diff_split);
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(!a.diff_split);
+        let on_disk = std::fs::read_to_string(dir.join("head.toml")).expect("head.toml written");
+        assert!(on_disk.contains("diff = \"unified\""), "{on_disk}");
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("unified"), "{screen}");
+
+        // The daemon's rows land; mode is editable through the verb.
+        a.apply(ServerFrame::Settings {
+            rows: vec![
+                letibot_sessionlog::protocol::SettingRow {
+                    key: "mode".into(),
+                    value: "writes-allowed".into(),
+                    source: "project store (modes.tsv)".into(),
+                    editable: "/mode NAME".into(),
+                },
+                letibot_sessionlog::protocol::SettingRow {
+                    key: "oracle.budget".into(),
+                    value: "20.0s".into(),
+                    source: "--oracle-budget".into(),
+                    editable: String::new(),
+                },
+            ],
+        });
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("writes-allowed"), "{screen}");
+        assert!(screen.contains("20.0s"), "{screen}");
+        // Down to the mode row (four head rows first).
+        for _ in 0..4 {
+            a.key(Key::Down);
+        }
+        assert_eq!(a.key(Key::Enter), Some(Action::Mode { name: "supervised".into() }));
+        // The budget row is not editable now, and says so rather than doing nothing.
+        a.key(Key::Down);
+        assert_eq!(a.key(Key::Enter), None);
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("takes a restart"), "{screen}");
+
+        if std::env::var("LETIBOT_SHOW").is_ok() {
+            eprintln!("{}", a.screen(120, 30).join("\n"));
+        }
+        a.key(Key::Esc);
+        assert!(!a.config_pane);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file is read at start and applied: a head that wrote `unified`
+    /// yesterday draws unified today.
+    #[test]
+    fn prefs_on_disk_are_applied_at_start() {
+        let dir = std::env::temp_dir().join(format!("letibot-prefs-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+        crate::prefs::save(&path, &crate::prefs::HeadPrefs {
+            diff: crate::prefs::DiffPref::Unified,
+            thinking: "open".into(),
+            tools: "open".into(),
+            raw_calls: true,
+        }).unwrap();
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        let (p, _) = crate::prefs::load(&path);
+        a.diff_split = p.diff == crate::prefs::DiffPref::Split;
+        a.reasoning = if p.thinking == "open" { Fold::Open } else { Fold::Folded };
+        a.tools = if p.tools == "open" { Fold::Open } else { Fold::Folded };
+        a.raw_calls = p.raw_calls;
+        assert!(!a.diff_split);
+        assert_eq!(a.reasoning, Fold::Open);
+        assert_eq!(a.tools, Fold::Open);
+        assert!(a.raw_calls);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

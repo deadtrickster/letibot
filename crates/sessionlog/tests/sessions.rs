@@ -93,6 +93,7 @@ fn frame_kind(f: &ServerFrame) -> String {
             events,
             ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),
+        ServerFrame::Settings { rows } => format!("Settings({} rows)", rows.len()),
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),

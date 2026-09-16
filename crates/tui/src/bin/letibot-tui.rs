@@ -151,6 +151,7 @@ fn main() {
 /// Render a recorded log. No daemon, no model, no socket.
 fn replay(args: &Args, cfg: RenderConfig) {
     let mut app = App::new(cfg);
+    app.load_prefs();
     let envelopes: Vec<Envelope> = if args.demo {
         testing::recorded_session()
             .into_iter()
@@ -444,6 +445,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     let pump_thread = std::thread::spawn(move || pump(reader, tx));
 
     let mut app = App::new(cfg);
+    app.load_prefs();
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for
     // something else — a resume of a session that is already live is then a switch
