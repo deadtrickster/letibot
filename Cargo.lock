@@ -844,6 +844,7 @@ name = "letibot-harnessd"
 version = "0.1.0"
 dependencies = [
  "letibot-backend",
+ "letibot-code",
  "letibot-dialect",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",

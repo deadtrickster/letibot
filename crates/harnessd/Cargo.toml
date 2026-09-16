@@ -16,6 +16,8 @@ letibot-tokencore.workspace = true
 letibot-backend.workspace = true
 letibot-turn.workspace = true
 letibot-tools.workspace = true
+# The tree-sitter shape of a command, for the etalon map (`--etalon-map`).
+letibot-code.workspace = true
 # The flowy seat the daemon holds, and the `flowy` tool a root session gets.
 letibot-flowy.workspace = true
 # The cloud providers (D10 mode 3): the one crate with a TLS stack in it.

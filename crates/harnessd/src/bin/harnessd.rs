@@ -248,6 +248,13 @@ fn run() -> Result<i32, String> {
             // Cross every command in the etalon with layer A as it is now: what
             // would prompt, what would be caught, what cannot be read. Plan §2.
             "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
+            // Every command's tree-sitter shape, aggregated and laid out on a
+            // self-organising map; writes the JSON the map page draws. Plan §7.
+            "--etalon-map" => {
+                let file = PathBuf::from(next()?);
+                let out = PathBuf::from(next()?);
+                query = Some(Query::EtalonMap(file, out));
+            }
             "--backfill-shapes" => query = Some(Query::Backfill { write: false }),
             "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
@@ -780,6 +787,7 @@ enum Query {
     Calibrate { write: bool },
     Backfill { write: bool },
     Etalon(PathBuf),
+    EtalonMap(PathBuf, PathBuf),
     RepairPrefixes,
     Compare,
     ShowBrief,
@@ -930,6 +938,21 @@ fn run_query(
                 .with_pinned_shell("the etalon: the harness that recorded it ran a fixed shell");
             let r = letibot_harnessd::etalon::report(&file, &env, 1_000_000)?;
             print!("{}", r.render());
+            Ok(0)
+        }
+        Query::EtalonMap(file, out) => {
+            drop(store);
+            let env = letibot_harnessd::harness::surroundings_for(cfg)
+                .with_pinned_shell("the etalon: the harness that recorded it ran a fixed shell");
+            let t = std::time::Instant::now();
+            let map = letibot_harnessd::etalon_map::build(&file, &env, 1_000_000, 4000)?;
+            let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+            std::fs::write(&out, json).map_err(|e| format!("{}: {e}", out.display()))?;
+            eprintln!(
+                "etalon map: {} rows, {} commands, {} unique shapes, {}x{} cells, {} epochs, {:.1}s → {}",
+                map.rows, map.commands, map.unique_shapes, map.side, map.side, map.epochs,
+                t.elapsed().as_secs_f64(), out.display()
+            );
             Ok(0)
         }
         Query::Backfill { write } => {
