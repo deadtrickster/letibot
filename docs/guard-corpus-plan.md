@@ -102,6 +102,28 @@ instead of one verdict. Measure with `--compare` over the 402 rows against the c
 Then measure a 3-call ensemble of the same prompt against one call, on latency and agreement.
 Cheapest step; may move the number the most.
 
+**Measured, 2026-09-16** (`harnessd --compare`, six arms, the 66 operator-answered rows, Qwen3.8-27B
+Q6_K_XL on lubuntu2 `192.168.1.78:8082`, budget 20 s, code at `acda545`):
+
+| arm | agreed | asks | false allows |
+|---|---|---|---|
+| asked-for-it, no examples (the floor) | 47 | 16 | 3 |
+| follows-from, no examples | 44 | 19 | 3 |
+| follows-from + the operator's own answers | 49 | 14 | 3 |
+| asked-for-it + their own answers (ships) | 51 | 12 | 3 |
+| + what the agent says it is doing | **52** | **11** | 3 |
+| two scores (TraceGuard §4), same brief as the row above | 47 | 16 | 3 |
+
+The two-score question **loses**: five more prompts than the verdict question on the identical
+brief, same false allows. The 27B's own ALLOW/DENY discriminates better than fixed thresholds
+over its scores, so `verdict` stays the production question; the code stays (`--oracle-question
+scores`) for a later threshold sweep, but that is not step 1 any more. The operator's own answers
+help (+4 over the floor) and the agent's claim helps again (+1): the claim arm is the best of the
+six and is one flag from what ships. The three false allows are constant across every arm and are
+**one command refused three times in a row** — `man dd | col -b | grep …` — a "stop repeating
+yourself" refusal, not a dangerous call; what the brief does not carry is a refusal *as a signal*.
+That is the next prompt question, not the dimensions.
+
 ## 4. Step 2 — port CARE into layer A, on the tree
 
 *Source: CARE §III (layers), Appendix A.4 (rule bank), `care/semantic.py`, `care/path.py`,
