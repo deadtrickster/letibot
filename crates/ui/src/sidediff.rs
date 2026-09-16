@@ -332,7 +332,14 @@ fn side_lines(
                 // loses its sign.
                 q.paint(Role::Faint, &" ".repeat(g.numw + 1))
             } else if sc.cfg.line_numbers {
-                q.paint(Role::Faint, &format!("{:>numw$} ", num, numw = g.numw))
+                // The number takes the line's own foreground on a changed
+                // row — the operator, comparing notes: *"claude code does
+                // change foregrounds but for line numbers and + - only"* —
+                // which is what makes the gutter read as part of the change
+                // rather than as furniture. A context row keeps the dim
+                // number it always had.
+                let fg = if tinted { h.role.foreground() } else { Role::Faint };
+                q.paint(fg, &format!("{:>numw$} ", num, numw = g.numw))
             } else {
                 String::new()
             };
@@ -647,6 +654,10 @@ mod tests {
         assert!(
             right.contains("\x1b[32m+\x1b[0m\x1b[48;5;22m     new();"),
             "the text after the sign carries no foreground of its own — the original foregrounds: {added:?}"
+        );
+        assert!(
+            right.contains("\x1b[32m2 \x1b[0m\x1b[48;5;22m"),
+            "the line number takes the line's foreground on a changed row, as claude code's does: {added:?}"
         );
         assert!(joined.contains("\x1b[31m-\x1b[0m\x1b[48;5;52m"), "the removed row is red: {joined:?}");
         // The cell ends with a reset — the padding inside the tint, then a

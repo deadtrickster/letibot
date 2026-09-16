@@ -473,7 +473,13 @@ fn row_lines(
     let text = expand_tabs(text, 4);
     let body = paint_with_emphasis(&text, role, emph, cfg.palette);
     let wrapped = width::wrap(&body, body_w);
-    let gut = cfg.palette.paint(Role::Faint, &gutter);
+    // The gutter takes the line's own foreground on a changed row — the same
+    // rule the split renderer's number follows — and stays dim on a context
+    // row.
+    let gut = cfg.palette.paint(
+        if role == Role::Plain { Role::Faint } else { role.foreground() },
+        &gutter,
+    );
     let mut out = Vec::with_capacity(wrapped.len());
     for (i, l) in wrapped.into_iter().enumerate() {
         if i == 0 {
