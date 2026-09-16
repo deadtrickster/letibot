@@ -65,21 +65,26 @@ approved by a human** (false prompts) and **rows a human refused that would now 
 the model** (true catches). A rule that adds the first without the second does not land.
 
 **Baseline, 2026-09-16** (`harnessd --etalon ~/.local/share/letibot/etalon.jsonl`, layer A at
-`f015aaa`, shell pinned, scope judged in each row's own `cwd`), over 40,740 rows / 36,759 bash
-commands from lab2x1 and lubuntu3 (Claude Code, opencode, letibot):
+`9171045`, shell pinned, scope judged in each row's own `cwd`), over 121,137 rows / 104,496 bash
+commands from lab2x1, the laptop and lubuntu3 (Claude Code, opencode, letibot; lubuntu1 and
+lubuntu2 pending):
 
 | | |
 |---|---|
-| ran × always_ask — would prompt now | **3,110 of 36,014 (8.6%)** |
-| refused × always_ask — caught before the model | **4 of 50 (8.0%)** |
-| not_run — layer A cannot read it | **6,943 of 36,759 (18.9%)**, all "meaning does not exist yet" |
+| ran × always_ask — would prompt now | **10,991 of 102,097 (10.8%)** |
+| refused × always_ask — caught before the model | **32 of 292 (11.0%)** |
+| not_run — layer A cannot read it | **31,462 of 104,496 (30.1%)**, all "meaning does not exist yet" |
 
-Prompts on rows that ran, by rule: `network_egress_to_an_unseen_host` 1,828 ·
-`secret_off_box` 667 (`. ~/.config/flowy/env-… && flowy say`, the fleet's own heartbeat) ·
-`destruction_outside_the_project` 262 · `credential_use` 124 (`find ~ -name x.go` — a name
-match) · `secret_to_transcript` 99 · `changes_its_own_rules` 50 · `privilege_escalation` 42 ·
-`secret_to_weaker_location` 34. Catches: `network_egress_to_an_unseen_host` 2,
-`destruction_outside_the_project` 1, `secret_flow_unknown` 1.
+Prompts on rows that ran, by rule: `network_egress_to_an_unseen_host` 7,024 ·
+`credential_use` 1,736 (`find ~ -name x.go`, `grep … flowy` — a name match) ·
+`destruction_outside_the_project` 1,162 · `secret_off_box` 720 (`. ~/.config/flowy/env-… &&
+flowy say`, the fleet's own heartbeat) · `secret_to_transcript` 135 · `privilege_escalation` 87 ·
+`secret_to_weaker_location` 62 · `changes_its_own_rules` 50 · `secret_flow_unknown` 15.
+
+The redactor was proved against a ground truth: one shipped transcript holds a real private key
+in tool output (the host's, in a `head` of a file that was the key). Zero corpus lines carry the
+key body. A second hole found on the corpus itself and closed: a password inline on the command
+line (`mysql -p…`, `redis-cli -a …`, 950 commands) — now blanked.
 
 What this says about the order of work: **our own rules cost the operator more than the CARE
 port would save.** The first three rules and the unreadable 19% are where the hours are; the port

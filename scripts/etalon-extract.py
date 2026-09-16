@@ -39,7 +39,23 @@ HOME = os.path.expanduser("~")
 
 SECRET = re.compile(
     r"(gh[pous]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|Bearer\s+[A-Za-z0-9._-]{16,}"
-    r"|(?:api[_-]?key|token|secret|password|passwd)\s*[=:]\s*['\"]?[^\s'\"]{8,})",
+    r"|ragflow-[A-Za-z0-9]{8,}"
+    r"|(?:api[_-]?key|token|secret|password|passwd)\s*[=:]\s*['\"]?[^\s'\"]{8,}"
+    # A key BODY, not only its header: the ground truth from the laptop shipment
+    # was a private key in tool output, and a model that echoes one into a
+    # heredoc puts it in a COMMAND. `b3BlbnNzaC1rZXktdjE` is base64 of
+    # `openssh-key-v1`, the first bytes of every OpenSSH private key.
+    r"|b3BlbnNzaC1rZXktdjE[A-Za-z0-9+/=\s]{40,}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{40,}?-----END [A-Z ]*PRIVATE KEY-----"
+    r"|ssh-(?:ed25519|rsa|ecdsa)\s+AAAA[A-Za-z0-9+/=]{40,}"
+    # Passwords on a command line. Found in the corpus, 950 times: RAGFlow's
+    # default password inline in `mysql -uroot -p…` and `redis-cli -a …`. The
+    # flag forms are the general shape; the literal is the one we know.
+    r"|(?<=\s-p)(?!\s)[^\s'\"]{4,}"
+    r"|(?<=redis-cli )(?:[^|;]*?\s)?-a\s+[^\s'\"]+"
+    r"|--password(?:=|\s+)[^\s'\"]+"
+    r"|(?:MYSQL_PWD|PGPASSWORD|REDIS_PASSWORD|MYSQL_ROOT_PASSWORD)=[^\s'\"]+"
+    r"|infini_rag_flow\w*)",
     re.I,
 )
 
@@ -108,7 +124,14 @@ def claude_code(paths, root, host="lab2x1"):
         utterances = []  # (ts_ms, text)
         pending = {}  # tool_use_id -> (ts_ms, name, input, trail)
         events = []
-        with open(path, encoding="utf-8", errors="replace") as f:
+        # A copy of another host's tree can carry a symlink whose target stayed
+        # behind; say so and move on rather than losing the whole host.
+        try:
+            f = open(path, encoding="utf-8", errors="replace")
+        except OSError as e:
+            print(f"skip {path}: {e.strerror}", file=sys.stderr)
+            continue
+        with f:
             for line in f:
                 try:
                     o = json.loads(line)
@@ -316,13 +339,16 @@ def main():
         host = os.path.basename(hostdir)
         jsonls = sorted(
             p for p in glob.glob(os.path.join(hostdir, "**/*.jsonl"), recursive=True)
-            if "/opencode/" not in p
+            if "/opencode" not in p
         )
         if jsonls:
             gens.append(claude_code(jsonls, hostdir, host))
-        db = os.path.join(hostdir, "opencode", "opencode.db")
-        if os.path.isfile(db):
-            gens.append(opencode(db, host))
+        # Any opencode sqlite under the host's copy, wherever the sender put it
+        # (`opencode/`, `opencode-share/`, a `-local` twin): each is its own set
+        # of sessions, tagged by file so the source says which.
+        for db in sorted(glob.glob(os.path.join(hostdir, "**/opencode*.db"), recursive=True)):
+            tag = os.path.basename(db).rsplit(".", 1)[0]
+            gens.append(opencode(db, host if tag == "opencode" else f"{host}:{tag}"))
     for gen in gens:
         for row in gen:
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
