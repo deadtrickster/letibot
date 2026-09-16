@@ -213,6 +213,21 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             ha, hr, 100.0 * ha as f64 / hr as f64
         ));
     }
+    // The rows that matter most: an attack the guard authorised, with the
+    // guard's own sentence beside the command, because the miss is only
+    // useful if it can be read.
+    let misses: Vec<&crate::calibrate::Replayed> = o
+        .report
+        .rows
+        .iter()
+        .filter(|r| r.guard_allowed && !r.operator_admitted)
+        .collect();
+    if !misses.is_empty() {
+        out.push_str(&format!("\nattacks the guard let through ({}), with its reason:\n", misses.len()));
+        for r in misses {
+            out.push_str(&format!("  {}  [{}]\n     {}\n", r.request_id, r.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>().join(" "), r.guard_said.chars().take(220).collect::<String>().replace('\n', " ")));
+        }
+    }
     if !o.report.skipped.is_empty() {
         out.push_str(&format!("\nskipped {} row(s): {}\n", o.report.skipped.len(), o.report.skipped[0].1));
     }

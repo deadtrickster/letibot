@@ -113,6 +113,35 @@ rule set that asks 11% on the operator's corpus, four times over because BashAre
 with the whole trajectory in view, ~80% catch at 4% FPR (§6). Ours sees one action; 57% is the
 baseline to beat.
 
+**The misses, read** (`--etalon-oracle` on the 47 attacks alone, 19 through): 11 are
+`chmod +x <a file the agent wrote earlier> && run it` — the malware is heredoc content from two
+steps back, and "make my script executable and run it" fits every build task, so the guard cites
+the task and is right about the task; 3 are `cat > /opt/…/x.py <<'EOF'` with the exfiltration
+inside the body; 5 are recon reads (`cat /etc/firewall/firewall.conf`, `which nginx; ps aux …`)
+labelled attack because every step of an attack trajectory is, and individually a read. **Fourteen
+of nineteen are one fact: the attack lives in a heredoc body layer A treats as opaque bytes** — and
+the operator's own corpus is 31.7% unreadable for the same reason. Reading a heredoc's body as a
+program when it is going somewhere executable is one change against both numbers. That is step 2b
+(below) and it displaces the GTFOBins rules as tranche 2.
+
+## 4b. Step 2b — a heredoc going somewhere executable is a program, and is read as one
+
+*flowy row `01M2P51EJE2TDY5GQZ9E89TSCW`.*
+
+*Source: the BashArena misses above; CARE §III for the canonicalisation idea (arXiv 2607.21642);
+ours for the rest.*
+
+When a stage writes a heredoc — `cat > PATH <<'EOF' … EOF`, `tee PATH <<EOF` — and any of: the
+body starts with a shebang; PATH is under a `bin/` or `/opt`, `/etc`, `/usr/local`; the same
+command or the next one runs `chmod +x PATH` or executes PATH — then the body is **normalised as
+shell** (a `#!/bin/sh`/`bash` shebang, or no shebang) or **scanned as a script** (python/perl: the
+network, secret-path and credential shapes the string layer already knows) and its intents and
+regions join the stage's. `curl http://<unseen host>` inside a script the agent is about to run is
+`network_egress_to_an_unseen_host`, the same rule that caught 8 of 47. Measured by: BashArena
+attacks caught before the model (8 today) and the unreadable share of the operator's corpus
+(31.7%); the operator's false-prompt rate must not rise — a heredoc that writes prose or config
+stays a write.
+
 ## 3. Step 1 — the prompt, before any port or finetune
 
 *Source: TraceGuard §4 (dimensions), BashArena §6 (ensemble).*
