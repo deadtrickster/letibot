@@ -112,6 +112,27 @@ pub enum Role {
     FuncName,
 }
 
+impl Role {
+    /// The role whose **foreground** this role used to paint with, before the
+    /// diff roles spent their sequence on a background.
+    ///
+    /// The operator, on the first cube tint: *"please keep original
+    /// foregrounds"* — a cell opened with `32;48;5;22` and every plain run in
+    /// it inherited the green, so the diff read as green text on green. Now
+    /// the role's sequence is background-only and the text keeps whatever
+    /// foreground it had — syntax colours, or the terminal's default. What
+    /// still wants the original green and red is the **sign glyph**, which was
+    /// `32`/`31` from the day it was drawn: it paints through this mapping,
+    /// and `Success`/`Failure` are exactly those two sequences.
+    pub fn foreground(self) -> Role {
+        match self {
+            Role::Added => Role::Success,
+            Role::Removed => Role::Failure,
+            other => other,
+        }
+    }
+}
+
 /// A mapping from roles to escape sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Palette {
@@ -164,21 +185,20 @@ impl Palette {
             // caught up — it painted a blue-grey and no italic.
             Role::Reasoning => "\x1b[2;3m",
             Role::Code => "\x1b[36m",
-            // The diff roles carry a background as well as a foreground. The
-            // trial ran twice: the theme's own slots (`42`/`41`) first, and the
-            // operator's verdict on them live was *"too much color, the diff is
-            // unreadable"* — a theme's background slots are saturated colours,
-            // bands and not tints. What they asked for after that was a **calm**
-            // green, and the only calm green there is sits outside the sixteen
-            // a theme defines: the xterm cube's darkest green and red,
-            // `48;5;22` and `48;5;52` — the faint full-width bands a diff
-            // viewer is expected to read through, dark enough to sit under
-            // every foreground the rest of this table spends, on the dark
-            // themes this head is actually run on. `no_role_paints_outside…`
-            // carries the exception by name: two roles, chosen once, and
-            // nothing else may follow them out.
-            Role::Added => "\x1b[32;48;5;22m",
-            Role::Removed => "\x1b[31;48;5;52m",
+            // The diff roles carry a **background**, and only a background —
+            // the operator, on the first cube tint: *"please keep original
+            // foregrounds"*. The trial ran three times: the theme's slots
+            // (`42`/`41`) were bands, not tints — *"too much color, the diff
+            // is unreadable"*; the cube tint beside the role's own foreground
+            // turned every plain run green-on-green; so what remains is the
+            // xterm cube's darkest green and red (`48;5;22`, `48;5;52`) alone,
+            // under whatever foreground the text already had — syntax colours,
+            // or the terminal's default. The sign glyph keeps the original
+            // green and red through [`Role::foreground`]. The exception is
+            // carried by name in `no_role_paints_outside…`: two roles, chosen
+            // once, and nothing else may follow them out.
+            Role::Added => "\x1b[48;5;22m",
+            Role::Removed => "\x1b[48;5;52m",
             Role::Emphasis => "\x1b[1;4m",
             Role::Keyword => "\x1b[35m",
             Role::StringLit => "\x1b[32m",
@@ -393,11 +413,11 @@ mod tests {
     #[test]
     fn no_role_paints_outside_the_sixteen_colours_a_theme_defines() {
         // The two roles the operator spent the cube on, and the exact
-        // sequences they are allowed: a background tint beside the theme's
-        // own foreground, nothing else.
+        // sequences they are allowed: a background tint, and nothing else —
+        // the foregrounds stay the theme's, per the operator's own ruling.
         const CUBE_EXCEPTIONS: &[(Role, &str)] = &[
-            (Role::Added, "\x1b[32;48;5;22m"),
-            (Role::Removed, "\x1b[31;48;5;52m"),
+            (Role::Added, "\x1b[48;5;22m"),
+            (Role::Removed, "\x1b[48;5;52m"),
         ];
         for r in EVERY_ROLE {
             let o = Palette::Colour.open(r);

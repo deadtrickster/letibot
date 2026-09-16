@@ -337,7 +337,11 @@ fn side_lines(
                 String::new()
             };
             let sign = if k == 0 {
-                q.paint(h.role, &h.sign.to_string())
+                // The sign keeps the foreground the role always had — green
+                // and red — while the cell's base is background-only, so the
+                // text keeps its own: the operator's *"keep original
+                // foregrounds"*.
+                q.paint(h.role.foreground(), &h.sign.to_string())
             } else {
                 " ".to_string()
             };
@@ -633,14 +637,18 @@ mod tests {
             .expect("the added row is shown");
         let (_, right) = added.split_once(" │ ").expect("two panels");
         assert!(
-            right.starts_with("\x1b[0m\x1b[32;48;5;22m"),
-            "the added cell opens with the cube's dark green as soon as the separator closes: {added:?}"
+            right.starts_with("\x1b[0m\x1b[48;5;22m"),
+            "the added cell opens with the cube's dark green, background only, as soon as the separator closes: {added:?}"
         );
         assert!(
-            right.contains("\x1b[32;48;5;22m+\x1b[0m\x1b[32;48;5;22m"),
-            "the sign closes back into the tint: {added:?}"
+            right.contains("\x1b[32m+\x1b[0m\x1b[48;5;22m"),
+            "the sign keeps its original green foreground and closes back into the tint: {added:?}"
         );
-        assert!(joined.contains("\x1b[31;48;5;52m-"), "the removed row is red: {joined:?}");
+        assert!(
+            right.contains("\x1b[32m+\x1b[0m\x1b[48;5;22m     new();"),
+            "the text after the sign carries no foreground of its own — the original foregrounds: {added:?}"
+        );
+        assert!(joined.contains("\x1b[31m-\x1b[0m\x1b[48;5;52m"), "the removed row is red: {joined:?}");
         // The cell ends with a reset — the padding inside the tint, then a
         // clean handoff — so the separator opens from a clean slate, not from
         // inside the tint.
@@ -654,7 +662,7 @@ mod tests {
         // so its bytes are what they always were.
         let ctx = rows.iter().find(|r| r.contains("fn a() {")).expect("context row");
         assert!(
-            !ctx.contains("\x1b[32;48;5;22m") && !ctx.contains("\x1b[31;48;5;52m"),
+            !ctx.contains("\x1b[48;5;22m") && !ctx.contains("\x1b[48;5;52m"),
             "{ctx:?}"
         );
 

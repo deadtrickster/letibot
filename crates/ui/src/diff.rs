@@ -477,7 +477,10 @@ fn row_lines(
     let mut out = Vec::with_capacity(wrapped.len());
     for (i, l) in wrapped.into_iter().enumerate() {
         if i == 0 {
-            out.push(format!("{gut}{}{l}", cfg.palette.paint(role, sign)));
+            // The sign keeps the foreground the role always had; the line's
+            // own paint is background-only, so the text keeps its original
+            // foregrounds (the operator's ruling on the first cube tint).
+            out.push(format!("{gut}{}{l}", cfg.palette.paint(role.foreground(), sign)));
         } else {
             // A wrapped continuation keeps the colour and loses the sign, so the
             // eye does not read it as a second changed line.
