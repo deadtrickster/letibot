@@ -92,6 +92,9 @@ fn usage() -> String {
      \x20                           verdicts land on one corpus row. `/supervise`\n\
      \x20                           turns it on and off mid-session -- this is only\n\
      \x20                           the starting value. Needs --oracle\n\
+     \x20 --oracle-question verdict what the guard is asked: `verdict` (ALLOW/DENY/\n\
+     \x20                           UNSURE) or `scores` (FIT and CLAIM 0-10, the\n\
+     \x20                           thresholds derive the verdict; TraceGuard §4)\n\
      \x20 --oracle-budget-ms 400    how long the gate waits for that answer before\n\
      \x20                           giving up and failing closed. 400 was measured\n\
      \x20                           against a 4B on THIS box's CPU and says nothing\n\
@@ -323,6 +326,14 @@ fn run() -> Result<i32, String> {
                 cfg.oracle_budget = std::time::Duration::from_millis(
                     v.parse().map_err(|e| format!("--oracle-budget-ms: {e}"))?,
                 );
+            }
+            // What the guard is asked: `verdict` (its own ALLOW/DENY/UNSURE) or
+            // `scores` (FIT and CLAIM 0-10, TraceGuard arXiv 2604.03968 §4; the
+            // thresholds derive the verdict). Plan §3; `--compare` measures both.
+            "--oracle-question" => {
+                let v = next()?;
+                cfg.oracle_question = letibot_harnessd::oracle::Question::parse(&v)
+                    .ok_or_else(|| format!("--oracle-question: `{v}` is not verdict or scores"))?;
             }
             "--intent-prose" => cfg.intent_prose = true,
             "--provider" => {

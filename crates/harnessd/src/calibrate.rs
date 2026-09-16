@@ -204,6 +204,8 @@ pub struct Arm {
     pub examples: bool,
     /// Whether the agent's statement of what it is doing is shown.
     pub claim: bool,
+    /// What the guard is asked. See `crate::oracle::Question`.
+    pub question: crate::oracle::Question,
 }
 
 /// The three that matter: what shipped, the reworded question alone, and the
@@ -215,18 +217,21 @@ pub const ARMS: &[Arm] = &[
         variant: letibot_tools::authorise::BriefVariant::AskedForIt,
         examples: false,
         claim: false,
+        question: crate::oracle::Question::Verdict,
     },
     Arm {
         name: "follows-from, no examples",
         variant: letibot_tools::authorise::BriefVariant::Follows,
         examples: false,
         claim: false,
+        question: crate::oracle::Question::Verdict,
     },
     Arm {
         name: "follows-from + the operator's own answers",
         variant: letibot_tools::authorise::BriefVariant::Follows,
         examples: true,
         claim: false,
+        question: crate::oracle::Question::Verdict,
     },
     // The missing cell of the 2x2: the ORIGINAL question with the examples. Without
     // it, "follows-from + examples is best" cannot be told apart from "examples are
@@ -236,12 +241,24 @@ pub const ARMS: &[Arm] = &[
         variant: letibot_tools::authorise::BriefVariant::AskedForIt,
         examples: true,
         claim: false,
+        question: crate::oracle::Question::Verdict,
     },
     Arm {
         name: "+ what the agent says it is doing",
         variant: letibot_tools::authorise::BriefVariant::Follows,
         examples: true,
         claim: true,
+        question: crate::oracle::Question::Verdict,
+    },
+    // TraceGuard arXiv 2604.03968 §4: the two questions scored apart, the
+    // verdict derived by thresholds. Same brief as the fullest verdict arm, so
+    // the only difference measured is the question.
+    Arm {
+        name: "two scores (TraceGuard §4): follows-from + answers + claim",
+        variant: letibot_tools::authorise::BriefVariant::Follows,
+        examples: true,
+        claim: true,
+        question: crate::oracle::Question::TwoScores,
     },
 ];
 
@@ -283,6 +300,7 @@ pub fn replay_rows(
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
 
     let mut oracle_cfg = cfg.clone();
+    oracle_cfg.oracle_question = arm.question;
     oracle_cfg.oracle_scope = Some(OracleScope::declared(
         &Intent::ALL.iter().map(|i| i.as_str().to_string()).collect::<Vec<_>>(),
         Some("external"),

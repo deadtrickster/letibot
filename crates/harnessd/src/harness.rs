@@ -4270,7 +4270,8 @@ pub(crate) fn model_adjudicator(
     // guard on another box is a different model, and naming this session's to that
     // server is both a wrong request and a wrong disclosure.
     let guard_model = cfg.oracle_model.clone().unwrap_or_else(|| cfg.model.clone());
-    let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget);
+    let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget)
+        .with_question(cfg.oracle_question);
     if let Some(scope) = &cfg.oracle_scope {
         oracle = oracle.with_scope(scope.clone());
     }

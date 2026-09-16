@@ -354,6 +354,9 @@ pub struct Config {
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
     pub oracle_budget: std::time::Duration,
+    /// What the guard is asked: a verdict, or two scores the thresholds turn
+    /// into one. See `crate::oracle::Question`.
+    pub oracle_question: crate::oracle::Question,
     /// **Start with the guard model consulted on every gated call.**
     ///
     /// Only a starting value: `/supervise` moves it at run time, which is the point
@@ -658,6 +661,7 @@ impl Config {
             oracle_model: None,
             oracle_scope: None,
             oracle_budget: std::time::Duration::from_millis(400),
+            oracle_question: crate::oracle::Question::Verdict,
             supervise: false,
             intent_prose: false,
             spill: SpillPolicy::Unset,
@@ -759,6 +763,12 @@ impl Config {
             "oracle.budget",
             format!("{:.1}s", self.oracle_budget.as_secs_f64()),
             "--oracle-budget",
+            "",
+        ));
+        out.push(row(
+            "oracle.question",
+            self.oracle_question.as_str().to_string(),
+            "--oracle-question",
             "",
         ));
         out.push(row(
