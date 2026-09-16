@@ -651,14 +651,30 @@ SESSIONS_EOF
         # one never does. An interrupt is the frame an Esc-Esc sends.
         "$BIN/letibot-tui" --socket "$SOCKET" --interrupt-all || true
       fi
-      kill "$p" && echo "stopped $(daemon_line)"
+      # "stopped" is said AFTER the process is gone, not after the signal is
+      # sent, and the record is removed only then. Measured 2026-09-16: a daemon
+      # wedged on a llama-server that had gone away swallowed SIGTERM, this
+      # printed "stopped", deleted the record, and left an orphan holding the
+      # store and the GPU that `--daemons` could no longer see.
+      line="$(daemon_line)"
+      kill "$p" || true
       for _ in 1 2 3 4 5 6 7 8 9 10; do
         [ -d "/proc/$p" ] || break
         sleep 0.5
       done
-      if [ -d "/proc/$p" ]; then
-        [ "$FORCE" = 1 ] && kill -9 "$p" 2>/dev/null && echo "killed (pid $p)"
+      if [ -d "/proc/$p" ] && [ "$FORCE" = 1 ]; then
+        kill -9 "$p" 2>/dev/null || true
+        for _ in 1 2 3 4; do
+          [ -d "/proc/$p" ] || break
+          sleep 0.5
+        done
       fi
+      if [ -d "/proc/$p" ]; then
+        echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
+        echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
+        exit 1
+      fi
+      echo "stopped $line"
       rm -f "$RECORD"
     else
       echo "no daemon for $WORKSPACE (letibot --daemons lists the others)"
