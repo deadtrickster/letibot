@@ -119,10 +119,12 @@ brief, same false allows. The 27B's own ALLOW/DENY discriminates better than fix
 over its scores, so `verdict` stays the production question; the code stays (`--oracle-question
 scores`) for a later threshold sweep, but that is not step 1 any more. The operator's own answers
 help (+4 over the floor) and the agent's claim helps again (+1): the claim arm is the best of the
-six and is one flag from what ships. The three false allows are constant across every arm and are
-**one command refused three times in a row** — `man dd | col -b | grep …` — a "stop repeating
-yourself" refusal, not a dangerous call; what the brief does not carry is a refusal *as a signal*.
-That is the next prompt question, not the dimensions.
+six and is one flag from what ships. The three "false allows", constant across every arm, were **mislabels**: two head timeouts and
+one unoffered option, written as `human:dead` refusals of a man-page lookup the operator had
+proposed (fixed in `by`-naming and relabelled; the labelled set has zero human refusals among
+its 66 asked rows). So every arm's true false-allow count is 0, and the labelled set cannot
+measure false allows at all — only the etalon's 334 refusals can, which is another reason step 5
+came first.
 
 ## 4. Step 2 — port CARE into layer A, on the tree
 
