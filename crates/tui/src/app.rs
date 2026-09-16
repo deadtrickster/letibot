@@ -1165,6 +1165,12 @@ impl App {
             self.model.clear();
             self.turn = None;
             self.heads = 0;
+            // The subagent tree is the PARENT's fact. Carried across a switch it
+            // put "1 subagent running" on the composer of the very subagent being
+            // looked at (measured 2026-09-16), and Enter in the pane there would
+            // have switched to itself.
+            self.subagents.clear();
+            self.subagents_sel = 0;
             // The queue is the old session's. Whatever was queued there stays
             // queued *there* — the hub drains it into that session's transcript —
             // but this head is no longer looking at that session, and an echo of
@@ -2291,18 +2297,30 @@ impl App {
                 Key::Enter if self.editor.text().is_empty() => {
                     // Reading, not moving: the output pane opens on the `Peeked`
                     // reply, and this head never leaves the session it is in.
-                    let id = self.subagents[self.subagents_sel.min(n - 1)]
-                        .session_id
-                        .clone();
+                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
+                    if row.state == "opening" {
+                        // Nothing to read yet, and the daemon would refuse the peek
+                        // by name anyway; saying it here keeps the operator in the
+                        // pane they were using rather than bouncing them through a
+                        // rejection.
+                        self.say("that subagent is still opening — nothing to read yet");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let id = row.session_id.clone();
                     self.sub_out_pending = Some(id.clone());
                     return Some(Action::Peek(id));
                 }
                 // Switching is still here, one key over: Enter reads, `o` opens
                 // the subagent's session for good.
                 Key::Char('o') if self.editor.text().is_empty() => {
-                    let id = self.subagents[self.subagents_sel.min(n - 1)]
-                        .session_id
-                        .clone();
+                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
+                    if row.state == "opening" {
+                        self.say("that subagent is still opening — nothing to attach to yet");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let id = row.session_id.clone();
                     self.subagents_pane = false;
                     return self.switch_to(id);
                 }
@@ -3948,6 +3966,9 @@ impl App {
         }
         for (i, s) in self.subagents.iter().enumerate() {
             let (mark, state_colour) = match s.state.as_str() {
+                // Not a session yet: the child is copying its workspace or booting.
+                // Enter does nothing here, and the row says so below.
+                "opening" => ("[…]", ""),
                 "running" => ("[~]", sgr::YELLOW),
                 "done" => ("[x]", sgr::GREEN),
                 "failed" => ("[!]", sgr::RED),
@@ -3969,10 +3990,15 @@ impl App {
             out.push(dim(
                 &self.cfg,
                 &format!(
-                    "       {} · role {} · {}",
+                    "       {} · role {} · {}{}",
                     short_id(&s.session_id),
                     s.role,
-                    s.state
+                    s.state,
+                    if s.state == "opening" {
+                        " — not attachable yet"
+                    } else {
+                        ""
+                    }
                 ),
             ));
         }
@@ -4825,8 +4851,31 @@ fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
 /// The whole view, spilled: the pane caps like a terminal, the file does not
 /// cap. One name per subagent, overwritten on each read, so the path is stable
 /// enough to open twice.
+/// Where a head keeps files of its own: `$XDG_RUNTIME_DIR/letibot`, where the
+/// socket already lives — per-user, mode 0700, tmpfs. Not `/tmp`: a subagent's
+/// tool output is whatever the model read, and a world-readable file at a name
+/// anyone can predict is both a disclosure and the classic symlink target. The
+/// fallback is the shape the sudo shims use when there is no runtime dir.
+fn head_runtime_dir() -> std::path::PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => std::path::PathBuf::from(d).join("letibot"),
+        None => std::env::temp_dir().join(format!("letibot-{}", unsafe { libc::getuid() })),
+    }
+}
+
 fn spill_sub_out(session_id: &str, lines: &[String]) -> Option<String> {
-    let path = std::env::temp_dir().join(format!("letibot-subagent-{session_id}.log"));
+    spill_sub_out_under(&head_runtime_dir(), session_id, lines)
+}
+
+fn spill_sub_out_under(
+    dir: &std::path::Path,
+    session_id: &str,
+    lines: &[String],
+) -> Option<String> {
+    if std::fs::create_dir_all(dir).is_err() {
+        return None;
+    }
+    let path = dir.join(format!("subagent-{session_id}.log"));
     let mut body = String::new();
     for l in lines {
         body.push_str(l);
@@ -6728,6 +6777,80 @@ mod tests {
         assert!(!a.subagents_pane);
     }
 
+    /// The subagent tree is the parent's fact. Measured 2026-09-16: switching
+    /// into a subagent carried "1 subagent running" onto ITS composer, and the
+    /// pane there offered the row of the very session being looked at. On the way
+    /// back the daemon replays the parent's retained events after `Hello`, so the
+    /// tree is rebuilt from the same events that built it the first time.
+    #[test]
+    fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        let spawn = SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "find the bug".into(),
+            role: "coder".into(),
+        };
+        a.apply(ServerFrame::Event(env(1, spawn.clone())));
+        a.key(Key::CtrlG);
+        // Enter reads; `o` is the key that moves the head.
+        assert_eq!(a.key(Key::Char('o')), Some(Action::Switch("s-sub-1".into())));
+        assert!(!a.subagents_pane, "switching closes the pane");
+
+        a.apply(hello("s-sub-1", vec![brief("s", "parent", true)], Hub::new("s-sub-1").snapshot()));
+        assert_eq!(a.session_id, "s-sub-1");
+        assert!(a.subagents.is_empty(), "the parent's tree came along");
+        let screen = a.screen(100, 24).join("\n");
+        assert!(!screen.contains("subagent running"), "{screen}");
+
+        // Back to the parent: Hello, then the replayed backlog.
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(1, spawn)));
+        assert_eq!(a.subagents.len(), 1);
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("find the bug"), "{screen}");
+    }
+
+    /// A child that is still copying its workspace or booting its VM is listed as
+    /// `opening`, and Enter on it goes nowhere — there is no session to go to.
+    #[test]
+    fn an_opening_subagent_is_listed_but_cannot_be_entered() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "opening".into(),
+                prompt: "find the bug".into(),
+                role: "coder".into(),
+            },
+        )));
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("not attachable yet"), "{screen}");
+        assert_eq!(a.key(Key::Enter), None, "Enter peeked at a session that is not open");
+        assert_eq!(a.key(Key::Char('o')), None, "`o` switched into a session that is not open");
+        assert!(a.subagents_pane, "the pane stays where the operator was");
+
+        // Open now: the same row, and Enter goes there.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "find the bug".into(),
+                role: "coder".into(),
+            },
+        )));
+        assert_eq!(a.subagents.len(), 1);
+        assert_eq!(a.key(Key::Enter), Some(Action::Peek("s-sub-1".into())));
+        a.sub_out_pending = None;
+        assert_eq!(a.key(Key::Char('o')), Some(Action::Switch("s-sub-1".into())));
+    }
+
     #[test]
     fn enter_on_a_subagent_row_asks_for_its_output_instead_of_switching() {
         let mut a = app();
@@ -6795,11 +6918,20 @@ mod tests {
         assert!(text.contains("line one"), "{text}");
         assert!(text.contains("line two"), "{text}");
         assert!(text.contains("/spill/c1"), "{text}");
-        // The whole view is on disk, at a name a re-read overwrites.
+        // The whole view is on disk, at a name a re-read overwrites — under the
+        // head's own runtime dir, never a world-readable /tmp. The live write
+        // went where the head puts things; the writer itself is exercised under
+        // a directory this test owns.
         let spill = v.spill.as_ref().expect("spilled");
-        assert!(spill.contains("letibot-subagent-s-sub-1.log"), "{spill}");
-        let on_disk = std::fs::read_to_string(spill).expect("read");
+        assert!(spill.ends_with("/letibot/subagent-s-sub-1.log") || spill.contains("/letibot-"), "{spill}");
+        assert!(!spill.starts_with("/tmp/letibot-subagent"), "spilled to a predictable /tmp name: {spill}");
+        let _ = std::fs::remove_file(spill);
+        let dir = std::env::temp_dir().join(format!("letibot-peek-test-{}", std::process::id()));
+        let under = spill_sub_out_under(&dir, "s-sub-1", &v.lines).expect("spilled");
+        assert!(under.starts_with(dir.to_str().unwrap()), "{under}");
+        let on_disk = std::fs::read_to_string(&under).expect("read");
         assert!(on_disk.contains("line two"), "{on_disk}");
+        let _ = std::fs::remove_dir_all(&dir);
         // And the pane draws, header and disclosure included.
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("subagent output"), "{screen}");

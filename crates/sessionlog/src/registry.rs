@@ -505,6 +505,56 @@ impl Registry {
         Ok(hub)
     }
 
+    /// A hub built exactly as [`Registry::create_under`] builds one — this
+    /// registry's bounds, this registry's bell — and **not registered**.
+    ///
+    /// For a session whose owner opens it itself, off the daemon's worker: a
+    /// subagent. Registering first and opening second is how a head could switch
+    /// into a hub nothing would ever write to (measured 2026-09-16: an empty
+    /// subagent conversation while the child was still copying its workspace),
+    /// and how the worker came to build a second harness for a session the runner
+    /// was already opening. Open it, then [`Registry::adopt`] it.
+    pub fn new_hub(&self, session_id: impl Into<String>) -> Arc<Hub> {
+        let g = self.lock();
+        let hub = Hub::with_bounds(session_id.into(), g.log_bounds, g.view_bounds);
+        hub.set_bell(self.bell.clone());
+        hub
+    }
+
+    /// Register a hub that is **already open** — see [`Registry::new_hub`]. The
+    /// same refusals as `create_under`, and no `ring_open`: the owner opened it,
+    /// and a worker told to open it again would build a second harness on it.
+    pub fn adopt(
+        &self,
+        hub: Arc<Hub>,
+        title: impl Into<String>,
+        wiring: SessionWiring,
+        parent: Option<String>,
+    ) -> Result<(), CreateError> {
+        let id = hub.session_id().to_string();
+        let mut g = self.lock();
+        if self.bell.is_closed() {
+            return Err(CreateError::Closed);
+        }
+        if g.entries.iter().any(|(k, _)| k == &id) {
+            return Err(CreateError::Exists(id));
+        }
+        if g.default_id.is_empty() {
+            g.default_id = id.clone();
+        }
+        g.entries.push((
+            id,
+            Entry {
+                hub,
+                title: title.into(),
+                created_ms: now_ms(),
+                wiring,
+                parent_session_id: parent,
+            },
+        ));
+        Ok(())
+    }
+
     /// Where to find sessions this registry is not holding. See [`SessionSource`].
     pub fn set_source(&self, source: Arc<dyn SessionSource>) {
         *self.source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
@@ -775,6 +825,35 @@ mod tests {
 
     fn reg() -> Arc<Registry> {
         Registry::new()
+    }
+
+    /// A subagent's hub is built first and registered only once its owner has
+    /// opened it — so nothing can switch into it early, and the worker is never
+    /// told to open a session somebody else is opening.
+    #[test]
+    fn a_new_hub_is_not_listed_until_adopted_and_adopting_does_not_ring_the_worker() {
+        let r = reg();
+        r.create("s-parent", "", SessionWiring::default()).unwrap();
+        // The parent's own creation rang the worker; drain that.
+        assert!(matches!(r.next_work(), Some(Work::Open(id)) if id == "s-parent"));
+
+        let hub = r.new_hub("s-parent-sub-1");
+        assert!(r.resolve("s-parent-sub-1").is_none(), "listed before it was open");
+        assert_eq!(r.list().len(), 1);
+
+        r.adopt(hub.clone(), "find the bug", SessionWiring::default(), Some("s-parent".into()))
+            .unwrap();
+        let brief = r.brief("s-parent-sub-1").expect("adopted");
+        assert_eq!(brief.parent_session_id.as_deref(), Some("s-parent"));
+        assert!(Arc::ptr_eq(&r.resolve("s-parent-sub-1").unwrap(), &hub));
+        let again = r.adopt(hub.clone(), "", SessionWiring::default(), None);
+        assert_eq!(again, Err(CreateError::Exists("s-parent-sub-1".into())));
+        // The bell blocks with nothing pending, so "did not ring" is proven by
+        // closing it: a drained, closed bell answers None at once, and a ring
+        // for the child would come out first.
+        r.bell().close();
+        assert!(r.next_work().is_none(), "adopting rang the worker to open it again");
+
     }
 
     #[test]

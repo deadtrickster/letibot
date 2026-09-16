@@ -71,14 +71,30 @@ pub struct TaskSpec {
 
 /// Runs a subagent turn to completion and returns its final answer.
 pub trait TaskRunner: Send + Sync {
-    fn run(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String>;
+    /// Run the subtask to completion. `progress` is the running call's own note
+    /// line on the operator's screen — say what the child is doing on it. A
+    /// `task` call runs for as long as its child does, minutes when the child
+    /// boots a VM, and a card that only says "running" for that long reads as a
+    /// hang: measured 2026-09-16, the operator watched one for the length of a
+    /// 112 GB copy and read the colour as *blocked on approval*.
+    fn run(
+        &self,
+        prompt: &str,
+        spec: &TaskSpec,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<String, String>;
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.
 pub struct NoTaskRunner;
 
 impl TaskRunner for NoTaskRunner {
-    fn run(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+    fn run(
+        &self,
+        _prompt: &str,
+        _spec: &TaskSpec,
+        _progress: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
         Err("no subagent runner is installed in this session".into())
     }
 }
@@ -123,7 +139,7 @@ impl Tool for TaskTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
         let Some(prompt) = args.get("prompt").and_then(|v| v.as_str()) else {
             return Invocation::failed(
                 "task needs a prompt",
@@ -160,7 +176,7 @@ impl Tool for TaskTool {
             downgrade,
             placement,
         };
-        match self.runner.run(prompt, &spec) {
+        match self.runner.run(prompt, &spec, &mut |note| ctx.progress(note)) {
             Ok(result) => Invocation::ok(result),
             Err(e) => Invocation::failed(e, "the subagent did not run."),
         }
@@ -174,7 +190,12 @@ mod tests {
     struct Echo;
 
     impl TaskRunner for Echo {
-        fn run(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        fn run(
+            &self,
+            prompt: &str,
+            spec: &TaskSpec,
+            _progress: &mut dyn FnMut(&str),
+        ) -> Result<String, String> {
             Ok(format!(
                 "{} [{}] @{}: {prompt}",
                 spec.role,
@@ -194,12 +215,12 @@ mod tests {
     #[test]
     fn a_runner_is_delegated_to_and_no_runner_refuses() {
         assert_eq!(
-            Echo.run("find the bug", &spec("coder")).unwrap(),
+            Echo.run("find the bug", &spec("coder"), &mut |_| {}).unwrap(),
             "coder [none] @host: find the bug"
         );
         assert!(
             NoTaskRunner
-                .run("x", &spec("coder"))
+                .run("x", &spec("coder"), &mut |_| {})
                 .unwrap_err()
                 .contains("no subagent runner")
         );

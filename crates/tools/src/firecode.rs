@@ -157,8 +157,21 @@ pub struct FirecodeSpec {
     pub cache: PathBuf,
     /// A name for the copy: the child session's id.
     pub name: String,
-    /// Paths (relative to `source`) not to copy: build output, other worktrees.
+    /// Names not to copy, **at any depth**: build output, other worktrees.
+    ///
+    /// Any depth, because the workspace is not always the repository. Measured
+    /// 2026-09-16: the daemon's workspace was the folder ABOVE the checkout, the
+    /// excludes were anchored at that folder, and `letibot/target` (38 GB) and
+    /// `letibot/.claude/worktrees` (63 GB of agent worktrees, each with its own
+    /// `target`) walked straight past them — 112 GB copied into the cache while
+    /// the operator watched a yellow `task` card and read it as blocked.
     pub exclude: Vec<String>,
+    /// The most the copy may weigh, in bytes, measured by a dry run before
+    /// anything is written. A copy over this is refused with the size named,
+    /// because a child that spends ten minutes copying build output is a child
+    /// nobody asked for. `LETIBOT_FIRECODE_COPY_MAX` (bytes) overrides the
+    /// default of 8 GiB.
+    pub copy_max: u64,
     /// Handed to `firecode up` after `--project`: `--mem`, `--vcpu`, `--add-dir`
     /// for a toolchain the guest image lacks, `--host-port` for a server on the
     /// host's loopback. The operator's, verbatim — this backend does not know
@@ -200,9 +213,16 @@ impl FirecodeSpec {
             up_args: Vec::new(),
             writable: true,
             exec: true,
+            copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(DEFAULT_COPY_MAX),
         }
     }
 }
+
+/// 8 GiB: room for any source tree, none for a build directory.
+pub const DEFAULT_COPY_MAX: u64 = 8 * 1024 * 1024 * 1024;
 
 impl FirecodeBackend {
     /// Copy the workspace, boot a VM on the copy, and wait until it takes
@@ -218,7 +238,7 @@ impl FirecodeBackend {
             )));
         }
         std::fs::create_dir_all(&spec.cache).map_err(|e| BackendError::Io(e.to_string()))?;
-        copy_tree(&spec.source, &project, &spec.exclude)?;
+        copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
 
         // Layers are attached to a PATH, and the copy has a path of its own. The
         // source's toolchain layers are what the guest needs to build this tree
@@ -685,21 +705,82 @@ fn siblings(project: &Path) -> Vec<PathBuf> {
 /// Copy a tree, skipping `exclude` (relative to `from`). Symlinks are copied as
 /// links; permissions are kept. `.git` is copied so the guest can commit and
 /// diff, which is what a coding subagent does.
-fn copy_tree(from: &Path, to: &Path, exclude: &[String]) -> Result<(), BackendError> {
-    if !from.is_dir() {
-        return Err(BackendError::NotADirectory(from.display().to_string()));
-    }
+/// The rsync invocation both passes share, so the dry run measures exactly the
+/// copy that would follow it. Excludes are **unanchored**: `target` matches a
+/// `target` at any depth, `.claude/worktrees` any `.claude/worktrees`. A leading
+/// slash would pin them to the transfer root, which is the mistake this replaces.
+fn rsync_cmd(from: &Path, to: &Path, exclude: &[String]) -> std::process::Command {
     let mut cmd = std::process::Command::new("rsync");
     cmd.arg("-a");
     for e in exclude {
-        cmd.arg("--exclude")
-            .arg(format!("/{}", e.trim_start_matches('/')));
+        cmd.arg("--exclude").arg(e.trim_start_matches('/'));
     }
     cmd.arg(format!("{}/", from.display())).arg(to);
-    let out = cmd.stdin(Stdio::null()).output().map_err(|e| {
-        BackendError::Io(format!(
-            "rsync: {e} (rsync is required to copy the workspace)"
-        ))
+    cmd.stdin(Stdio::null());
+    cmd
+}
+
+/// What the copy would weigh, from `rsync --dry-run --stats`: the "Total file
+/// size" line, digits only, so a locale that groups thousands does not matter.
+fn measure_copy(from: &Path, to: &Path, exclude: &[String]) -> Result<u64, BackendError> {
+    let out = rsync_cmd(from, to, exclude)
+        .arg("--dry-run")
+        .arg("--stats")
+        .output()
+        .map_err(|e| BackendError::Io(format!("rsync: {e} (rsync is required to copy the workspace)")))?;
+    if !out.status.success() {
+        return Err(BackendError::Io(format!(
+            "measuring {}: {}",
+            from.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("Total file size:"))
+        .map(|rest| rest.chars().filter(char::is_ascii_digit).collect::<String>())
+        .and_then(|d| d.parse().ok())
+        .ok_or_else(|| BackendError::Io("rsync --stats printed no `Total file size` line".into()))
+}
+
+fn human(bytes: u64) -> String {
+    const G: f64 = 1024.0 * 1024.0 * 1024.0;
+    const M: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= G {
+        format!("{:.1} GiB", b / G)
+    } else if b >= M {
+        format!("{:.0} MiB", b / M)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Copy `from` under `to`, after measuring it.
+///
+/// Measured first, and refused by size, because the failure this guards is not
+/// an error rsync would ever report: a copy that succeeds after ten minutes and
+/// 112 GB is, to rsync, a success.
+fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(), BackendError> {
+    if !from.is_dir() {
+        return Err(BackendError::NotADirectory(from.display().to_string()));
+    }
+    let size = measure_copy(from, to, exclude)?;
+    if size > max {
+        return Err(BackendError::Io(format!(
+            "refusing to copy {}: it weighs {} after excluding [{}], and the ceiling is {}. \
+             A workspace this size is a folder of repositories or a tree with build output \
+             under an unexpected name; point the session at the one repository, or raise \
+             LETIBOT_FIRECODE_COPY_MAX on purpose",
+            from.display(),
+            human(size),
+            exclude.join(", "),
+            human(max)
+        )));
+    }
+    let out = rsync_cmd(from, to, exclude).output().map_err(|e| {
+        BackendError::Io(format!("rsync: {e} (rsync is required to copy the workspace)"))
     })?;
     if !out.status.success() {
         return Err(BackendError::Io(format!(
@@ -778,6 +859,82 @@ fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("letibot-firecode-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn file(p: &Path, bytes: usize) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, vec![b'x'; bytes]).unwrap();
+    }
+
+    /// The 2026-09-16 shape: the workspace is the folder ABOVE the checkout, so
+    /// the build output and the agent worktrees are one level down. Every one of
+    /// them must be left behind, at that depth and deeper.
+    #[test]
+    fn excludes_apply_at_any_depth_not_only_at_the_root() {
+        let src = tmp("src");
+        let dst = tmp("dst").join("copy");
+        file(&src.join("repo/crates/a/src/lib.rs"), 10);
+        file(&src.join("repo/target/release/big"), 5000);
+        file(&src.join("repo/.claude/worktrees/agent-1/target/x"), 5000);
+        file(&src.join("repo/.claude/worktrees/agent-1/src/y.rs"), 10);
+        file(&src.join("repo/web/node_modules/pkg/index.js"), 5000);
+        file(&src.join("target/root-level"), 5000);
+
+        let exclude = FirecodeSpec::new(&src, "t").exclude;
+        copy_tree(&src, &dst, &exclude, u64::MAX).unwrap();
+
+        assert!(dst.join("repo/crates/a/src/lib.rs").exists());
+        assert!(!dst.join("repo/target").exists(), "nested target was copied");
+        assert!(!dst.join("repo/.claude/worktrees").exists(), "nested worktrees were copied");
+        assert!(!dst.join("repo/web/node_modules").exists(), "nested node_modules was copied");
+        assert!(!dst.join("target").exists(), "root target was copied");
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(dst.parent().unwrap());
+    }
+
+    /// A copy over the ceiling is refused BEFORE anything is written, with the
+    /// size and the ceiling named.
+    #[test]
+    fn a_copy_over_the_ceiling_is_refused_with_its_size_named_and_nothing_written() {
+        let src = tmp("big");
+        let dst = tmp("bigdst").join("copy");
+        file(&src.join("repo/data/blob"), 200_000);
+        let exclude = FirecodeSpec::new(&src, "t").exclude;
+
+        let err = copy_tree(&src, &dst, &exclude, 100_000).unwrap_err().to_string();
+        assert!(err.contains("refusing to copy"), "{err}");
+        assert!(err.contains("195 MiB") || err.contains("200000 bytes"), "{err}");
+        assert!(err.contains("LETIBOT_FIRECODE_COPY_MAX"), "{err}");
+        assert!(!dst.exists(), "the refusal wrote the copy anyway");
+
+        // The same tree under the ceiling copies.
+        copy_tree(&src, &dst, &exclude, 1_000_000).unwrap();
+        assert!(dst.join("repo/data/blob").exists());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(dst.parent().unwrap());
+    }
+
+    /// The measurement counts what the copy would carry, not what the excludes
+    /// leave behind — otherwise the ceiling would refuse the very copies the
+    /// excludes made small.
+    #[test]
+    fn the_measurement_honours_the_excludes() {
+        let src = tmp("meas");
+        let dst = tmp("measdst").join("copy");
+        file(&src.join("repo/src/main.rs"), 100);
+        file(&src.join("repo/target/huge"), 900_000);
+        let exclude = FirecodeSpec::new(&src, "t").exclude;
+        let size = measure_copy(&src, &dst, &exclude).unwrap();
+        assert!(size < 10_000, "excluded build output was measured: {size}");
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(dst.parent().unwrap());
+    }
 
     #[test]
     fn base64_round_trips_binary_and_the_paddings() {

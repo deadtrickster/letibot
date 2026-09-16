@@ -3431,6 +3431,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         &self,
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
+        progress: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
         use letibot_tools::builtins::task::Placement;
         let role = spec.role.as_str();
@@ -3482,18 +3483,30 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             }
         };
 
-        // The dashboard's tasks panel: record the spawn up front so it shows
-        // "running" through the open and the child turn, then its finish.
+        // **`opening`, not `running`, until the child is actually open.** A spawn
+        // that said "running" from this line was listed in the subagents pane
+        // while its VM was still copying the workspace — for the operator, a row
+        // they could press Enter on that led to an empty conversation (measured
+        // 2026-09-16). `opening` is a row that says what is happening and that
+        // there is nothing to attach to yet; `running` is published below, after
+        // the harness is open and the hub is in the registry.
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
-            state: "running".into(),
+            state: "opening".into(),
             tokens: 0,
             elapsed: 0.0,
             prompt: title.clone(),
             parent: parent.clone(),
         });
-        publish("running", &title);
+        publish("opening", &title);
+        progress(&match placement {
+            Placement::Firecode => format!(
+                "opening subagent {} in a firecode VM: copying the workspace, booting",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ),
+            _ => format!("opening subagent {}", letibot_sessionlog::registry::short_id(&sub_id)),
+        });
         // Every early return from here on records the failure rather than leaving a
         // "running" row forever.
         let fail = |why: String| {
@@ -3516,10 +3529,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             endpoint: self.base.endpoint.authority(),
             workspace: self.base.workspace.display().to_string(),
         };
-        let sub_hub = self
-            .registry
-            .create_under(sub_id.clone(), title.clone(), wiring, Some(parent.clone()))
-            .map_err(|e| fail(e.to_string()))?;
+        // Built, not registered: nothing can switch into it, and the worker is not
+        // told to open it, until `open_with_registry` below has succeeded.
+        let sub_hub = self.registry.new_hub(sub_id.clone());
 
         let sub_cfg = Config {
             session_id: sub_id.clone(),
@@ -3545,12 +3557,31 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let mut sub = Harness::open_with_registry(
             &parts,
             sub_cfg,
-            sub_hub,
+            sub_hub.clone(),
             Some(Box::new(SubagentAdjudicator)),
             None,
             self.registry.clone(),
         )
         .map_err(|e| fail(e.to_string()))?;
+        // Open. Now it is a session a head can switch into, and now it is running.
+        self.registry
+            .adopt(sub_hub, title.clone(), wiring, Some(parent.clone()))
+            .map_err(|e| fail(e.to_string()))?;
+        self.tasks.record(crate::tasks::TaskEntry {
+            name: sub_id.clone(),
+            role: seat.as_str().to_string(),
+            state: "running".into(),
+            tokens: 0,
+            elapsed: spawned.elapsed().as_secs_f64(),
+            prompt: title.clone(),
+            parent: parent.clone(),
+        });
+        publish("running", &title);
+        progress(&format!(
+            "subagent {} open after {:.1}s — running; ctrl-g lists it, enter attaches",
+            letibot_sessionlog::registry::short_id(&sub_id),
+            spawned.elapsed().as_secs_f64()
+        ));
 
         let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
         // The child is done: release its substrate now, not when the harness is
