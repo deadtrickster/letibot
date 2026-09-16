@@ -157,7 +157,12 @@ came first.
   regex over a corpus produced by people building a guard matches the guard's own vocabulary; the
   tree sees a `WriteFile` of prose. That is the argument for GTFOBins-as-tree-rules, now with a
   number behind it, and the reason the lexicon (tranche 1, `050743f`) is the part of CARE that
-  ported.
+  ported. **What this does not say:** the etalon is benign work and holds no attacks, so the 108
+  patterns that never fired have zero false-positive cost here and zero evidence of value here —
+  their recall is unmeasured, not disproved. Measuring it needs an attack corpus: BashArena's
+  attack trajectories (§1, item 3), run through layer A and the bank alike. Until then: the six
+  loud rules are not ported as-is; the quiet ones go in as tree rules where they do not already
+  overlap `DeviceWrite`/`Destroy`.
 - Port CARE's 10 pipeline tests as behavioural specs where they apply (`curl | sh`, a secret
   read, an obfuscated destructive) — they test their code, not our data, so they are floor, not
   measurement.
