@@ -1106,6 +1106,12 @@ impl App {
             self.model.clear();
             self.turn = None;
             self.heads = 0;
+            // The subagent tree is the PARENT's fact. Carried across a switch it
+            // put "1 subagent running" on the composer of the very subagent being
+            // looked at (measured 2026-09-16), and Enter in the pane there would
+            // have switched to itself.
+            self.subagents.clear();
+            self.subagents_sel = 0;
             // The queue is the old session's. Whatever was queued there stays
             // queued *there* — the hub drains it into that session's transcript —
             // but this head is no longer looking at that session, and an echo of
@@ -2196,9 +2202,16 @@ impl App {
                     return None;
                 }
                 Key::Enter if self.editor.text().is_empty() => {
-                    let id = self.subagents[self.subagents_sel.min(n - 1)]
-                        .session_id
-                        .clone();
+                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
+                    if row.state == "opening" {
+                        // The daemon would refuse the switch by name anyway; saying
+                        // it here keeps the operator in the pane they were using
+                        // rather than bouncing them through a rejection.
+                        self.say("that subagent is still opening — nothing to attach to yet");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let id = row.session_id.clone();
                     self.subagents_pane = false;
                     return self.switch_to(id);
                 }
@@ -3840,6 +3853,9 @@ impl App {
         }
         for (i, s) in self.subagents.iter().enumerate() {
             let (mark, state_colour) = match s.state.as_str() {
+                // Not a session yet: the child is copying its workspace or booting.
+                // Enter does nothing here, and the row says so below.
+                "opening" => ("[…]", ""),
                 "running" => ("[~]", sgr::YELLOW),
                 "done" => ("[x]", sgr::GREEN),
                 "failed" => ("[!]", sgr::RED),
@@ -3861,10 +3877,15 @@ impl App {
             out.push(dim(
                 &self.cfg,
                 &format!(
-                    "       {} · role {} · {}",
+                    "       {} · role {} · {}{}",
                     short_id(&s.session_id),
                     s.role,
-                    s.state
+                    s.state,
+                    if s.state == "opening" {
+                        " — not attachable yet"
+                    } else {
+                        ""
+                    }
                 ),
             ));
         }
@@ -6517,6 +6538,76 @@ mod tests {
 
         a.key(Key::Esc);
         assert!(!a.subagents_pane);
+    }
+
+    /// The subagent tree is the parent's fact. Measured 2026-09-16: switching
+    /// into a subagent carried "1 subagent running" onto ITS composer, and the
+    /// pane there offered the row of the very session being looked at. On the way
+    /// back the daemon replays the parent's retained events after `Hello`, so the
+    /// tree is rebuilt from the same events that built it the first time.
+    #[test]
+    fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        let spawn = SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "find the bug".into(),
+            role: "coder".into(),
+        };
+        a.apply(ServerFrame::Event(env(1, spawn.clone())));
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        assert!(!a.subagents_pane, "Enter closes the pane");
+
+        a.apply(hello("s-sub-1", vec![brief("s", "parent", true)], Hub::new("s-sub-1").snapshot()));
+        assert_eq!(a.session_id, "s-sub-1");
+        assert!(a.subagents.is_empty(), "the parent's tree came along");
+        let screen = a.screen(100, 24).join("\n");
+        assert!(!screen.contains("subagent running"), "{screen}");
+
+        // Back to the parent: Hello, then the replayed backlog.
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(1, spawn)));
+        assert_eq!(a.subagents.len(), 1);
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("find the bug"), "{screen}");
+    }
+
+    /// A child that is still copying its workspace or booting its VM is listed as
+    /// `opening`, and Enter on it goes nowhere — there is no session to go to.
+    #[test]
+    fn an_opening_subagent_is_listed_but_cannot_be_entered() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "opening".into(),
+                prompt: "find the bug".into(),
+                role: "coder".into(),
+            },
+        )));
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("not attachable yet"), "{screen}");
+        assert_eq!(a.key(Key::Enter), None, "Enter switched into a session that is not open");
+        assert!(a.subagents_pane, "the pane stays where the operator was");
+
+        // Open now: the same row, and Enter goes there.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "find the bug".into(),
+                role: "coder".into(),
+            },
+        )));
+        assert_eq!(a.subagents.len(), 1);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
     }
 
     #[test]
