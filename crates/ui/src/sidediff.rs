@@ -633,14 +633,14 @@ mod tests {
             .expect("the added row is shown");
         let (_, right) = added.split_once(" │ ").expect("two panels");
         assert!(
-            right.starts_with("\x1b[0m\x1b[32;42m"),
-            "the added cell opens with the theme's green slot as soon as the separator closes: {added:?}"
+            right.starts_with("\x1b[0m\x1b[32;48;5;22m"),
+            "the added cell opens with the cube's dark green as soon as the separator closes: {added:?}"
         );
         assert!(
-            right.contains("\x1b[32;42m+\x1b[0m\x1b[32;42m"),
+            right.contains("\x1b[32;48;5;22m+\x1b[0m\x1b[32;48;5;22m"),
             "the sign closes back into the tint: {added:?}"
         );
-        assert!(joined.contains("\x1b[31;41m-"), "the removed row is red: {joined:?}");
+        assert!(joined.contains("\x1b[31;48;5;52m-"), "the removed row is red: {joined:?}");
         // The cell ends with a reset — the padding inside the tint, then a
         // clean handoff — so the separator opens from a clean slate, not from
         // inside the tint.
@@ -653,7 +653,10 @@ mod tests {
         // And a context row is untouched: its base closes to a plain reset,
         // so its bytes are what they always were.
         let ctx = rows.iter().find(|r| r.contains("fn a() {")).expect("context row");
-        assert!(!ctx.contains("\x1b[32;42m") && !ctx.contains("\x1b[31;41m"), "{ctx:?}");
+        assert!(
+            !ctx.contains("\x1b[32;48;5;22m") && !ctx.contains("\x1b[31;48;5;52m"),
+            "{ctx:?}"
+        );
 
         // No palette, no bytes: the glyph alone still says which is which.
         for r in render_split(&old, &new, &sc(60, Palette::None, 1, 1)) {

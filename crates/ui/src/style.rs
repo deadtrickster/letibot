@@ -164,19 +164,21 @@ impl Palette {
             // caught up — it painted a blue-grey and no italic.
             Role::Reasoning => "\x1b[2;3m",
             Role::Code => "\x1b[36m",
-            // The diff roles carry a background as well as a foreground — the
-            // operator's trial: *"let's try green for add and red for remove as
-            // backgrounds"*. Both come from the theme's own slots (`42`/`41`),
-            // because the sixteen colours a theme defines are the whole palette
-            // this table is allowed to spend — an absolute cube tint
-            // (`48;5;22`) would be the exact fault the operator reported as
-            // *"colors not matching theme"*. What the slot renders is the
-            // theme's decision, which is the point of the trial: on a dark
-            // theme the row reads as a tinted band, on a light one as a pastel
-            // one, and the sign glyph still carries the distinction alone
-            // under [`Palette::None`].
-            Role::Added => "\x1b[32;42m",
-            Role::Removed => "\x1b[31;41m",
+            // The diff roles carry a background as well as a foreground. The
+            // trial ran twice: the theme's own slots (`42`/`41`) first, and the
+            // operator's verdict on them live was *"too much color, the diff is
+            // unreadable"* — a theme's background slots are saturated colours,
+            // bands and not tints. What they asked for after that was a **calm**
+            // green, and the only calm green there is sits outside the sixteen
+            // a theme defines: the xterm cube's darkest green and red,
+            // `48;5;22` and `48;5;52` — the faint full-width bands a diff
+            // viewer is expected to read through, dark enough to sit under
+            // every foreground the rest of this table spends, on the dark
+            // themes this head is actually run on. `no_role_paints_outside…`
+            // carries the exception by name: two roles, chosen once, and
+            // nothing else may follow them out.
+            Role::Added => "\x1b[32;48;5;22m",
+            Role::Removed => "\x1b[31;48;5;52m",
             Role::Emphasis => "\x1b[1;4m",
             Role::Keyword => "\x1b[35m",
             Role::StringLit => "\x1b[32m",
@@ -380,10 +382,32 @@ mod tests {
     /// theme looks fine either way — so it is settled by the sequences. `38;5;N`
     /// and `48;5;N` above 15 are absolute RGB out of the xterm cube and are the
     /// definition of ignoring the theme; `2;` and `3;` (truecolour) likewise.
+    ///
+    /// **One exception, by name.** The diff roles' backgrounds are the cube's
+    /// darkest green and red (`48;5;22`, `48;5;52`), because the operator tried
+    /// the theme's own slots live and ruled them *"too much color, the diff is
+    /// unreadable"* — a theme's background slots are bands, not tints, and the
+    /// only calm green is off-law. The exception is exactly two roles and
+    /// exactly a background: no foreground may leave the cube, and no third
+    /// role may follow, so the loophole is a named pair rather than a door.
     #[test]
     fn no_role_paints_outside_the_sixteen_colours_a_theme_defines() {
+        // The two roles the operator spent the cube on, and the exact
+        // sequences they are allowed: a background tint beside the theme's
+        // own foreground, nothing else.
+        const CUBE_EXCEPTIONS: &[(Role, &str)] = &[
+            (Role::Added, "\x1b[32;48;5;22m"),
+            (Role::Removed, "\x1b[31;48;5;52m"),
+        ];
         for r in EVERY_ROLE {
             let o = Palette::Colour.open(r);
+            if let Some((_, allowed)) = CUBE_EXCEPTIONS.iter().find(|(e, _)| e == &r) {
+                assert_eq!(
+                    o, *allowed,
+                    "{r:?} is the named cube exception and may not drift: {o:?}"
+                );
+                continue;
+            }
             assert!(
                 !o.contains("38;5;") && !o.contains("48;5;") && !o.contains("38;2;"),
                 "{r:?} paints an absolute colour the theme cannot reach: {o:?}"
