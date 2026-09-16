@@ -138,6 +138,19 @@ impl Access {
         }
     }
 
+    /// The inverse of [`Access::as_str`], derived from it.
+    pub fn parse(name: &str) -> Option<Access> {
+        [
+            Access::Read,
+            Access::Write,
+            Access::Exec,
+            Access::Network,
+            Access::Session,
+        ]
+        .into_iter()
+        .find(|a| a.as_str() == name.trim())
+    }
+
     /// Whether a call of this class may proceed without anyone being asked.
     ///
     /// `Read` and `Session`. Everything else goes through the gate, and in M1

@@ -119,6 +119,7 @@ impl CorpusSink for StoreCorpus {
             // recorded under and the key a later call is looked up by must be one
             // derivation.
             shape: row.shape.clone(),
+            shape_class: row.shape_class.clone(),
             brief_sha: Some(row.brief_format.to_string()),
             effect: row.effect.to_string(),
             asked: row.asked,
@@ -165,4 +166,136 @@ impl CorpusSink for StoreCorpus {
 /// A JSON string literal, for the one place above that builds JSON by hand.
 fn json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+#[cfg(test)]
+mod shape_cache_tests {
+    use super::*;
+    use letibot_tools::adjudicate::{
+        AdjudicatedGate, AdjudicationDecision, AdjudicationRequest, AskAdjudicator,
+    };
+    use letibot_tools::runtime::{Gate, GateCall, GateDecision};
+    use letibot_tools::schema::Access;
+
+    /// **The whole loop, end to end: approve once, restart, do not be asked again.**
+    ///
+    /// Every piece of this was unit-tested separately and the operator still had a
+    /// session that asked them about the same `grep` after a restart — because the
+    /// pieces were never joined up. This joins them: a real gate writes through a
+    /// real corpus sink into a real store, a second gate is built from that store the
+    /// way the daemon builds it, and the same shape is not asked about twice.
+    #[test]
+    fn a_shape_approved_before_a_restart_survives_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-shape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("sessions.db");
+
+        let session = "s-shape-1";
+        let workspace = "/w";
+        {
+            let s = Store::open(&path).expect("store");
+            s.put_session(&letibot_tokencore::store::SessionRecord {
+                id: session.into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: workspace.into(),
+                owner: "dead".into(),
+                approvers: vec![],
+                role: None,
+                parent_session_id: None,
+            })
+            .expect("session");
+        }
+
+        let sink = std::sync::Arc::new(StoreCorpus::open(&path).expect("corpus"));
+
+        // Session one: the operator is asked, and says yes.
+        let asked_first = {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let a = asked.clone();
+            let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+                "human:dead",
+                move |req: &AdjudicationRequest| {
+                    a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Some(AdjudicationDecision::selected(
+                        req,
+                        "allow_once",
+                        "human:dead",
+                        "yes",
+                    ))
+                },
+            )))
+            .with_identity(session, "dead")
+            .with_surroundings(surroundings(workspace))
+            .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
+
+            let args = serde_json::json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+            assert!(matches!(g.admit(&call(&args, workspace)), GateDecision::Admit));
+            asked.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(asked_first, 1, "the first time must ask");
+
+        // The daemon's own warm start, from the store the sink just wrote to.
+        let warm = {
+            let s = Store::open(&path).expect("reopen");
+            s.approved_shapes(workspace).expect("shapes")
+        };
+        assert_eq!(warm.len(), 1, "the approval did not reach the store: {warm:?}");
+
+        // Session two: a different pattern, count and file — one shape.
+        let asked_second = {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let a = asked.clone();
+            let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+                "human:dead",
+                move |req: &AdjudicationRequest| {
+                    a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Some(AdjudicationDecision::selected(
+                        req,
+                        "allow_once",
+                        "human:dead",
+                        "yes",
+                    ))
+                },
+            )))
+            .with_identity("s-shape-2", "dead")
+            .with_surroundings(surroundings(workspace));
+            assert_eq!(g.seed_shapes(warm), 1);
+
+            let args = serde_json::json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+            assert!(matches!(g.admit(&call(&args, workspace)), GateDecision::Admit));
+            asked.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(
+            asked_second, 0,
+            "the operator was asked again about a shape they approved before the restart"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn surroundings(workspace: &str) -> letibot_tools::intent::Surroundings {
+        letibot_tools::intent::Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some(workspace.into()),
+            shell: letibot_tools::intent::ShellTrust::Pinned {
+                how: "test fixture".into(),
+            },
+            seen_hosts: Default::default(),
+        }
+    }
+
+    fn call<'a>(args: &'a serde_json::Value, workspace: &'a str) -> GateCall<'a> {
+        GateCall {
+            name: "bash",
+            access: Access::Exec,
+            args,
+            turn_id: "t#1",
+            call_id: "c1",
+            workspace,
+            target_exists: None,
+        }
+    }
 }

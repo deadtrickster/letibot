@@ -201,9 +201,23 @@ pub struct NewAdjudication {
     /// The command's shape — the parse with its literals holed. `None` for a
     /// call that is not a command. See `letibot_code::shell::shape`.
     pub shape: Option<String>,
+    /// The effect class the decision was taken at, as `ActionClass`'s Display.
+    /// Paired with `shape`: the warm start needs both or it has neither.
+    pub shape_class: Option<String>,
 }
 
-pub const SCHEMA_VERSION: i64 = 6;
+/// One row the backfill may be able to fill in. See [`Store::shapeless_human_admits`].
+#[derive(Debug, Clone)]
+pub struct ShapelessAdmit {
+    pub request_id: String,
+    /// The workspace of the session this decision was taken in, from the `session`
+    /// row — so a recomputed shape is filed under the project it was approved in.
+    pub workspace_root: String,
+    pub tool: String,
+    pub arguments_json: String,
+}
+
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -340,6 +354,12 @@ CREATE TABLE IF NOT EXISTS adjudication (
     oracle_ms      INTEGER,
     oracle_model   TEXT,
     shape          TEXT,
+    -- The effect class the operator approved that shape AT, spelled as
+    -- `ActionClass`'s Display. The shape alone is not an approval: `cat <arg>`
+    -- inside the project and `cat <arg>` over `~/.ssh` are one shape and two
+    -- different things, and the class is the half that tells them apart. Written
+    -- only where `shape` is, and read back only by the warm start.
+    shape_class    TEXT,
     -- Which brief format produced `shown`. A corpus spanning a prompt change is
     -- two datasets, and without this nobody can tell where the seam is.
     brief_sha      TEXT,
@@ -805,6 +825,21 @@ impl Store {
             if !has {
                 self.conn
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape TEXT")?;
+            }
+        }
+        if from < 7 {
+            // v7: the effect class a shape was approved at, so the shape cache can
+            // survive a restart without widening. Same idempotence argument as v6.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape_class'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE adjudication ADD COLUMN shape_class TEXT")?;
             }
         }
         Ok(())
@@ -1297,9 +1332,10 @@ impl Store {
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
                 trail_json, shown, tool, arguments_json, mode, options_json, agent,
                 model_verdict, verdict, verdict_by, verdict_basis, p_allow, oracle_ms,
-                oracle_model, shape, brief_sha, effect, asked, corpus_version)
+                oracle_model, shape, shape_class, brief_sha, effect, asked,
+                corpus_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             rusqlite::params![
                 a.request_id,
                 a.session_id,
@@ -1323,6 +1359,7 @@ impl Store {
                 a.oracle_ms,
                 a.oracle_model,
                 a.shape,
+                a.shape_class,
                 a.brief_sha,
                 a.effect,
                 a.asked as i64,
@@ -1420,6 +1457,102 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)
+    }
+
+    /// **Shapes this operator approved by hand, under this workspace** — the warm
+    /// start for the shape cache.
+    ///
+    /// The cache was in-memory, so it died with the process. That made it useless
+    /// to the person it was built for: the operator restarts a session precisely
+    /// when a session has gone wrong, and was then asked again about every shape
+    /// they had already approved. Persisting it is the feature; the bounds below
+    /// are what keep persisting it honest.
+    ///
+    /// Every bound the live rule applies is applied HERE too, in SQL, so a warm
+    /// start can never be wider than the session that earned it:
+    ///
+    /// * `verdict_by LIKE 'human%'` — only a person's approval is remembered. The
+    ///   guard's own admits are excluded for the same reason they are kept out of
+    ///   the brief: a mechanism that learns from itself drifts.
+    /// * `tier = 'may_approve'` — an `always_ask` a human admitted was admitted for
+    ///   that one call. It is re-checked live as well; this is the second lock.
+    /// * `effect = 'admit'` — a refusal is not an approval.
+    /// * `baseline NOT LIKE '%destroy%'` — a shape holes its operands, so a
+    ///   destructive call is never settled by one.
+    /// * **the same `workspace_root`** — this is the bound the old in-memory cache
+    ///   got for free and a persisted one does not. `host_project` means *this*
+    ///   project, so without the join a shape approved in one checkout would admit
+    ///   the same shape in another. The class is compared for equality by the
+    ///   caller, and `host_project` is equal to `host_project` across two different
+    ///   projects — hence the join rather than trust in the class alone.
+    ///
+    /// Newest first, so a caller keeping the first answer per shape keeps the most
+    /// recent ruling.
+    pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.shape, a.shape_class
+               FROM adjudication a
+               JOIN session s ON s.id = a.session_id
+              WHERE a.shape IS NOT NULL
+                AND a.shape_class IS NOT NULL
+                AND a.tier = 'may_approve'
+                AND a.effect = 'admit'
+                AND a.verdict_by LIKE 'human%'
+                AND a.baseline NOT LIKE '%destroy%'
+                AND s.workspace_root = ?1
+              ORDER BY a.decided_ms DESC",
+        )?;
+        let rows = stmt
+            .query_map([workspace_root], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// **Human admits recorded before the shape column was filled in.** The input
+    /// to the backfill, and nothing else reads it.
+    ///
+    /// Carries the workspace from the session rather than assuming one: a shape is
+    /// only ever an approval *within a project*, and these rows span more than one.
+    /// The row's own arguments come back unparsed — deciding what a command means is
+    /// the intent layer's job and this module does not have an opinion.
+    pub fn shapeless_human_admits(&self) -> Result<Vec<ShapelessAdmit>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.request_id, s.workspace_root, a.tool, a.arguments_json
+               FROM adjudication a
+               JOIN session s ON s.id = a.session_id
+              WHERE a.shape IS NULL
+                AND a.tier = 'may_approve'
+                AND a.effect = 'admit'
+                AND a.verdict_by LIKE 'human%'
+              ORDER BY a.decided_ms ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ShapelessAdmit {
+                    request_id: r.get(0)?,
+                    workspace_root: r.get(1)?,
+                    tool: r.get(2)?,
+                    arguments_json: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Write a shape and its class onto a row that has neither.
+    ///
+    /// `WHERE shape IS NULL` is the whole safety property: this can only ever fill a
+    /// hole, never change an answer. Running it twice fills nothing the second time,
+    /// and a row whose shape was recorded live is untouchable by it. Returns whether
+    /// a row was actually filled, so a backfill can report what it did rather than
+    /// what it attempted.
+    pub fn backfill_shape(&self, request_id: &str, shape: &str, class: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE adjudication SET shape = ?2, shape_class = ?3
+              WHERE request_id = ?1 AND shape IS NULL",
+            rusqlite::params![request_id, shape, class],
+        )?;
+        Ok(n == 1)
     }
 
     /// Counts for the startup disclosure: a corpus nobody can see the size of is
@@ -1941,6 +2074,114 @@ mod corpus_tests {
             effect: "refuse".into(),
             ..Default::default()
         }
+    }
+
+    /// **The warm start is exactly as wide as the session that earned it.**
+    ///
+    /// Six rows, one per bound, and only the first may come back. Each of the other
+    /// five is a way the shape cache could quietly grow across a restart into
+    /// something nobody approved — which is the failure that matters here, because
+    /// it is silent: a cache that is too wide does not ask, and not being asked is
+    /// indistinguishable from things working.
+    #[test]
+    fn a_warm_start_carries_only_what_the_operator_themselves_approved() {
+        let s = store();
+        let here = a_session(&s);
+
+        // A second project, same store — a shape approved there is not approved here.
+        let elsewhere = "s-corpus-elsewhere".to_string();
+        s.put_session(&SessionRecord {
+            id: elsewhere.clone(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/other".into(),
+            owner: "op".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("session");
+
+        let approved = |id: &str, session: &str, shape: &str| NewAdjudication {
+            tier: "may_approve".into(),
+            effect: "admit".into(),
+            verdict_by: Some("human:op".into()),
+            baseline: "ask — intents [inspect read_file]".into(),
+            shape: Some(shape.into()),
+            shape_class: Some("read,host_project,reversible,free".into()),
+            ..a_decision(id, session)
+        };
+
+        // The one that counts.
+        s.record_adjudication(&approved("a-keep", &here, "grep -n <arg> <arg>"))
+            .expect("write");
+        // The guard's own admit: never learned from.
+        s.record_adjudication(&NewAdjudication {
+            verdict_by: Some("model oracle `qwen`".into()),
+            ..approved("a-model", &here, "sed -n <arg> <arg>")
+        })
+        .expect("write");
+        // A refusal is not an approval.
+        s.record_adjudication(&NewAdjudication {
+            effect: "refuse".into(),
+            ..approved("a-refused", &here, "curl <arg>")
+        })
+        .expect("write");
+        // An always-ask a human admitted was admitted for that one call.
+        s.record_adjudication(&NewAdjudication {
+            tier: "always_ask".into(),
+            ..approved("a-alwaysask", &here, "ssh <arg>")
+        })
+        .expect("write");
+        // A shape holes its operands, so a destructive call is never settled by one.
+        s.record_adjudication(&NewAdjudication {
+            baseline: "ask — intents [destroy]".into(),
+            ..approved("a-destroy", &here, "rm -rf <arg>")
+        })
+        .expect("write");
+        // Approved by the same person, in a different project.
+        s.record_adjudication(&approved("a-elsewhere", &elsewhere, "cat <arg>"))
+            .expect("write");
+
+        let got = s.approved_shapes("/tmp").expect("read");
+        assert_eq!(
+            got,
+            vec![(
+                "grep -n <arg> <arg>".to_string(),
+                "read,host_project,reversible,free".to_string()
+            )],
+            "the warm start reached past one of its bounds"
+        );
+
+        // And the other project sees its own, not this one's.
+        assert_eq!(
+            s.approved_shapes("/other").expect("read"),
+            vec![(
+                "cat <arg>".to_string(),
+                "read,host_project,reversible,free".to_string()
+            )]
+        );
+    }
+
+    /// A row written before the class column existed is not a usable approval: the
+    /// shape alone does not say what it was approved at. Withheld rather than
+    /// assumed, which costs one question and no more.
+    #[test]
+    fn a_shape_recorded_without_its_class_is_not_warm_started() {
+        let s = store();
+        let here = a_session(&s);
+        s.record_adjudication(&NewAdjudication {
+            tier: "may_approve".into(),
+            effect: "admit".into(),
+            verdict_by: Some("human:op".into()),
+            baseline: "ask — intents [inspect]".into(),
+            shape: Some("grep -n <arg> <arg>".into()),
+            shape_class: None,
+            ..a_decision("a-old", &here)
+        })
+        .expect("write");
+        assert!(s.approved_shapes("/tmp").expect("read").is_empty());
     }
 
     /// The property the whole table exists for: the model's verdict and the

@@ -242,6 +242,11 @@ fn run() -> Result<i32, String> {
             // answer. "Look at what it is shown" — the only way to tell a prompt
             // problem from a evidence problem.
             "--show-brief" => query = Some(Query::ShowBrief),
+            // Recover shapes for decisions the operator already made, so the shape
+            // cache does not start cold on a store full of their own approvals.
+            // Re-derived with today's classifier, never reinstated from the row.
+            "--backfill-shapes" => query = Some(Query::Backfill { write: false }),
+            "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
             "--scope" => scope = Some(PathBuf::from(next()?)),
@@ -770,6 +775,7 @@ enum Query {
     Rename(String, String),
     Delete(String),
     Calibrate { write: bool },
+    Backfill { write: bool },
     RepairPrefixes,
     Compare,
     ShowBrief,
@@ -907,6 +913,16 @@ fn run_query(
                  what you refused — the only column that is a fault, and the one a \
                  wording change must not raise."
             );
+            Ok(0)
+        }
+        Query::Backfill { write } => {
+            // Same reason as the replay below: the backfill opens its own handle.
+            drop(store);
+            let mut report = letibot_harnessd::backfill::plan(path)?;
+            if write {
+                letibot_harnessd::backfill::apply(path, &mut report)?;
+            }
+            print!("{}", report.render());
             Ok(0)
         }
         Query::Calibrate { write } => {

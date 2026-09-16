@@ -1422,6 +1422,10 @@ pub struct CorpusRow {
     /// the same question asked about a different file is one row. `None` for a call
     /// that is not a command. See `letibot_code::shell::shape`.
     pub shape: Option<String>,
+    /// **The effect class this decision was taken at**, as `ActionClass`'s
+    /// `Display`. Written beside `shape` so a later session can tell whether a
+    /// remembered shape covers the call in front of it. `None` wherever `shape` is.
+    pub shape_class: Option<String>,
     /// Layer A's deterministic reading.
     pub baseline: String,
     pub tier: &'static str,
@@ -2794,6 +2798,7 @@ mod tests {
         // state has thrown the label away.
         let row = CorpusRow {
             shape: None,
+            shape_class: None,
             request_id: "adj-1".into(),
             session_id: "s".into(),
             turn_id: "t".into(),

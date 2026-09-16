@@ -264,6 +264,13 @@ impl Reversibility {
             Reversibility::Irreversible => "irreversible",
         }
     }
+
+    /// The inverse of [`Reversibility::as_str`], derived from it.
+    pub fn parse(name: &str) -> Option<Reversibility> {
+        [Reversibility::Reversible, Reversibility::Irreversible]
+            .into_iter()
+            .find(|r| r.as_str() == name.trim())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -278,6 +285,13 @@ impl Cost {
             Cost::Free => "free",
             Cost::Metered => "metered",
         }
+    }
+
+    /// The inverse of [`Cost::as_str`], derived from it.
+    pub fn parse(name: &str) -> Option<Cost> {
+        [Cost::Free, Cost::Metered]
+            .into_iter()
+            .find(|c| c.as_str() == name.trim())
     }
 }
 
@@ -309,6 +323,27 @@ impl std::fmt::Display for ActionClass {
 }
 
 impl ActionClass {
+    /// The inverse of [`ActionClass`]'s `Display`, so a class can be written down
+    /// and read back.
+    ///
+    /// Every field must parse or the whole thing refuses: a class that lost one of
+    /// its four facts is not a narrower class, it is an unknown one, and the shape
+    /// cache compares classes for equality to decide whether a past approval covers
+    /// a present call. A `None` here means the row is skipped, which is asking.
+    pub fn parse(s: &str) -> Option<ActionClass> {
+        let mut parts = s.split(',');
+        let (a, sc, r, c) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(ActionClass {
+            access: Access::parse(a)?,
+            scope: EffectScope::parse(sc)?,
+            reversibility: Reversibility::parse(r)?,
+            cost: Cost::parse(c)?,
+        })
+    }
+
     /// The class of a host-local tool call.
     ///
     /// Two of the four facts are honest simplifications and both are stated rather
@@ -1294,6 +1329,11 @@ impl AdjudicationRow {
             trail: self.request.trail.clone(),
             shown: self.shown.clone(),
             shape: self.request.shape.clone(),
+            shape_class: self
+                .request
+                .shape
+                .as_ref()
+                .map(|_| self.request.class.to_string()),
             baseline: self.request.baseline.clone(),
             tier: self.request.tier.as_str(),
             tool: self.request.tool.clone(),
@@ -1470,8 +1510,14 @@ pub struct AdjudicatedGate {
     /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
     /// the key because that is what an execution vehicle changes.
     grants: Vec<crate::grant::Grant>,
-    /// Shapes the operator approved themselves this session, with the effect class
-    /// they approved them at. See the lookup for the four bounds.
+    /// Shapes the operator approved themselves, with the effect class they approved
+    /// them at. See the lookup for the bounds.
+    ///
+    /// Seeded at construction from the operator's own past approvals under THIS
+    /// workspace ([`AdjudicatedGate::seed_shapes`]) and added to as they answer.
+    /// It outlives the process on purpose — a cache that died with the session was
+    /// no use to somebody who restarts a session when one goes wrong, and then gets
+    /// asked again about every shape they already approved.
     approved_shapes: std::collections::HashMap<String, ActionClass>,
     /// **What the agent says it is doing right now**, supplied by the layer that
     /// has the transcript. A closure for the reason the trail source is one: this
@@ -1634,6 +1680,34 @@ impl AdjudicatedGate {
 
     /// The standing permissions in force, for a listing. A grant nobody can see is a
     /// permanent widening nobody remembers making.
+    /// **Warm-start the shape cache** from approvals the operator already gave.
+    ///
+    /// Takes `(shape, class)` pairs as written down — the class spelled as
+    /// [`ActionClass`]'s `Display` — newest first, and keeps the first ruling seen
+    /// per shape. A pair whose class does not parse is dropped rather than guessed
+    /// at: an unknown class is not a narrower one, and dropping it means the next
+    /// call of that shape asks, which is the safe direction.
+    ///
+    /// The caller owes the bounds this cannot check for itself — human, admitted,
+    /// `may_approve`, non-destructive, same workspace. [`Store::approved_shapes`]
+    /// applies all five in SQL. Everything this type CAN re-check it re-checks at
+    /// the lookup, so a seed is a claim about the past and never a licence.
+    ///
+    /// [`Store::approved_shapes`]: letibot_tokencore::store::Store::approved_shapes
+    pub fn seed_shapes(&mut self, seen: impl IntoIterator<Item = (String, String)>) -> usize {
+        let mut added = 0;
+        for (shape, class) in seen {
+            let Some(class) = ActionClass::parse(&class) else {
+                continue;
+            };
+            if !self.approved_shapes.contains_key(&shape) {
+                self.approved_shapes.insert(shape, class);
+                added += 1;
+            }
+        }
+        added
+    }
+
     pub fn grants(&self) -> &[crate::grant::Grant] {
         &self.grants
     }
@@ -2671,7 +2745,11 @@ impl Gate for AdjudicatedGate {
         //    rule protecting the rule files;
         //  * the effect class must match the one that was approved, so a shape
         //    approved inside the project does not admit the same shape outside it;
-        //  * it lives and dies with the session.
+        //  * it crosses sessions but never a project. The table is seeded from the
+        //    operator's own past approvals under this workspace and no other —
+        //    `host_project` equals `host_project` in two different checkouts, so
+        //    the class alone would let a shape approved in one admit it in the
+        //    other, and the workspace is joined on rather than trusted to the class;
         //  * and a DESTRUCTIVE call is never settled by a shape, however often the
         //    operator approved one. A shape holes its operands, so `rm -rf <arg>`
         //    approved over `target/` would stand in for `rm -rf` over anything else
@@ -2686,8 +2764,7 @@ impl Gate for AdjudicatedGate {
             && *seen == req.class
             && !baseline.intents.contains(&crate::intent::Intent::Destroy)
         {
-            let basis =
-                format!("you approved this shape earlier in this session: `{shape}`");
+            let basis = format!("you approved this shape before, in this project: `{shape}`");
             let d = AdjudicationDecision::selected(&req, "allow_once", "gate:shape", &basis);
             self.advise_on_a_settled_call(&req, "a shape the operator approved".into());
             self.breaker.admitted(&direction);
@@ -3284,6 +3361,148 @@ mod tests {
             before + 1,
             "a second deletion of the same shape was admitted without asking"
         );
+    }
+
+    /// **A shape survives the restart** — the whole point of persisting it.
+    ///
+    /// The operator restarts a session when one has gone wrong, which was exactly
+    /// when the in-memory cache threw away every approval they had given. A gate
+    /// seeded from the store must not ask again.
+    #[test]
+    fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "yes",
+                ))
+            },
+        )))
+        .with_surroundings(pinned());
+
+        // What the previous session wrote down: the shape, and the class it was
+        // approved at, spelled the way the row holds it.
+        let first = json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+        let class = {
+            let mut probe = AdjudicatedGate::closed().with_surroundings(pinned());
+            let _ = probe.admit(&bash_at(&first, "s#0"));
+            probe.log.last().expect("a row").request.class.to_string()
+        };
+        let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(
+            "grep -n \"struct CallRow\" -A 22 /w/a.rs",
+            &pinned(),
+        ))
+        .expect("a command has a shape");
+
+        assert_eq!(g.seed_shapes([(shape, class)]), 1);
+
+        // A different pattern, count and file — one shape, and nobody is asked.
+        let now = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+        assert!(matches!(g.admit(&bash_at(&now, "s#1")), GateDecision::Admit));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            0,
+            "a shape approved before the restart was asked about again"
+        );
+    }
+
+    /// A seeded shape whose class does not match the call in front of it settles
+    /// nothing. The class is the half of the pair that says *what* was approved,
+    /// and equality on it is what stops a read's approval admitting a write.
+    #[test]
+    fn a_seeded_shape_does_not_admit_a_different_class() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "yes",
+                ))
+            },
+        )))
+        .with_surroundings(pinned());
+
+        let cmd = "grep -n \"fn foo\" -A 3 /w/b.rs";
+        let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(
+            cmd,
+            &pinned(),
+        ))
+        .expect("a command has a shape");
+
+        // Seeded at a class this call is not: read, off the project, irreversible.
+        let wrong = ActionClass {
+            access: Access::Read,
+            scope: EffectScope::External,
+            reversibility: Reversibility::Irreversible,
+            cost: Cost::Metered,
+        };
+        assert_eq!(g.seed_shapes([(shape, wrong.to_string())]), 1);
+
+        let _ = g.admit(&bash_at(&json!({ "command": cmd }), "s#1"));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            1,
+            "a shape seeded at another class settled this call"
+        );
+    }
+
+    /// A class that cannot be read back is dropped, never guessed at. The next call
+    /// of that shape asks, which is the safe direction.
+    #[test]
+    fn an_unreadable_seeded_class_is_dropped_rather_than_guessed() {
+        let mut g = AdjudicatedGate::closed();
+        assert_eq!(g.seed_shapes([("grep -n <arg>".to_string(), "nonsense".to_string())]), 0);
+        assert_eq!(
+            g.seed_shapes([("grep -n <arg>".to_string(), "read,host_project".to_string())]),
+            0,
+            "a class missing two of its four facts was accepted"
+        );
+    }
+
+    /// Every class an approval can be recorded at reads back as itself. A class that
+    /// did not round-trip would silently stop matching after a restart, which reads
+    /// as "the cache does not work" and not as a bug.
+    #[test]
+    fn a_class_reads_back_as_what_was_written() {
+        for access in [
+            Access::Read,
+            Access::Write,
+            Access::Exec,
+            Access::Network,
+            Access::Session,
+        ] {
+            for scope in [
+                EffectScope::InRun,
+                EffectScope::HostProject,
+                EffectScope::HostOther,
+                EffectScope::External,
+            ] {
+                for reversibility in [Reversibility::Reversible, Reversibility::Irreversible] {
+                    for cost in [Cost::Free, Cost::Metered] {
+                        let c = ActionClass {
+                            access,
+                            scope,
+                            reversibility,
+                            cost,
+                        };
+                        assert_eq!(ActionClass::parse(&c.to_string()), Some(c));
+                    }
+                }
+            }
+        }
     }
 
     /// The guard's own admits never become shapes. The operator's rule about

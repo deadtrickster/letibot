@@ -1676,6 +1676,40 @@ impl<'a> Harness<'a> {
                     Some(sink) => g.with_corpus_sink(sink),
                     None => g,
                 };
+                // **The shape cache, warm.**
+                //
+                // The cache lived in a `HashMap` on the gate, so it died with the
+                // process — and the operator restarts a session exactly when one has
+                // gone wrong, which is the worst possible moment to forget every
+                // shape they approved. Measured on their own session: a restart put
+                // them back to being asked about `cd <arg> ; grep -n <arg> <arg>`
+                // again, which is the thing the cache exists to stop.
+                //
+                // Seeded from the store, bounded in SQL by `approved_shapes`: their
+                // own approvals, admitted, `may_approve`, non-destructive, under THIS
+                // workspace. The gate re-checks everything it can re-check at the
+                // lookup, so this is a claim about the past and not a licence.
+                //
+                // A store that cannot answer is a note, never a refusal to start —
+                // the cost of a cold cache is being asked, which is the safe side.
+                let mut g = g;
+                if let Some(st) = &store {
+                    let ws = cfg.workspace.display().to_string();
+                    match st.approved_shapes(&ws) {
+                        Ok(rows) => {
+                            let n = g.seed_shapes(rows);
+                            if n > 0 {
+                                notes.push(format!(
+                                    "{n} command shape{} you approved in this project                                      before are remembered — they will not be asked again",
+                                    if n == 1 { "" } else { "s" }
+                                ));
+                            }
+                        }
+                        Err(e) => notes.push(format!(
+                            "the shape cache could not be warmed ({e}), so shapes you                              approved before will be asked again"
+                        )),
+                    }
+                }
                 (Box::new(g), true, true)
             }
         };
