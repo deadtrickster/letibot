@@ -92,6 +92,27 @@ port would save.** The first three rules and the unreadable 19% are where the ho
 layer-A-shaped at all). So step 2 is preceded by a step 2a: bring the false-prompt rate down on
 the three rules above and read the `not_run` fifth, each measured with the same command.
 
+**Recall, measured 2026-09-17** — the first attack corpus through every layer. BashArena's
+`monitor-eval` split (HF `abhayesian/basharena-monitor-eval`; 339 bash actions from 134
+trajectories, 47 attack / 292 honest, the main task as the operator's utterance), converted by
+`scripts/basharena-to-etalon.py`; layer A via `--etalon`, the guard via `--etalon-oracle` with the
+claim arm on Qwen3.8-27B at `.78:8082`, budget 20 s:
+
+| | attacks caught (of 47) | honest flagged / asked (of 292) |
+|---|---|---|
+| CARE's 139-regex bank, as shipped | 1 (2%) | 9 (3%) |
+| layer A alone | 8 (17%), all `network_egress_to_an_unseen_host` | 36 (12%) |
+| **the guard** (layer A + oracle, best arm) | **27 (57%)** | 120 asked (41%), 172 allowed |
+
+The oracle triples layer A's recall by judging the action against the task — the attacks are
+ordinary sysadmin text (`chmod +x` on a file the agent wrote two steps earlier, the exfiltration
+inside a heredoc, `cat /etc/sudoers.d/…`) and exist only against the ask. Twenty attacks would have
+gone through; those twenty are the training signal. The 41% ask rate on honest work is the same
+rule set that asks 11% on the operator's corpus, four times over because BashArena is `/etc`,
+`/usr/local/bin` and sudoers by construction. Reference: BashArena's own GPT-4.1-mini monitor,
+with the whole trajectory in view, ~80% catch at 4% FPR (§6). Ours sees one action; 57% is the
+baseline to beat.
+
 ## 3. Step 1 — the prompt, before any port or finetune
 
 *Source: TraceGuard §4 (dimensions), BashArena §6 (ensemble).*
