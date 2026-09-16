@@ -1603,7 +1603,23 @@ impl<'a> Harness<'a> {
                         Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
                     }
                     (None, AdjudicatorChoice::Model) => {
-                        model_adjudicator(&cfg, "`--adjudicator model`", Some(hub.clone()))?
+                        // **The model decides; when it cannot, the person does.**
+                        // The operator's rule, after watching a call sit yellow and
+                        // come back `not run` with nobody asked: an oracle timeout
+                        // is a hand-off, not a refusal. The answer sink is
+                        // installed as one act with the adjudicator that uses it —
+                        // the same pair rule the Head arm below spells out.
+                        let model =
+                            model_adjudicator(&cfg, "`--adjudicator model`", Some(hub.clone()))?;
+                        let answers = Arc::new(crate::answers::Answers::new());
+                        hub.set_answer_sink(answers.clone());
+                        Box::new(crate::answers::EscalateOnTimeout::new(
+                            std::sync::Arc::from(model),
+                            std::sync::Arc::new(crate::answers::HeadAdjudicator::new(
+                                hub.clone(),
+                                answers,
+                            )),
+                        ))
                     }
                 };
                 // **The guard model, attached whenever there is one to attach.**

@@ -742,6 +742,155 @@ mod tests {
         assert!(open_of(&hub).is_empty(), "the row is closed either way");
     }
 
+    /// **The yellow card says why it is yellow.** The ask renders in the chrome,
+    /// but the call is where the eye already is — and the operator's report was
+    /// *"some tool calls stay yellow, no idea what that means"*. So posing an ask
+    /// also publishes a progress note on the call itself, naming the wait and
+    /// the budget. The call is still `Proposed` at this point — `ToolStarted`
+    /// fires only after the gate admits — which is exactly why the note has to
+    /// travel on `ToolProgress`: it is the one event the head applies to an open
+    /// call of either state.
+    #[test]
+    fn an_open_ask_tells_the_card_why_it_waits() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        hub.attach("tui", "alice", Caps::default(), 0);
+        let adj =
+            HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(30));
+        let _ = adj.decide(&request());
+        let note = hub
+            .retained()
+            .iter()
+            .find_map(|e| match &e.event {
+                SessionEvent::ToolProgress { note, .. } => Some(note.clone()),
+                _ => None,
+            })
+            .expect("posing an ask published a note on the call");
+        assert!(note.contains("waiting for you"), "{note}");
+        assert!(note.contains("nothing runs"), "{note}");
+    }
+
+    // ------------------------------------------------------------- escalation
+
+    /// A stand-in adjudicator that answers one of four ways, and counts how many
+    /// times it was asked — the counter is what distinguishes *decided* from
+    /// *consulted on the way past*. The name is what the decision's `by`
+    /// carries, so a test can tell which side answered.
+    struct Stub {
+        kind: StubKind,
+        name: &'static str,
+        asked: std::sync::Mutex<usize>,
+    }
+
+    enum StubKind {
+        /// The oracle's timeout: nobody decided.
+        TimesOut,
+        /// The oracle is down: also nobody decided.
+        Unavailable,
+        /// Somebody stopped the turn.
+        Cancels,
+        /// A verdict: the first option, allowed.
+        Allows,
+    }
+
+    impl Stub {
+        fn new(kind: StubKind, name: &'static str) -> Arc<Stub> {
+            Arc::new(Stub { kind, name, asked: std::sync::Mutex::new(0) })
+        }
+        fn asks(&self) -> usize {
+            *self.asked.lock().unwrap()
+        }
+    }
+
+    impl Adjudicator for Stub {
+        fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+            *self.asked.lock().unwrap() += 1;
+            let (outcome, basis) = match self.kind {
+                StubKind::TimesOut => (DecisionOutcome::Timeout, "the guard did not answer in time"),
+                StubKind::Unavailable => (DecisionOutcome::Unavailable, "the guard is not reachable"),
+                StubKind::Cancels => (DecisionOutcome::Cancelled, "the turn was stopped"),
+                StubKind::Allows => (
+                    DecisionOutcome::Selected { option_id: "allow_once".into() },
+                    "the person allowed it",
+                ),
+            };
+            AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome,
+                by: self.name.into(),
+                basis: basis.into(),
+                latency_ms: 1,
+            }
+        }
+        fn describe(&self) -> String {
+            self.name.into()
+        }
+    }
+
+    /// The operator's rule: **an oracle timeout is a hand-off, not a refusal.**
+    /// The model cannot answer, so the person is asked — and the record keeps
+    /// both facts: the person's decision, and the reason they were asked. A row
+    /// that showed only the first would read as a person overruling a model
+    /// that never spoke.
+    #[test]
+    fn an_oracle_timeout_asks_the_person_instead_of_refusing() {
+        let model = Stub::new(StubKind::TimesOut, "stub:model");
+        let person = Stub::new(StubKind::Allows, "stub:person");
+        let esc = EscalateOnTimeout::new(model.clone(), person.clone());
+        let d = esc.decide(&request());
+        assert_eq!(model.asks(), 1);
+        assert_eq!(person.asks(), 1, "the person was asked");
+        assert_eq!(
+            d.outcome,
+            DecisionOutcome::Selected { option_id: "allow_once".into() },
+            "{d:?}"
+        );
+        assert!(d.by.contains("person"), "{}", d.by);
+        assert!(d.basis.contains("the person allowed it"), "{}", d.basis);
+        assert!(
+            d.basis.contains("the guard did not answer in time"),
+            "the record keeps why the person was asked: {}",
+            d.basis
+        );
+    }
+
+    /// An oracle that is *down* is the same nobody-decided as one that is slow,
+    /// and escalates the same way.
+    #[test]
+    fn an_oracle_that_cannot_answer_asks_too() {
+        let model = Stub::new(StubKind::Unavailable, "stub:model");
+        let person = Stub::new(StubKind::Allows, "stub:person");
+        let esc = EscalateOnTimeout::new(model.clone(), person.clone());
+        let d = esc.decide(&request());
+        assert_eq!(person.asks(), 1, "the person was asked");
+        assert!(matches!(d.outcome, DecisionOutcome::Selected { .. }), "{d:?}");
+    }
+
+    /// A model that answers decides, and nobody else is asked.
+    #[test]
+    fn a_model_that_answers_decides_and_nobody_else_is_asked() {
+        let model = Stub::new(StubKind::Allows, "stub:model");
+        let person = Stub::new(StubKind::Allows, "stub:person");
+        let esc = EscalateOnTimeout::new(model.clone(), person.clone());
+        let d = esc.decide(&request());
+        assert_eq!(model.asks(), 1);
+        assert_eq!(person.asks(), 0, "the person was never asked");
+        assert!(d.by.contains("model"), "{}", d.by);
+    }
+
+    /// A cancellation is somebody stopping the turn, and asking over them would
+    /// be input arriving from nowhere — the same rule the sink itself keeps.
+    #[test]
+    fn a_cancelled_decision_is_not_overridden_by_an_ask() {
+        let model = Stub::new(StubKind::Cancels, "stub:model");
+        let person = Stub::new(StubKind::Allows, "stub:person");
+        let esc = EscalateOnTimeout::new(model.clone(), person.clone());
+        let d = esc.decide(&request());
+        assert_eq!(person.asks(), 0, "the person was never asked");
+        assert_eq!(d.outcome, DecisionOutcome::Cancelled, "{d:?}");
+    }
+
     /// Esc-Esc while a decision is open. The interrupt does not reach the worker —
     /// the worker is the thread waiting — so it reaches the sink, and the wait ends
     /// as a cancellation rather than sitting out five minutes.
