@@ -142,9 +142,12 @@ impl Palette {
             Role::Subheading => "\x1b[1;34m",
             Role::UserAccent => "\x1b[34m",
             // Reverse video: the terminal's own pair, swapped. See the module
-            // header — this is the one role that names a foreground *and* a
-            // background, and naming them absolutely is what made a light-themed
-            // terminal render the operator's own words as a black bar.
+            // header — this role names neither a foreground nor a background,
+            // and naming them absolutely is what made a light-themed
+            // terminal render the operator's own words as a black bar. (The
+            // diff roles do name a background — but from the theme's slots,
+            // which is the difference between *the theme decides* and *the
+            // table overrides it*.)
             Role::UserBlock => "\x1b[7m",
             Role::Success => "\x1b[32m",
             Role::Pending => "\x1b[33m",
@@ -161,8 +164,19 @@ impl Palette {
             // caught up — it painted a blue-grey and no italic.
             Role::Reasoning => "\x1b[2;3m",
             Role::Code => "\x1b[36m",
-            Role::Added => "\x1b[32m",
-            Role::Removed => "\x1b[31m",
+            // The diff roles carry a background as well as a foreground — the
+            // operator's trial: *"let's try green for add and red for remove as
+            // backgrounds"*. Both come from the theme's own slots (`42`/`41`),
+            // because the sixteen colours a theme defines are the whole palette
+            // this table is allowed to spend — an absolute cube tint
+            // (`48;5;22`) would be the exact fault the operator reported as
+            // *"colors not matching theme"*. What the slot renders is the
+            // theme's decision, which is the point of the trial: on a dark
+            // theme the row reads as a tinted band, on a light one as a pastel
+            // one, and the sign glyph still carries the distinction alone
+            // under [`Palette::None`].
+            Role::Added => "\x1b[32;42m",
+            Role::Removed => "\x1b[31;41m",
             Role::Emphasis => "\x1b[1;4m",
             Role::Keyword => "\x1b[35m",
             Role::StringLit => "\x1b[32m",
