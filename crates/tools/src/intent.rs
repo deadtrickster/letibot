@@ -234,6 +234,16 @@ pub enum Intent {
     /// adjudicable, because the disclosure cannot be undone by the person consenting
     /// to it.
     Disclose,
+    /// The action outlives the session: a cron entry, a unit enabled, a login
+    /// item. CARE's PERSISTENCE class (arXiv 2607.21642, `care/semantic.py`),
+    /// which this table had no home for — `crontab` fell to `Unknown` and
+    /// `systemctl enable` read as `ProcessControl`, which is a kill, not a
+    /// foothold.
+    Persist,
+    /// The machine itself: shutdown, reboot, halt. CARE's RESOURCE_ABUSE row
+    /// for power. Not `ProcessControl`, because the process being controlled
+    /// is every process.
+    Power,
     /// This table does not know this program. **Not** a claim that it is harmless.
     Unknown,
 }
@@ -255,6 +265,8 @@ impl Intent {
             Intent::PackageChange => "package_change",
             Intent::VersionControlPublish => "version_control_publish",
             Intent::Disclose => "disclose",
+            Intent::Persist => "persist",
+            Intent::Power => "power",
             Intent::Unknown => "unknown",
         }
     }
@@ -276,6 +288,8 @@ impl Intent {
         Intent::PackageChange,
         Intent::VersionControlPublish,
         Intent::Disclose,
+        Intent::Persist,
+        Intent::Power,
         Intent::Unknown,
     ];
 
@@ -1356,14 +1370,106 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         }
         "mount" | "umount" => vec![DeviceWrite, EnvironmentMutation],
         "chmod" | "chown" | "chgrp" | "setfacl" | "setcap" => vec![ChangePermissions],
-        "kill" | "pkill" | "killall" | "systemctl" | "service" | "nohup" | "disown" | "wait"
-        | "jobs" | "fg" | "bg" | "trap" => vec![ProcessControl],
-        "ps" | "pgrep" | "pidof" | "top" | "htop" | "lsof" | "journalctl" | "dmesg" => {
-            vec![Inspect]
+        "kill" | "pkill" | "killall" | "nohup" | "disown" | "wait" | "jobs" | "fg" | "bg"
+        | "trap" => vec![ProcessControl],
+        // **Persistence — CARE's class, arXiv 2607.21642 §III, `care/semantic.py`
+        // PERSISTENCE.** A unit enabled or a cron entry written is an action
+        // that outlives the session; `systemctl status` and `crontab -l` only
+        // look. Split on the sub-verb, as `git` is.
+        "systemctl" | "service" => {
+            // The verb is the first word that is not an option: `systemctl
+            // --user status X` is a `status`. Measured on the etalon before this
+            // skip existed: 637 prompts, most of them `--user is-active` and
+            // `--user restart` read as persistence because `--user` was arg 0.
+            let verb = argv
+                .iter()
+                .filter_map(|w| w.text())
+                .find(|t| !t.starts_with('-'))
+                .unwrap_or("");
+            match verb {
+                "status" | "is-active" | "is-enabled" | "is-failed" | "show" | "list-units"
+                | "list-unit-files" | "list-timers" | "list-dependencies" | "cat" | "get-default"
+                | "show-environment" | "" => vec![Inspect],
+                // Running state, not standing state: the same tier as `kill`.
+                "start" | "stop" | "restart" | "reload" | "kill" | "try-restart"
+                | "reload-or-restart" | "daemon-reload" | "reset-failed" | "isolate" => {
+                    vec![ProcessControl]
+                }
+                // What survives the session: enable, mask, link, edit, presets.
+                _ => vec![Persist],
+            }
         }
-        "curl" | "wget" | "nc" | "netcat" | "socat" | "telnet" | "ftp" | "http" | "httpie" => {
-            vec![Network]
+        "crontab" => {
+            if has("-l") {
+                vec![Inspect]
+            } else {
+                vec![Persist, WriteFile]
+            }
         }
+        "at" | "batch" | "anacron" | "launchctl" | "update-rc.d" | "chkconfig" => vec![Persist],
+        // **Power — CARE's RESOURCE_ABUSE row for the machine itself.**
+        "shutdown" | "reboot" | "halt" | "poweroff" | "telinit" => vec![Power],
+        // **Accounts and sudoers — CARE's PRIVILEGE_OR_PERMISSION class.** Who
+        // may log in and who may escalate; the same tier as `sudo`.
+        "useradd" | "userdel" | "usermod" | "adduser" | "deluser" | "groupadd" | "groupdel"
+        | "groupmod" | "chpasswd" | "passwd" | "visudo" => vec![PrivilegeEscalation],
+        // Joining a supplementary group the user already holds is not an
+        // escalation — `sg render -c …` is how the lubuntu seats reach the GPU —
+        // and the command it runs is read on its own (see
+        // `deferred_command_arg`). A group the user is NOT in asks for a
+        // password, which the seats cannot type.
+        "newgrp" => vec![EnvironmentMutation],
+        "getcap" => vec![Inspect],
+        // **Recon — CARE's RESOURCE_ABUSE row for scanners.** They reach hosts,
+        // which is what the unseen-host rule already judges.
+        "nmap" | "masscan" | "hping3" => vec![Network],
+        // Partitioners CARE names that this table did not.
+        "gdisk" | "sgdisk" | "cfdisk" => vec![DeviceWrite, Destroy],
+        // Load generators and a preallocation: a write, not a mystery.
+        "stress" | "stress-ng" => vec![ProcessControl],
+        "fallocate" => vec![WriteFile],
+        "ps" | "pgrep" | "pidof" | "top" | "htop" | "lsof" | "journalctl" | "dmesg" | "atop"
+        | "iotop" | "pstree" | "tty" | "whereis" | "lsb_release" | "printenv" | "tldr"
+        | "whatis" | "locate" => vec![Inspect],
+        // Checksums and text tools CARE's READ_ONLY class names and this table
+        // fell to `Unknown` on — each one a call that reached the model or the
+        // operator for no reason.
+        "sha512sum" | "cksum" | "b2sum" | "paste" | "xmllint" | "tr" | "fold" | "expand"
+        | "unexpand" | "fmt" | "iconv" => vec![ReadFile],
+        // Control-flow and variable builtins: no effect of their own. They appear
+        // as stages of their own inside loops and `case` arms; measured on the
+        // etalon, `break` 1,474 and `continue` 622 reached the model as
+        // `Unknown`.
+        // The ones that change the environment (`export`, `unset`, `set`,
+        // `declare`, `umask`…) have their own arm below and are not here.
+        "break" | "continue" | "return" | "shift" | "read" | "exit" | "let" | "getopts"
+        | "hash" | "times" | "builtin" | "enable" | "shopt" => vec![Inspect],
+        // Formatters and linters. `-w` / `--fix` write the file in place; the
+        // flag rule table adds `WriteFile` where the flag says so, and without
+        // it they read. gofmt 2,021, shellcheck 1,911, shfmt 1,728 on the etalon.
+        "shellcheck" | "checkbashisms" => vec![ReadFile],
+        "gofmt" | "shfmt" | "ruff" | "black" | "prettier" | "rustfmt" | "clang-format" => {
+            if has("-w") || has("--fix") || has("--write") || has("-i") {
+                vec![ReadFile, WriteFile]
+            } else {
+                vec![ReadFile]
+            }
+        }
+        // Sockets and sessions.
+        "ss" | "netstat" | "ip" | "ifconfig" => vec![Inspect],
+        "tmux" | "screen" => vec![ProcessControl, ExecuteCode],
+        // `sg`: run a command as another group; see `newgrp` above.
+        "sg" => vec![EnvironmentMutation],
+        // `npx` fetches a package and runs it.
+        "npx" | "pipx" | "uvx" => vec![Network, PackageChange, ExecuteCode],
+        "mise" | "asdf" | "nvm" => vec![EnvironmentMutation, PackageChange],
+        "emacsclient" => vec![ReadFile, WriteFile],
+        // Query-only network tools: they reach a host, and the unseen-host rule
+        // is the right judge of which host.
+        "dig" | "nslookup" | "traceroute" | "mtr" => vec![Network],
+        "bzip2" | "bunzip2" => vec![ReadFile, WriteFile],
+        "curl" | "wget" | "nc" | "netcat" | "socat" | "telnet" | "ftp" | "http" | "httpie"
+        | "aria2c" => vec![Network],
         "ssh" | "sftp" | "scp" | "sshfs" | "ssh-add" | "ssh-agent" => vec![Network],
         "apt" | "apt-get" | "dnf" | "yum" | "pacman" | "brew" | "snap" | "flatpak" | "npm"
         | "pnpm" | "yarn" | "pip" | "pip3" | "gem" | "cargo-install" | "rustup" | "uv" => {
@@ -1391,13 +1497,14 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         // front of it, because a relative path is read conservatively either way.
         // Measured before changing this, rather than assumed.
         "cd" | "pushd" | "popd" | "dirs" => vec![Inspect],
-        "eval" | "bash" | "sh" | "zsh" | "dash" | "ksh" | "python" | "python3" | "perl"
-        | "ruby" | "node" | "deno" | "bun" | "php" | "lua" | "Rscript" | "xargs" | "watch"
+        "eval" | "bash" | "sh" | "zsh" | "dash" | "ksh" | "csh" | "tcsh" | "python" | "python3"
+        | "perl" | "ruby" | "node" | "deno" | "bun" | "php" | "lua" | "Rscript" | "xargs" | "watch"
         | "env" | "timeout" | "nice" | "ionice" | "stdbuf" | "setsid" | "time" | "command"
         | "coproc" => {
             vec![ExecuteCode]
         }
-        "make" | "cmake" | "ninja" | "cargo" | "go" | "rustc" | "gcc" | "clang" | "javac"
+        "make" | "cmake" | "ninja" | "cargo" | "go" | "rustc" | "gcc" | "g++" | "clang" | "javac"
+        | "tsc" | "bazel" | "poetry" | "jest" | "mocha" | "vitest" | "nose2" | "rspec"
         | "mvn" | "gradle" | "pytest" | "tox" => {
             // A build runs arbitrary code from the tree and writes into it. Saying
             // only `Inspect` for `cargo test` would be the under-declaration
@@ -1421,10 +1528,17 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
             let (sub, rest) = git_subcommand(argv);
             let subarg = |i: usize| rest.get(i).copied().unwrap_or("");
             let v = match sub {
+                // The read-only porcelain and plumbing. The plumbing half is from
+                // the etalon: `merge-base` 363, `rev-list` 247, `merge-tree` 176,
+                // `ls-tree` 75, `cat-file` 57 — every one reaching the model as
+                // `Unknown` for reading the repository.
                 "status" | "log" | "diff" | "show" | "blame" | "describe" | "rev-parse"
-                | "shortlog" | "ls-files" | "grep" | "whatchanged" | "reflog" => {
-                    vec![Inspect]
-                }
+                | "shortlog" | "ls-files" | "grep" | "whatchanged" | "reflog" | "merge-base"
+                | "rev-list" | "merge-tree" | "ls-tree" | "cat-file" | "diff-tree" | "name-rev"
+                | "count-objects" | "for-each-ref" | "show-ref" | "symbolic-ref" | "var"
+                | "version" | "help" | "check-ignore" | "ls-remote" | "fsck" => vec![Inspect],
+                // A new repository, on the operator's disk: a write, not a mystery.
+                "init" => vec![WriteFile],
                 // **Subcommands that both read and write, by their own verb.**
                 // `worktree` was on the inspect list whole, and `worktree add`
                 // creates a directory and a branch; `stash` with no verb PUSHES,
@@ -1458,7 +1572,10 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
             v
         }
         "gh" | "glab" => vec![Network, VersionControlPublish],
-        "docker" | "podman" | "kubectl" | "helm" | "flowy" => vec![Network, ExecuteCode],
+        "docker" | "podman" | "kubectl" | "helm" | "flowy" | "docker-compose" => {
+            vec![Network, ExecuteCode]
+        }
+        "vi" | "vim" | "nvim" | "nano" | "emacs" => vec![ReadFile, WriteFile],
         _ => vec![Unknown],
     }
 }
@@ -1519,8 +1636,12 @@ fn deferred_command_arg(program: &str, argv: &[Word]) -> Option<usize> {
     };
     match program {
         "eval" => Some(0),
-        "bash" | "sh" | "zsh" | "dash" | "ksh" => pos("-c"),
+        "bash" | "sh" | "zsh" | "dash" | "ksh" | "csh" | "tcsh" => pos("-c"),
         "su" | "sudo" | "doas" => pos("-c"),
+        // `sg render -c 'CMD'`: the command runs under another group, and the
+        // command is what there is to judge. Measured on the etalon: 451 `sg
+        // render -c …` from the lubuntu seats reaching their GPUs, none refused.
+        "sg" | "newgrp" => pos("-c"),
         "trap" => Some(0),
         "watch" => Some(0),
         // `ssh host 'cmd'`: the command runs on the *far* side, so the local
@@ -1548,6 +1669,11 @@ fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
         _ => return None,
     };
     let mut i = 0;
+    // `timeout DURATION cmd`: the first operand is a duration, not the program.
+    // Measured on the etalon before this: 6,371 commands unwrapped to a program
+    // called `60` and reached the model as `Unknown` — the single largest hole
+    // in layer A's vocabulary, and it was a wrapper the table already named.
+    let mut skip_operands = if program == "timeout" { 1 } else { 0 };
     while i < argv.len() {
         let Some(t) = argv[i].text() else {
             // An unresolved word in the wrapper's argument list: the real program
@@ -1561,6 +1687,11 @@ fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
         }
         // `env VAR=1 cmd`: an assignment-shaped operand is not the program.
         if t.starts_with('-') || (program == "env" && t.contains('=') && !t.starts_with('/')) {
+            i += 1;
+            continue;
+        }
+        if skip_operands > 0 {
+            skip_operands -= 1;
             i += 1;
             continue;
         }
@@ -2031,6 +2162,18 @@ pub const ALWAYS_ASK: &[AlwaysAskRule] = &[
               configuration",
     },
     AlwaysAskRule {
+        name: "persistence",
+        why: "the action outlives the session — a cron entry, a unit enabled, a login \
+              item. A session ends; a foothold does not, and the operator is the only \
+              one who knows whether they meant to leave one. CARE arXiv 2607.21642's \
+              PERSISTENCE class",
+    },
+    AlwaysAskRule {
+        name: "machine_power",
+        why: "shutdown, reboot, halt: every process on the box, the operator's own \
+              included. Not a thing a session decides",
+    },
+    AlwaysAskRule {
         name: "could_not_be_read",
         why: "layer A could not resolve the action. Carried as `NotRun` rather than as \
               this tier, and listed here because it is the same requirement: \
@@ -2307,6 +2450,14 @@ impl Baseline {
         if self.intents.contains(&Intent::PrivilegeEscalation) {
             let d = "this command escalates privilege".to_string();
             ask("privilege_escalation", d, self);
+        }
+        if self.intents.contains(&Intent::Persist) {
+            let d = "this command leaves something running after the session".to_string();
+            ask("persistence", d, self);
+        }
+        if self.intents.contains(&Intent::Power) {
+            let d = "this command powers the machine down or restarts it".to_string();
+            ask("machine_power", d, self);
         }
         // **The rules about the rules, and the one thing not read from them.**
         //
@@ -3167,6 +3318,87 @@ mod tests {
             x.intents
         );
         assert!(x.findings.iter().any(|f| f.contains("wraps")));
+    }
+
+    /// `timeout DURATION cmd`: the duration is an operand, not the program.
+    /// Measured on the etalon (2026-09-16): 6,371 commands unwrapped to a program
+    /// called `60` and reached the model as `Unknown`.
+    #[test]
+    fn timeout_unwraps_past_its_duration_to_the_real_program() {
+        let x = b("timeout 60 cargo test --workspace");
+        assert!(!x.intents.contains(&Intent::Unknown), "{:?}", x.intents);
+        assert!(x.intents.contains(&Intent::ExecuteCode), "{:?}", x.intents);
+        assert!(x.findings.iter().any(|f| f.contains("wraps `cargo`")), "{:?}", x.findings);
+        // With the signal options too.
+        let y = b("timeout -k 5 -s TERM 30 curl -sf https://example.org/");
+        assert!(y.intents.contains(&Intent::Network), "{:?}", y.intents);
+    }
+
+    /// CARE arXiv 2607.21642 §III, PERSISTENCE: what outlives the session asks;
+    /// what only looks at it or restarts it does not. `systemctl --user status`
+    /// was 637 false prompts before the verb was found past `--user`.
+    #[test]
+    fn persistence_is_the_standing_state_not_the_running_state() {
+        let enable = b("systemctl --user enable --now qwen-3.8.service");
+        assert!(enable.intents.contains(&Intent::Persist), "{:?}", enable.intents);
+        assert!(matches!(&enable.tier, Tier::AlwaysAsk { rule, .. } if *rule == "persistence"), "{:?}", enable.tier);
+        let cron = b("crontab - <<'EOF'\n0 * * * * ~/bin/x\nEOF");
+        assert!(cron.intents.contains(&Intent::Persist), "{:?}", cron.intents);
+
+        for looks in ["systemctl --user status qwen-3.8.service", "systemctl --user is-active x", "crontab -l"] {
+            let x = b(looks);
+            assert!(!x.intents.contains(&Intent::Persist), "{looks}: {:?}", x.intents);
+            assert!(!matches!(x.tier, Tier::AlwaysAsk { .. }), "{looks}: {:?}", x.tier);
+        }
+        let restart = b("systemctl --user restart qwen-3.8.service");
+        assert!(restart.intents.contains(&Intent::ProcessControl), "{:?}", restart.intents);
+        assert!(!restart.intents.contains(&Intent::Persist), "{:?}", restart.intents);
+    }
+
+    /// CARE's RESOURCE_ABUSE row for the machine: power asks, every time.
+    #[test]
+    fn powering_the_machine_down_always_asks() {
+        let x = b("sudo -n reboot");
+        assert!(x.intents.contains(&Intent::Power), "{:?}", x.intents);
+        assert!(matches!(x.tier, Tier::AlwaysAsk { .. }), "{:?}", x.tier);
+        let y = b("shutdown -h now");
+        assert!(matches!(&y.tier, Tier::AlwaysAsk { rule, .. } if *rule == "machine_power"), "{:?}", y.tier);
+    }
+
+    /// `sg render -c 'CMD'` is how the lubuntu seats reach their GPU: 451 on the
+    /// etalon, none refused. Not an escalation, and the command inside is what is
+    /// read.
+    #[test]
+    fn sg_is_not_an_escalation_and_its_command_is_read() {
+        let x = b("sg render -c 'rocm-smi --showuse'");
+        assert!(!x.intents.contains(&Intent::PrivilegeEscalation), "{:?}", x.intents);
+        assert!(x.intents.contains(&Intent::Inspect), "the inner command was not read: {:?}", x.intents);
+        let y = b("sg render -c 'rm -rf /etc/x'");
+        assert!(y.intents.contains(&Intent::Destroy), "the inner command was not read: {:?}", y.intents);
+    }
+
+    /// Heads the etalon showed reaching the model as `Unknown` for reading:
+    /// git plumbing, text tools, control-flow builtins, linters.
+    #[test]
+    fn the_corpus_heads_are_read_not_unknown() {
+        for c in [
+            "git merge-base HEAD main",
+            "git rev-list --count HEAD",
+            "git cat-file -p HEAD",
+            "tr -d '\\n' < a.txt",
+            "shellcheck scripts/letibot",
+            "gofmt -l .",
+            "break",
+            "ss -tlnp",
+        ] {
+            let x = b(c);
+            assert!(!x.intents.contains(&Intent::Unknown), "{c}: {:?}", x.intents);
+            assert!(!x.intents.contains(&Intent::WriteFile), "{c} read as a write: {:?}", x.intents);
+        }
+        let w = b("gofmt -w main.go");
+        assert!(w.intents.contains(&Intent::WriteFile), "{:?}", w.intents);
+        let n = b("npx create-thing app");
+        assert!(n.intents.contains(&Intent::Network) && n.intents.contains(&Intent::ExecuteCode), "{:?}", n.intents);
     }
 
     #[test]

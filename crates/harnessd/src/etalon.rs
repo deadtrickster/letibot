@@ -104,6 +104,10 @@ pub struct Report {
     pub prompt_examples: BTreeMap<&'static str, Vec<String>>,
     /// Why layer A could not read a command, by first sentence, with counts.
     pub not_run_why: BTreeMap<String, usize>,
+    /// Program heads layer A does not know (`Intent::Unknown`), by count of
+    /// commands they appear in. The list the next tranche of heads is chosen
+    /// from — by what this operator actually runs, not by a paper's table.
+    pub unknown_heads: BTreeMap<String, usize>,
 }
 
 /// Read the JSONL and cross every `bash` row with today's layer A.
@@ -135,6 +139,24 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
         };
         let b = Baseline::of_command(cmd, env_for_row);
         let read = Read::of(&b);
+        if b.intents.contains(&letibot_tools::intent::Intent::Unknown) {
+            if let Some(n) = &b.command {
+                for st in &n.stages {
+                    if let letibot_code::shell::Word::Literal(p) = &st.program {
+                        let base = p.rsplit('/').next().unwrap_or(p).to_string();
+                        // Only the stages the table does not name: re-read THIS
+                        // stage's own text, so `git status` is judged as `git
+                        // status` and not as a bare `git`, which has no sub-verb
+                        // and would read as unknown for the wrong reason.
+                        let text = n.source.get(st.span.start..st.span.end).unwrap_or(&base);
+                        let probe = Baseline::of_command(text, env_for_row);
+                        if probe.intents.contains(&letibot_tools::intent::Intent::Unknown) {
+                            *r.unknown_heads.entry(base).or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
         *r.cells
             .entry((row.source.clone(), row.outcome.clone(), read))
             .or_default() += 1;
@@ -256,6 +278,15 @@ impl Report {
             v.sort_by(|a, b| b.1.cmp(a.1));
             for (rule, n) in v {
                 out.push_str(&format!("  {n:>6}  {rule}\n"));
+            }
+        }
+        if !self.unknown_heads.is_empty() {
+            let total: usize = self.unknown_heads.values().sum();
+            out.push_str(&format!("\nprogram heads layer A does not know ({total} occurrences), top 24:\n"));
+            let mut v: Vec<_> = self.unknown_heads.iter().collect();
+            v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (head, n) in v.into_iter().take(24) {
+                out.push_str(&format!("  {n:>6}  {head}\n"));
             }
         }
         if !self.not_run_why.is_empty() {
