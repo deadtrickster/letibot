@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Preserve the etalon: extract, prove the redaction, compress, checksum, and
+# write a manifest that says exactly what this snapshot is.
+#
+# Plan: docs/guard-corpus-plan.md §7. The corpus is the operator's own
+# conversations — commands and utterances, redacted — so it is versioned and
+# kept OFF the git repo: under ~/.local/share/letibot/etalon/ here, and a copy
+# on one more box by rsync. The raw sources (which hold tool output, and so
+# live credentials) are never snapshotted; they stay 0700 on this box and their
+# origin hosts already hold them.
+#
+# A snapshot is named by date and the extractor's commit, so a number quoted
+# against it can be traced to the code that produced it. The manifest records
+# the redaction checks and their results: a snapshot whose checks were not
+# run is not a snapshot.
+#
+# Usage: scripts/etalon-snapshot [--dest DIR]
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="${HOME}/.local/share/letibot/etalon"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dest) DEST="$2"; shift 2 ;;
+    *) echo "etalon-snapshot: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+mkdir -p "$DEST"; chmod 700 "$DEST"
+
+COMMIT="$(git -C "$HERE" rev-parse --short HEAD)"
+DIRTY=""
+git -C "$HERE" diff --quiet -- scripts/etalon-extract.py || DIRTY="+dirty"
+STAMP="$(date +%Y-%m-%d)"
+NAME="etalon-${STAMP}-${COMMIT}${DIRTY}"
+RAW="$(mktemp -t etalon.XXXXXX.jsonl)"
+trap 'rm -f "$RAW"' EXIT
+
+echo "extracting…" >&2
+python3 "$HERE/scripts/etalon-extract.py" --out "$RAW" 2> >(tee "$DEST/$NAME.extract.log" >&2)
+
+# The checks. Every pattern here has a story: the key body is the host's ground
+# truth; the password literal was found in 950 commands; the rest are the
+# fleet's own credential shapes. A hit fails the snapshot.
+declare -A CHECKS=(
+  [openssh_key_body]='b3BlbnNzaC1rZXktdjE[A-Za-z0-9+/]{20}'
+  # The header alone is not a key — a test fixture printf's one next to a
+  # fakeagent (found in the laptop's transcripts). A key is the base64 after it.
+  [pem_key_body]='PRIVATE KEY-----(\\\\n|\\s)*[A-Za-z0-9+/=]{40}'
+  [ragflow_default_password]='infini_rag_flow'
+  [github_token]='gh[pous]_[A-Za-z0-9]{20}'
+  [bearer]='Bearer [A-Za-z0-9._-]{16}'
+  [flowy_token_value]='FLOWY_TOKEN=t[a-z0-9-]{8}'
+)
+FAILED=0
+CHECKLINES=""
+for k in "${!CHECKS[@]}"; do
+  n="$(grep -cE -e "${CHECKS[$k]}" "$RAW" || true)"
+  CHECKLINES+="  $k: $n"$'\n'
+  if [ "$n" != "0" ]; then FAILED=1; fi
+done
+if [ "$FAILED" = 1 ]; then
+  echo "etalon-snapshot: a redaction check found hits — NOT snapshotting:" >&2
+  printf '%s' "$CHECKLINES" >&2
+  exit 1
+fi
+
+ROWS="$(wc -l < "$RAW")"
+zstd -q -19 -T0 "$RAW" -o "$DEST/$NAME.jsonl.zst"
+( cd "$DEST" && sha256sum "$NAME.jsonl.zst" > "$NAME.sha256" )
+HOSTS="$(ls "${HOME}/.local/share/letibot/etalon-src" 2>/dev/null | tr '\n' ' ')"
+
+cat > "$DEST/$NAME.manifest" <<EOF
+etalon snapshot $NAME
+made:        $(date -Is) on $(hostname)
+extractor:   scripts/etalon-extract.py at $COMMIT$DIRTY (deadtrickster/letibot)
+rows:        $ROWS
+sources:     this box (claude code, opencode, letibot) + etalon-src hosts: $HOSTS
+contains:    commands and operator utterances only; never tool output
+redaction checks (hits, all must be 0):
+$CHECKLINES
+file:        $NAME.jsonl.zst  ($(du -h "$DEST/$NAME.jsonl.zst" | cut -f1))
+sha256:      $(cut -d' ' -f1 "$DEST/$NAME.sha256")
+EOF
+chmod 600 "$DEST/$NAME".*
+echo "$DEST/$NAME.jsonl.zst"
+cat "$DEST/$NAME.manifest" >&2
