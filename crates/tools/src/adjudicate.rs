@@ -105,7 +105,7 @@ impl FlowRule {
 /// | [`Tier::Auto`] | nothing is consulted | a read inside the boundary — clause 4 |
 /// | [`Tier::MayApprove`] | the model, if the authorisation is clear | everything else |
 /// | [`Tier::AlwaysAsk`] | **the operator, every time** | layer A's fixed list, whatever anything else concludes |
-/// | [`Tier::Inexpressible`] | nobody, ever | secret bytes crossing the boundary, and nothing else |
+/// | [`Tier::Blocked`] | nobody, ever | secret bytes crossing the boundary, and nothing else |
 ///
 /// # The two the model cannot move
 ///
@@ -121,7 +121,7 @@ impl FlowRule {
 /// it on their behalf, and **the classifier cannot shrink it** — only the operator
 /// can, and each removal is a recorded decision like any other override.
 ///
-/// [`Tier::Inexpressible`] is narrower still: irreversible disclosure of a secret
+/// [`Tier::Blocked`] is narrower still: irreversible disclosure of a secret
 /// across the boundary. Not "dangerous", not "destructive". The asymmetry is who
 /// bears the consequence and whether they can consent in-session — the operator owns
 /// a deletion and chose it, and cannot un-disclose a key afterwards.
@@ -143,7 +143,7 @@ pub enum Tier {
     /// reading a prompt can see what they are trading.
     AlwaysAsk { rule: &'static str, why: String },
     /// Nothing promotes this. `evidence` is the sentence the audit row carries.
-    Inexpressible { rule: FlowRule, evidence: String },
+    Blocked { rule: FlowRule, evidence: String },
 }
 
 impl Tier {
@@ -152,12 +152,12 @@ impl Tier {
             Tier::Auto => "auto",
             Tier::MayApprove => "may_approve",
             Tier::AlwaysAsk { .. } => "always_ask",
-            Tier::Inexpressible { .. } => "inexpressible",
+            Tier::Blocked { .. } => "blocked",
         }
     }
 
-    pub fn is_inexpressible(&self) -> bool {
-        matches!(self, Tier::Inexpressible { .. })
+    pub fn is_blocked(&self) -> bool {
+        matches!(self, Tier::Blocked { .. })
     }
 
     /// Whether an oracle may be consulted at all. False for both of the tiers it
@@ -175,7 +175,7 @@ impl Tier {
                 Tier::Auto => 0,
                 Tier::MayApprove => 1,
                 Tier::AlwaysAsk { .. } => 2,
-                Tier::Inexpressible { .. } => 3,
+                Tier::Blocked { .. } => 3,
             }
         }
         if rank(&other) > rank(&self) {
@@ -191,13 +191,13 @@ impl Tier {
 /// A tuple struct with a private field: nothing outside this module can construct
 /// one, and the only public way to obtain one is
 /// [`AdjudicationRequest::adjudicable`], which answers `None` when the tier is
-/// [`Tier::Inexpressible`] **or** when the command did not resolve.
+/// [`Tier::Blocked`] **or** when the command did not resolve.
 ///
 /// [`crate::authorise::Widening`] — the sole value that can turn an ask into an
 /// admit — takes one by value. So both of the failures this design is most afraid of
 /// are unspellable rather than merely checked:
 ///
-/// - *admit an inexpressible action* — the witness does not exist for one.
+/// - *admit an blocked action* — the witness does not exist for one.
 /// - *promote out of always-ask* — nor for one of those. The operator decides those
 ///   every time, and "the model was very sure" is not a way around it.
 /// - *unresolved, therefore proceed* — measured as one `if` apart in the survey:
@@ -774,7 +774,7 @@ pub struct ModelAdvice {
     /// **Whether an oracle was actually consulted.**
     ///
     /// `false` covers every case where a model adjudicator answered *without asking
-    /// a model*: an unresolved action, an always-ask entry, an inexpressible one, an
+    /// a model*: an unresolved action, an always-ask entry, an blocked one, an
     /// uncollected trail, an intent outside the oracle's earned scope. Those are
     /// layer A's answers arriving through layer B's door, and they are not verdicts.
     ///
@@ -829,7 +829,7 @@ impl AdjudicationRequest {
     /// The witness that layer A found this adjudicable **and** readable.
     ///
     /// The only way to obtain an [`Adjudicable`], and therefore the only way anything
-    /// can be admitted by an oracle. `None` for an inexpressible action and `None`
+    /// can be admitted by an oracle. `None` for an blocked action and `None`
     /// for an unresolved one — see [`Adjudicable`] for why that is a type rather than
     /// a check.
     pub fn adjudicable(&self) -> Option<Adjudicable> {
@@ -2079,7 +2079,7 @@ impl AdjudicatedGate {
     /// | | settled by |
     /// |---|---|
     /// | 1a | layer A could not resolve the action |
-    /// | 1b | an inexpressible tier — a secret crossing the boundary |
+    /// | 1b | an blocked tier — a secret crossing the boundary |
     /// | 1  | the never-write list |
     /// | 1.5 | a `permission` config `deny` |
     /// | 1.5 | a `permission` config `allow` |
@@ -2546,7 +2546,7 @@ impl Gate for AdjudicatedGate {
         //      `rm -rf /` is allowed if it is the intent, and what makes it safe or not
         //      is a mismatch with what was authorised rather than a property of the
         //      string.
-        if let Tier::Inexpressible { rule, evidence } = &req.tier {
+        if let Tier::Blocked { rule, evidence } = &req.tier {
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Selected {
@@ -2664,7 +2664,7 @@ impl Gate for AdjudicatedGate {
         // 2. **The point this session sits at.** See `crate::mode`.
         //
         //    It governs `Tier::MayApprove` and nothing else: `admits_unasked` answers
-        //    `false` for an always-ask and for an inexpressible at every point,
+        //    `false` for an always-ask and for an blocked at every point,
         //    including automode, and there is no argument that makes it answer
         //    otherwise. So this arm cannot be the one that widens something a point is
         //    not allowed to widen — the check is in the type rather than here.
@@ -2713,7 +2713,7 @@ impl Gate for AdjudicatedGate {
         //    was shown rather than a superset of it.
         //
         //    `Grant::covers` is the only reader, and it refuses an unresolved action,
-        //    an always-ask and an inexpressible before it looks at coverage at all.
+        //    an always-ask and an blocked before it looks at coverage at all.
         let program = grant_program(&baseline);
         //    The operator's rule excepts exec here too: a standing permission never
         //    covers an exec-class call, so an `allow_session` taken over `cargo test`
@@ -2740,7 +2740,7 @@ impl Gate for AdjudicatedGate {
         //    *"that command was approved already by someone and this is ever so
         //    slightly different"* — applied to the mechanism most able to do it;
         //  * the tier is re-checked HERE, not remembered. Reaching `always-ask` or
-        //    `inexpressible` today means asking today, whatever was approved
+        //    `blocked` today means asking today, whatever was approved
         //    yesterday, so a shape cannot carry a call past the secret list or the
         //    rule protecting the rule files;
         //  * the effect class must match the one that was approved, so a shape
@@ -2843,7 +2843,7 @@ impl Gate for AdjudicatedGate {
         //  * the oracle's scope, which decides whether it may answer about this
         //    action at all (it returns `ask` when it may not, and that falls
         //    through to the person below);
-        //  * `Tier::Inexpressible`, refused at step 1b, before any of this.
+        //  * `Tier::Blocked`, refused at step 1b, before any of this.
         //
         // And it admits ONCE. The oracle mints `allow_once` and nothing here turns
         // that into a standing grant.
@@ -4286,7 +4286,7 @@ mod tests {
     /// with one.
     ///
     /// `ModelAdjudicator` answers five questions without asking a model — an
-    /// unresolved action, an always-ask entry, an inexpressible one, an uncollected
+    /// unresolved action, an always-ask entry, an blocked one, an uncollected
     /// trail, an intent outside its earned scope. From outside, those produce the
     /// same `AdjudicationDecision` a real verdict does. Labelling against them would
     /// manufacture signal, which is worse than none because it looks like data.
@@ -4870,7 +4870,7 @@ mod tests {
             }
             other => panic!("a disclosure must not be admitted: {other:?}"),
         }
-        assert_eq!(g.log[0].request.tier.as_str(), "inexpressible");
+        assert_eq!(g.log[0].request.tier.as_str(), "blocked");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Plan mode as a **capability boundary**, not a flag.
 //!
-//! `docs/tool-design-brief.md` §2.4: make the mistake inexpressible, do not warn
+//! `docs/tool-design-brief.md` §2.4: make the mistake blocked, do not warn
 //! about it. Three of the five surveyed harnesses have a plan mode and all three
 //! implement it as a *guard*: opencode denies `plan_exit` by permission, omp's
 //! `plan-mode-guard.ts:143-153` hard-rejects filesystem mutation at call time,

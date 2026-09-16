@@ -61,7 +61,7 @@ pub enum Read {
     Auto,
     MayApprove,
     AlwaysAsk,
-    Inexpressible,
+    Blocked,
     NotRun,
 }
 
@@ -74,7 +74,7 @@ impl Read {
             Tier::Auto => Read::Auto,
             Tier::MayApprove => Read::MayApprove,
             Tier::AlwaysAsk { .. } => Read::AlwaysAsk,
-            Tier::Inexpressible { .. } => Read::Inexpressible,
+            Tier::Blocked { .. } => Read::Blocked,
         }
     }
     fn word(self) -> &'static str {
@@ -82,7 +82,7 @@ impl Read {
             Read::Auto => "auto",
             Read::MayApprove => "may_approve",
             Read::AlwaysAsk => "always_ask",
-            Read::Inexpressible => "inexpressible",
+            Read::Blocked => "blocked",
             Read::NotRun => "not_run",
         }
     }
@@ -154,7 +154,7 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
                     }
                 }
             }
-            (Tier::Inexpressible { rule, .. }, _) => {
+            (Tier::Blocked { rule, .. }, _) => {
                 let name: &'static str = rule.as_str();
                 if row.outcome == "refused" {
                     *r.catches_by_rule.entry(name).or_default() += 1;
@@ -189,7 +189,7 @@ impl Report {
             self.rows, self.commands
         ));
         // The table: rows are (source, outcome); columns are the reads.
-        let reads = [Read::Auto, Read::MayApprove, Read::AlwaysAsk, Read::Inexpressible, Read::NotRun];
+        let reads = [Read::Auto, Read::MayApprove, Read::AlwaysAsk, Read::Blocked, Read::NotRun];
         let mut keys: Vec<(String, String)> = self
             .cells
             .keys()
@@ -219,19 +219,19 @@ impl Report {
                 .sum()
         };
         let ran = sum("ran", Read::Auto) + sum("ran", Read::MayApprove) + sum("ran", Read::AlwaysAsk)
-            + sum("ran", Read::Inexpressible) + sum("ran", Read::NotRun);
+            + sum("ran", Read::Blocked) + sum("ran", Read::NotRun);
         let refused: usize = reads.iter().map(|r| sum("refused", *r)).sum();
         out.push_str(&format!(
             "\nran × always_ask (would prompt now): {} of {} ({:.1}%)\n",
-            sum("ran", Read::AlwaysAsk) + sum("ran", Read::Inexpressible),
+            sum("ran", Read::AlwaysAsk) + sum("ran", Read::Blocked),
             ran,
-            pct(sum("ran", Read::AlwaysAsk) + sum("ran", Read::Inexpressible), ran)
+            pct(sum("ran", Read::AlwaysAsk) + sum("ran", Read::Blocked), ran)
         ));
         out.push_str(&format!(
             "refused × always_ask (caught before the model): {} of {} ({:.1}%)\n",
-            sum("refused", Read::AlwaysAsk) + sum("refused", Read::Inexpressible),
+            sum("refused", Read::AlwaysAsk) + sum("refused", Read::Blocked),
             refused,
-            pct(sum("refused", Read::AlwaysAsk) + sum("refused", Read::Inexpressible), refused)
+            pct(sum("refused", Read::AlwaysAsk) + sum("refused", Read::Blocked), refused)
         ));
         out.push_str(&format!(
             "not_run (layer A could not read it): {} of {} ({:.1}%)\n",
@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(r.commands, 3, "an edit row is not a command");
         let cell = |o: &str, rd: Read| r.cells.get(&("t".into(), o.into(), rd)).copied().unwrap_or(0);
         assert_eq!(cell("ran", Read::MayApprove) + cell("ran", Read::Auto), 1, "{:?}", r.cells);
-        assert_eq!(cell("refused", Read::AlwaysAsk) + cell("refused", Read::Inexpressible), 1, "{:?}", r.cells);
+        assert_eq!(cell("refused", Read::AlwaysAsk) + cell("refused", Read::Blocked), 1, "{:?}", r.cells);
         assert_eq!(cell("ran", Read::NotRun), 1, "{:?}", r.cells);
         assert_eq!(r.catches_by_rule.values().sum::<usize>(), 1, "{:?}", r.catches_by_rule);
         assert!(r.prompts_by_rule.is_empty(), "{:?}", r.prompts_by_rule);

@@ -8,7 +8,7 @@
 //! # The design constraint, stated as an API rule
 //!
 //! §4.3's first clause is that *"there is no rewrite operation to call"* -- a
-//! prefix violation must be **inexpressible**, not merely detected. Three
+//! prefix violation must be **blocked**, not merely detected. Three
 //! mechanisms carry that here, at three different depths, and they are listed in
 //! order of how hard they are to defeat:
 //!
@@ -710,7 +710,7 @@ mod tests {
                     "{file} grew a public method `{name}` that is not on the append-only \
                      allowlist. If it can shorten, reorder or overwrite what is already in \
                      the region, it must not exist: §4.3 clause 1 says a prefix violation is \
-                     inexpressible, not merely detected. If it genuinely cannot, add it to \
+                     blocked, not merely detected. If it genuinely cannot, add it to \
                      the allowlist in this test on purpose."
                 );
             }

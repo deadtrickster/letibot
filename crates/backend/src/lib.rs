@@ -75,7 +75,7 @@ pub enum Meter {
 
 /// How strongly the append-only prompt invariant holds.
 ///
-/// The plan's claim (§4.3) is that a prefix violation is *inexpressible*: request
+/// The plan's claim (§4.3) is that a prefix violation is *blocked*: request
 /// N+1 is the same append-only token region read to a greater length, so there is
 /// no rewrite operation to call. That claim is a property of submitting token ids
 /// over memory we own. It does not survive a `messages` API, and pretending it does

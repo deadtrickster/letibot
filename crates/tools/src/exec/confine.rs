@@ -420,7 +420,7 @@ impl Grant {
                  file is NOT an alternative: binding `~/.ssh/id_rsa` into the view \
                  would make it readable, and a readable key is one `cat` away from \
                  the transcript — which `docs/boundary-and-adjudication.md` §3 calls \
-                 inexpressible, with no context and no authorisation that promotes \
+                 blocked, with no context and no authorisation that promotes \
                  it. Start an agent and load the key (`eval $(ssh-agent); ssh-add \
                  <key>`); letibot forwards the agent, never the key. Note that an \
                  authorised `ssh` needs a SECOND decision as well: `Egress::Host`, \
@@ -1957,7 +1957,7 @@ mod tests {
         let m = format!("{e}");
         assert!(m.contains("ssh-add"), "{m}");
         assert!(m.contains("never the key"), "{m}");
-        assert!(m.contains("inexpressible"), "{m}");
+        assert!(m.contains("blocked"), "{m}");
         // And it names the SECOND decision the authorised case needs.
         assert!(m.contains("Egress::Host"), "{m}");
 

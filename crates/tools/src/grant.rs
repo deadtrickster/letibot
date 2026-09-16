@@ -42,7 +42,7 @@
 //! | | |
 //! |---|---|
 //! | it is shown in class terms **before** it is accepted | informed foot-shooting; the muzzle direction is visible |
-//! | it reaches `MayApprove` and `AlwaysAsk`, **never** `Inexpressible` | §3's flow rule is not a setting. You can shoot your foot; you cannot shoot your head |
+//! | it reaches `MayApprove` and `AlwaysAsk`, **never** `Blocked` | §3's flow rule is not a setting. You can shoot your foot; you cannot shoot your head |
 //! | it never covers an **unresolvable** normalisation | `NotRun` stands: a pattern written in advance cannot apply to a command nobody could parse |
 //!
 //! The second and third are enforced by [`Grant::covers`] taking the tier and the
@@ -161,8 +161,8 @@ pub enum NotCovered {
     /// `Tier::AlwaysAsk`. The operator decides these every time, and a standing
     /// permission is the model's authority rather than the operator's presence.
     AlwaysAsk,
-    /// `Tier::Inexpressible`. Nothing reaches this, at any mode, by any spelling.
-    Inexpressible,
+    /// `Tier::Blocked`. Nothing reaches this, at any mode, by any spelling.
+    Blocked,
 }
 
 impl NotCovered {
@@ -171,7 +171,7 @@ impl NotCovered {
             NotCovered::ClassNotGranted => "class_not_granted",
             NotCovered::Unresolved => "unresolved",
             NotCovered::AlwaysAsk => "always_ask",
-            NotCovered::Inexpressible => "inexpressible",
+            NotCovered::Blocked => "blocked",
         }
     }
 
@@ -197,7 +197,7 @@ impl NotCovered {
                  is the model's authority to act on their behalf, and that is the one \
                  thing this list withholds."
             }
-            NotCovered::Inexpressible => {
+            NotCovered::Blocked => {
                 "secret bytes would cross the boundary. No grant, no glob, no mode and \
                  no instruction reaches this — the consequence does not land on the \
                  person who would be consenting to it and it cannot be undone \
@@ -212,7 +212,7 @@ impl Grant {
     ///
     /// Takes the tier and the resolved flag by value rather than reading them off
     /// something a caller assembled, so there is no arrangement of arguments under
-    /// which an inexpressible or unresolved action is covered. The three refusals are
+    /// which an blocked or unresolved action is covered. The three refusals are
     /// checked **before** the coverage lookup, which is the same ordering
     /// `AdjudicatedGate::admit` uses and for the same reason: an action nobody could
     /// read is not an action anybody can have pre-approved.
@@ -228,7 +228,7 @@ impl Grant {
             return Err(NotCovered::Unresolved);
         }
         match tier {
-            Tier::Inexpressible { .. } => return Err(NotCovered::Inexpressible),
+            Tier::Blocked { .. } => return Err(NotCovered::Blocked),
             Tier::AlwaysAsk { .. } => return Err(NotCovered::AlwaysAsk),
             Tier::Auto | Tier::MayApprove => {}
         }
@@ -314,7 +314,7 @@ impl Grant {
             ));
         }
         s.push_str(
-            "  Nothing here reaches an inexpressible action, an always-ask entry, or a \
+            "  Nothing here reaches an blocked action, an always-ask entry, or a \
              command layer A could not read.\n",
         );
         s
@@ -466,10 +466,10 @@ mod tests {
             ),
             Err(NotCovered::AlwaysAsk)
         );
-        // Inexpressible: you can shoot your foot, you cannot shoot your head.
+        // Blocked: you can shoot your foot, you cannot shoot your head.
         assert_eq!(
             g.covers(
-                &Tier::Inexpressible {
+                &Tier::Blocked {
                     rule: FlowRule::SecretToTranscript,
                     evidence: "test".into()
                 },
@@ -478,7 +478,7 @@ mod tests {
                 inspect_class(),
                 &all
             ),
-            Err(NotCovered::Inexpressible)
+            Err(NotCovered::Blocked)
         );
     }
 
@@ -490,7 +490,7 @@ mod tests {
             NotCovered::ClassNotGranted,
             NotCovered::Unresolved,
             NotCovered::AlwaysAsk,
-            NotCovered::Inexpressible,
+            NotCovered::Blocked,
         ]
         .iter()
         .map(|n| n.why())
@@ -540,7 +540,7 @@ mod tests {
         );
         assert!(s.contains("--upload-pack"), "{s}");
         assert!(s.contains("still ask"), "{s}");
-        assert!(s.contains("inexpressible"), "{s}");
+        assert!(s.contains("blocked"), "{s}");
     }
 
     /// An unclassified program is counted and named as unclassified. A disclosure that

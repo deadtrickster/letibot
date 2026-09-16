@@ -34,7 +34,7 @@
 //! 'harnessd-rice.sock'` — killed a running command mid-flight, because the
 //! string was in the shell's own command line. Prompting has now failed eight
 //! times against this hazard. `docs/tool-design-brief.md` §2.4: *make the mistake
-//! inexpressible, do not warn about it.*
+//! blocked, do not warn about it.*
 //!
 //! [`crate::builtins::monitor`]'s test asserts no monitor tool has grown a
 //! `pattern`, `match` or `cmdline` argument, the way the job tools already do.

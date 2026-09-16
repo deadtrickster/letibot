@@ -56,8 +56,8 @@
 //! `tok_offset` is not the previous `tok_offset + tok_len`. The last one is the
 //! prefix invariant written as a constraint: a hole, an overlap, a reordering or
 //! a re-insert at an old index is rejected by the database, whatever the caller
-//! believed it was doing. `crate::ledger`'s type makes a rewrite inexpressible
-//! in this process; the triggers make it inexpressible in `sqlite3` on the
+//! believed it was doing. `crate::ledger`'s type makes a rewrite blocked
+//! in this process; the triggers make it blocked in `sqlite3` on the
 //! command line too.
 //!
 //! **WAL, `synchronous = FULL`.** §4.4 says WAL. `FULL` rather than `NORMAL`

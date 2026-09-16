@@ -8,7 +8,7 @@
 //! `TODO.md` T24: *"`pkill -f X` becomes 'kill this cgroup' — no pattern, so
 //! nothing to self-match; `until pgrep -f X` becomes 'is this cgroup non-empty' —
 //! no predicate that can match its own waiter."* T21.1 and T21.2 are not guarded
-//! here, they are **inexpressible** here.
+//! here, they are **blocked** here.
 //!
 //! # 2. There is a wait verb at all
 //!
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn no_tool_here_takes_a_pattern() {
-        // T21 made inexpressible rather than guarded: if this ever fails, somebody
+        // T21 made blocked rather than guarded: if this ever fails, somebody
         // added the argument that brings the whole failure mode back.
         for s in [
             JobList.schema(),

@@ -244,7 +244,7 @@ impl AuthorisationOracle for HttpOracle {
                 // The witness is layer A's, taken once. Without it there is
                 // nothing to widen and ALLOW is not an available answer --
                 // which is the rule that keeps layer B from promoting out of
-                // AlwaysAsk or Inexpressible.
+                // AlwaysAsk or Blocked.
                 let Some(witness) = brief.adjudicable() else {
                     return OracleAnswer::NotAuthorised {
                         why: format!(

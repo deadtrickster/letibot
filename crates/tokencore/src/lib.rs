@@ -15,7 +15,7 @@
 //!   startup**, and turns `RenderSpan`s into tokens across the one seam where
 //!   text and control tokens must not be able to become each other.
 //! * [`ledger::TokenLedger`] -- the rows, the hash chain, and the memfd region
-//!   whose shape makes a prefix violation inexpressible rather than merely
+//!   whose shape makes a prefix violation blocked rather than merely
 //!   detectable.
 //! * [`store::Store`] -- the durable copy, with the append-only rule restated as
 //!   SQL triggers.

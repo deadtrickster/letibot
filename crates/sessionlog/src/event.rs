@@ -775,7 +775,7 @@ pub enum SessionEvent {
         /// Who decided: `boundary:host`, `model:…`, `breaker`, or `none`.
         by: String,
         basis: String,
-        /// `inexpressible`, `always_ask`, `adjudicable`, `auto`.
+        /// `blocked`, `always_ask`, `adjudicable`, `auto`.
         tier: String,
         /// **`denied` (somebody decided) or `not_run` (nobody did).** Never
         /// collapsed: `not_run` is not a denial, and it is not permission either.

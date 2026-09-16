@@ -47,7 +47,7 @@
 //!
 //! A point governs [`Tier::MayApprove`] and **nothing else**. It cannot move
 //! [`Tier::AlwaysAsk`] — that tier means *the operator decides, every time, however
-//! confident anything is* — and it cannot touch [`Tier::Inexpressible`], which nobody
+//! confident anything is* — and it cannot touch [`Tier::Blocked`], which nobody
 //! can, at any point, including [`Mode::AUTO`]. Both properties are types rather than
 //! checks: [`crate::adjudicate::Adjudicable`] is minted only for `MayApprove`, so
 //! there is no value a point could hold that would widen either of the other two.
@@ -378,7 +378,7 @@ impl Mode {
             Prereq::Oracle,
         ],
         summary: "a model answers, within the scope it has earned. The always-ask list \
-                  still reaches you and nothing promotes an inexpressible action.",
+                  still reaches you and nothing promotes an blocked action.",
     };
 
     /// **Everything is admitted, nothing asks.** The firecode-native point.
@@ -476,7 +476,7 @@ impl Mode {
     ///
     /// The whole of the point's authority, in one function, and it takes the tier so
     /// that the two tiers a point may not move cannot be reached by a caller that
-    /// forgot to check them. `AlwaysAsk` and `Inexpressible` answer `false` here at
+    /// forgot to check them. `AlwaysAsk` and `Blocked` answer `false` here at
     /// every point including [`Mode::AUTO`].
     ///
     /// # Why `Tier::Auto` is not a blanket yes here
@@ -504,7 +504,7 @@ impl Mode {
             // Layer A's own tier — a secret disclosed across the boundary — is
             // refused by the gate before any point is consulted, and a point cannot
             // reach it. A credential in the copy is still a credential.
-            Tier::Inexpressible { .. } => false,
+            Tier::Blocked { .. } => false,
         }
     }
 
@@ -631,12 +631,12 @@ mod tests {
     /// remembered. `allow-all` is the one point that is not on the operator's box —
     /// its prerequisite is a confinement — and it is checked the other way below.
     #[test]
-    fn no_point_on_the_operators_box_moves_always_ask_or_inexpressible() {
+    fn no_point_on_the_operators_box_moves_always_ask_or_blocked() {
         let ask = Tier::AlwaysAsk {
             rule: "privilege_escalation",
             why: "test".into(),
         };
-        let never = Tier::Inexpressible {
+        let never = Tier::Blocked {
             rule: crate::adjudicate::FlowRule::SecretToTranscript,
             evidence: "test".into(),
         };
@@ -653,7 +653,7 @@ mod tests {
                 );
                 assert!(
                     !m.admits_unasked(&never, access),
-                    "{} admitted an inexpressible for {access:?}",
+                    "{} admitted an blocked for {access:?}",
                     m.name
                 );
             }
@@ -670,7 +670,7 @@ mod tests {
             rule: "privilege_escalation",
             why: "test".into(),
         };
-        let never = Tier::Inexpressible {
+        let never = Tier::Blocked {
             rule: crate::adjudicate::FlowRule::SecretToTranscript,
             evidence: "test".into(),
         };

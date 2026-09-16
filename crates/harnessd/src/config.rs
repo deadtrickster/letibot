@@ -962,7 +962,7 @@ impl Config {
                 )
             } else {
                 format!(
-                    "{}. Nothing at this mode reaches an inexpressible action, and the \
+                    "{}. Nothing at this mode reaches an blocked action, and the \
                      always-ask list reaches you at every one of them.",
                     self.mode.describe()
                 )

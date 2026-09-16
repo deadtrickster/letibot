@@ -207,7 +207,7 @@ fn read_word(b: &Baseline) -> &'static str {
         Tier::Auto => "auto",
         Tier::MayApprove => "may_approve",
         Tier::AlwaysAsk { .. } => "always_ask",
-        Tier::Inexpressible { .. } => "inexpressible",
+        Tier::Blocked { .. } => "blocked",
     }
 }
 
@@ -379,7 +379,7 @@ pub fn build(path: &Path, env: &Surroundings, limit: usize, points_cap: usize) -
         cell.refused_by_human += s.refused_by_human;
         cell.error += s.error;
         cell.always_ask += s.reads.get("always_ask").copied().unwrap_or(0)
-            + s.reads.get("inexpressible").copied().unwrap_or(0);
+            + s.reads.get("blocked").copied().unwrap_or(0);
         cell.may_approve += s.reads.get("may_approve").copied().unwrap_or(0);
         cell.not_run += s.reads.get("not_run").copied().unwrap_or(0);
     }
