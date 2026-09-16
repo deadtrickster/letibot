@@ -47,8 +47,8 @@ use letibot_sessionlog::event::{
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
 use letibot_tools::adjudicate::{
-    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, OnTimeout, OptionKind as ToolOptionKind,
-    RequestKind,
+    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice, OnTimeout,
+    OptionKind as ToolOptionKind, RequestKind,
 };
 
 /// How long a person gets to answer before the gate fails closed.
@@ -184,7 +184,7 @@ impl Answers {
         if who.is_empty() {
             return AdjudicationDecision::unavailable(
                 req,
-                "human:none",
+                "gate:no-head",
                 "no head that can answer is attached to this session, so nothing was \
                  asked and nobody decided. The gate fails closed: nothing ran and \
                  nothing changed. Attach a head, or run this seat in a foreground \
@@ -199,6 +199,20 @@ impl Answers {
             g.insert(req.id.clone(), Slot::Waiting);
             drop(g);
             hub.publish(pose(req, deadline_ms));
+            // **The yellow card says why it is yellow.** The call is still
+            // `Proposed` — `ToolStarted` fires only after the gate admits — so
+            // this note is the only thing on the card that explains the wait,
+            // and the operator's report was *"some tool calls stay yellow, no
+            // idea what that means"*. The ask renders in the chrome; the note
+            // renders on the call, where the eye already is.
+            hub.publish(SessionEvent::ToolProgress {
+                turn_id: req.turn_id.clone(),
+                call_id: req.call_id.clone(),
+                note: format!(
+                    "waiting for you: the ask is open for {}s, then nothing runs",
+                    budget.as_secs()
+                ),
+            });
             self.wait(&req.id, budget)
         };
 
@@ -211,20 +225,24 @@ impl Answers {
                 }
                 settle(req, &reply, &by, latency_ms)
             }
+            // Nobody decided, so `by` is the gate and not the heads that were
+            // asked — the heads are named in the basis. A `human:` here put
+            // timeouts into the corpus as a person's refusals (2026-09-16).
             Waited::TimedOut => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Timeout,
-                by: format!("human:{}", who.join(",")),
+                by: "gate:timeout".into(),
                 basis: format!(
-                    "nobody answered within {}s. This is not a denial — nobody decided.",
-                    budget.as_secs()
+                    "nobody answered within {}s (asked {}). This is not a denial — nobody decided.",
+                    budget.as_secs(),
+                    who.join(",")
                 ),
                 latency_ms,
             },
             Waited::Cancelled { why } => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Cancelled,
-                by: "human:interrupt".into(),
+                by: "gate:interrupt".into(),
                 basis: format!("the decision was cancelled before anybody answered: {why}"),
                 latency_ms,
             },
@@ -303,13 +321,17 @@ fn settle(req: &AdjudicationRequest, reply: &Reply, by: &str, latency_ms: u64) -
             basis: format!("{by} chose `{option_id}` at the head"),
             latency_ms,
         },
+        // Not the person's decision: nobody chose an option. `by` says who
+        // decided, and here nothing did — see the same rule in
+        // `AskAdjudicator::decide`.
         Reply::Question(_) => AdjudicationDecision {
             request_id: req.id.clone(),
             outcome: DecisionOutcome::Unavailable,
-            by: format!("human:{by}"),
-            basis: "a question's answer arrived for a permission, which settles nothing; \
-                    a permission is answered by option id"
-                .into(),
+            by: "gate:unavailable".into(),
+            basis: format!(
+                "a question's answer arrived from {by} for a permission, which settles \
+                 nothing; a permission is answered by option id"
+            ),
             latency_ms,
         },
     }
@@ -498,6 +520,76 @@ impl Adjudicator for HeadAdjudicator {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+}
+
+/// **The model decides; when it cannot, the person does.**
+///
+/// `--adjudicator model` puts the model in front of the gate alone, and an oracle
+/// that timed out failed the call closed with a refusal the operator experienced as
+/// a card that sat yellow and then said `not run` — their rule, after that: *"if a
+/// tool call reaches oracle and timeouts — the timeout must be visible and result
+/// in a human ask"*. The timeout already is visible (the card's note names the
+/// consult while it waits); what was missing was the ask.
+///
+/// This wrapper forwards to the model and, when the answer means **nobody decided**
+/// — [`DecisionOutcome::Timeout`] or [`DecisionOutcome::Unavailable`] — asks the
+/// person instead. A `Cancelled` decision is *not* forwarded: a cancel is somebody
+/// stopping the turn, and asking over them would be input arriving from nowhere.
+/// And when no head is attached the ask returns `Unavailable` immediately, so an
+/// unattended session degrades to exactly the fail-closed refusal it had before —
+/// the fallback makes a session stronger when a person is there and changes nothing
+/// when one is not, which is the difference between this and the silent fallback
+/// `--oracle`'s absence refuses to make.
+pub struct EscalateOnTimeout {
+    inner: Arc<dyn Adjudicator>,
+    human: Arc<dyn Adjudicator>,
+}
+
+impl EscalateOnTimeout {
+    pub fn new(inner: Arc<dyn Adjudicator>, human: Arc<dyn Adjudicator>) -> Self {
+        EscalateOnTimeout { inner, human }
+    }
+}
+
+impl Adjudicator for EscalateOnTimeout {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        let d = self.inner.decide(req);
+        match d.outcome {
+            DecisionOutcome::Timeout | DecisionOutcome::Unavailable => {
+                let mut h = self.human.decide(req);
+                // The record keeps both facts: the person decided, and the reason
+                // they were asked is that the guard did not answer. A corpus row
+                // that showed only the first would read as a person overruling a
+                // model that never spoke.
+                h.basis.push_str(&format!(" {}", d.basis));
+                h
+            }
+            _ => d,
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{}, and when it cannot answer in time, the person at the head",
+            self.inner.describe()
+        )
+    }
+
+    fn last_pattern(&self) -> Option<String> {
+        // Whichever of the two answered: a pattern typed with a person's answer
+        // belongs to the person, and a model that minted one reported its own.
+        self.human.last_pattern().or_else(|| self.inner.last_pattern())
+    }
+
+    fn last_brief(&self) -> Option<String> {
+        self.human.last_brief().or_else(|| self.inner.last_brief())
+    }
+
+    fn last_advice(&self) -> Option<ModelAdvice> {
+        // The model's verdict travels to the corpus row even when it lost the
+        // decision to the timeout — that row is the disagreement signal.
+        self.inner.last_advice()
     }
 }
 

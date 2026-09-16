@@ -1199,11 +1199,19 @@ impl Adjudicator for ConsoleAdjudicator {
             Ok(g) => g,
             // A poisoned mutex means a previous ask panicked. Unavailable, not a
             // guess.
+            // **`by` names who DECIDED, and nobody did.** These arms carried
+            // `human:<who>`, so a head that timed out or answered with an option
+            // the request did not offer was written into the corpus as a person
+            // refusing — and the operator's own three "refusals" of a man-page
+            // lookup they had proposed were exactly that (2026-09-16). The
+            // corpus filters on `human:` to find a human's answers, the
+            // calibration counted those rows as false allows, and every prompt
+            // arm was charged for being right. Only `Selected` is the person.
             Err(_) => {
                 return AdjudicationDecision::unavailable(
                     req,
-                    &format!("human:{}", self.who),
-                    "the console adjudicator's stream is poisoned",
+                    "gate:unavailable",
+                    &format!("the console adjudicator's stream is poisoned (asked {})", self.who),
                 );
             }
         };
@@ -1219,8 +1227,8 @@ impl Adjudicator for ConsoleAdjudicator {
             Ok(0) => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Timeout,
-                by: format!("human:{}", self.who),
-                basis: "the ask channel closed without an answer".into(),
+                by: "gate:timeout".into(),
+                basis: format!("the ask channel closed without an answer (asked {})", self.who),
                 latency_ms: started.elapsed().as_millis() as u64,
             },
             Ok(_) => {
@@ -1237,8 +1245,11 @@ impl Adjudicator for ConsoleAdjudicator {
                     return AdjudicationDecision {
                         request_id: req.id.clone(),
                         outcome: DecisionOutcome::Unavailable,
-                        by: format!("human:{}", self.who),
-                        basis: format!("`{chosen}` is not one of the options this request offered"),
+                        by: "gate:unavailable".into(),
+                        basis: format!(
+                            "{} chose `{chosen}`, which is not one of the options this request offered",
+                            self.who
+                        ),
                         latency_ms: started.elapsed().as_millis() as u64,
                     };
                 }
@@ -1252,8 +1263,8 @@ impl Adjudicator for ConsoleAdjudicator {
             }
             Err(e) => AdjudicationDecision::unavailable(
                 req,
-                &format!("human:{}", self.who),
-                &format!("the ask channel failed: {e}"),
+                "gate:unavailable",
+                &format!("the ask channel failed: {e} (asked {})", self.who),
             ),
         }
     }
