@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 /// config pane; adding one here is adding a row there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadPrefs {
-    /// `split` — two panels when the row is wide enough, unified below — or
-    /// `unified` always.
+    /// `split` — two panels — or `unified` always. The toggle is the whole
+    /// choice; the width is the renderer's business.
     pub diff: DiffPref,
     /// `open` or `folded`.
     pub thinking: String,

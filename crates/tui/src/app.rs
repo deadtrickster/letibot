@@ -4082,7 +4082,7 @@ impl App {
         };
         rows.push(head(
             "diff view",
-            if self.diff_split { "split (unified below 100 columns)".into() } else { "unified".into() },
+            if self.diff_split { "split".into() } else { "unified".into() },
             ConfigEdit::Head(HeadSetting::Diff),
         ));
         rows.push(head("thinking", fold_word(self.reasoning).into(), ConfigEdit::Head(HeadSetting::Thinking)));
@@ -5680,15 +5680,15 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             }
         }
     };
-    // The two-panel before/after view. It replaces the byte-count body when
-    // this call edited a file, the operator has it switched on, and the pane
-    // is wide enough for both panels (opencode's gate, and for the same
-    // reason); every other case keeps exactly what the card already said,
-    // which is what makes the toggle safe to flip at any width.
+    // The before/after view. Split or unified is the operator's `/diff` toggle
+    // and nothing else — no width gate, because the two answers a width gate
+    // ever gave were a cramped diff or no diff at all. Every other case keeps
+    // exactly what the card already said, which is what makes the toggle safe
+    // to flip at any width.
     if matches!(card.verb, card::Verb::Edit | card::Verb::Write)
         && let Some(e) = edit_excerpt
     {
-        let view = sidediff::edit_view(diff_split, cfg.width.saturating_sub(2));
+        let view = sidediff::edit_view(diff_split);
         let dcfg = DiffConfig {
             // The card indents its body by two, so the panels are built for
             // the width the body actually has, or the card truncates the
@@ -6477,7 +6477,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // window of the new file — and a folded row showed two lines of it.
             // When this head watched the call run it holds both sides, and the
             // operator's question about an edit is "what changed", which is a
-            // diff in whichever of the two shapes fits (`sidediff::edit_view`).
+            // diff in whichever of the two shapes the toggle picks
+            // (`sidediff::edit_view`).
             // Folded keeps the first hunk's opening rows so the change is on the
             // screen without the fold; open shows it whole, up to the diff's own
             // cap. A row this head did not watch run has no pair and keeps the
@@ -6494,7 +6495,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     intra_line: false,
                     max_rows: 60,
                 };
-                let view = sidediff::edit_view(diff_split, w.saturating_sub(2));
+                let view = sidediff::edit_view(diff_split);
                 let mut rows = sidediff::render_edit_view(
                     &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
                 );
@@ -7149,7 +7150,7 @@ mod tests {
         assert!(a.config_pane);
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("diff view"), "{screen}");
-        assert!(screen.contains("split (unified below 100 columns)"), "{screen}");
+        assert!(screen.contains("split"), "{screen}");
         assert!(screen.contains("asked the daemon; nothing back yet"), "{screen}");
 
         // Row 0 is the diff view; Enter flips it and the file says so.
@@ -9942,24 +9943,23 @@ mod tests {
         );
     }
 
-    /// The fallback is a UNIFIED diff, not the byte count. The toggle's own
-    /// message promised "unified below 100 columns" while the card drew the
-    /// old body there — measured by the operator as *"even unified claude-code
-    /// style edit panes are not here"*.
+    /// The toggle is the whole gate. Off is a unified diff at any width; on is
+    /// a split at any width — a narrow pane gets a narrow split, not the byte
+    /// count, because an edit drawn cramped is still an edit the operator can
+    /// read, and the width gate's other answer was *no diff at all*.
     #[test]
-    fn the_diff_toggle_and_a_narrow_pane_both_fall_back_to_unified() {
+    fn the_diff_toggle_alone_picks_split_or_unified_at_any_width() {
         let off = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, false);
         let text = off.join("\n");
         assert!(!text.contains('│'), "switched off: {off:?}");
         assert!(text.contains("+    x();") || text.contains("+x();"), "no unified diff: {off:?}");
         assert!(!text.contains("64 B"), "the byte count came back instead of a diff: {off:?}");
 
-        // opencode's gate: under 100 columns the panels cannot hold code and
-        // gutters, so the switch being on is not enough — and the answer is
-        // still a diff.
+        // Narrow and switched on: still a split. The panels are cramped; the
+        // renderer wraps and degrades, and the change is on the screen.
         let narrow = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(80), 0, Fold::Open, true);
         let text = narrow.join("\n");
-        assert!(!text.contains('│'), "narrow pane: {narrow:?}");
+        assert!(text.contains('│'), "narrow pane drew no split: {narrow:?}");
         assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
     }
 
