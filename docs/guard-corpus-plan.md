@@ -145,6 +145,19 @@ came first.
   cited per rule; nothing copied from GTFOBins' pages (GPL).
 - Not taken: `grep -r "password"` (SE-P-028, 0.75) and `chown root` (SE-P-057, 0.55) — they
   would prompt on ordinary work.
+- **The L4 regex bank, measured and not taken (2026-09-16).** All 139 patterns, as shipped, run
+  over the etalon's 120,593 commands: **31 fire at all; together they would add 879 prompts on
+  rows that ran and catch 5 refused rows** (4 of them scp/rsync legs `credential_use` already
+  catches). The heaviest firers are wrong: SE-P-069 "shutdown/reboot" matches the *word* in grep
+  patterns and source text (297); SE-P-003 counts `/home` as a system directory, so every
+  `rm -rf /home/dead/Projects/x` prompts (104); SE-P-112 fires on the operator's own docker-in-
+  docker tests (77). The confidence-1.0 hits — `rm -rf /` (9), `cat ~/.ssh/id_rsa` (11),
+  `curl … | sh` (11) — are every one of them **text about a dangerous command**: this repository's
+  test fixtures, its docs, the tool survey's table, written into files by heredoc. A whole-string
+  regex over a corpus produced by people building a guard matches the guard's own vocabulary; the
+  tree sees a `WriteFile` of prose. That is the argument for GTFOBins-as-tree-rules, now with a
+  number behind it, and the reason the lexicon (tranche 1, `050743f`) is the part of CARE that
+  ported.
 - Port CARE's 10 pipeline tests as behavioural specs where they apply (`curl | sh`, a secret
   read, an obfuscated destructive) — they test their code, not our data, so they are floor, not
   measurement.
