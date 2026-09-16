@@ -5690,10 +5690,15 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
     {
         let view = sidediff::edit_view(diff_split);
         let dcfg = DiffConfig {
-            // The card indents its body by two, so the panels are built for
-            // the width the body actually has, or the card truncates the
-            // right panel's tail to fit and the diff lies by omission.
-            width: cfg.width.saturating_sub(2),
+            // The card indents its body by two, and the turn block steps the
+            // whole card in by the activity indent *after* the card has
+            // rendered, so the panels are built for the width the row will
+            // actually have — or the frame trims the right panel's tail off
+            // and the diff lies by omission. The transcript's own diff arm
+            // does the same arithmetic at its `let w`.
+            width: cfg
+                .width
+                .saturating_sub(2 + activity_indent(cfg.width)),
             palette: cfg.palette(),
             // The excerpt already carries ±3 lines of context around the
             // change; re-diffing with the same keeps it intact.
@@ -9961,6 +9966,39 @@ mod tests {
         let text = narrow.join("\n");
         assert!(text.contains('│'), "narrow pane drew no split: {narrow:?}");
         assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
+    }
+
+    /// **The clip the operator photographed.** The card built its diff for the
+    /// body width, and the turn block then stepped the whole card in by the
+    /// activity indent — *after* the card had rendered — so every split row
+    /// left the frame two columns wider than the frame trims to, and a
+    /// full-width panel line lost its tail at the terminal edge. The panels
+    /// are built for the width the row will actually have, which is the
+    /// arithmetic the transcript's own diff arm already does at its `let w`.
+    #[test]
+    fn the_split_diff_fits_after_the_indent_the_caller_applies() {
+        let w = 209; // a 211-column terminal minus the gutter
+        let e = letibot_sessionlog::event::ToolEdit {
+            before: format!("{}\n", "y".repeat(300)),
+            after: format!("{}\n", "x".repeat(300)),
+            before_lines: 1,
+            after_lines: 1,
+            ..edit_excerpt()
+        };
+        let cfg = plain_cfg(w);
+        let rows = step_in(
+            call_card(&edit_row(Some(e)), &cfg, 0, Fold::Open, true),
+            activity_indent(w),
+        );
+        let joined = rows.join("\n");
+        assert!(
+            rows.iter().all(|r| r.chars().count() <= w),
+            "a diff row outgrew the frame the card is drawn in: {joined}"
+        );
+        // And the width was not paid for by the content: both panels wrap
+        // their long line whole, so the change is on the screen, not cut.
+        assert_eq!(joined.matches('x').count(), 300, "{joined}");
+        assert_eq!(joined.matches('y').count(), 300, "{joined}");
     }
 
     #[test]
