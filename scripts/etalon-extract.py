@@ -5,7 +5,7 @@ words beside it and what became of it.
 Plan: docs/guard-corpus-plan.md §7 (step 5). Three stores, one row shape:
 
     {"source": "claude-code" | "opencode" | "letibot",
-     "session": ..., "cwd": <where it ran; the project for scope>, "ts_ms": ...,
+     "session": ..., "cwd": <where it ran; the project for scope>, "mode": <permission mode, when recorded>, "ts_ms": ...,
      "trail": [{"speaker": "operator", "text": ..., "seconds_ago": ..., "turns_ago": ...}, ...],
      "tool": "bash" | "edit" | "write",
      "arguments": {"command": ...} | {"path": ...},
@@ -124,6 +124,11 @@ def claude_code(paths, root, host="lab2x1"):
         utterances = []  # (ts_ms, text)
         pending = {}  # tool_use_id -> (ts_ms, name, input, trail)
         events = []
+        # The permission mode in force. Claude Code writes it on
+        # `permission-mode` records (a switch) and on `user` records (the
+        # prompt's mode), never on the assistant line that carries the call —
+        # so it is state, carried forward, not a field read per line.
+        mode = ""
         # A copy of another host's tree can carry a symlink whose target stayed
         # behind; say so and move on rather than losing the whole host.
         try:
@@ -138,6 +143,8 @@ def claude_code(paths, root, host="lab2x1"):
                 except Exception:
                     continue
                 t = o.get("type")
+                if o.get("permissionMode"):
+                    mode = o["permissionMode"]
                 if t not in ("user", "assistant"):
                     continue
                 ts = o.get("timestamp")
@@ -148,6 +155,10 @@ def claude_code(paths, root, host="lab2x1"):
                 m = o.get("message") or {}
                 content = m.get("content")
                 cwd = o.get("cwd") or ""
+                # The mode is what turns "ran" into a label: under `default` a
+                # person (or their allowlist) let it through; under `auto` the
+                # classifier did, which is a model's verdict and is kept apart
+                # from a human's the same way its denials are.
                 if t == "user":
                     if isinstance(content, str) and content.strip():
                         utterances.append((ts_ms, content))
@@ -161,7 +172,7 @@ def claude_code(paths, root, host="lab2x1"):
                 elif isinstance(content, list):
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "tool_use":
-                            events.append(("use", ts_ms, dict(p, _cwd=cwd)))
+                            events.append(("use", ts_ms, dict(p, _cwd=cwd, _mode=mode)))
         for kind, ts_ms, p in events:
             if kind == "use":
                 name = (p.get("name") or "").lower()
@@ -172,12 +183,12 @@ def claude_code(paths, root, host="lab2x1"):
                     args = {"path": inp["file_path"]}
                 else:
                     continue
-                pending[p.get("id")] = (ts_ms, name, args, trail_of(utterances, ts_ms), p.get("_cwd", ""))
+                pending[p.get("id")] = (ts_ms, name, args, trail_of(utterances, ts_ms), p.get("_cwd", ""), p.get("_mode", ""))
             else:
                 key = p.get("tool_use_id")
                 if key not in pending:
                     continue
-                ts_use, name, args, trail, cwd = pending.pop(key)
+                ts_use, name, args, trail, cwd, mode = pending.pop(key)
                 body = p.get("content")
                 if isinstance(body, list):
                     body = " ".join(x.get("text", "") for x in body if isinstance(x, dict))
@@ -194,13 +205,22 @@ def claude_code(paths, root, host="lab2x1"):
                     "source": f"claude-code@{host}",
                     "session": session,
                     "cwd": cwd,
+                    "mode": mode,
                     "ts_ms": ts_use,
                     "trail": trail,
                     "tool": name,
                     "arguments": args,
                     "outcome": outcome,
                     "why": redact(why),
-                    "label": {"by": refused_by, "effect": "refuse"} if refused_by else None,
+                    "label": (
+                        {"by": refused_by, "effect": "refuse"}
+                        if refused_by
+                        else {"by": "classifier", "effect": "admit"}
+                        if outcome == "ran" and mode == "auto"
+                        else {"by": "human-or-allowlist", "effect": "admit"}
+                        if outcome == "ran" and mode in ("default", "acceptEdits")
+                        else None
+                    ),
                 }
                 rows += 1
     print(f"claude-code@{host}: {rows} rows from {len(paths)} transcripts", file=sys.stderr)
@@ -274,9 +294,9 @@ def opencode(db, host="lab2x1"):
 def letibot(db):
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     rows = 0
-    for sid, ts, tool, args, trail, effect, by, asked, ws in c.execute(
+    for sid, ts, tool, args, trail, effect, by, asked, ws, mode in c.execute(
         "select a.session_id, a.decided_ms, a.tool, a.arguments_json, a.trail_json, a.effect, a.verdict_by, a.asked, "
-        "coalesce(s.workspace_root, '') from adjudication a left join session s on s.id = a.session_id"
+        "coalesce(s.workspace_root, ''), coalesce(a.mode, '') from adjudication a left join session s on s.id = a.session_id"
     ):
         try:
             a = json.loads(args)
@@ -294,6 +314,7 @@ def letibot(db):
             "source": "letibot",
             "session": sid,
             "cwd": ws,
+            "mode": mode,
             "ts_ms": ts,
             "trail": [
                 {
