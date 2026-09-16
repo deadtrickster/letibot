@@ -5,7 +5,7 @@ design) and to two flowy rows: the survey `01M2MHKC839DVJEBG4M5RW0JNR` and its a
 `01M2MW0S3D2BTMDERXCYT34TYT`, with the nine PDFs on message `01M2MJFZRYEE627Q14DQ8ZTQSA`
 in `Lab/#general`. Each step below is a flowy todo row (Lab):
 `01M2NTZ3K7FS5Q7PX3WWWPDPE1` step 1 · `01M2NTZ3N3B2SMRXRN418H1YMT` step 2 · `01M2NTZ3PD8D9W61X8V4SWHNGJ` step 3 ·
-`01M2NTZ3NS4M5JCNYMC5MKZ2MB` step 4 · `01M2NTZ3MB03DT4ZWT2QBTZAJ4` step 5.
+`01M2NTZ3NS4M5JCNYMC5MKZ2MB` step 4 · `01M2NTZ3MB03DT4ZWT2QBTZAJ4` step 5 · `01M2NXVY8JA69Q54ZYDQQMZJ18` step 6.
 
 **The rule this document sets:** every commit that lands a step here names its source —
 the paper by arXiv id (and the section or table where the number came from), the dataset by its
@@ -167,7 +167,57 @@ Not to be done without a look first: some of those transcripts carry things the 
 not want in a training set (paths, tokens in tool output). The extractor writes commands and
 utterances, never tool *output*.
 
+## 7b. Step 6 — the head must be a person, and a person may allow anything
+
+*Source: none — ours. The operator, 2026-09-16: "it is indeed an impersonation gap, yet me, human,
+must be able to allow anything."*
+
+**The gap.** A head is a client on the daemon's unix socket that declared `can_decide` and a
+name (`--identity dead`). Its authority is the socket's permission — `$XDG_RUNTIME_DIR/letibot`,
+mode 0700 — which is the *uid*, not the person. Anything running as that uid can attach a head,
+call itself `dead`, and answer a prompt: an agent's own `bash` on an unconfined seat, a script a
+model wrote, another agent on the box. Every `human:dead` in the corpus is a declaration the
+daemon believed. Confined seats (bubblewrap) cannot reach the socket; the leticode seat with
+`--bash` can, and that is the seat the operator runs.
+
+**The other half.** Today `blocked` means nobody can say yes to the call — not the head, not the
+model. The operator's rule is different: *a person* may allow anything, including a blocked call;
+what nobody but a person may do is override. So the fourth tier's meaning becomes: **no agent and
+no model can promote this; a proven person can, once, with the proof recorded.**
+
+**Two mechanisms, for two strengths of claim:**
+
+1. **Provenance of the head — for every decision.** The daemon reads the connecting process's
+   credentials (`SO_PEERCRED` → pid) and walks `/proc/<pid>/status` ancestry. A head whose
+   ancestry contains `harnessd` itself (a tool call answering its own gate), a known agent process
+   (the `claude`, `opencode`, `letibot-tui --no-tty` invocations the agents make), or no
+   controlling terminal at all, is seated **read-only** whatever it declared: it sees the session,
+   it cannot decide. The verdict row records the head's pid, its tty and the ancestor that was
+   checked, so `human:dead` becomes `human:dead@pts/3, parent zsh, no agent above it` — a fact,
+   not a name. Cheap, no secret to keep, and it closes the case the corpus actually contains: an
+   agent's bash attaching a head.
+
+2. **Proof of person — for overriding `blocked`.** Provenance says the head is not an agent's
+   child; it does not say a human is at it. An override of a blocked call asks for something a
+   model process cannot supply: the operator's own password, verified through the PAM stack the
+   box already trusts (`sudo -S -v` on a throwaway timestamp, through the `letibot-askpass`
+   plumbing in `crates/harnessd/src/sudo.rs` that already exists for `sudo`), or a per-boot
+   secret written by the login session to a file agents' views never mount. The override is
+   recorded as such (`by: person:dead, proof: pam`), never becomes a standing grant, never enters
+   the shape cache, and is shown in the corpus as its own row kind — an overridden block is the
+   most valuable label there is, because it says where the rule is wrong.
+
+**What this does not do:** it does not authenticate the *daemon* (a uid that can attach a head
+can also start a daemon with a different config); that is the sudo/PAM boundary's problem, and
+this plan does not pretend to fix it. It does not stop a person from being fooled; a head that
+is a person answering a brief is exactly what layer B is for.
+
+**Measured by:** the corpus — how many `human:dead` rows would have been read-only under (1); the
+tier table — how many `blocked` rows the operator overrides under (2), which is the list of rules
+to revisit.
+
 ## 8. Order
 
-1 (prompt, measure) → 5 (etalon; it improves every later measurement) → 2 (CARE port, measured
+1 (prompt, measure) → 5 (etalon; it improves every later measurement) → 2a (our own rules and the
+unreadable third) → 6 (the head is a person; mechanism 1 first, it is cheap) → 2 (CARE port, measured
 against both) → 4 (builder) → 3 (finetune). 1 and 5 can run in parallel; 2 waits for 5.
