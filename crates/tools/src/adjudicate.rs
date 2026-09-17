@@ -568,8 +568,6 @@ pub fn permission_options() -> Vec<DecisionOption> {
     ]
 }
 
-/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
-///
 /// The ladder for an exec-class call: no session grant (the operator's rule of
 /// 2026-09-11, a shell asks every time), and *Always allow* as a durable rule
 /// over the program and its verb (the revision of 2026-09-14).
@@ -600,6 +598,8 @@ pub fn exec_options() -> Vec<DecisionOption> {
     ]
 }
 
+/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
+///
 /// Same as [`permission_options`] without `allow_session`, and the label says where
 /// the missing option went rather than leaving its absence to be guessed at. An
 /// operator who wants to stop being asked needs a different point, not a different

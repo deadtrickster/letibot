@@ -1,0 +1,17 @@
+the background trial failed: the theme's slots are bands, not tints
+
+The operator, looking at it live: "too much color fo the diff unreadable".
+The trial painted added rows with the theme's green slot and removed rows
+with its red slot, full width, and on a real terminal those slots are
+saturated colours — the diff became two loud bands with dim syntax on top,
+which is the opposite of a tint. Reverted whole: the palette table is back
+to foreground-only 32/31, and the split renderer is back to the shape where
+the sign glyph is the carrier and the code keeps its syntax colours.
+
+What the trial did settle, and is worth having settled: the mechanism works
+(the cell paints inside its role, spans close back into it, the separator
+gets a clean slate), so if a faint band is ever wanted it is a palette
+change away — but the faint band this tree's own law cannot reach is the
+xterm cube (48;5;22/52), and spending it means rewriting
+no_role_paints_outside_the_sixteen_colours_a_theme_defines first. That is
+the operator's call to make twice, not once.

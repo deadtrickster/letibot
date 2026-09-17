@@ -1,0 +1,85 @@
+harnessd: session s-1789425173067568726
+  model    glm-5.3-flash via 127.0.0.1:8080 (/completion, token array)
+  dialect  glm-5.3-flash
+  workspace /home/dead/Projects/letibot
+  socket   /run/user/1000/letibot/oneshot-2069717.sock
+  prefix   5665 tokens, head 2e4fc776287fb01a0dac24ed398f4ec3f965b77ebfcb65275f5ed86464910358
+  sessions 1 open — a head can list them, switch, and make more
+  new session — nothing in the store to resume under this id
+
+  this session
+  OFF  spill (UNSET)
+         no inline budget is configured, so no tool result will ever spill and
+         every payload reaches the model whole (D6: unset is a genuine no-op).
+         Pass --spill-inline BYTES to enable it.
+  on   progress check — stops after 5 consecutive rounds producing nothing new; the round backstop is 200
+  on   mid-reasoning check — a turn that stops inside an unterminated reasoning block with no assistant content fails as UnfinishedReasoning and the loop asks the model to continue
+  OFF  retrieval (INERT)
+         ask_code and ask_corpus return NotRun, not Abstained (none attached).
+         No MCP server is running anywhere (T16.6), so nothing was searched;
+         saying `the corpus does not cover this` would be a claim about a corpus
+         nobody queried. Attach a retrieval backend to change that.
+  OFF  web search (N/A)
+         `web_search` is not seated in this session and nothing is attached
+         behind it. It cannot be called.
+  OFF  web fetch (N/A)
+         `web_fetch` is not seated in this session and nothing is attached
+         behind it. It cannot be called.
+  OFF  github (N/A)
+         `github` is not seated in this session and nothing is attached behind
+         it. It cannot be called.
+  OFF  mcp (NONE)
+         no MCP server is connected (none connected), so 0 tools are mounted.
+         T16.6 checked this rather than recalling it: a TCP connect to the
+         published port succeeds while nothing is behind it, which is why a
+         client reports the connection and not the absence.
+  on   mode — mode `allow-all` — write, exec and network all go through without asking, the always-ask list included: the VM is the boundary and nothing inside it reaches this box. Only a secret leaving the boundary is still refused. The confinement prerequisite is what refuses this point on a bare host. (role coder, write admit, exec admit, network admit, grants session, decided by none). The always-ask list does not ask here: the boundary is structural and nothing inside it reaches this box. A secret leaving the boundary is still refused.
+  on   preapproved (142 RULES)
+         142 in /home/dead/.config/letibot/permission.json — the list is that
+         file (installed once from the repository's config/permission.json:
+         read-only git and gh, cargo/go/npm/pytest build and test verbs, the
+         shell's read-only utilities; yours from then on). A `bash` command is
+         tested one simple command at a time — every segment must match, and a
+         substitution, a redirection to a file or a group is never matched — and
+         `Always allow` on a prompt appends the program and its verb to the
+         file. `deny` rows outrank everything.
+  on   role — seated as `leticode`: 18 tool(s) — read, write, edit, grep, glob, bash, todo_write, skill, lsp, task, job_list, job_output, job_wait, job_kill, monitor, pkill, ps, flowy. Access classes present: read + write + exec + network.
+  on   backend (WRITABLE)
+         firecode VM (run firecode-20260915-003254-2069800) holding a copy of
+         /home/dead/Projects/letibot at
+         /home/dead/.cache/letibot/firecode/s-1789425173067568726: the VM is the
+         boundary — no host filesystem, processes or devices; the network is the
+         guest's. writable, exec through `firecode in`. Files are the guest's
+         and reach the host as a sibling of the copy at down
+  on   adjudication — console ask, answered by dead. WRITE + EXEC + NETWORK tools are callable: an admitted call takes effect. Read-only tools still never prompt (clause 4).
+  on   auth trail — the adjudicator is shown the operator's own words from this transcript, with their distance in turns and in seconds. §2: the same command is authorised or not depending on what was just said, so a decision without the trail is a decision about a different question.
+  on   corpus — every decision this gate makes is written to the session store, with the model's verdict and the operator's ruling in separate columns so a disagreement survives as a label. 10 decisions recorded: 3 you answered yourself, 10 measured against a model, 0 where the two differ. `/gate recent` shows them; `/gate ok|grant|revoke ID [note]` rules on one after the fact.
+  on   intent check — at every turn boundary, what the turn SAID it would do is diffed against what actually ran, and a mismatch is injected as steering at the next step boundary. Only an `ok` tool result counts as an effect; an abstention is an attempt.
+  OFF  monitor wake (POLL ONLY)
+         a fired monitor reaches the model only when something calls `job_list`.
+         That is a poll, not a wake, and a condition that fires while nothing is
+         running is a condition nobody acts on.
+  on   placement — a firecode VM holding a copy of the workspace: the VM is the boundary, the mode inside is allow-all, and what this session writes lands in a sibling directory when it ends
+  OFF  flowy (NO SEAT)
+         the `flowy` tool is seated as a door and nothing is behind it: no room
+         is heard, nothing is said. `/flowy login` in the head attaches a seat
+         to the running daemon; --flowy at start does the same.
+  on   resume (67 ON DISK)
+         every one of them can be brought back: `letibot --sessions` lists them,
+         `letibot --continue` reopens the newest in this workspace, and ctrl-s
+         in the head shows them alongside the live ones. A resumed session
+         replays the stored TOKENS — the assistant rows were cut from the ids
+         the server streamed and are never re-rendered — and the hash chain is
+         verified twice on the way in, so a session whose rows do not rebuild
+         refuses by name instead of continuing approximately. Store:
+         /home/dead/.local/share/letibot/sessions.db.
+
+Everything checks out:
+
+- **`rows.jsonl`**: 91 rows, all valid JSON with exactly `program`/`flag`/`why`, covering 31 programs — including condition-qualified flags like `dd`'s `of= (without conv=notrunc)`, `curl`'s `-o (unless --no-clobber)`, and gzip/xz/tee's default-deletes-unless-guard entries.
+- **`none.txt`**: 18 programs whose grep output showed no destructive flag (awk/gawk/nawk/mawk's `delete` is an in-language statement, ps/top/htop/lsof are reporters, etc.). 31 + 18 = 49.
+- **`done.txt`**: all 49 todo.tsv names, in todo order, no duplicates.
+- **`failed.txt`**: never needed — every grep ran and produced output (two `head`-truncated views were re-captured in full; attribution was taken only from what the prescribed grep printed, and unnamed flags — e.g. find's print-to-file truncation, xz's delete-existing-target bullets, the bare `StreamLocalBindUnlink` keyword — were deliberately not attributed rather than filled from memory).
+
+SCRAPE COMPLETE 49 programs
+  [51 round(s), 52 tool call(s), f_keep 1.0002 1.0000 1.0000 1.0001 1.0000 1.0001 1.0000 1.0001 1.0001 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000 1.0000]

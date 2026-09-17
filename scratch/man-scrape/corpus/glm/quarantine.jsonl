@@ -1,0 +1,3 @@
+{"program": "ssh-add", "flag": "-D", "why": "Deletes all identities (keys) currently held in the ssh-agent.", "_reject": "not-in-page: -D"}
+{"program": "ssh-add", "flag": "-e pkcs11", "why": "Removes the keys provided by the named PKCS#11 shared library from the agent.", "_reject": "not-in-page: -e"}
+{"program": "shred", "flag": "--remove[=HOW]", "why": "Like -u, removes the file after overwriting, with control over how it is deleted (unlink, wipe or wipesync).", "_reject": "not-in-page: --remove[=HOW]"}

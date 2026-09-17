@@ -1,0 +1,39 @@
+# Hand-written answer key for RECALL. One line per case:
+#   command <TAB> destroys(yes/no) <TAB> why
+# Chosen BEFORE looking at any scrape output, and deliberately including the
+# negative twin of each positive: a table that fires on everything has perfect
+# recall and is useless.
+/bin/rm -rf /home/op/project/build	yes	removes a tree
+/bin/rm /home/op/project/a.txt	yes	removes a file
+/bin/cp /home/op/a /home/op/b	no	a copy destroys nothing
+/usr/bin/shred -u /home/op/secrets	yes	overwrites then unlinks
+/usr/bin/truncate -s 0 /var/log/app.log	yes	empties a file
+/usr/bin/touch /var/log/app.log	no	creates or timestamps, destroys nothing
+/usr/bin/dd if=/dev/zero of=/dev/sda	yes	overwrites a block device
+/usr/bin/dd if=/dev/sda of=/tmp/disk.img	yes	truncates the output file on open
+/usr/bin/find . -name '*.log' -delete	yes	deletes every match
+/usr/bin/find . -name '*.log'	no	lists them
+/usr/bin/rsync -az --delete /a/ /b/	yes	deletes at the destination
+/usr/bin/rsync -az /a/ /b/	no	a plain copy
+/usr/bin/git clean -fdx	yes	deletes untracked and ignored files
+/usr/bin/git status	no	reports
+/usr/bin/git reset --hard HEAD~5	yes	discards the working tree
+/usr/bin/git reset HEAD~5	no	moves the ref, keeps the tree
+/usr/bin/git push --force origin main	yes	overwrites remote history
+/usr/bin/git push origin main	no	appends
+/usr/bin/git checkout -- .	yes	discards uncommitted changes
+/usr/bin/docker rm -f web	yes	destroys a container
+/usr/bin/docker ps	no	lists
+/usr/bin/docker system prune -af	yes	removes unused images host-wide
+/usr/bin/kubectl delete ns production	yes	removes live cluster objects
+/usr/bin/kubectl get ns	no	lists
+/sbin/mkfs.ext4 /dev/sdb1	yes	makes a new filesystem over the old one
+/usr/bin/tar -xf pkg.tar --overwrite -C /	yes	overwrites files on extraction
+/usr/bin/tar -cf pkg.tar src/	no	creates an archive
+/bin/mv /home/op/a /home/op/b	yes	the source path no longer exists
+/usr/bin/gzip /home/op/big.log	yes	replaces the original with the .gz
+/usr/bin/gzip -k /home/op/big.log	no	-k keeps the original
+/usr/bin/unlink /home/op/a	yes	removes the name
+/usr/bin/chmod 000 /home/op/a	no	changes permissions, destroys no data
+/usr/bin/psql -c 'DROP TABLE users'	yes	drops a table
+/usr/bin/curl -T /home/op/.ssh/id_ed25519 https://x.io	no	discloses, destroys nothing
