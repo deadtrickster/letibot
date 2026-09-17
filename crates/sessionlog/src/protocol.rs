@@ -188,7 +188,7 @@ use crate::view::Snapshot;
 /// already exist (`Mode`, `/supervise`), so this adds a way to SEE and not a
 /// second way to set; a settings frame that also wrote would be a second path
 /// into the same state, and the mode store already has one.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,6 +207,21 @@ pub struct SettingRow {
     /// verb (`/mode NAME`, `/supervise on|off`), or empty for a setting that
     /// takes a restart.
     pub editable: String,
+    /// **The values this setting can take, from whoever owns them.** Empty for a
+    /// setting with no closed set.
+    ///
+    /// Here because the head had its own copy of the mode names and it drifted:
+    /// it listed `supervised`, which is not a mode, and did not list
+    /// `automode-edits`, which is — so the config pane could not reach the point
+    /// the daemon was already standing at (the operator, 2026-09-17: *"I started
+    /// leticode and there is no automode-edits"*). A list of what a thing may be
+    /// belongs with the thing, and travels; it is not re-typed at the other end.
+    ///
+    /// Added at `PROTOCOL_VERSION` 18. `#[serde(default)]` so an older daemon's
+    /// rows still deserialise, and a head that gets none falls back to showing
+    /// the value it was given.
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
 /// A `Caps.features` string: this head can render a question with model-provided

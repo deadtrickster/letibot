@@ -729,15 +729,34 @@ impl Config {
             value,
             source: source.into(),
             editable: editable.into(),
+            choices: Vec::new(),
+        };
+        let choices = |mut r: SettingRow, of: &[&str]| -> SettingRow {
+            r.choices = of.iter().map(|s| (*s).to_string()).collect();
+            r
         };
         let mut out = Vec::new();
         // What changes now, first: it is what the pane is for.
-        out.push(row("mode", self.mode.name.to_string(), mode_source, "/mode NAME"));
-        out.push(row(
-            "supervise",
-            if supervising { "on — the guard model answers".into() } else { "off".into() },
-            "",
-            "/supervise on|off",
+        //
+        // **The mode's choices travel with it.** `Mode::NAMED` is the one list
+        // and the head is given it rather than keeping a copy — which it did,
+        // and which drifted: it offered `supervised`, which is not a mode, and
+        // not `automode-edits`, which is.
+        out.push(choices(
+            row("mode", self.mode.name.to_string(), mode_source, "/mode NAME"),
+            &letibot_tools::mode::Mode::NAMED
+                .iter()
+                .map(|m| m.name)
+                .collect::<Vec<_>>(),
+        ));
+        out.push(choices(
+            row(
+                "supervise",
+                if supervising { "on — the guard model answers".into() } else { "off".into() },
+                "",
+                "/supervise on|off",
+            ),
+            &["on", "off"],
         ));
         // What the session is.
         out.push(row("session", self.session_id.clone(), "", ""));

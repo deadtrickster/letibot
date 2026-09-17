@@ -571,6 +571,7 @@ fn settings_are_answered_from_what_the_harness_published() {
             value: "automode".into(),
             source: "project store (modes.tsv)".into(),
             editable: "/mode NAME".into(),
+            choices: vec!["automode".into(), "automode-edits".into()],
         }],
     );
     w.write(&ClientFrame::Settings).expect("settings");

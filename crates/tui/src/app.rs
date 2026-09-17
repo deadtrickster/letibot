@@ -349,6 +349,10 @@ struct ConfigRow {
     /// Where the value came from — a path, a flag, "default" — shown under the
     /// selected row. Empty when nobody tracks it.
     source: String,
+    /// The values this row may take, as the DAEMON sent them. Empty for a row
+    /// with no closed set, and for a daemon older than protocol 18 — the pane
+    /// then says it cannot cycle rather than cycling a list it invented.
+    choices: Vec<String>,
     edit: ConfigEdit,
 }
 
@@ -2804,8 +2808,8 @@ impl App {
             }
             if name.is_empty() {
                 self.say(
-                    "/mode NAME — read-only, always-ask, writes-allowed, supervised, \
-                     automode, allow-all (or the opencode names plan/default/\
+                    "/mode NAME — read-only, always-ask, writes-allowed, automode, \
+                     automode-edits, allow-all (or the opencode names plan/default/\
                      acceptEdits/bypassPermissions). Moves THIS session from its \
                      next call, and every later session in this project.",
                 );
@@ -4108,6 +4112,7 @@ impl App {
     fn config_rows(&self) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
         let head = |key: &str, value: String, edit: ConfigEdit| ConfigRow {
+            choices: Vec::new(),
             section: "head — this window",
             key: key.into(),
             value,
@@ -4136,6 +4141,7 @@ impl App {
                 key: r.key.clone(),
                 value: r.value.clone(),
                 source: r.source.clone(),
+                choices: r.choices.clone(),
                 edit: if r.editable.is_empty() {
                     ConfigEdit::No("takes a restart of the daemon")
                 } else {
@@ -4162,6 +4168,7 @@ impl App {
                 key: f.into(),
                 value,
                 source,
+                choices: Vec::new(),
                 edit: ConfigEdit::No("a file the guard protects: a person edits it, not a pane"),
             });
         }
@@ -4207,18 +4214,23 @@ impl App {
                 // The verbs that already exist, so the pane is a way to see and
                 // not a second way to set.
                 match key.as_str() {
+                    // **The names come from the daemon, on the row.** This was a
+                    // `const NAMES` here, and a second copy of a list is a copy
+                    // that drifts: it offered `supervised`, which is not a mode,
+                    // and not `automode-edits`, which is — so the pane could not
+                    // reach the point the daemon was already standing at. The
+                    // operator, 2026-09-17: *"I started leticode and there is no
+                    // automode-edits"*. A row with no choices is a daemon older
+                    // than protocol 18, and then the pane says so rather than
+                    // cycling a list it made up.
                     "mode" => {
-                        const NAMES: [&str; 6] = [
-                            "read-only",
-                            "always-ask",
-                            "writes-allowed",
-                            "supervised",
-                            "automode",
-                            "allow-all",
-                        ];
+                        if row.choices.is_empty() {
+                            self.say("this daemon does not send the mode list; use `/mode NAME`");
+                            return None;
+                        }
                         let cur = row.value.split_whitespace().next().unwrap_or("");
-                        let at = NAMES.iter().position(|n| *n == cur).unwrap_or(0);
-                        let next = NAMES[(at + 1) % NAMES.len()].to_string();
+                        let at = row.choices.iter().position(|n| n == cur).unwrap_or(0);
+                        let next = row.choices[(at + 1) % row.choices.len()].clone();
                         self.say(&format!("mode → {next} (asking the daemon)"));
                         Some(Action::Mode { name: next })
                     }
@@ -5544,7 +5556,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
         ("/interrupt", "interrupt, when a key is awkward"),
         ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
-        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, allow-all (next session)"),
+        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, automode-edits, allow-all (next session)"),
         ("/supervise", "the guard model answers every gated call before you do, from the next call — on, off, status"),
         ("/gate", "what the gate decided, and rule on it afterwards: recent, todo, corpus, ok|grant|revoke ID"),
         ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
@@ -7221,12 +7233,18 @@ mod tests {
                     value: "writes-allowed".into(),
                     source: "project store (modes.tsv)".into(),
                     editable: "/mode NAME".into(),
+                    // The daemon's own list, which is what the pane cycles.
+                    choices: ["read-only", "always-ask", "writes-allowed", "automode", "automode-edits", "allow-all"]
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
                 },
                 letibot_sessionlog::protocol::SettingRow {
                     key: "oracle.budget".into(),
                     value: "20.0s".into(),
                     source: "--oracle-budget".into(),
                     editable: String::new(),
+                    choices: Vec::new(),
                 },
             ],
         });
@@ -7237,7 +7255,9 @@ mod tests {
         for _ in 0..4 {
             a.key(Key::Down);
         }
-        assert_eq!(a.key(Key::Enter), Some(Action::Mode { name: "supervised".into() }));
+        // The next name after `writes-allowed` in the DAEMON's list — the head
+        // has no list of its own any more.
+        assert_eq!(a.key(Key::Enter), Some(Action::Mode { name: "automode".into() }));
         // The budget row is not editable now, and says so rather than doing nothing.
         a.key(Key::Down);
         assert_eq!(a.key(Key::Enter), None);
