@@ -2243,8 +2243,8 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                if self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
-                    || self.jobs_pane || self.config_pane
+                if self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
+                    || self.subagents_pane || self.jobs_pane || self.config_pane
                 {
                     return None;
                 }
@@ -9416,6 +9416,41 @@ mod tests {
             !after.contains("no result"),
             "a call that returned does not still read as one that did not:\n{after}"
         );
+    }
+
+    /// **Every pane swallows the wheel, and the list is checked against the
+    /// panes that exist** rather than against the ones somebody remembered.
+    ///
+    /// `mode_picker` arrived after the wheel router did and was added to the Esc
+    /// handler, the render dispatch and the footer — but not here, so a wheel in
+    /// the mode picker scrolled the transcript underneath and closing it left the
+    /// operator parked in the scrollback. That is the defect the subagent view
+    /// already paid for once. A test per pane, so the next one added fails here
+    /// rather than on somebody's screen.
+    #[test]
+    fn no_pane_lets_the_wheel_through_to_the_conversation() {
+        let panes: [(&str, fn(&mut App)); 8] = [
+            ("help", |a| a.help = true),
+            ("picker", |a| a.picker = true),
+            ("mode_picker", |a| a.mode_picker = true),
+            ("stats", |a| a.stats = true),
+            ("todos_pane", |a| a.todos_pane = true),
+            ("subagents_pane", |a| a.subagents_pane = true),
+            ("jobs_pane", |a| a.jobs_pane = true),
+            ("config_pane", |a| a.config_pane = true),
+        ];
+        for (name, set) in panes {
+            let mut a = app();
+            for i in 0..40u64 {
+                a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("u.{i}"), "user"))));
+                a.apply(ServerFrame::Event(env(i * 2 + 2, testing::content(&format!("u.{i}"), &format!("line {i}")))));
+            }
+            let _ = a.screen(80, 24);
+            set(&mut a);
+            a.key(Key::WheelUp);
+            a.key(Key::PageUp);
+            assert_eq!(a.scroll, 0, "{name} let the wheel reach the conversation");
+        }
     }
 
     /// A wheel in the subagent output view scrolls that view, and leaves the
