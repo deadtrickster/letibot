@@ -78,6 +78,16 @@ wrappers' source of truth), `tests/fidelity`, `scratch/` (untracked; see gotchas
   `git -c` config angers the operator.
 - `origin/main` runs stale; pushes need the credential-helper ask.
 
+**Parked, not forgotten** (2026-09-17): `role-switch` (d42c04c — `SetRole`
+protocol machinery, daemon-side switch between a session's declared roles
+without re-seating; no TUI command wired, so nothing can type it) and
+`adjudication/answer-path-and-grants` (fac3909 — numbered answer options,
+mistype-holding, the create-vs-overwrite and classification halves of the
+grant-stickiness report, decode rate). Both are the earlier Claude Opus 5
+session's work, a week old at parking. `grants` (merged) is that branch's
+cause #3, so a future merge of adjudication meets its own overlap in
+`adjudicate.rs` — reconcile semantically, not just textually.
+
 ## Patterns that recur
 
 **A second copy of a list drifts.** The head once kept its own `const` of mode
@@ -95,11 +105,35 @@ time: every opener closes the others, and a card steps aside while a decision
 is up because a second cursor under the ladder would be a cursor nothing
 moves.
 
-**Key ownership has a fixed precedence**, all gated on an empty composer so a
-half-typed line always means the line: decision ladder, then session picker,
-then other cards/panes, then the composer. New screens join the Esc-close
-block and (if full-body) the scroll guard; a bottom card does not join the
+**Key ownership has a fixed precedence**: decision ladder, then session
+picker, then other cards/panes, then the composer. The empty-composer gate
+holds for the picker and the cards, but **an open decision owns Enter even
+with a line typed** — a line naming an option is that answer, any other line
+is held (back to the composer) while the marked row answers — because a
+permission arriving mid-typing used to turn Enter into "send the
+half-thought" (operator, 2026-09-17). New screens join the Esc-close block
+and (if full-body) the scroll guard; a bottom card does not join the
 scroll guard — the wheel scrolls the transcript behind it.
+
+**Behind a running turn, the operator's queue is one message.** Consecutive
+operator prompts coalesce — engine-side in `Pending::absorb`, mirror-side in
+`submit()` — into one User item at the boundary; notices (harness injections,
+monitor firings) stand alone and split the run, because they are not the
+operator's words and must not wear the attribution. Up on an **empty**
+composer recalls the queue for editing and sends `WithdrawPrompts` (protocol
+19), so the edited resend replaces the original instead of stacking onto it;
+a half-typed line keeps the editor's own Up — readline history, never a
+take-back, or one press of Up behind a running turn would drop the queue.
+When a queued row finally lands, `retire_pending` retires its echo by exact
+match or front-strip, because a notice that split the run leaves pieces.
+
+**A button whose effect the gate would decline is never shown.** The
+permission ladder orders its rules: tier first (`AlwaysAsk` →
+allow_once/deny/deny_and_tell), then exec-class (a shell never takes a
+session grant; a durable allow-always rule is offered), then the mode's
+grant scope — `permission_options` at a `Session` point, `once_only_options`
+at a `Once` point. Two guards for one decision, only one kept in step, was
+how `allow_session` "did not stick" (operator report; fixed in `grants`).
 
 **Click arithmetic is recorded by the frame, not recomputed.** A click
 arrives without a repaint, so the render stores what the click needs:
@@ -129,6 +163,14 @@ manually, caps the body, and splits curl's metadata by a `-w` sentinel with
 - `scratch/` is untracked and **not** in worktrees; `crates/tools/src/intent.rs`
   `include_str!`s `scratch/man-scrape/eval/answer-key.tsv`, so tools tests fail
   in a fresh worktree until that file is copied over.
+- Scoping by crate is **not** enough to stay off the model. `harnessd`'s
+  non-live integration tests (`compact`, `loop_closes`, `resume`, `slash`,
+  `todos`, `wired`) and `turn`'s `compaction` + `engine_decisions` load the
+  GGUF through llama.cpp and abort with a CUDA error while the model server
+  holds the GPU — confirmed identical on main, 2026-09-17, so it is the box,
+  not the branch. The invocation that works names every non-model target:
+  `cargo test -p <crates> --lib --test askpass --test late_head --test
+  resume_frames --test screen --test sessions --test restore`.
 - htmd keeps `<script>` content by default; webfetch passes `skip_tags`
   (script/style/noscript/template) and a test pins it.
 - Rust `format!` needs `%{{http_code}}` to emit curl's `%{http_code}`.
