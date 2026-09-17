@@ -188,7 +188,10 @@ pub fn with_session_tools(
     reg.register(Box::new(builtins::todo::TodoWriteTool::new(board)))?;
     reg.register(Box::new(builtins::skill::SkillTool::new(skills)))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
-    reg.register(Box::new(builtins::task::TaskTool::new(task_runner)))?;
+    reg.register(Box::new(builtins::task::TaskTool::new(task_runner.clone())))?;
+    // `task_result` is seated with `task` and never without it: a handle that
+    // nothing can collect is worse than no handle.
+    reg.register(Box::new(builtins::task::TaskResultTool::new(task_runner)))?;
     Ok(reg)
 }
 

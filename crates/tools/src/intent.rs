@@ -1466,7 +1466,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "emacsclient" => vec![ReadFile, WriteFile],
         // Query-only network tools: they reach a host, and the unseen-host rule
         // is the right judge of which host.
-        "dig" | "nslookup" | "traceroute" | "mtr" | "ping" | "ping6" | "nmap" | "arping" => vec![Network],
+        "dig" | "nslookup" | "traceroute" | "mtr" | "ping" | "ping6" | "arping" => vec![Network],
         "bzip2" | "bunzip2" => vec![ReadFile, WriteFile],
         "curl" | "wget" | "nc" | "netcat" | "socat" | "telnet" | "ftp" | "http" | "httpie"
         | "aria2c" => vec![Network],
