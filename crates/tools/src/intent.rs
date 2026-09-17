@@ -2206,6 +2206,14 @@ fn remote_host(s: &str) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
+/// Programs whose positional operands are words or numbers, never places: a
+/// region placed on `20` or `hello` is a fact about nothing.
+const NON_PATH_OPERANDS: &[&str] = &[
+    "sleep", "seq", "echo", "printf", "true", "false", "date", "uname", "hostname", "whoami",
+    "id", "nproc", "uptime", "free", "basename", "dirname", "expr", "bc", "yes", "kill", "wait",
+    "exit", "return", "shift", "let", "getconf", "tput", "tty",
+];
+
 /// Flags whose value is a credential the program consumes itself. §3's second row:
 /// handing `ssh` a key is the authorised case and must not need an exception.
 const IDENTITY_FLAGS: &[&str] = &[
@@ -2576,11 +2584,12 @@ impl Baseline {
             .intents
             .iter()
             .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile));
-        let only_inside = !self.regions.is_empty()
-            && self
-                .regions
-                .iter()
-                .all(|r| matches!(r, Region::Workspace | Region::None));
+        // No region at all is inside too: `pwd`, `date`, `nproc` look at
+        // nothing that has a place.
+        let only_inside = self
+            .regions
+            .iter()
+            .all(|r| matches!(r, Region::Workspace | Region::None));
         if only_looks && only_inside && matches!(self.tier, Tier::MayApprove) {
             self.tier = Tier::Auto;
         }
@@ -2974,6 +2983,18 @@ impl Baseline {
             for w in word.flatten() {
                 let Some(text) = w.text() else { continue };
                 if text.starts_with('-') || text.is_empty() || text.contains('\n') {
+                    continue;
+                }
+                // `sleep 20`, `echo hello`, `seq 1 5`: the operand is a number or
+                // a word, not a place. Placing it made it `host_other`, which
+                // made `sleep 20` reach outside the boundary and ask — the
+                // operator, 2026-09-17: "i was just asked to allow sleep 20,
+                // wtf". A number is never a path; a program whose operands are
+                // not paths gives them no region.
+                if (text.bytes().all(|b| b.is_ascii_digit() || b == b'.') && !is_ipv4(text))
+                    || NON_PATH_OPERANDS.contains(&effective.as_str())
+                {
+                    self.regions.insert(Region::None);
                     continue;
                 }
                 let mut region = env.region_of(text);
@@ -5204,5 +5225,33 @@ mod known_and_seen_hosts {
         let other = Baseline::of_command("curl https://example.net/x", &env);
         assert!(matches!(other.tier, Tier::AlwaysAsk { rule: "network_egress_to_an_unseen_host", .. }));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod operands_that_are_not_places {
+    use super::*;
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: BTreeSet::new(),
+        }
+    }
+
+    /// "i was just asked to allow sleep 20, wtf" — 2026-09-17.
+    #[test]
+    fn a_number_or_a_word_given_to_a_looking_program_is_inside() {
+        for cmd in ["sleep 20", "echo hello world", "seq 1 5", "pwd", "date +%s", "nproc", "sleep 2 && date", "printf '%s\\n' done"] {
+            let x = Baseline::of_command(cmd, &env());
+            assert_eq!(x.tier, Tier::Auto, "{cmd}: {:?} {:?}", x.regions, x.findings);
+        }
+        // A path operand is still placed.
+        let x = Baseline::of_command("ls /etc", &env());
+        assert_ne!(x.tier, Tier::Auto);
+        let x = Baseline::of_command("cat /home/dead/.ssh/id_rsa", &env());
+        assert!(matches!(x.tier, Tier::Blocked { .. }));
     }
 }
