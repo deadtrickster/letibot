@@ -213,6 +213,20 @@ came first.
   attack trajectories (§1, item 3), run through layer A and the bank alike. Until then: the six
   loud rules are not ported as-is; the quiet ones go in as tree rules where they do not already
   overlap `DeviceWrite`/`Destroy`.
+- **The bank's cost in CPU, measured (2026-09-17)**, because a session with real teeth might want
+  the whole bank and "with that many the performance of the regex engine becomes a question".
+  Rust's `regex` crate compiles 136 of the 139 (SE-P-069 and SE-P-139 use lookahead, SE-P-094 a
+  backreference — neither exists in a linear-time engine). Over the same 120,593 commands
+  (72 MB): as one `RegexSet`, **214 µs a command, 8.7 ms on the longest (75 KB)**, 3 MB/s — the
+  set loses the per-pattern literal prefilter and its lazy DFA gives up on the `\b…\s+.*…`
+  shapes. As 136 separate `Regex` values tried in turn, **7.7 µs a command, 25 µs worst, 78 MB/s**.
+  So the engine is not the cost: a thousand rules of this kind stay under the 300 µs the tree
+  parse already spends. The cost is the 587 benign commands (0.49%) the compilable bank fires on,
+  four fifths of them from seven rules (`rm -rf /home…`, `scp user@host:`, `nohup /tmp/…`,
+  `docker run --privileged`, `chmod +x x.sh; bash x.sh`, `../../../`, `chmod 777 /`) that do not
+  know a workspace, a LAN host or `$HOME` — which `EffectScope` does. Same conclusion, now from
+  both sides: the bank ports as scoped tree rules in `intent.rs`, not as strings, and no regex
+  engine enters the guard.
 - Port CARE's 10 pipeline tests as behavioural specs where they apply (`curl | sh`, a secret
   read, an obfuscated destructive) — they test their code, not our data, so they are floor, not
   measurement.
