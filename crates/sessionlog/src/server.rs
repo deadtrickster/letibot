@@ -546,18 +546,47 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **The stop does NOT go through the command queue**, and that was
+            // the whole of its first version's failure. One worker drains that
+            // queue and a running turn owns it, so a `Stop` submitted mid-turn
+            // sat behind the turn doing nothing — the operator, 2026-09-17:
+            // *"i stopped mid turn and harness kept it running"*. Right, and
+            // the signal path never had that problem: `catch_signals` closes
+            // the REGISTRY from its own thread, and the worker falls out of
+            // `next_command` wherever it happens to be.
+            //
+            // So this rings the same bell from this connection's thread. The
+            // announcement goes first, while the hubs are still open and every
+            // other head can still be reached; then the registry closes and
+            // that is the stop.
             Ok(ClientFrame::Stop {
                 client_request_id,
-                expected_seq,
+                expected_seq: _,
                 who,
             }) => {
-                let f = seat.hub.submit(
-                    &seat.head_id,
+                for brief in registry.list() {
+                    if let Some(hub) = registry.get(&brief.session_id) {
+                        hub.publish(crate::event::SessionEvent::Warning {
+                            code: "daemon_stopping".into(),
+                            detail: format!(
+                                "`{who}` asked this daemon to stop. Every head detaches, \
+                                 the socket goes, and the session is on disk — `letibot \
+                                 --continue` reopens it. A turn already generating \
+                                 finishes its round; nothing new is started."
+                            ),
+                        });
+                    }
+                }
+                // Acked before the close, because after it there is no socket to
+                // ack on and a head waiting for one would wait forever.
+                let f = crate::protocol::ServerFrame::Accepted {
                     client_request_id,
-                    expected_seq,
-                    CommandKind::Stop { who },
-                );
+                    seq: seat.hub.head_seq(),
+                    note: "stopping".into(),
+                };
                 writer.lock().unwrap().write(&f)?;
+                registry.close();
+                return Ok(());
             }
             Ok(ClientFrame::Interrupt {
                 client_request_id,

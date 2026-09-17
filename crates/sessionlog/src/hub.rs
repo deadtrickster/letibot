@@ -124,10 +124,6 @@ pub enum CommandKind {
     /// it is a quiet no-op, because a prompt that survived to here is about to
     /// run as its own turn and is no longer the operator's to take back.
     WithdrawPrompts,
-    /// Stop the daemon itself. `who` is the head's identity, for the notice
-    /// every OTHER head gets before the socket goes — a shared session learning
-    /// that somebody stopped it beats a shared session finding a dead socket.
-    Stop { who: String },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
@@ -222,7 +218,6 @@ impl CommandKind {
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
             CommandKind::WithdrawPrompts => "take-back",
-            CommandKind::Stop { .. } => "stop",
             CommandKind::Promote => "promote",
         }
     }
@@ -888,9 +883,6 @@ impl Hub {
                 (CommandKind::Reseat, false) => "re-seat queued".into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
-                // Never stale-rejected: "stop" is about the daemon, not about
-                // the screen the head was looking at when it asked.
-                (CommandKind::Stop { .. }, _) => "stop requested".into(),
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
