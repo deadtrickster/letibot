@@ -776,6 +776,44 @@ mod tests {
         assert_eq!(role_for_capture("variable"), Role::Plain);
     }
 
+    /// **A multi-byte character shifts no class but its own.**
+    ///
+    /// rano's capture walk counted chars where tree-sitter answers bytes, so
+    /// an em-dash on one line pushed every later line's classes two cells to
+    /// the right and clamped its own line's captures short — the head drew
+    /// `tail o[0mff`, a reset landing mid-word. Pinned from this side because
+    /// the grid is what the palette paints: rano's own test pins the engine,
+    /// this one pins the hand-off, and it fails the moment the path
+    /// dependency regresses under us.
+    #[test]
+    fn an_em_dash_shifts_no_class_but_its_own() {
+        let lines = ["let s = \"a—b\"; // dash", "let done = build(); // tail"];
+        // Char column of `needle`'s first char — `find` answers bytes and the
+        // grid is one cell per char.
+        let col_of = |line: &str, needle: &str| {
+            let b = line.find(needle).unwrap();
+            line[..b].chars().count()
+        };
+        let grid = class_grid(&lines, Some(rano::syntax::Lang::Rust));
+
+        // The dash's own line: the string capture keeps its closing quote.
+        let l0 = lines[0];
+        assert_eq!(grid[0][col_of(l0, "—")], Role::StringLit, "{:?}", grid[0]);
+        assert_eq!(
+            grid[0][col_of(l0, "b\"") + 1],
+            Role::StringLit,
+            "the closing quote is still inside the capture: {:?}",
+            grid[0]
+        );
+        assert_eq!(grid[0][col_of(l0, "// dash")], Role::Comment);
+
+        // The line after it: not shifted two cells to the right.
+        let l1 = lines[1];
+        assert_eq!(grid[1][col_of(l1, "let")], Role::Keyword, "{:?}", grid[1]);
+        assert_eq!(grid[1][col_of(l1, "build")], Role::FuncName);
+        assert_eq!(grid[1][col_of(l1, "// tail")], Role::Comment);
+    }
+
     #[test]
     fn tabs_expand_to_the_same_stops_the_unified_renderer_uses() {
         let old = ["\tfn a() {}"];
