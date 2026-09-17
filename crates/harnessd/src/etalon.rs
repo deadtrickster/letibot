@@ -104,6 +104,16 @@ pub struct Report {
     pub prompt_examples: BTreeMap<&'static str, Vec<String>>,
     /// Why layer A could not read a command, by first sentence, with counts.
     pub not_run_why: BTreeMap<String, usize>,
+    /// The constructs that made a command unreadable, by how many commands
+    /// each appears in — and, separately, how many commands each construct is
+    /// the ONLY reason for. The second number is what resolving that one
+    /// construct would recover; the first is only how common it is.
+    pub not_run_constructs: BTreeMap<String, (usize, usize)>,
+    /// Where here-document bodies go, by count of commands: the program that
+    /// reads the body on stdin, or the file it is redirected into (by its
+    /// extension or directory class). Plan §4b: a body headed somewhere
+    /// executable is a program, and this is how many there are to read.
+    pub heredoc_sinks: BTreeMap<String, usize>,
     /// Program heads layer A does not know (`Intent::Unknown`), by count of
     /// commands they appear in. The list the next tranche of heads is chosen
     /// from — by what this operator actually runs, not by a paper's table.
@@ -157,6 +167,30 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
                 }
             }
         }
+        if let Some(n) = &b.command {
+            for st in &n.stages {
+                let Some(body) = st.redirects.iter().find_map(|rd| match &rd.target {
+                    letibot_code::shell::RedirectTarget::HereDoc { body, .. } => Some(body),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let prog = st.program_name().unwrap_or("<unresolved>");
+                let file = st.redirects.iter().find_map(|rd| match &rd.target {
+                    letibot_code::shell::RedirectTarget::File(w) if rd.op.writes() => w.text().map(str::to_string),
+                    _ => None,
+                });
+                let shebang = body.trim_start().starts_with("#!");
+                let key = match file {
+                    Some(f) => {
+                        let ext = f.rsplit('/').next().unwrap_or(&f).rsplit_once('.').map(|(_, e)| e.to_string());
+                        format!("{prog} > {}{}", ext.map(|e| format!(".{e}")).unwrap_or_else(|| "(no ext)".into()), if shebang { " #!" } else { "" })
+                    }
+                    None => format!("{prog}{}", if shebang { " #!" } else { "" }),
+                };
+                *r.heredoc_sinks.entry(key).or_default() += 1;
+            }
+        }
         *r.cells
             .entry((row.source.clone(), row.outcome.clone(), read))
             .or_default() += 1;
@@ -164,6 +198,19 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
             (_, BaselineVerdict::NotRun { why }) => {
                 let key = why.split(['.', '\n']).next().unwrap_or(why).trim().to_string();
                 *r.not_run_why.entry(key).or_default() += 1;
+                if let Some(n) = &b.command {
+                    let mut kinds: Vec<&str> = n.unresolved.iter().map(|u| u.construct.as_str()).collect();
+                    kinds.sort();
+                    kinds.dedup();
+                    let alone = kinds.len() == 1;
+                    for k in kinds {
+                        let e = r.not_run_constructs.entry(k.to_string()).or_default();
+                        e.0 += 1;
+                        if alone {
+                            e.1 += 1;
+                        }
+                    }
+                }
             }
             (Tier::AlwaysAsk { rule, .. }, _) => {
                 if row.outcome == "refused" {
@@ -295,6 +342,23 @@ impl Report {
             v.sort_by(|a, b| b.1.cmp(a.1));
             for (why, n) in v.into_iter().take(8) {
                 out.push_str(&format!("  {n:>6}  {why}\n"));
+            }
+        }
+        if !self.heredoc_sinks.is_empty() {
+            let total: usize = self.heredoc_sinks.values().sum();
+            out.push_str(&format!("\nhere-documents ({total} stages), by where the body goes (top 24):\n"));
+            let mut v: Vec<_> = self.heredoc_sinks.iter().collect();
+            v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (k, n) in v.into_iter().take(24) {
+                out.push_str(&format!("  {n:>6}  {k}\n"));
+            }
+        }
+        if !self.not_run_constructs.is_empty() {
+            out.push_str("\nnot_run, by construct (commands it appears in / commands it is the only reason for):\n");
+            let mut v: Vec<_> = self.not_run_constructs.iter().collect();
+            v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            for (k, (any, alone)) in v {
+                out.push_str(&format!("  {any:>6} / {alone:>6}  {k}\n"));
             }
         }
         out

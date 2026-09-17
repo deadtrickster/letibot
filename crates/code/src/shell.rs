@@ -894,6 +894,23 @@ fn pipe_member(
 
 /// A command with redirections attached. The redirections belong to the command,
 /// not to the statement, which is why they cannot be discovered by a generic walk.
+///
+/// **Which command.** The grammar hoists a trailing redirection above the whole
+/// list or pipeline it ends: `cd /x && python3 - <<'PY'` is
+/// `redirected_statement(list(cd, python3), heredoc)`, and `a | b > f` is
+/// `redirected_statement(pipeline(a, b), > f)`. The shell gives that redirection
+/// to the LAST command — `python3` reads the here-document, `b` writes `f` — and
+/// this used to give it to the first. Measured on the operator's corpus
+/// (2026-09-17): 5,675 here-documents were read as `cd`'s stdin, 217 as `.`'s,
+/// 214 as `timeout`'s. A compound body (`{ a; b; } > f`, `while …; done < f`) has
+/// no single owner and every stage of the body gets the fact, as before.
+///
+/// **What follows the operator.** The grammar also nests whatever follows a
+/// here-document operator on the same line INSIDE the `heredoc_redirect`:
+/// `cat <<'EOF' | bash` puts `pipeline(| bash)` there, `cat > f <<'EOF' && chmod
+/// +x f` puts `&& command(chmod …)` there. Those are commands and they used to be
+/// dropped — `cat <<'EOF' | sudo bash` normalised to a `cat`. See
+/// [`heredoc_tail`].
 fn redirected(
     node: Node<'_>,
     source: &str,
@@ -904,8 +921,10 @@ fn redirected(
 ) {
     let body = node.child_by_field_name("body");
     let before = out.stages.len();
-    match body.map(|b| b.kind()) {
-        Some("command") | Some("declaration_command") | Some("unset_command") => {
+    let depth = ctx.len();
+    let body_kind = body.map(|b| b.kind()).unwrap_or("");
+    match body_kind {
+        "command" | "declaration_command" | "unset_command" => {
             stage(body.unwrap(), source, ctx, out, pipe_in, pipe_out);
         }
         _ => {
@@ -918,26 +937,153 @@ fn redirected(
     // `cat <<EOF > f` nests the `file_redirect` inside the `heredoc_redirect`, so
     // this recurses rather than scanning one level.
     let mut reds = Vec::new();
+    let mut tails: Vec<Node<'_>> = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.id() == body.map(|b| b.id()).unwrap_or(usize::MAX) {
             continue;
         }
         collect_redirects(child, source, out, &mut reds);
-        scan_substitutions(child, source, ctx, out);
-    }
-    if out.stages.len() > before {
-        // The body's own stage is the first one it produced; a nested substitution
-        // may have produced more, and those redirections are not theirs.
-        out.stages[before].redirects.extend(reds);
-    } else {
-        // A redirected compound statement (`{ …; } > f`). There is no single stage
-        // to own the redirection; the fact is not dropped, it is recorded against
-        // every stage of the body, which is what the shell does to their shared
-        // stdout.
-        for s in out.stages.iter_mut() {
-            s.redirects.extend(reds.iter().cloned());
+        if child.kind() == "heredoc_redirect" {
+            // The substitutions inside the body are scanned here; the commands
+            // that follow the operator are walked after the owner is known, so
+            // they are not walked twice.
+            for k in named_children(child) {
+                if !is_continuation(k) {
+                    scan_substitutions(k, source, ctx, out);
+                }
+            }
+            tails.push(child);
+        } else {
+            scan_substitutions(child, source, ctx, out);
         }
+    }
+    // The stages the body itself produced, not the ones inside a `$(…)` in one
+    // of its arguments: those ran to make a word and the redirection is not
+    // theirs.
+    let own: Vec<usize> = (before..out.stages.len())
+        .filter(|&i| {
+            !out.stages[i].context[depth.min(out.stages[i].context.len())..]
+                .iter()
+                .any(|c| matches!(c, Context::CommandSubstitution | Context::ProcessSubstitution))
+        })
+        .collect();
+    let single_owner = matches!(
+        body_kind,
+        "command" | "declaration_command" | "unset_command" | "pipeline" | "list" | "redirected_statement"
+    );
+    let owner = if single_owner { own.last().copied() } else { None };
+    match owner {
+        Some(i) => out.stages[i].redirects.extend(reds),
+        None => {
+            // A redirected compound statement (`{ …; } > f`). There is no single
+            // stage to own the redirection; the fact is not dropped, it is
+            // recorded against every stage of the body, which is what the shell
+            // does to their shared stdout.
+            for i in &own {
+                out.stages[*i].redirects.extend(reds.iter().cloned());
+            }
+        }
+    }
+    for t in tails {
+        heredoc_tail(t, source, ctx, out, owner);
+    }
+}
+
+/// A named child of a `heredoc_redirect` that is a command rather than a part of
+/// the here-document: what followed the `<<` operator on its line.
+fn is_continuation(k: Node<'_>) -> bool {
+    k.is_named()
+        && !matches!(
+            k.kind(),
+            "heredoc_start" | "heredoc_body" | "heredoc_end" | "file_redirect" | "herestring_redirect"
+        )
+}
+
+/// Walk the commands the grammar nested inside a `heredoc_redirect`, joined to
+/// the owner by the operator token that precedes them. `| bash` makes the owner's
+/// stdout a pipe and `bash` a pipe member; `&& chmod` is a guarded sibling.
+fn heredoc_tail(
+    node: Node<'_>,
+    source: &str,
+    ctx: &mut Vec<Context>,
+    out: &mut Normalised,
+    owner: Option<usize>,
+) {
+    let mut op: Option<String> = None;
+    let mut cursor = node.walk();
+    for k in node.children(&mut cursor) {
+        if !k.is_named() {
+            if matches!(k.kind(), "|" | "|&" | "&&" | "||" | ";" | "&") {
+                op = Some(k.kind().to_string());
+            }
+            continue;
+        }
+        if is_continuation(k) {
+            continuation(k, op.take().as_deref(), source, ctx, out, owner);
+        }
+    }
+}
+
+fn continuation(
+    node: Node<'_>,
+    op: Option<&str>,
+    source: &str,
+    ctx: &mut Vec<Context>,
+    out: &mut Normalised,
+    owner: Option<usize>,
+) {
+    let piped = matches!(op, Some("|") | Some("|&"));
+    if node.kind() == "pipeline" {
+        // `pipeline(| bash)` or `pipeline(| pipeline(bash | wc))`: the leading
+        // token says the owner feeds it, and a lone inner pipeline is the real
+        // one.
+        let mut cursor = node.walk();
+        let leading = node
+            .children(&mut cursor)
+            .next()
+            .map(|c| matches!(c.kind(), "|" | "|&"))
+            .unwrap_or(false)
+            || piped;
+        let members: Vec<Node<'_>> = named_children(node)
+            .into_iter()
+            .filter(|c| c.kind() != "|" && c.kind() != "|&")
+            .collect();
+        if members.len() == 1 && members[0].kind() == "pipeline" {
+            continuation(members[0], Some("|"), source, ctx, out, owner);
+            return;
+        }
+        if leading && let Some(o) = owner {
+            out.stages[o].pipe_out = true;
+        }
+        let last = members.len().saturating_sub(1);
+        ctx.push(Context::Pipeline);
+        for (i, m) in members.iter().enumerate() {
+            pipe_member(*m, source, ctx, out, i > 0 || leading, i < last);
+        }
+        ctx.pop();
+        return;
+    }
+    match op {
+        Some("|") | Some("|&") => {
+            if let Some(o) = owner {
+                out.stages[o].pipe_out = true;
+            }
+            ctx.push(Context::Pipeline);
+            pipe_member(node, source, ctx, out, true, false);
+            ctx.pop();
+        }
+        Some("&&") => {
+            ctx.push(Context::AndThen);
+            walk(node, source, ctx, out);
+            ctx.pop();
+        }
+        Some("||") => {
+            ctx.push(Context::OrElse);
+            walk(node, source, ctx, out);
+            ctx.pop();
+        }
+        _ => walk(node, source, ctx, out),
     }
 }
 
@@ -1100,6 +1246,7 @@ fn stage(
     let mut program: Option<Word> = None;
     let mut argv = Vec::new();
     let mut assignments = Vec::new();
+    let mut tails: Vec<Node<'_>> = Vec::new();
 
     // `declaration_command` and `unset_command` name themselves with an anonymous
     // keyword child rather than a `command_name`.
@@ -1127,6 +1274,9 @@ fn stage(
                 let mut reds = Vec::new();
                 collect_redirects(child, source, out, &mut reds);
                 out.stages[index].redirects.extend(reds);
+                if child.kind() == "heredoc_redirect" {
+                    tails.push(child);
+                }
             }
             _ if !child.is_named() => {}
             _ => {
@@ -1147,6 +1297,9 @@ fn stage(
     // grammar was worth the trouble: `kill $(pgrep -f x)` has two programs in it,
     // not one string.
     scan_substitutions(node, source, ctx, out);
+    for t in tails {
+        heredoc_tail(t, source, ctx, out, Some(index));
+    }
 }
 
 /// Walk the substitutions hanging under `node`, without re-entering `node` itself.
@@ -1154,6 +1307,16 @@ fn scan_substitutions(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out:
     for child in named_children(node) {
         match child.kind() {
             "command_substitution" | "process_substitution" => walk(child, source, ctx, out),
+            // The commands nested after a here-document operator are walked by
+            // `heredoc_tail`, substitutions and all; only the document itself is
+            // scanned here.
+            "heredoc_redirect" => {
+                for k in named_children(child) {
+                    if !is_continuation(k) {
+                        scan_substitutions(k, source, ctx, out);
+                    }
+                }
+            }
             _ => scan_substitutions(child, source, ctx, out),
         }
     }
@@ -1811,4 +1974,89 @@ pub fn shape(n: &Normalised) -> String {
         }
     }
     out
+}
+
+
+#[cfg(test)]
+mod redirect_ownership {
+    //! Which stage a hoisted redirection belongs to, and that the commands the
+    //! grammar nests after a here-document operator are not lost. Measured on
+    //! the operator's corpus 2026-09-17 (plan §4b): 5,675 here-documents read
+    //! as `cd`'s stdin, and `cat <<'EOF' | bash` normalised to a `cat`.
+    use super::*;
+
+    fn heredoc_of(s: &Stage) -> Option<&str> {
+        s.redirects.iter().find_map(|r| match &r.target {
+            RedirectTarget::HereDoc { body, .. } => Some(body.as_str()),
+            _ => None,
+        })
+    }
+
+    fn programs(n: &Normalised) -> Vec<&str> {
+        n.stages.iter().map(|s| s.program_name().unwrap_or("?")).collect()
+    }
+
+    #[test]
+    fn a_trailing_heredoc_belongs_to_the_last_command_of_the_list() {
+        let n = normalise("cd /x && python3 - <<'PY'\nprint(1)\nPY");
+        assert_eq!(programs(&n), ["cd", "python3"]);
+        assert_eq!(heredoc_of(&n.stages[0]), None, "`cd` reads nothing");
+        assert_eq!(heredoc_of(&n.stages[1]), Some("print(1)\n"));
+    }
+
+    #[test]
+    fn a_trailing_file_redirect_belongs_to_the_last_command_of_the_pipeline() {
+        let n = normalise("a | b > f");
+        assert_eq!(programs(&n), ["a", "b"]);
+        assert!(n.stages[0].redirects.is_empty());
+        assert_eq!(n.stages[1].redirect_writes(), vec![&Word::Literal("f".into())]);
+        // The substitution inside the last member ran to make a word; the
+        // redirection is not its.
+        let n = normalise("a && b $(c) > f");
+        assert_eq!(programs(&n), ["a", "b", "c"]);
+        assert_eq!(n.stages[1].redirect_writes().len(), 1);
+        assert!(n.stages[2].redirects.is_empty());
+    }
+
+    #[test]
+    fn a_compound_body_gives_the_fact_to_every_stage_of_the_body_only() {
+        let n = normalise("ls; { a; b; } > f");
+        assert_eq!(programs(&n), ["ls", "a", "b"]);
+        assert!(n.stages[0].redirects.is_empty(), "`ls` is before the group");
+        assert_eq!(n.stages[1].redirect_writes().len(), 1);
+        assert_eq!(n.stages[2].redirect_writes().len(), 1);
+    }
+
+    #[test]
+    fn a_pipe_after_the_heredoc_operator_is_a_pipe_into_a_real_stage() {
+        let n = normalise("cat <<'EOF' | bash\necho hi\nEOF");
+        assert!(n.is_resolved(), "{:?}", n.unresolved);
+        assert_eq!(programs(&n), ["cat", "bash"]);
+        assert!(n.stages[0].pipe_out, "cat's stdout is the pipe");
+        assert!(n.stages[1].pipe_in);
+        assert_eq!(heredoc_of(&n.stages[0]), Some("echo hi\n"));
+
+        let n = normalise("cat <<'EOF' | sudo bash | wc -l\nx\nEOF");
+        assert_eq!(programs(&n), ["cat", "sudo", "wc"]);
+        assert!(n.stages[1].pipe_in && n.stages[1].pipe_out);
+        assert!(n.stages[2].pipe_in && !n.stages[2].pipe_out);
+    }
+
+    #[test]
+    fn a_guarded_command_after_the_heredoc_operator_is_a_stage() {
+        let n = normalise("cat > f.sh <<'EOF' && chmod +x f.sh\nbody\nEOF");
+        assert!(n.is_resolved(), "{:?}", n.unresolved);
+        assert_eq!(programs(&n), ["cat", "chmod"]);
+        assert_eq!(n.stages[0].redirect_writes(), vec![&Word::Literal("f.sh".into())]);
+        assert_eq!(heredoc_of(&n.stages[0]), Some("body\n"));
+        assert!(n.stages[1].context.contains(&Context::AndThen));
+        assert_eq!(n.stages[1].argv.len(), 2);
+    }
+
+    #[test]
+    fn a_stage_after_the_heredoc_body_is_unchanged() {
+        let n = normalise("cat <<'EOF' | bash\nx\nEOF\nls");
+        assert_eq!(programs(&n), ["cat", "bash", "ls"]);
+        assert!(!n.stages[2].pipe_in);
+    }
 }
