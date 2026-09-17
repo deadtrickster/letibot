@@ -339,6 +339,14 @@ pub enum ClientFrame {
     /// abort one either — `letibot --stop --force` is the verb that does, and it
     /// interrupts over the protocol first. Naming this `Stop` rather than
     /// `Shutdown` keeps it the same word the launcher uses for the same act.
+    ///
+    /// **It does not travel through the command queue**, and that is the point.
+    /// Its first version submitted a `CommandKind` like every other frame; one
+    /// worker drains that queue and a running turn owns it, so a stop asked for
+    /// mid-turn sat behind the turn and nothing happened. The server handles
+    /// this frame on the connection's own thread — announce, ack, close the
+    /// registry — which is the same thing `catch_signals` does from its thread,
+    /// and the reason a `SIGTERM` never had the bug.
     Stop {
         client_request_id: String,
         expected_seq: u64,

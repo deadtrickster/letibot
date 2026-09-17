@@ -378,3 +378,59 @@ fn one_worker_serving_two_sessions_takes_them_in_the_order_they_were_prompted() 
     let _ = pa.join();
     let _ = pb.join();
 }
+
+/// **A stop closes the daemon while the worker is busy**, which is the whole
+/// reason it does not travel through the command queue.
+///
+/// The first version submitted `CommandKind::Stop` like any other command. One
+/// worker drains that queue and a running turn owns it, so a stop asked for
+/// mid-turn sat behind the turn and nothing happened — the operator, 2026-09-17:
+/// *"i stopped mid turn and harness kept it running"*. The signal path never had
+/// that problem because it closes the registry from its own thread, and this now
+/// does the same from the connection's.
+///
+/// The test does not need a worker to prove it: a registry with a command
+/// already queued and nobody draining it IS the busy case, and the stop has to
+/// land anyway.
+#[test]
+fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
+    let (reg, server) = start("stopnow");
+    let a = reg.get("a").unwrap();
+
+    let (mut client, _hello, reader) =
+        HeadClient::attach(server.path(), "a", 0, "tui", "dead", Caps::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || pump(reader, tx));
+
+    // A command nobody will ever drain: this is the worker being busy.
+    client.prompt(0, "a question that will never be answered").unwrap();
+    assert!(!reg.is_closed(), "still open with work queued");
+
+    // The other head, which must be told before the socket goes.
+    let (_other, _h2, reader2) =
+        HeadClient::attach(server.path(), "a", 0, "tui", "someone", Caps::default()).unwrap();
+    let (tx2, rx2) = std::sync::mpsc::channel();
+    std::thread::spawn(move || pump(reader2, tx2));
+
+    client.stop(0, "dead").unwrap();
+
+    // The registry closes, and it does not wait for the queue.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !reg.is_closed() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(reg.is_closed(), "the stop did not reach the registry");
+
+    // …and the OTHER head was told who did it, while the hub was still up.
+    let seen = until(&rx2, |f| {
+        matches!(f, ServerFrame::Event(e)
+            if matches!(&e.event, SessionEvent::Warning { code, detail }
+                if code == "daemon_stopping" && detail.contains("dead")))
+    });
+    assert!(
+        seen.iter().any(|f| matches!(f, ServerFrame::Event(e)
+            if matches!(&e.event, SessionEvent::Warning { code, .. } if code == "daemon_stopping"))),
+        "the other head never heard why the daemon went: {seen:#?}"
+    );
+    let _ = rx;
+}

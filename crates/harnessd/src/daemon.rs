@@ -191,18 +191,7 @@ impl Daemon {
                 }
                 Work::Command(session_id, cmd) => {
                     let outcome = sessions.dispatch(&session_id, &cmd);
-                    // **A stop ends the worker, and it ends it HERE.** The
-                    // announcement has already gone out from `dispatch`; what is
-                    // left is to stop serving, which is this loop's own business
-                    // and nobody else's. Returning rather than signalling keeps
-                    // one shutdown sequence — the caller closes the registry
-                    // exactly as it does for a SIGTERM, so every head wakes with
-                    // `Closed` and the socket goes the same way.
-                    let stop = matches!(outcome, Outcome::Stopped { .. });
                     on_reply(&session_id, &cmd, outcome);
-                    if stop {
-                        return;
-                    }
                 }
                 // **A monitor fired while nothing was running.** T24's *"wakes the
                 // loop when it fires"*, which until now had no caller: a firing was
@@ -226,9 +215,6 @@ impl Daemon {
                     // the worker's one vocabulary.
                     Outcome::Compacted(_) => {}
                     Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
-                    // A wake cannot ask the daemon to stop; the arm exists
-                    // because the outcome is the worker's one vocabulary.
-                    Outcome::Stopped { .. } => {}
                     Outcome::Ignored => {}
                 },
             }

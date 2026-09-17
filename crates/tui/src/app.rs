@@ -2387,6 +2387,13 @@ impl App {
                 Key::Enter if n > 0 => {
                     return self.answer_marked();
                 }
+                // A row number is the row, and answering it — see `digit_row`.
+                // Gated on the empty composer like the arrows above, so a line
+                // already being typed keeps its digits.
+                _ if digit_row(&k, n).is_some() => {
+                    self.sel = digit_row(&k, n).unwrap();
+                    return self.answer_marked();
+                }
                 _ => {}
             }
         }
@@ -2461,15 +2468,15 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Char('1') if self.editor.text().is_empty() => {
+                _ if self.editor.text().is_empty() && digit_row(&k, 2).is_some() => {
+                    self.quit_sel = digit_row(&k, 2).unwrap();
                     self.quit_card = false;
                     self.quit = true;
-                    return Some(Action::Quit);
-                }
-                Key::Char('2') if self.editor.text().is_empty() => {
-                    self.quit_card = false;
-                    self.quit = true;
-                    return Some(Action::StopDaemon);
+                    return Some(if self.quit_sel == 0 {
+                        Action::Quit
+                    } else {
+                        Action::StopDaemon
+                    });
                 }
                 Key::Enter if self.editor.text().is_empty() => {
                     self.quit_card = false;
@@ -2520,6 +2527,11 @@ impl App {
                     }
                     let name = choices[self.mode_sel.min(n - 1)].clone();
                     return self.take_mode(name);
+                }
+                _ if self.editor.text().is_empty() && digit_row(&k, n).is_some() => {
+                    let at = digit_row(&k, n).unwrap();
+                    self.mode_sel = at;
+                    return self.take_mode(choices[at].clone());
                 }
                 Key::Click { y, .. } => {
                     // The arithmetic the last frame did: the card's first
@@ -3951,13 +3963,13 @@ impl App {
             // true the moment the second press started opening a card instead:
             // a third press now CLOSES it. A hint that names the wrong key is
             // worse than none.
-            "↑↓ or 1/2 to choose · enter leaves · esc stays"
+            "1/2 or ↑↓ then enter · esc stays"
         } else if self.help || self.stats {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
         } else if self.mode_picker {
-            "↑↓ to choose · enter switches · type a name or a row · esc closes"
+            "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.todos_pane {
             "the model's plan above, the repo's queue below · esc closes"
         } else if self.config_pane {
@@ -3967,7 +3979,7 @@ impl App {
         } else if self.jobs_pane {
             "background jobs this session started · esc closes"
         } else if !self.open.is_empty() {
-            "type an option above to answer · /help"
+            "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
             "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · ctrl-q jobs · tab completes /commands · /help"
         };
@@ -5654,6 +5666,24 @@ fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>
 /// Searching from the back for a row that is still open is exact rather than
 /// heuristic: within a turn the engine proposes and settles in order, so the only
 /// row a start or a finish can be about is the newest unfinished one.
+/// A row number typed on a card: `'1'`..`'9'` to a 0-based index, within `n`.
+///
+/// **Nine, not more.** A card with ten rows would make `1` ambiguous between
+/// row one and the start of row twelve, and the fix for that is a composer that
+/// collects digits — which is what the session picker already does and is why
+/// this is not used there. Every card that uses it has a handful of rows; when
+/// one grows past nine, its tenth row is reachable by the arrows and by typing,
+/// and nothing here silently picks the wrong one.
+///
+/// The operator asked for it on all three cards at once (2026-09-17): *"it
+/// shows numbered lists anyway so me pressing row number should constitute
+/// focus and enter"*.
+fn digit_row(k: &Key, n: usize) -> Option<usize> {
+    let Key::Char(c) = k else { return None };
+    let d = c.to_digit(10)? as usize;
+    (1..=n.min(9)).contains(&d).then(|| d - 1)
+}
+
 fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
     calls
         .iter_mut()
@@ -8452,6 +8482,61 @@ mod tests {
     /// daemon's KV with it and a cold prefill of a long session is minutes on
     /// this box — a default that costs that much is a default that has answered
     /// for the operator.
+    /// **A row number is focus and enter, on every card that draws one.** The
+    /// operator, 2026-09-17: *"it shows numbered lists anyway so me pressing row
+    /// number should constitute focus and enter"*.
+    ///
+    /// One rule, three cards, and the same guard on each: the composer must be
+    /// empty, so a line already being typed keeps its digits.
+    #[test]
+    fn a_row_number_answers_the_ask_the_mode_card_and_the_quit_card() {
+        // The permission ask.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::requested("r1", "`bash` wants exec access"),
+        )));
+        assert_eq!(
+            a.key(Key::Char('2')),
+            Some(Action::Answer {
+                req_id: "r1".into(),
+                option_id: "deny".into(),
+                pattern: None
+            }),
+            "row 2 of the ask is `deny`"
+        );
+
+        // The quit card.
+        let mut b = app();
+        b.clock(1_000);
+        b.key(Key::CtrlC);
+        b.key(Key::CtrlC);
+        assert_eq!(b.key(Key::Char('2')), Some(Action::StopDaemon));
+
+        // Out of range does nothing — it is not an answer and not a keystroke
+        // the card invents a meaning for.
+        let mut c = app();
+        c.clock(1_000);
+        c.key(Key::CtrlC);
+        c.key(Key::CtrlC);
+        assert_eq!(c.key(Key::Char('7')), None, "there is no row 7");
+        assert!(c.quit_card, "and the card is still up");
+    }
+
+    /// A digit typed into a line that has already started is part of the line,
+    /// not an answer — the same empty-composer guard the arrows have.
+    #[test]
+    fn a_digit_inside_a_half_typed_line_is_not_an_answer() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::requested("r1", "`bash` wants exec access"),
+        )));
+        typed(&mut a, "give me ");
+        assert_eq!(a.key(Key::Char('2')), None, "it went into the line");
+        assert_eq!(a.input(), "give me 2");
+    }
+
     #[test]
     fn the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one() {
         let mut a = app();
@@ -10947,10 +11032,10 @@ mod tests {
         ));
         a.apply(mode_settings("read-only", MODES));
         assert_eq!(a.command("mode"), Some(Action::Settings));
-        // A row number takes that row.
-        typed(&mut a, "5");
+        // A row number takes that row **on the keypress** — it is focus and
+        // enter in one, which is what a numbered list means. See `digit_row`.
         assert_eq!(
-            a.key(Key::Enter),
+            a.key(Key::Char('5')),
             Some(Action::Mode {
                 name: "automode-edits".into()
             })
