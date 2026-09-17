@@ -111,9 +111,12 @@ holds for the picker and the cards, but **an open decision owns Enter even
 with a line typed** — a line naming an option is that answer, any other line
 is held (back to the composer) while the marked row answers — because a
 permission arriving mid-typing used to turn Enter into "send the
-half-thought" (operator, 2026-09-17). New screens join the Esc-close block
-and (if full-body) the scroll guard; a bottom card does not join the
-scroll guard — the wheel scrolls the transcript behind it.
+half-thought" (operator, 2026-09-17). New screens join the Esc-close block,
+the scroll guard (if full-body), and the wheel router: wheel and page keys
+move what is on the screen — a screen on top swallows them, and the
+transcript scrolls only when nothing is up. A test walks every pane, so a
+pane that lets the wheel reach the transcript fails there instead of on
+somebody's screen.
 
 **Behind a running turn, the operator's queue is one message.** Consecutive
 operator prompts coalesce — engine-side in `Pending::absorb`, mirror-side in
@@ -160,9 +163,11 @@ manually, caps the body, and splits curl's metadata by a `-w` sentinel with
 
 ## Rakes, already stepped on
 
-- `scratch/` is untracked and **not** in worktrees; `crates/tools/src/intent.rs`
-  `include_str!`s `scratch/man-scrape/eval/answer-key.tsv`, so tools tests fail
-  in a fresh worktree until that file is copied over.
+- `scratch/` is gitignored, and after it briefly arrived **tracked** in a
+  merge (27 files of scrape output), the one file a build needed moved into
+  the tree: `answer-key.tsv` lives at `crates/tools/tests/data/`, beside the
+  test that reads it. Nothing in the build reads from `scratch/` any more —
+  keep it that way.
 - Scoping by crate is **not** enough to stay off the model. `harnessd`'s
   non-live integration tests (`compact`, `loop_closes`, `resume`, `slash`,
   `todos`, `wired`) and `turn`'s `compaction` + `engine_decisions` load the
