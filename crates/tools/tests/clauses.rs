@@ -582,16 +582,21 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
         letibot_tools::schema::lint_description(&edit.description),
         vec![]
     );
-    assert!(edit.description.contains("Read the file first"));
+    // Read-before-write and the staleness refusal are gone from the code and
+    // from the sentence together, which is the whole point of this test. What
+    // the description promises now is the check that was always doing the work.
+    assert!(!edit.description.contains("Read the file first"));
+    assert!(!edit.description.contains("changed since"));
     assert!(
         edit.description
             .contains("exactly once unless `replace_all`")
     );
 
     let mut h = writable_harness();
-    // …the read-before-write promise.
+    // …and nothing about reading or staleness gates it any more: a unique
+    // target on an unread file lands.
     assert!(
-        !h.call(
+        h.call(
             "edit",
             r#"{"path":"README.md","old_string":"letibot","new_string":"x"}"#
         )
