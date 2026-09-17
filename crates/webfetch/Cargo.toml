@@ -1,0 +1,17 @@
+[package]
+name = "letibot-webfetch"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dom_smoothie = "0.18.1"
+htmd = "0.5.5"
+html2text = "0.17.1"
+# The `Fetcher` seam this crate fills. The trait lives in `tools`; the
+# implementation lives here, so the crate that shells out to `curl` and
+# parses other people's HTML never becomes a dependency of the crate that
+# is otherwise a function of a call and a filesystem.
+letibot-tools.workspace = true

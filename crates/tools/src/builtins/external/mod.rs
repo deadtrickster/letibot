@@ -614,6 +614,7 @@ pub mod scripted {
                 bytes: self.body.len(),
                 body: self.body.clone(),
                 truncated: false,
+                notes: Vec::new(),
             })
         }
 
