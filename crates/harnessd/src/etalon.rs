@@ -124,7 +124,11 @@ pub struct Report {
 pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut r = Report::default();
-    for line in text.lines().take(limit) {
+    // `LETIBOT_ETALON_DUMP=path` writes one line per command — its row number,
+    // read and rule — so two builds can be diffed row by row, which the summary
+    // cannot do: a rule that gains 500 and loses 500 shows as unchanged.
+    let mut dump = std::env::var_os("LETIBOT_ETALON_DUMP").map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("dump path")));
+    for (row_no, line) in text.lines().take(limit).enumerate() {
         let row: Row = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(_) => continue,
@@ -190,6 +194,17 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
                 };
                 *r.heredoc_sinks.entry(key).or_default() += 1;
             }
+        }
+        if let Some(d) = dump.as_mut() {
+            use std::io::Write;
+            let rule = match (&b.tier, &b.verdict) {
+                (_, BaselineVerdict::NotRun { .. }) => "not_run".to_string(),
+                (Tier::AlwaysAsk { rule, .. }, _) => rule.to_string(),
+                (Tier::Blocked { rule, .. }, _) => rule.as_str().to_string(),
+                (Tier::Auto, _) => "auto".into(),
+                (Tier::MayApprove, _) => "may_approve".into(),
+            };
+            let _ = writeln!(d, "{row_no}\t{}\t{}\t{rule}", row.source, row.outcome);
         }
         *r.cells
             .entry((row.source.clone(), row.outcome.clone(), read))

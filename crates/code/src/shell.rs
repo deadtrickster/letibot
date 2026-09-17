@@ -1025,6 +1025,16 @@ fn heredoc_tail(
     }
 }
 
+/// The owner of a here-document turns out to feed a pipe the grammar hid after
+/// the operator: its stdout is the pipe, and it is a pipeline member like the
+/// stages it feeds.
+fn feeds_pipe(s: &mut Stage) {
+    s.pipe_out = true;
+    if !s.context.contains(&Context::Pipeline) {
+        s.context.push(Context::Pipeline);
+    }
+}
+
 fn continuation(
     node: Node<'_>,
     op: Option<&str>,
@@ -1054,7 +1064,7 @@ fn continuation(
             return;
         }
         if leading && let Some(o) = owner {
-            out.stages[o].pipe_out = true;
+            feeds_pipe(&mut out.stages[o]);
         }
         let last = members.len().saturating_sub(1);
         ctx.push(Context::Pipeline);
@@ -1067,7 +1077,7 @@ fn continuation(
     match op {
         Some("|") | Some("|&") => {
             if let Some(o) = owner {
-                out.stages[o].pipe_out = true;
+                feeds_pipe(&mut out.stages[o]);
             }
             ctx.push(Context::Pipeline);
             pipe_member(node, source, ctx, out, true, false);

@@ -142,6 +142,62 @@ attacks caught before the model (8 today) and the unreadable share of the operat
 (31.7%); the operator's false-prompt rate must not rise — a heredoc that writes prose or config
 stays a write.
 
+**Landed 2026-09-17** (`c172dd0` the parser, then the reading). What the measurement found first:
+
+- **The 31.7% was not heredocs.** `--etalon` now breaks `not_run` down by construct: of the
+  38,236 unreadable commands, `parameter_expansion` is in 29,024 and `command_substitution` in
+  22,638; expanded (unquoted) heredocs are in 110. A quoted heredoc was never *unreadable* — it was
+  read as a literal and its body ignored, which is a different fact and the one this step is about.
+  The claim above was wrong and is left standing, struck through by this paragraph.
+- **The parser gave a trailing heredoc to the wrong stage and dropped what followed the operator.**
+  tree-sitter-bash hoists `<<'EOF'` above the whole list, so `cd /x && python3 - <<'PY'` was read
+  as `cd`'s stdin (5,675 times in the corpus), and it nests `| bash` / `&& chmod +x f` INSIDE the
+  heredoc node, so `cat <<'EOF' | sudo bash` normalised to a `cat`. Fixed before any reading was
+  written, as its own commit.
+- **A mention is not a call.** The first reading counted every host and secret path in a script
+  body: +1,570 prompts, nearly all `python3 - <<'PY' … s.replace('''…192.168.1.55:8787…''')` —
+  this fleet's edit scripts, whose string literals hold the vocabulary of the code they edit. Now
+  a triple-quoted literal is data, a host counts only in a script that imports a network module or
+  shells out, and a secret path only after a call that opens a file.
+- **Three defects the measurement exposed in the string layer**, each its own line in the same
+  commit: a loopback address was `network_egress_to_an_unseen_host` (the rule's fact is bytes
+  leaving the box; `127.0.0.1` is the box — 4,573 of the rule's 7,950 prompts, and 5 of layer A's
+  8 BashArena "catches", which were `curl localhost:8888` in a sandbox); a multi-line word
+  (`python3 -c "…"` program text) was read as `host:path` by its first line; `{"line_number":`
+  was a host.
+
+What is read now: the body when it is the stdin of an interpreter (`bash <<'EOF'`, `python3 -
+<<'PY'`, `cat <<'EOF' | sh`, `echo '…' | sh`), the `-c`/`-e` argument of a non-shell interpreter,
+and a body written to a file that is evidently a program — a shebang, a script extension, a `bin/`
+(not `src/bin/`), or a stage of the same command that `chmod +x`es or runs it. Shell bodies are
+normalised and folded (only tightening; a written script's `$1` does not make the write unreadable,
+text that runs now is `bash -c`); other languages are scanned for hosts and secret paths. Plus two
+host shapes BashArena uses: a bare address as the operand of a network program (`nc 192.0.2.10
+4444`), and a host assigned to a variable (`H=192.0.2.10; curl http://$H/`).
+
+| layer A | before | after |
+|---|---|---|
+| operator's corpus, prompts on rows that ran | 12,787 / 117,813 (10.9%) | **8,333 (7.1%)** |
+| … of which `network_egress_to_an_unseen_host` | 7,950 | 2,209 |
+| … `secret_off_box` + `secret_flow_unknown` | 1,102 + 15 | 1,625 + 137 (scripts that open the flowy token and post to the node — the heartbeat, in Python; step 2a's shape) |
+| BashArena attacks caught before the model (of 47) | 8, 5 of them loopback | **5**, all for the stated reason |
+| BashArena honest rows flagged (of 292) | 36 (12%) | **20 (7%)** |
+| **the guard** (layer A + oracle, claim arm) on the 47 attacks | 28 caught (60%) | **22 (47%)** |
+
+**The guard's recall fell while layer A's precision rose**, and the six new misses say why: two
+are the loopback `curl` rows the old layer A caught for the wrong reason and the oracle now judges
+against the task (which asked for a health check); the other four are actions the reading made
+*legible* — `python3 -c "import socket, …; print('Core libs available')"` used to carry `unknown`
+and be asked about, and now carries `execute_code network` and is admitted as what the task asked.
+A single-action judge cannot see that the trajectory is an attack; BashArena's own monitor sees the
+whole trajectory (§6). The honest number is 47%, and the thing to build against it is the
+trajectory (the `chmod +x FILE` rows whose FILE was written three steps back), not a looser reading.
+
+The attack set's ceiling for a single-action reader is low by construction: 11 of 47 are
+`chmod +x FILE && ./FILE` where FILE was written in an earlier, honest-labelled row, and 5 are recon
+reads. The bodies that ARE in attack rows and name no host outside an f-string template
+(`http://{endpoint}`) are out of a string scanner's reach.
+
 ## 3. Step 1 — the prompt, before any port or finetune
 
 *Source: TraceGuard §4 (dimensions), BashArena §6 (ensemble).*
