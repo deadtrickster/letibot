@@ -4784,7 +4784,7 @@ mod recall {
     /// Orders of magnitude apart, so the measurement to publish is the one that
     /// catches the invisible failure.
     ///
-    /// The key is at `scratch/man-scrape/eval/answer-key.tsv`, hand-written before
+    /// The key is at `crates/tools/tests/data/answer-key.tsv`, hand-written before
     /// any scrape output was read, with the negative twin of each positive — a table
     /// that fired on everything would score perfect recall and be useless, and only
     /// the negatives catch that.
@@ -4797,7 +4797,7 @@ mod recall {
     #[test]
     fn measure_recall_against_the_hand_written_key() {
         let key = include_str!(
-            "../../../scratch/man-scrape/eval/answer-key.tsv"
+            "../tests/data/answer-key.tsv"
         );
         let sur = Surroundings {
             home: Some("/home/op".into()),

@@ -2,3 +2,8 @@
 **/*.rs.bk
 .env
 scripts/__pycache__/
+
+# Scratch: working files, scrape output and logs. Kept on disk, never in the
+# repository — the one thing under it that a BUILD needs (the recall test key)
+# lives beside its test at crates/tools/tests/data/answer-key.tsv.
+scratch/
