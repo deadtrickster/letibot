@@ -2343,9 +2343,11 @@ impl App {
         // the ladder and cannot sensibly mean anything else -- the same argument the
         // picker arm above already makes for a bare row number.
         //
-        // Only with an EMPTY composer, so nothing is taken away: a half-typed line
-        // still scrolls, still edits, and Enter still sends it. That keeps `/command`,
-        // a typed option id and the tests working unchanged.
+        // Up/Down only with an EMPTY composer, so nothing is taken away: a half-typed
+        // line still scrolls and still edits. Enter is the ask's in both states —
+        // with an empty line the marked row is the answer here; with a typed line
+        // `submit` answers the ask and holds the words, because a permission arriving
+        // mid-typing must not turn Enter into "send the half-thought".
         if !self.open.is_empty() && self.editor.text().is_empty() {
             let n = self.open[0].options.len();
             match k {
@@ -2360,17 +2362,7 @@ impl App {
                     return None;
                 }
                 Key::Enter if n > 0 => {
-                    let d = &self.open[0];
-                    let opt = d.options[self.sel.min(n - 1)].option_id.clone();
-                    let req_id = d.req_id.clone();
-                    return Some(Action::Answer {
-                        req_id,
-                        option_id: opt,
-                        // Enter on the ladder is the no-glob path by construction:
-                        // there is nothing typed to read one from. A glob is given
-                        // by typing `allow_always <pattern>` on the line.
-                        pattern: None,
-                    });
+                    return self.answer_marked();
                 }
                 _ => {}
             }
@@ -2585,6 +2577,28 @@ impl App {
         }
     }
 
+    /// The marked row is the answer: the marker IS the thing Enter takes, the
+    /// same contract the pickers keep. `None` when the ask offers no options —
+    /// the ladder arm refuses to move through one, and this refuses to answer
+    /// one.
+    fn answer_marked(&mut self) -> Option<Action> {
+        let d = self.open.first()?;
+        let n = d.options.len();
+        if n == 0 {
+            return None;
+        }
+        let option_id = d.options[self.sel.min(n - 1)].option_id.clone();
+        let req_id = d.req_id.clone();
+        Some(Action::Answer {
+            req_id,
+            option_id,
+            // The ladder is the no-glob path by construction: there is nothing
+            // typed to read one from. A glob is given by typing
+            // `allow_always <pattern>` on the line.
+            pattern: None,
+        })
+    }
+
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     fn submit(&mut self, text: String) -> Option<Action> {
@@ -2604,16 +2618,30 @@ impl App {
         if self.mode_picker {
             return self.pick_mode(text.trim());
         }
-        // An open decision takes the line as an option id or its first letter, so
-        // answering does not require a second keymap.
-        if let Some(d) = self.open.first().cloned()
-            && let Some((opt, pattern)) = match_option(&d, text.trim())
-        {
-            return Some(Action::Answer {
-                req_id: d.req_id,
-                option_id: opt,
-                pattern,
-            });
+        // An open decision owns Enter, typed line or not. A line that names an
+        // option is that answer. Any other line is not disposable: the ask
+        // arrived while it was being typed, and Enter on a card means "answer
+        // this" — the marked row — so the words go back to the composer and
+        // the next Enter, with the ask settled, sends them. Sending them here
+        // is how a permission arriving mid-typing turned Enter into "send the
+        // half-thought" (the operator, 2026-09-17).
+        if let Some(d) = self.open.first().cloned() {
+            if let Some((opt, pattern)) = match_option(&d, text.trim()) {
+                return Some(Action::Answer {
+                    req_id: d.req_id,
+                    option_id: opt,
+                    pattern,
+                });
+            }
+            self.set_composer(&text);
+            if let Some(a) = self.answer_marked() {
+                self.say("answered the ask — your line is held, enter sends it");
+                return Some(a);
+            }
+            // An ask with no options cannot be taken by Enter at all; the
+            // line stays held rather than becoming a prompt sent under it.
+            self.say("this ask offers no options — your line is held");
+            return None;
         }
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
@@ -7997,18 +8025,35 @@ mod tests {
 
     /// The arrows belong to the decision only while the composer is empty.
     ///
-    /// A half-typed line still edits and still sends, so nothing was taken away from
-    /// the person who prefers typing — including `/command`, which shares Enter.
+    /// A half-typed line still edits, so nothing was taken away from the person
+    /// who prefers typing — including `/command`, which shares Enter. Enter does
+    /// NOT send the line while an ask is open: the ask arrived while the line
+    /// was being typed, and Enter on a card means "answer this" (the operator,
+    /// 2026-09-17: *"when i hit enter my unfinished prompt gets sent first"*).
+    /// The line is held and the next Enter, with the ask settled, sends it.
     #[test]
-    fn a_half_typed_line_keeps_the_arrows_and_enter() {
+    fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
         typed(&mut a, "some prose");
-        // Enter sends the line as a prompt, not as an answer to the decision.
-        assert!(
-            matches!(a.key(Key::Enter), Some(Action::Prompt(t)) if t == "some prose"),
-            "a typed line must still submit while a decision is open"
+        // The arrows still belong to the composer while a line is typed: the
+        // ladder cursor does not move under the operator's feet.
+        a.key(Key::Up);
+        assert_eq!(a.sel, 0);
+        // Enter answers the ask with the marked row and holds the line.
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Answer {
+                req_id: "r1".into(),
+                option_id: "allow".into(),
+                pattern: None
+            })
         );
+        assert_eq!(a.input(), "some prose", "the words are held, not sent");
+        assert!(a.pending_prompts.is_empty(), "nothing was sent");
+        // With the ask settled, the next Enter sends the held line.
+        a.apply(ServerFrame::Event(env(2, testing::answered("r1", "allow"))));
+        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("some prose".into())));
     }
 
     #[test]
@@ -8024,6 +8069,7 @@ mod tests {
                 pattern: None
             })
         );
+        assert_eq!(a.input(), "", "the typed id is consumed, not held");
     }
 
     #[test]
