@@ -380,6 +380,11 @@ pub struct FetchedPage {
     pub bytes: usize,
     /// The fetcher stopped early. Reported, never inferred from a short body.
     pub truncated: bool,
+    /// What the fetcher did to the body before handing it over — reader-mode
+    /// extraction, or the fallback to the whole document. The tool hangs
+    /// these on the result as notes, because a silent rewrite of a page is
+    /// the defect the quarantine exists to make visible.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -619,6 +624,9 @@ fn render_page(call_id: &str, req: &FetchRequest, page: FetchedPage) -> Invocati
             page.bytes
         ));
     }
+    // What the fetcher itself did to the body — extraction, fallback —
+    // travels as notes beside the provenance ones.
+    notes.extend(page.notes.iter().cloned());
 
     if page.body.trim().is_empty() {
         // It ran, it got an answer, and the answer has no text in it. That is a

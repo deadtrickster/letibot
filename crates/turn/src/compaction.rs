@@ -38,10 +38,11 @@
 //!   a map would keep — events, decisions, outcomes — so the summary this
 //!   version produces is the material that map would be built from.
 
-use letibot_transcript::{SystemOrigin, TranscriptItem};
+use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure};
 use crate::events::EventSink;
+use crate::length::EmptyReason;
 
 /// What is appended as the compaction turn's instruction.
 ///
@@ -58,6 +59,32 @@ every decision taken and the reason for it; every file created or changed and wh
 the change was; every command run and its outcome; every number, name and path that \
 is still needed; every question left open. Drop tool output bodies and reasoning. \
 Do not call tools. Answer with the record and nothing else.";
+
+/// What is appended when the summary turn stops inside its own reasoning block
+/// and says nothing (R7).
+///
+/// The same steering the tool loop gives (`harnessd`'s `run_rounds`), with the ask
+/// carried the way the `EmptyLength` arm carries it: a compaction turn that
+/// reasons past its budget is exactly the turn that must hear *put the answer
+/// first*, because the summary is the only thing this turn is for. Exported so a
+/// test can assert the notice itself, not just that something was appended.
+pub const UNFINISHED_REASONING_NOTICE: &str = "\
+Your previous turn ended inside a reasoning block and said nothing; continue or say \
+why not. Answer again, and put the summary before the reasoning if you reason at all.";
+
+/// What is appended when the summary turn hits the output limit with nothing
+/// usable in it (§5.7's hard fail, given the loop's salvage).
+///
+/// Worded from the harness's `EmptyLength` arm with one word changed: the answer
+/// this turn owes is the summary.
+fn empty_length_notice(reason: EmptyReason) -> String {
+    format!(
+        "Your previous turn hit the output token limit with nothing usable in it ({}). \
+         Nothing was recorded. Answer again, and put the summary before the reasoning \
+         if you are close to the limit.",
+        reason.as_str()
+    )
+}
 
 /// What a compaction turn leaves behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +123,23 @@ pub struct CompactionOutcome {
 /// session's base will not carry it — the summary replaces the span it asked
 /// about, instruction included.
 ///
-/// A failed turn fails the compaction: [`TurnFailure`] comes straight out, and
-/// nothing about the session has been reduced — the instruction stays in the
-/// ledger, which is harmless and honest, because the next compaction attempt
-/// appends a fresh instruction over it.
+/// A failed turn fails the compaction — but the two *say-nothing* failures get
+/// the same bounded salvage the tool loop gives them, because a compaction turn
+/// is a turn and GLM ends those mid-thought exactly as it ends any other. On
+/// [`TurnFailure::UnfinishedReasoning`] and [`TurnFailure::EmptyLength`] the
+/// notice is appended as one more user item and the turn is taken again; the
+/// engine's own salvage budget bounds the retries (each failed turn spends one
+/// unit, and a spent budget comes back as [`TurnFailure::SalvageExhausted`],
+/// which is not one of the two and so falls through to the caller). When the
+/// budget is spent the failure propagates: nothing about the session has been
+/// reduced, and the caller's `auto_compact_failed` — or `/compact`'s error —
+/// still says an honest thing.
+///
+/// Nothing about the session has been reduced on the failure paths: the
+/// instruction stays in the ledger, which is harmless and honest, because the
+/// next compaction attempt appends a fresh instruction over it. The salvage
+/// notices ride in the same span — the summary replaces everything before it,
+/// instruction and notices included.
 pub fn run_compaction(
     engine: &mut TurnEngine<'_>,
     session: &mut Session,
@@ -113,7 +153,31 @@ pub fn run_compaction(
         .append_items(engine, &[instruction], sink)
         .map_err(TurnFailure::from)?;
 
-    let ok = engine.run_turn(session, sink)?;
+    // The salvage loop. A user item, not a system update: this is the harness
+    // talking to the model mid-compaction, the same shape the tool loop's
+    // `append_notice` appends, and a system update here would sit in the ledger
+    // looking like an instruction the operator never saw. The failed turn
+    // committed nothing (§5.7 and R7 both commit no items), so the notice lands
+    // directly after the instruction and the retry's prompt extends the bytes
+    // the server already prefilled — the prefix reuse the auto-compact message
+    // promises survives the salvage.
+    let ok = loop {
+        match engine.run_turn(session, sink) {
+            Ok(ok) => break ok,
+            Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+            }
+            Err(TurnFailure::EmptyLength { reason, .. }) => {
+                let notice = empty_length_notice(reason);
+                append_salvage_notice(session, engine, sink, &notice)?;
+            }
+            // SalvageExhausted lands here, and so does everything that is not a
+            // say-nothing turn: a guard trip, a socket error, a spent budget.
+            // Propagating is the honest answer — a compaction that did not run
+            // must say so, not disappear into a retry that never ends.
+            Err(e) => return Err(e),
+        }
+    };
 
     let mut summary = String::new();
     let mut tool_calls = 0usize;
@@ -143,4 +207,26 @@ pub fn run_compaction(
         reusable,
         generated_tokens: ok.metrics.predicted_tokens,
     })
+}
+
+/// Append one salvage notice as a user item, the tool loop's `append_notice`
+/// shape minus the trail this crate does not have.
+///
+/// The trail is the harnessd side's job (`Speaker::Agent` there marks the notice
+/// as the harness's own words in the authorisation ledger); what the turn crate
+/// owes is the transcript row, and a user row is what the model reads as a
+/// prompt. Appending through [`Session::append_items`] keeps the ledger, the
+/// token region and the `TranscriptAppended` event in step with every other row.
+fn append_salvage_notice(
+    session: &mut Session,
+    engine: &TurnEngine<'_>,
+    sink: &mut dyn EventSink,
+    text: &str,
+) -> Result<(), TurnFailure> {
+    let item = TranscriptItem::User {
+        parts: vec![UserPart::Text { text: text.into() }],
+    };
+    session
+        .append_items(engine, &[item], sink)
+        .map_err(TurnFailure::from)
 }

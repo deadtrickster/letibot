@@ -62,7 +62,9 @@ pub mod stream;
 
 pub use capture::{CaptureSession, FrameCapture};
 pub use completion::{Chunk, CompletionRequest, FinalChunk, FinishReason, PromptProgress, Timings};
-pub use compaction::{CompactionOutcome, SUMMARY_INSTRUCTION, run_compaction};
+pub use compaction::{
+    CompactionOutcome, SUMMARY_INSTRUCTION, UNFINISHED_REASONING_NOTICE, run_compaction,
+};
 pub use engine::{EngineError, Session, TurnEngine, TurnFailure, TurnOk};
 pub use events::{DeltaTarget, EventSink, NullSink, RecordingSink, TurnEvent};
 pub use guards::{GuardSet, Trip};
