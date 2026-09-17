@@ -949,6 +949,8 @@ impl OracleScope {
 #[cfg(test)]
 mod named_tools {
     //! A grant by NAME reaches past the ceiling for that tool and nothing else.
+
+    //! A grant by NAME reaches past the ceiling for that tool and nothing else.
     use super::*;
 
     fn scope() -> OracleScope {
@@ -984,6 +986,32 @@ mod named_tools {
         // And the rung still governs anything unnamed.
         assert!(s.covers(&reading, EffectScope::External).is_err());
         assert!(s.covers(&reading, EffectScope::HostOther).is_ok());
+    }
+
+    /// **The banner names the granted tools.** A reach the disclosure does not
+    /// mention is a reach nobody agreed to, and this line is the only place an
+    /// operator sees what their guard may answer about.
+    #[test]
+    fn the_disclosure_names_the_tools_it_granted() {
+        let s = scope();
+        assert!(!s.tools.is_empty());
+        // The sentence the banner builds, through the same path.
+        let shown = format!(
+            "intents [{}] landing up to `{}`.{}",
+            s.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>().join(" "),
+            s.max_scope.as_str(),
+            if s.tools.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Past that rung for {} — named by the operator, one tool at a time; the intents above still bind them.",
+                    s.tools.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join(", ")
+                )
+            }
+        );
+        assert!(shown.contains("`web_fetch`"), "{shown}");
+        assert!(shown.contains("`web_search`"), "{shown}");
+        assert!(shown.contains("host_other"), "{shown}");
     }
 
     /// A grant says how far an effect may LAND, never what the action may be.
@@ -2081,10 +2109,25 @@ impl Adjudicator for ModelAdjudicator {
         // earned is pure llm speak"*. So the line says what the guard may answer
         // about, and `evidence` — one sentence, further down — says where that came
         // from for anyone who asks.
+        // **A grant the banner does not mention is a grant nobody consented to.**
+        // `tools` exempts named tools from the rung, and the first version of this
+        // line said only the rung — so a session where `web_search` reached
+        // `external` announced a ceiling of `host_other` and meant something else.
+        // That is the shape of defect this whole disclosure exists to prevent, and
+        // it was introduced here on 2026-09-17 by the change that added the field.
+        let past_the_rung = if scope.tools.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Past that rung for {} — named by the operator, one tool at a \
+                 time; the intents above still bind them.",
+                scope.tools.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join(", ")
+            )
+        };
         format!(
             "{} — answers only 'did the operator ask for this'; may widen a \
              may-approve ask into an allow-once and can do nothing else. It may \
-             answer about intents [{}] landing up to `{}`. Why that much: {}. \
+             answer about intents [{}] landing up to `{}`.{} Why that much: {}. \
              Budget {} ms.",
             self.oracle.describe(),
             scope
@@ -2094,6 +2137,7 @@ impl Adjudicator for ModelAdjudicator {
                 .collect::<Vec<_>>()
                 .join(" "),
             scope.max_scope.as_str(),
+            past_the_rung,
             scope.evidence,
             self.oracle.budget().as_millis()
         )
