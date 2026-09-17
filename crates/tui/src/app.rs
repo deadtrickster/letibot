@@ -128,6 +128,10 @@ pub enum Action {
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     Mode { name: String },
+    /// Take back every prompt this head queued that the running turn has not
+    /// consumed yet — the companion of a recall: Up pulled the queued line into
+    /// the composer to edit it, and the original must not land behind the edit.
+    WithdrawPrompts,
     /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
     Slash { line: String },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
@@ -1287,9 +1291,8 @@ impl App {
                     UserPart::Text { text } => Some(text.clone()),
                     _ => None,
                 })
-                && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
             {
-                self.pending_prompts.remove(at);
+                self.retire_pending(&text);
             }
         }
         // The snapshot's in-flight calls are **not** seeded into `call_targets`.
@@ -2536,6 +2539,32 @@ impl App {
             }
         }
 
+        // **Up with an empty composer recalls the queued line.**
+        //
+        // The echo above the composer is the operator's own words, held only
+        // until the next step boundary — and the one thing this head can do
+        // about a message it already sent is take it back before it lands. Up
+        // is the key readline taught for "the previous entry", and behind a
+        // running turn the queue is one entry now. The take-back rides with the
+        // recall: the daemon drops the queued prompts and the held operator
+        // text, so the edited resend replaces the original instead of stacking
+        // onto it. Parked in the scrollback, Up still scrolls — reading history
+        // is what the operator is there for — and a half-typed line keeps the
+        // editor's own Up: readline history, not the queue's recall. No take-back
+        // rides on browsing history, or one press of Up behind a running turn
+        // would silently drop the queue under the operator.
+        if matches!(k, Key::Up)
+            && self.editor.text().is_empty()
+            && self.scroll == 0
+            && !self.pending_prompts.is_empty()
+        {
+            let text = self.pending_prompts.join("\n");
+            self.pending_prompts.clear();
+            self.set_composer(&text);
+            self.redraw = true;
+            return Some(Action::WithdrawPrompts);
+        }
+
         // Tab: slash-command completion. The composer's own keys run after it
         // because Tab means nothing to the editor — its byte used to be eaten
         // by the decoder — and every other key leaves a running completion
@@ -2625,7 +2654,20 @@ impl App {
         // queues the prompt as a follow-up user item and appends it at the next
         // step boundary, and until then this is the only place the sentence exists
         // where the person who typed it can see it.
-        self.pending_prompts.push(text.clone());
+        //
+        // **Behind a running turn the queue is one message.** The engine merges
+        // the operator's consecutive steering into one held item (one user turn
+        // for the model, not a stack of fragments), so the echo joins the same
+        // way — the landing row retires the echo by being its text. Idle submits
+        // land each as their own row within a tick, so they stay separate.
+        if self.turn_running()
+            && let Some(last) = self.pending_prompts.last_mut()
+        {
+            last.push('\n');
+            last.push_str(&text);
+        } else {
+            self.pending_prompts.push(text.clone());
+        }
         Some(Action::Prompt(text))
     }
 
@@ -3119,6 +3161,34 @@ impl App {
         }
     }
 
+    /// Stand down the echo of a queued prompt whose row has landed.
+    ///
+    /// The transcript takes the words over by being their text, so the exact
+    /// match is the rule. One refinement: behind a running turn the operator's
+    /// consecutive messages are **one** message — the engine merges them — and
+    /// a notice landing between them splits the run, so a landing row may be a
+    /// *piece* of a coalesced echo. A row that is the front piece of an echo
+    /// strips itself off it, and the rest stays queued until its own rows land.
+    fn retire_pending(&mut self, text: &str) {
+        if let Some(at) = self.pending_prompts.iter().position(|p| *p == text) {
+            self.pending_prompts.remove(at);
+            return;
+        }
+        let prefix = format!("{text}\n");
+        if let Some(at) = self
+            .pending_prompts
+            .iter()
+            .position(|p| p.starts_with(&prefix))
+        {
+            let rest = self.pending_prompts[at][prefix.len()..].to_string();
+            if rest.is_empty() {
+                self.pending_prompts.remove(at);
+            } else {
+                self.pending_prompts[at] = rest;
+            }
+        }
+    }
+
     /// Post a transient line. It lives for a few frames and then gets out of the
     /// way; it does **not** take the input line's place, which is what the old one
     /// did — after the first prompt of a session there was nowhere to see what you
@@ -3149,9 +3219,8 @@ impl App {
                 UserPart::Text { text } => Some(text.clone()),
                 _ => None,
             })
-            && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
         {
-            self.pending_prompts.remove(at);
+            self.retire_pending(&text);
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
@@ -7190,6 +7259,141 @@ mod tests {
             "the queued row is painting the whole screen: {} lines",
             drawn.len()
         );
+    }
+
+    #[test]
+    fn queued_prompts_behind_a_running_turn_are_one_message() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("also fix the parser".into()))
+        );
+        typed(&mut a, "and add a test for it");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("and add a test for it".into()))
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec!["also fix the parser\nand add a test for it".to_string()],
+            "one echo, the way the engine holds one message"
+        );
+        // Idle submits land each as their own row within a tick, so they stay
+        // separate entries.
+        a.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+        typed(&mut a, "fresh question");
+        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("fresh question".into())));
+        assert_eq!(a.pending_prompts.len(), 2);
+    }
+
+    #[test]
+    fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        a.key(Key::Enter);
+        typed(&mut a, "and add a test for it");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts.len(), 1);
+        // Up with an empty composer: the queue comes back, the take-back rides.
+        assert_eq!(a.key(Key::Up), Some(Action::WithdrawPrompts));
+        assert_eq!(a.input(), "also fix the parser\nand add a test for it");
+        assert!(a.pending_prompts.is_empty(), "recalled, not held");
+        // The operator edits and sends; the edited line queues fresh, and the
+        // daemon's take-back means it replaces the original rather than
+        // stacking onto it.
+        typed(&mut a, " — no, just the parser");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt(
+                "also fix the parser\nand add a test for it — no, just the parser".into()
+            ))
+        );
+        assert_eq!(a.pending_prompts.len(), 1);
+    }
+
+    #[test]
+    fn up_with_a_half_typed_line_still_belongs_to_the_editor() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "queued one");
+        a.key(Key::Enter);
+        typed(&mut a, "half a thought");
+        assert_eq!(a.key(Key::Up), None, "the editor keeps its own Up");
+        // What the editor does with it is the editor's own readline semantics,
+        // unchanged here: Up at the top row walks its submitted-line history,
+        // which replaces the half-typed line — same as main, same as any shell.
+        // The queue's part in this is only the negative one: no take-back rode
+        // along, and the mirror still holds what the daemon still holds.
+        assert_eq!(a.input(), "queued one");
+        assert_eq!(a.pending_prompts.len(), 1, "the queue is untouched");
+    }
+
+    #[test]
+    fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "first");
+        a.key(Key::Enter);
+        typed(&mut a, "second");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts, vec!["first\nsecond".to_string()]);
+        // The whole coalesced message lands: the echo stands down whole.
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "first\nsecond".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty());
+        // A notice split the run, so the pieces land around it: the front piece
+        // strips itself off the echo, the rest waits for its own row.
+        typed(&mut a, "third");
+        a.key(Key::Enter);
+        typed(&mut a, "fourth");
+        a.key(Key::Enter);
+        a.record_item(
+            "s.1",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "third".into(),
+                }],
+            },
+        );
+        assert_eq!(a.pending_prompts, vec!["fourth".to_string()]);
+        a.record_item(
+            "s.2",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "fourth".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty());
     }
 
     /// **A refusal the harness made is one dim line, not a wall in red.**

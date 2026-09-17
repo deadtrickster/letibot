@@ -33,6 +33,13 @@ pub struct SteeringMessage {
     pub text: String,
     /// Interrupt at the next token rather than at the next step boundary.
     pub urgent: bool,
+    /// The operator's own words — a head's prompt. Consecutive operator
+    /// messages coalesce into one held message (the model reads one user turn,
+    /// not a stack of fragments), and a take-back drops them. A notice — the
+    /// harness's own injections, a fired monitor — stands alone: merging it
+    /// into the operator's text would put the harness's words in the
+    /// operator's mouth.
+    pub from_operator: bool,
 }
 
 impl SteeringMessage {
@@ -40,6 +47,16 @@ impl SteeringMessage {
         SteeringMessage {
             text: text.into(),
             urgent: false,
+            from_operator: false,
+        }
+    }
+
+    /// The operator's own words, from a head's prompt. Coalescing-eligible.
+    pub fn operator(text: impl Into<String>) -> Self {
+        SteeringMessage {
+            text: text.into(),
+            urgent: false,
+            from_operator: true,
         }
     }
 
@@ -47,6 +64,7 @@ impl SteeringMessage {
         SteeringMessage {
             text: text.into(),
             urgent: true,
+            from_operator: false,
         }
     }
 
@@ -79,6 +97,17 @@ pub trait SteeringSource {
     /// message reaches the daemon, not about how the token loop drains an in-memory
     /// queue it already owns.
     fn try_next(&mut self) -> Option<SteeringMessage>;
+
+    /// A take-back the operator issued from a head: every held **operator**
+    /// message is dropped, because the operator pulled the queued line back
+    /// into the composer to edit it and the held original must not land behind
+    /// the edited resend. `true` when a take-back was acted on.
+    ///
+    /// Default: never — a source that cannot carry a take-back says so by
+    /// doing nothing, and no implementor has to grow an arm for it.
+    fn try_withdraw(&mut self) -> bool {
+        false
+    }
 }
 
 /// Nothing ever arrives. The default for a turn with no head attached.
@@ -139,12 +168,37 @@ impl Pending {
 
     /// Drain a source, keeping non-urgent messages and returning the first urgent
     /// one. Called once per generated token, so the empty path is one `try_recv`.
+    ///
+    /// **The operator's consecutive messages are one message.** A prompt typed
+    /// behind a long tool call sits unconsumed for minutes, and the operator
+    /// keeps typing; at the boundary those fragments would land as a stack of
+    /// one-line user turns, each costing its own row and its own turn of the
+    /// model's attention. They merge here instead — into the held operator
+    /// text, newline-joined — so the model reads one user turn. A notice
+    /// (harness injection, fired monitor) still stands alone, and splits the
+    /// run: what the operator typed after it is a separate message, because
+    /// merging across it would put the harness's words in the operator's mouth.
+    ///
+    /// A take-back is honoured first, for the same reason: the operator pulled
+    /// the queued line into the composer to edit it, and the held original must
+    /// not land behind the edited resend.
     pub fn absorb(&mut self, source: &mut dyn SteeringSource) -> Option<SteeringMessage> {
+        if source.try_withdraw() {
+            self.queued.retain(|m| !m.from_operator);
+        }
         while let Some(m) = source.try_next() {
             if m.urgent {
                 return Some(m);
             }
-            self.queued.push(m);
+            if m.from_operator
+                && let Some(last) = self.queued.last_mut()
+                && last.from_operator
+            {
+                last.text.push('\n');
+                last.text.push_str(&m.text);
+            } else {
+                self.queued.push(m);
+            }
         }
         None
     }
@@ -244,6 +298,100 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["a", "b", "c"]);
+    }
+
+    /// The operator typing behind a long tool call: three fragments queued, one
+    /// user turn at the boundary.
+    #[test]
+    fn the_operators_consecutive_messages_are_one_message() {
+        let mut src = Fixed(vec![
+            SteeringMessage::operator("also fix the parser"),
+            SteeringMessage::operator("and add a test for it"),
+            SteeringMessage::operator("run the suite after"),
+        ]);
+        let mut pending = Pending::new();
+        assert!(pending.absorb(&mut src).is_none());
+        assert_eq!(pending.len(), 1, "one held message, not three fragments");
+        let items = pending.take_items();
+        assert_eq!(items.len(), 1);
+        let TranscriptItem::User { parts } = &items[0] else {
+            panic!("steering is a user item")
+        };
+        let UserPart::Text { text } = &parts[0] else {
+            panic!()
+        };
+        assert_eq!(text, "also fix the parser\nand add a test for it\nrun the suite after");
+    }
+
+    /// A notice stands alone and splits the run: what the operator typed after
+    /// it is their own next message, not a continuation of the harness's words.
+    #[test]
+    fn a_notice_splits_the_operators_run() {
+        let mut src = Fixed(vec![
+            SteeringMessage::operator("one"),
+            SteeringMessage::normal("watch fired: the build is red"),
+            SteeringMessage::operator("two"),
+        ]);
+        let mut pending = Pending::new();
+        assert!(pending.absorb(&mut src).is_none());
+        assert_eq!(pending.len(), 3, "operator, notice, operator");
+    }
+
+    struct WithWithdraw {
+        msgs: Vec<SteeringMessage>,
+        withdraw: bool,
+    }
+
+    impl SteeringSource for WithWithdraw {
+        fn try_next(&mut self) -> Option<SteeringMessage> {
+            if self.msgs.is_empty() {
+                None
+            } else {
+                Some(self.msgs.remove(0))
+            }
+        }
+        fn try_withdraw(&mut self) -> bool {
+            std::mem::take(&mut self.withdraw)
+        }
+    }
+
+    /// The recall-to-edit flow's daemon half: the operator pulled the queued
+    /// line into the composer, so the held original must not land behind the
+    /// edited resend. A notice held beside it is not the operator's to take
+    /// back, and stays.
+    #[test]
+    fn a_take_back_drops_the_held_operator_text_and_keeps_notices() {
+        let mut src = WithWithdraw {
+            msgs: vec![SteeringMessage::operator("half a thought")],
+            withdraw: false,
+        };
+        let mut pending = Pending::new();
+        pending.absorb(&mut src);
+        assert_eq!(pending.len(), 1);
+        src.withdraw = true;
+        assert!(pending.absorb(&mut src).is_none());
+        assert!(pending.is_empty(), "the recalled line is not held any more");
+
+        let mut src = WithWithdraw {
+            msgs: vec![
+                SteeringMessage::operator("one"),
+                SteeringMessage::normal("a fired monitor"),
+            ],
+            withdraw: false,
+        };
+        let mut pending = Pending::new();
+        pending.absorb(&mut src);
+        src.withdraw = true;
+        pending.absorb(&mut src);
+        assert_eq!(pending.len(), 1, "the notice is not the operator's to drop");
+        let items = pending.take_items();
+        let TranscriptItem::User { parts } = &items[0] else {
+            panic!("steering is a user item")
+        };
+        let UserPart::Text { text } = &parts[0] else {
+            panic!()
+        };
+        assert_eq!(text, "a fired monitor");
     }
 
     #[test]

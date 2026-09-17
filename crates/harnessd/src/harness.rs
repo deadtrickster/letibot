@@ -639,11 +639,13 @@ impl SteeringSource for HubSteering {
                 CommandKind::Prompt { text } => {
                     // The operator, typing into a running turn. This is the case
                     // §2's *"yeah restart"* is about, and it is the one utterance
-                    // that can authorise the action it is racing.
+                    // that can authorise the action it is racing. Marked as the
+                    // operator's so consecutive prompts coalesce into one held
+                    // message and a take-back drops them.
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Operator, &text, Some(Instant::now()));
                     }
-                    Some(SteeringMessage::normal(text))
+                    Some(SteeringMessage::operator(text))
                 }
                 CommandKind::Interrupt { reason } => Some(SteeringMessage::urgent(reason)),
                 // Nothing else here: the filter above only hands over prompts and
@@ -682,6 +684,16 @@ impl SteeringSource for HubSteering {
             t.say(Speaker::Agent, &text, Some(Instant::now()));
         }
         Some(SteeringMessage::normal(text))
+    }
+
+    /// The take-back the operator issued from a head: the hub drops the head's
+    /// still-queued prompts, and the engine's `Pending` drops the held operator
+    /// text when this returns `true`. The two halves of one recall — a prompt
+    /// typed behind a long tool call is still in the hub's queue, one absorbed
+    /// during generation is already held here, and the operator's Up pulled the
+    /// whole thing back into the composer.
+    fn try_withdraw(&mut self) -> bool {
+        self.hub.try_withdraw_command()
     }
 }
 

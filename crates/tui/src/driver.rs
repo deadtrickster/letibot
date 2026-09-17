@@ -115,6 +115,9 @@ pub fn tick(
             Action::Prompt(text) => {
                 client.prompt(app.seq, &text)?;
             }
+            Action::WithdrawPrompts => {
+                client.withdraw_prompts(app.seq)?;
+            }
             Action::Interrupt(reason) => {
                 client.interrupt(app.seq, &reason)?;
             }

@@ -118,6 +118,12 @@ pub enum CommandKind {
     Slash {
         line: String,
     },
+    /// A head took its queued prompts back — the operator pulled the queued line
+    /// into the composer to edit it. Consumed by the running turn's steering
+    /// poll (which drops the head's held operator text with it); between turns
+    /// it is a quiet no-op, because a prompt that survived to here is about to
+    /// run as its own turn and is no longer the operator's to take back.
+    WithdrawPrompts,
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
@@ -211,6 +217,7 @@ impl CommandKind {
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
+            CommandKind::WithdrawPrompts => "take-back",
             CommandKind::Promote => "promote",
         }
     }
@@ -875,6 +882,7 @@ impl Hub {
                 (CommandKind::Reseat, true) => format!("{REJECT_STALE_SEQ}: queued anyway"),
                 (CommandKind::Reseat, false) => "re-seat queued".into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
+                (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
@@ -1009,6 +1017,29 @@ impl Hub {
             )
         })?;
         g.commands.remove(i)
+    }
+
+    /// The next take-back a **running turn** can act on, dropping the issuing
+    /// head's still-queued prompts with it.
+    ///
+    /// A take-back is only meaningful while the prompts it names are unconsumed,
+    /// which is the steering poll's exact window: during a long tool call the
+    /// operator's prompts sit here, and the withdraw that follows them up must
+    /// remove them from this queue, not from the engine's held steering — the
+    /// engine has not seen them yet. Scanned rather than popped-and-dropped like
+    /// [`Self::try_steering_command`], and scoped to the head that asked, so one
+    /// head's recall never takes another head's queued prompt.
+    pub fn try_withdraw_command(&self) -> bool {
+        let mut g = self.lock();
+        let Some(cmd) = (0..g.commands.len())
+            .find(|&i| matches!(g.commands[i].kind, CommandKind::WithdrawPrompts))
+            .and_then(|i| g.commands.remove(i))
+        else {
+            return false;
+        };
+        g.commands
+            .retain(|c| !(c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. })));
+        true
     }
 
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`].
