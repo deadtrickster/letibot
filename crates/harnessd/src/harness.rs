@@ -203,9 +203,10 @@ impl std::fmt::Display for HarnessError {
                  this turn produced is committed. A compaction was ATTEMPTED — whether \
                  it succeeded is its own line above, because a summary turn can refuse \
                  (it may not call tools) and saying it worked when it did not is the \
-                 failure this whole check exists to avoid. Ask again: if it compacted, \
-                 the turn continues on the summary; if it did not, the wall is still \
-                 there and `/compact` or a fresh session is the way past it."
+                 failure this whole check exists to avoid. If it compacted, the turn \
+                 continues on the summary by itself, a bounded number of times; if the \
+                 wall comes back after those, the task does not fit the window and \
+                 `/compact` or a fresh session is the way past it."
             ),
             HarnessError::LoopBound { rounds } => write!(
                 f,
@@ -2531,6 +2532,36 @@ impl<'a> Harness<'a> {
         .map(Some)
     }
 
+    /// **The turn after the wall, without a human typing "continue".**
+    ///
+    /// A wall stop ends the turn with the work half-done, and the compaction that
+    /// follows it (`Sessions::after_turn`) replaces the transcript with a summary —
+    /// after which, until now, nothing ran. The worker went idle, the prompt was
+    /// still open, and the operator typed "continue" by hand to start the turn the
+    /// summary had just recorded the state of. Measured on 2026-09-15 and on every
+    /// compaction since: *"again have to write it after compaction"*.
+    ///
+    /// opencode never had the hole, because its compaction is a step inside the run
+    /// loop and the run never ends. This harness cannot run compaction — it reaches
+    /// the store, the resume chain and the registry, which `Sessions` owns — so the
+    /// seam is a user item in the harness's own voice, the same shape as
+    /// [`Harness::wake`]: `Speaker::Agent`, never an authorisation, and never
+    /// readable as the operator's words. `Sessions::after_turn` calls this while
+    /// there is room and a bound of continuations left; a wall the compaction did
+    /// not clear still comes back as [`HarnessError::ContextWall`], which is the
+    /// honest answer.
+    pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
+        let text = "Your previous turn was stopped at the context wall and the conversation \
+                    was then compacted: the summary above stands in for everything said \
+                    before it. Continue the work you were doing, picking up from the \
+                    summary rather than repeating what it already records.";
+        self.trail.begin_turn();
+        self.trail.say(Speaker::Agent, text, Some(Instant::now()));
+        self.submit_item(TranscriptItem::User {
+            parts: vec![UserPart::Text { text: text.into() }],
+        })
+    }
+
     /// §5.3: change the system prompt mid-session, in the form the dialect can
     /// render.
     ///
@@ -3102,6 +3133,27 @@ impl<'a> Harness<'a> {
                     // the half of T21.3 that makes it a correction rather than a
                     // report.
                     self.append_notice(&steer)?;
+                    continue;
+                }
+                // **A message queued while the head was running is a prompt, not a
+                // footnote.**
+                //
+                // The engine drains the steering queue at the step boundary — after
+                // `TurnFinished` — and appends what it finds as user items, reporting
+                // them in `steering_applied`. Until now that was where the story
+                // ended: a turn that made no tool call returned here, the worker went
+                // idle, and the queued message sat in the transcript answered by
+                // nobody — "message was queued when you stopped and it didnt restart
+                // you, while it went out o the queue". The loop continues instead:
+                // the next round's prompt is the transcript, the queued items are its
+                // last rows, and the model answers them. This covers every kind of
+                // steering the boundary absorbs, not only the operator's words — a
+                // monitor firing that lands at the boundary is `wake`'s business when
+                // nothing is running, and this is the same obligation when something
+                // just did. Bounded the way every round is: a round with nothing
+                // queued and no tool call returns below, so one queued message costs
+                // exactly one round.
+                if !ok.steering_applied.is_empty() {
                     continue;
                 }
                 return Ok(Reply {

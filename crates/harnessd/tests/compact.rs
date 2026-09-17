@@ -184,6 +184,65 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     );
 }
 
+/// **The turn after the wall is the harness's own words, not the operator's.**
+///
+/// `continue_after_wall` is what `Sessions::after_turn` calls instead of leaving
+/// the operator to type "continue" after every compaction (*"again have to write
+/// it after compaction"*). What must hold even where no model server answers:
+/// the item lands as a User row, because that is what the model reads as a
+/// prompt; the trail records it as `Speaker::Agent`, because the harness talking
+/// to itself must never be readable as the operator authorising the work it
+/// resumes; and the turn it then attempts is allowed to fail — the append
+/// happens first, which is the ordering this test can see without a server and
+/// the part that would be lost if the item were never written. The endpoint is
+/// a dead port, so the attempt fails fast and touches no server.
+#[test]
+fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
+    use letibot_tools::authorise::Speaker;
+
+    let dir = TempDir::new("harnessd-continue");
+    let path = dir.path().join("sessions.db");
+    let mut cfg = config(&path, "continue-test");
+    cfg.endpoint = letibot_turn::Endpoint::parse("127.0.0.1:1").expect("a literal endpoint");
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+
+    let out = h.continue_after_wall();
+    assert!(out.is_err(), "a dead endpoint cannot answer: {out:?}");
+
+    // The item is there, and it is a prompt: a User row that says what happened
+    // and asks for the work back.
+    let items = h.items();
+    let last = items.last().expect("the continuation was appended");
+    let letibot_transcript::TranscriptItem::User { parts: user_parts } = last else {
+        panic!("the continuation is a user item, got {last:?}");
+    };
+    let letibot_transcript::UserPart::Text { text } = &user_parts[0] else {
+        panic!("the continuation is text, got {:?}", user_parts[0]);
+    };
+    assert!(
+        text.contains("context wall") && text.contains("compacted"),
+        "the continuation says what happened: {text}"
+    );
+    assert!(
+        text.contains("Continue the work"),
+        "the continuation asks for the work back: {text}"
+    );
+
+    // And the trail says who spoke: the harness, never the operator.
+    let t = h.trail();
+    let said = t
+        .utterances
+        .iter()
+        .find(|u| u.text.contains("context wall"))
+        .expect("the continuation is in the trail");
+    assert_eq!(
+        said.speaker,
+        Speaker::Agent,
+        "the continuation must never read as the operator's words"
+    );
+}
+
 /// A directory that removes itself, because a test that leaks a store per run
 /// eventually fills the disk and the run that finds out is not this one.
 struct TempDir {

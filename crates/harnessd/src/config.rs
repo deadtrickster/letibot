@@ -558,6 +558,24 @@ impl Config {
         };
         self.auto_compact && resident_tokens + self.headroom() >= w
     }
+
+    /// Would a turn starting at `resident` tokens fit, with the headroom reserved?
+    ///
+    /// The gate the wall continuation reads (`Sessions::after_turn`), and the
+    /// difference from [`Config::should_compact`] is the point: `should_compact`
+    /// answers *"must something be tidied first"* and folds in the `auto_compact`
+    /// flag, while this answers *"is there room"* as a measurement of the window
+    /// alone. The no-progress guard turns `auto_compact` off **without freeing
+    /// anything**, so a gate that read the flag would see room that is not there
+    /// and continue straight into a second wall. Unknown window: no room, for the
+    /// same reason `should_compact` says false — an invented number here would
+    /// continue turns that cannot fit.
+    pub fn room_for_next_turn(&self, resident_tokens: u64) -> bool {
+        match self.context_window {
+            Some(w) => resident_tokens + self.headroom() < w,
+            None => false,
+        }
+    }
 }
 
 /// Which search provider `web_search` gets, when the operator has not said.
@@ -1850,5 +1868,36 @@ mod compaction_trigger_tests {
         cfg.context_window = Some(1000);
         cfg.auto_compact = false;
         assert!(!cfg.should_compact(999_999));
+    }
+
+    /// **The wall-continuation gate measures the window, not the flag.**
+    ///
+    /// `should_compact` folds in `auto_compact`, and the no-progress guard turns
+    /// that flag off WITHOUT freeing anything — so a gate that read the flag would
+    /// see room that is not there and continue straight into a second wall. The
+    /// edges: the headroom boundary is exclusive (a turn that would end exactly at
+    /// the wall does not start), and an unknown window is no room, for the same
+    /// reason `should_compact` refuses.
+    #[test]
+    fn the_wall_continuation_gate_measures_the_window_not_the_flag() {
+        let mut cfg = Config::for_this_box(std::env::temp_dir());
+        cfg.context_window = Some(10_000);
+        let h = cfg.headroom();
+        assert!(h > 0 && h < 10_000, "{h}");
+        assert!(
+            !cfg.room_for_next_turn(10_000 - h),
+            "resident + headroom == window is the wall, not room"
+        );
+        assert!(
+            cfg.room_for_next_turn(10_000 - h - 1),
+            "one token under the wall is room"
+        );
+        // The flag the no-progress guard flips changes nothing here: this is a
+        // measurement, and the guard does not free tokens when it flips it.
+        cfg.auto_compact = false;
+        assert!(cfg.room_for_next_turn(10_000 - h - 1));
+        // Unknown window: no room, the same refusal should_compact gives.
+        cfg.context_window = None;
+        assert!(!cfg.room_for_next_turn(0));
     }
 }

@@ -58,6 +58,18 @@ use crate::harness::{CompactReport, Harness, HarnessError, Parts, Reply};
 /// nothing, several times a minute, forever.
 const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How many times one prompt may continue itself past the context wall.
+///
+/// Each continuation is a whole turn plus the compaction behind it, and the room
+/// check in [`Sessions::after_turn`] is what normally ends the loop. The cap is
+/// the runaway guard for the cycle the room check cannot see: a turn that fills
+/// the window in one round, a summary that frees it, repeat — every cycle does
+/// real work, so no flag ever says stop. Three wall-cycles inside one prompt is
+/// not a conversation recovering from the wall any more, it is a task that does
+/// not fit the window, and the fourth wall is the operator's to answer — by
+/// `/compact`, a fresh session, or a bigger `--context-window`.
+const WALL_CONTINUES: usize = 3;
+
 /// What the worker did with one command.
 pub enum Outcome {
     Replied(Box<Reply>),
@@ -779,8 +791,9 @@ impl<'a> Sessions<'a> {
         };
         self.publish_title(session_id);
         self.arm_wake(session_id);
-        self.after_turn(session_id, &hub, &out);
-        out
+        // `after_turn` owns the tail now, wall continuations included, so it
+        // takes the outcome and returns the one that finally stands.
+        self.after_turn(session_id, &hub, out)
     }
 
     /// **Everything that follows a turn, whatever started it.**
@@ -792,11 +805,11 @@ impl<'a> Sessions<'a> {
         &mut self,
         session_id: &str,
         hub: &Option<std::sync::Arc<Hub>>,
-        out: &Result<Reply, HarnessError>,
-    ) {
+        mut out: Result<Reply, HarnessError>,
+    ) -> Result<Reply, HarnessError> {
         // The failure reaches the head FIRST: it is the answer to what was asked,
         // and the tidying after it is not.
-        if let Err(e) = out {
+        if let Err(e) = &out {
             let turn_id = self
                 .open
                 .get(session_id)
@@ -836,6 +849,90 @@ impl<'a> Sessions<'a> {
                 });
             }
         }
+
+        // **A wall that compacted is not the end of the prompt.**
+        //
+        // Until now the wall ended the run: the turn stopped, the compaction
+        // tidied, the worker went idle — and the operator typed "continue" by
+        // hand to start the turn the prompt still owed them, every time, which
+        // is the report this loop answers. opencode never had the hole, because
+        // its compaction is a step inside the run loop (`prompt.ts`: overflow →
+        // `compaction.create` → `continue`) and the run never ends; this harness
+        // cannot do that, because the wall is the engine's stop and the
+        // compaction is this struct's act, so the seam is here — after the
+        // tidying, while the prompt is still open.
+        //
+        // The continuation is [`Harness::continue_after_wall`]'s user item, and
+        // each one is a whole turn with this same tail: it publishes its own
+        // failure, compacts after itself, and can meet the wall again, which is
+        // what the loop is for. Two gates bound it. Room is MEASURED, not read
+        // off a flag — the no-progress guard turns `auto_compact` off without
+        // freeing anything, and a flag would then read as room that is not
+        // there — and [`WALL_CONTINUES`] caps the cycles the room check cannot
+        // see. When either gate closes, the wall error from the last turn is
+        // what the caller gets, which is the honest answer.
+        if wall {
+            for _ in 0..WALL_CONTINUES {
+                let room = self
+                    .open
+                    .get(session_id)
+                    .map(|h| self.base.room_for_next_turn(h.ledger_len() as u64))
+                    .unwrap_or(false);
+                if !room {
+                    break;
+                }
+                out = match self.run_continuation(session_id, hub) {
+                    // The continuation met the wall too; `run_continuation`
+                    // already compacted after it, so the room check above decides
+                    // whether there is another continuation in this prompt.
+                    Err(HarnessError::ContextWall { .. }) => continue,
+                    other => other,
+                };
+                break;
+            }
+        }
+        out
+    }
+
+    /// One continuation turn after a wall, and everything that follows it.
+    ///
+    /// The same tail [`Sessions::run_prompt`] gives a prompt, because a
+    /// continuation IS a prompt — the harness's own, not the operator's — and
+    /// the last time this tail lived in two places, one of them was missing the
+    /// compaction.
+    fn run_continuation(
+        &mut self,
+        session_id: &str,
+        hub: &Option<std::sync::Arc<Hub>>,
+    ) -> Result<Reply, HarnessError> {
+        let out = match self.open.get_mut(session_id) {
+            Some(h) => h.continue_after_wall(),
+            None => {
+                return Err(HarnessError::Setup(
+                    "the session closed before the continuation could run".into(),
+                ))
+            }
+        };
+        self.publish_title(session_id);
+        self.arm_wake(session_id);
+        if let Err(e) = &out {
+            let turn_id = self
+                .open
+                .get(session_id)
+                .map(|h| h.last_turn_id().to_string())
+                .unwrap_or_default();
+            if let Some(hub) = hub {
+                publish_failure(hub, &turn_id, e);
+            }
+        }
+        // A continuation is a turn: it can reach the wall, and it tidies after
+        // itself — the room the compaction leaves is what the loop in
+        // `after_turn` reads.
+        let wall = matches!(out, Err(HarnessError::ContextWall { .. }));
+        if out.is_ok() || wall {
+            self.compact_if_at_the_wall(session_id);
+        }
+        out
     }
 
     /// **Compact when the next turn would not fit.** `docs/compaction.md` §1:
@@ -1128,8 +1225,10 @@ impl<'a> Sessions<'a> {
         };
         self.publish_title(session_id);
         // A monitor's turn is a turn: it appends rows, it can reach the wall, and a
-        // session that only ever woke would have compacted never.
-        self.after_turn(session_id, &hub, &out);
+        // session that only ever woke would have compacted never. The wall's
+        // continuation is in there too, so a monitor's work resumes the same way a
+        // prompt's does.
+        let out = self.after_turn(session_id, &hub, out);
         match out {
             Ok(reply) => Outcome::Replied(Box::new(reply)),
             Err(e) => Outcome::Failed(e.to_string()),

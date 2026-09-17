@@ -384,3 +384,94 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
         "the head saw no answer, only {text:?}"
     );
 }
+
+/// **A message queued while the head was running is a prompt, not a footnote.**
+///
+/// The engine drains the steering queue at the step boundary — after
+/// `TurnFinished` — and until now the loop returned there: the queued message was
+/// appended as a user item and answered by nobody, and the operator had to send
+/// it again (*"message was queued when you stopped and it didnt restart you,
+/// while it went out o the queue"*). Here the queue is seeded BEFORE the turn,
+/// which is the deterministic form of "typed while you were working": round one
+/// answers the first prompt, the boundary absorbs the queued one, and the loop
+/// must go round again to answer it. Two short generations, under the same lock
+/// as the rest of this file.
+#[test]
+fn a_message_queued_mid_turn_is_answered_not_just_appended() {
+    use letibot_sessionlog::hub::CommandKind;
+    use letibot_sessionlog::protocol::{Caps, ServerFrame};
+    use letibot_transcript::{TranscriptItem, UserPart};
+
+    let _lock = serial();
+    let cfg = config();
+    let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
+    let hub = Hub::new("steering-continue-test");
+    let head = hub.attach("tui", "test", Caps::default(), 0);
+    // Seeded before the turn: the running turn's steering source drains it at the
+    // first step boundary, which is the deterministic form of the operator typing
+    // while the head was running.
+    let frame = hub.submit(
+        &head.head_id,
+        "queued-1",
+        0,
+        CommandKind::Prompt {
+            text: "This message was queued while you were working on the previous \
+                   message. Reply with exactly the word: two"
+                .into(),
+        },
+    );
+    assert!(
+        matches!(frame, ServerFrame::Accepted { .. }),
+        "the queued command is accepted: {frame:?}"
+    );
+    let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
+    let reply = h
+        .submit("Reply with exactly the word: one")
+        .expect("the loop must close");
+
+    // Two rounds: the first prompt answered, the boundary absorbed the queued
+    // message, and the loop went round again instead of returning.
+    assert_eq!(
+        reply.rounds, 2,
+        "the queued message must cost a round; the reply was {reply:?}"
+    );
+
+    // And the transcript says the order: first prompt, its answer, the queued
+    // message, the answer to it. Word-matched loosely — the model is told to
+    // reply with exactly one word and usually does, and a test that demanded
+    // byte-exactness would be pinning the model rather than the loop.
+    let rows: Vec<String> = h
+        .items()
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::User { parts } => match &parts[0] {
+                UserPart::Text { text } => Some(format!("user: {text}")),
+                _ => None,
+            },
+            TranscriptItem::Assistant { text, .. } => Some(format!("assistant: {text}")),
+            _ => None,
+        })
+        .collect();
+    let first = rows
+        .iter()
+        .position(|r| r.starts_with("user: Reply with exactly"))
+        .expect("the first prompt is in the transcript");
+    let answer_one = rows
+        .iter()
+        .position(|r| r.starts_with("assistant:") && r.to_lowercase().contains("one"))
+        .expect("the first prompt was answered");
+    let queued = rows
+        .iter()
+        .position(|r| r.starts_with("user: This message was queued"))
+        .expect("the queued message is in the transcript");
+    assert!(
+        first < answer_one && answer_one < queued,
+        "the queued message must arrive after the first answer: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .skip(queued + 1)
+            .any(|r| r.starts_with("assistant:") && r.to_lowercase().contains("two")),
+        "the queued message was appended but never answered: {rows:?}"
+    );
+}
