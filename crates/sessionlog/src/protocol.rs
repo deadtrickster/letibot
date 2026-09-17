@@ -198,7 +198,16 @@ use crate::view::Snapshot;
 /// stacked under the edit. The same version makes the operator's consecutive
 /// queued messages **one** message: the engine merges them before the boundary,
 /// so the model reads one user turn instead of a stack of fragments.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// # 20: a head can ask the daemon to stop
+///
+/// [`ClientFrame::Stop`] is a new client frame, so a version-19 daemon would
+/// fail to parse it — the version-4 argument again. It exists because `Ctrl+C`
+/// twice used to mean one thing (this head leaves) when an operator often means
+/// the other (the daemon goes too), and the only way to get the second was a
+/// second terminal and `letibot --stop`. The head now asks which, and the
+/// answer that stops the daemon travels over the protocol rather than a head
+/// reaching around it to signal a pid.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +325,26 @@ pub enum ClientFrame {
     WithdrawPrompts {
         client_request_id: String,
         expected_seq: u64,
+    },
+    /// **Stop the daemon**, not just this head.
+    ///
+    /// Rings the same bell a `SIGTERM` does — one shutdown sequence, not two —
+    /// so every head wakes with `Closed`, the socket goes, and the last turn's
+    /// rows are written the way an orderly stop writes them. Announced first,
+    /// because a daemon may be serving more than the head that asked: a shared
+    /// session's other heads learn who stopped it rather than finding a dead
+    /// socket.
+    ///
+    /// A running turn is NOT interrupted by this. The signal path does not
+    /// abort one either — `letibot --stop --force` is the verb that does, and it
+    /// interrupts over the protocol first. Naming this `Stop` rather than
+    /// `Shutdown` keeps it the same word the launcher uses for the same act.
+    Stop {
+        client_request_id: String,
+        expected_seq: u64,
+        /// Who asked, for the announcement. The head's identity, not a name it
+        /// invents.
+        who: String,
     },
     /// Idempotent, issuable by any attached head, announced with the issuer.
     Interrupt {
@@ -797,6 +826,11 @@ mod tests {
             ClientFrame::WithdrawPrompts {
                 client_request_id: "r1w".into(),
                 expected_seq: 12,
+            },
+            ClientFrame::Stop {
+                client_request_id: "r1s".into(),
+                expected_seq: 12,
+                who: "dead".into(),
             },
             ClientFrame::Interrupt {
                 client_request_id: "r2".into(),

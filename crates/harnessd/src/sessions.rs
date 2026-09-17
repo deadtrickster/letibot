@@ -73,6 +73,9 @@ const WALL_CONTINUES: usize = 3;
 /// What the worker did with one command.
 pub enum Outcome {
     Replied(Box<Reply>),
+    /// A head asked the daemon to stop. The worker loop breaks on this and the
+    /// caller shuts down; the announcement has already gone out.
+    Stopped { who: String },
     /// The session was compacted: one summary turn, then a transcript fork.
     /// The report is the evidence, not the word.
     Compacted(Box<CompactReport>),
@@ -1376,6 +1379,27 @@ impl<'a> Sessions<'a> {
                     });
                 }
                 Outcome::Ignored
+            }
+            // **Stop the daemon, announced before it happens.** A daemon may be
+            // serving more than the head that asked — another head, a
+            // subagent's session — and the difference between "somebody stopped
+            // this" and "the socket died" is the whole of what a shared session
+            // is owed. The shutdown itself is the worker's caller's job: this
+            // returns an outcome, it does not reach for a signal.
+            CommandKind::Stop { who } => {
+                let who = who.clone();
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "daemon_stopping".into(),
+                        detail: format!(
+                            "`{who}` asked this daemon to stop. Every head detaches, the \
+                             socket goes, and the session is on disk — `letibot \
+                             --continue` reopens it. A turn already running is not \
+                             interrupted; `letibot --stop --force` is the verb for that."
+                        ),
+                    });
+                }
+                Outcome::Stopped { who }
             }
             CommandKind::Slash { line } => {
                 let line = line.clone();

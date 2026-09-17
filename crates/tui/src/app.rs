@@ -140,6 +140,9 @@ pub enum Action {
         secret: Option<String>,
     },
     Quit,
+    /// Leave AND stop the daemon. The head detaches after the daemon has been
+    /// asked, so the notice reaches every other head first.
+    StopDaemon,
 }
 
 /// A key, decoded from the terminal.
@@ -680,6 +683,20 @@ pub struct App {
     /// drift. Each opener closes the other, so the screen holds one list and
     /// the arrows mean one thing.
     mode_picker: bool,
+    /// **The quit card**, opened by the second Ctrl+C instead of leaving at
+    /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
+    /// operator often wants the other: leave the head and let the daemon keep
+    /// the session warm, or stop both. The operator, 2026-09-17: *"when i do
+    /// CcCc i should be asked if I want to exit letibot or letibot and
+    /// harnessd"*.
+    ///
+    /// It is a card and not an immediate act because the second answer is the
+    /// irreversible one — the daemon's KV goes with it, and on this box a cold
+    /// prefill of a long session is minutes.
+    quit_card: bool,
+    /// Which row of the quit card the cursor is on. Seeded to 0 — leave the
+    /// head — so Enter on an untouched card does the smaller thing.
+    quit_sel: usize,
     /// Which mode row the cursor is on. Seeded to the mode the session is
     /// already under, so Enter on an untouched list is a no-op rather than a
     /// surprise — the same rule the session picker's cursor follows.
@@ -952,6 +969,8 @@ impl App {
             help: false,
             picker: false,
             mode_picker: false,
+            quit_card: false,
+            quit_sel: 0,
             mode_sel: 0,
             mode_rows_drawn: 0,
             mode_first_row: 0,
@@ -2323,6 +2342,7 @@ impl App {
             self.help = false;
             self.picker = false;
             self.mode_picker = false;
+            self.quit_card = false;
             self.stats = false;
             self.todos_pane = false;
             self.subagents_pane = false;
@@ -2430,6 +2450,48 @@ impl App {
         // empty-composer rule is the ladder's own: a half-typed line's Enter
         // still means the line, and the typed path lands in `pick_mode` through
         // `submit`.
+        // **The quit card owns the keys while it is open**, ahead of every other
+        // list: it was opened by a key that means "I am leaving", and a stray
+        // arrow landing in the transcript under it would be a keystroke the
+        // operator aimed at the card.
+        if self.quit_card {
+            match k {
+                Key::Up | Key::Down => {
+                    self.quit_sel = 1 - self.quit_sel.min(1);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Char('1') if self.editor.text().is_empty() => {
+                    self.quit_card = false;
+                    self.quit = true;
+                    return Some(Action::Quit);
+                }
+                Key::Char('2') if self.editor.text().is_empty() => {
+                    self.quit_card = false;
+                    self.quit = true;
+                    return Some(Action::StopDaemon);
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    self.quit_card = false;
+                    self.quit = true;
+                    return Some(if self.quit_sel == 0 {
+                        Action::Quit
+                    } else {
+                        Action::StopDaemon
+                    });
+                }
+                // Esc is "I did not mean to leave", which is the answer a card
+                // like this has to have — the alternative is an operator who
+                // hit Ctrl+C twice by habit and cannot take it back.
+                Key::Esc | Key::CtrlC => {
+                    self.quit_card = false;
+                    self.say("staying");
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
         if self.mode_picker {
             let choices = self.mode_choices();
             let n = choices.len();
@@ -2588,9 +2650,16 @@ impl App {
                     None
                 }
             }
+            // **The second Ctrl+C asks instead of leaving.** It used to detach
+            // and that was the only thing it could do; an operator who wanted
+            // the daemon stopped as well needed a second terminal and
+            // `letibot --stop`. The card is one keystroke either way and it
+            // makes the irreversible half a choice rather than a default.
             Reaction::Quit => {
-                self.quit = true;
-                Some(Action::Quit)
+                self.quit_card = true;
+                self.quit_sel = 0;
+                self.redraw = true;
+                None
             }
             Reaction::Changed => None,
             // The composer had no use for it. Up and Down then belong to the
@@ -3527,6 +3596,10 @@ impl App {
             // The two are never up at once — a decision owns the ladder keys,
             // and a second cursor under it would be a cursor nothing moves —
             // so the card waits out an ask and comes back when it is answered.
+            // Ahead of the mode picker: a head on its way out is answering the
+            // last question it will be asked, and a list under it is a list
+            // nobody is going to use.
+            (None, None) if self.quit_card => self.quit_card_lines(w),
             (None, None) if self.mode_picker => self.mode_picker_lines(w),
             (None, None) => Vec::new(),
         };
@@ -3862,8 +3935,24 @@ impl App {
     /// the second half, which is its own keys.
     fn hint_bar(&self, w: usize) -> String {
         let p = self.cfg.palette();
-        let mut s = self.editor.hint(self.turn_running(), self.now_ms, p);
-        let tail = if self.help || self.stats {
+        // The editor's own half is about the composer's double-taps. While the
+        // quit card is up there is no double-tap left to learn — the card IS
+        // the second press — and the editor's "ctrl+c again to exit" would name
+        // a key that now closes the card instead. So the card's line stands
+        // alone.
+        let s = if self.quit_card {
+            String::new()
+        } else {
+            self.editor.hint(self.turn_running(), self.now_ms, p)
+        };
+
+        let tail = if self.quit_card {
+            // The footer said "ctrl+c again to exit" here, which stopped being
+            // true the moment the second press started opening a card instead:
+            // a third press now CLOSES it. A hint that names the wrong key is
+            // worse than none.
+            "↑↓ or 1/2 to choose · enter leaves · esc stays"
+        } else if self.help || self.stats {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
@@ -3882,8 +3971,14 @@ impl App {
         } else {
             "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · ctrl-q jobs · tab completes /commands · /help"
         };
-        s.push_str(&p.paint(Role::Faint, &format!(" · {tail}")));
-        trim_to(&s, w)
+        // The separator belongs between two halves, not in front of one: with
+        // the editor's half suppressed the bar used to open with a bare `·`.
+        let joined = if s.is_empty() {
+            p.paint(Role::Faint, tail)
+        } else {
+            format!("{s}{}", p.paint(Role::Faint, &format!(" · {tail}")))
+        };
+        trim_to(&joined, w)
     }
 
     /// The visible `room` lines of the body, and nothing else built.
@@ -4970,6 +5065,61 @@ impl App {
     /// The card's shape is load-bearing: the first line is the title and the
     /// second is the first choice, because the click arithmetic in `screen`
     /// counts on it. No blank between them.
+    /// The quit card's rows: what Enter does, and the consequence of it.
+    ///
+    /// The consequence is on the row rather than in a footnote because it is
+    /// the whole reason the card exists — one of these two is cheap and the
+    /// other is not, and a card that made them look alike would be a card that
+    /// answered for the operator.
+    fn quit_choices(&self) -> [(&'static str, String); 2] {
+        let others = self.heads.saturating_sub(1);
+        [
+            (
+                "leave this head",
+                "the daemon keeps running: the session stays warm and `letibot` \
+                 reattaches to it"
+                    .to_string(),
+            ),
+            (
+                "leave and stop the daemon",
+                match others {
+                    0 => "the session is written to disk and `letibot --continue` \
+                          reopens it — but its prompt leaves the model server's cache, \
+                          so the next turn prefills cold"
+                        .to_string(),
+                    1 => "one other head is attached and will be told. The session is \
+                          on disk; the next turn after reopening prefills cold"
+                        .to_string(),
+                    n => format!(
+                        "{n} other heads are attached and will be told. The session is \
+                         on disk; the next turn after reopening prefills cold"
+                    ),
+                },
+            ),
+        ]
+    }
+
+    fn quit_card_lines(&self, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "leave — and what happens to the daemon")];
+        for (i, (name, why)) in self.quit_choices().iter().enumerate() {
+            let picked = i == self.quit_sel.min(1);
+            let mark = if picked { "▸" } else { " " };
+            out.push(trim_to(
+                &format!(
+                    "{mark} {:>2}  {}",
+                    i + 1,
+                    p.paint(if picked { Role::Strong } else { Role::Plain }, name)
+                ),
+                w,
+            ));
+            for l in wrap(why, w.saturating_sub(8)) {
+                out.push(dim(&self.cfg, &format!("       {l}")));
+            }
+        }
+        out
+    }
+
     fn mode_picker_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![colour(
@@ -8277,17 +8427,102 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_clears_the_composer_and_only_a_double_tap_quits() {
+    fn ctrl_c_clears_the_composer_and_only_a_double_tap_asks() {
         // The old rule quit an idle head on one press and interrupted a running
         // one, so there was no way to abandon a half-typed prompt and a stray
         // Ctrl+C killed the head. opencode's rule, via `letibot_ui::editor`.
+        //
+        // The double tap now opens the quit card rather than leaving outright —
+        // see `the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one`.
         let mut a = app();
         a.clock(1_000);
         typed(&mut a, "half a question I am still");
         assert_eq!(a.key(Key::CtrlC), None, "it clears, it does not quit");
         assert_eq!(a.input(), "");
         assert_eq!(a.key(Key::CtrlC), None, "one press on an empty composer");
-        assert_eq!(a.key(Key::CtrlC), Some(Action::Quit));
+        assert_eq!(a.key(Key::CtrlC), None, "the second opens the card, it does not leave");
+        assert!(a.quit_card, "the card is up");
+    }
+
+    /// **Ctrl+C Ctrl+C asks which exit.** The operator, 2026-09-17: *"when i do
+    /// CcCc i should be asked if I want to exit letibot or letibot and
+    /// harnessd"*.
+    ///
+    /// The card defaults to the cheap answer, because the other one takes the
+    /// daemon's KV with it and a cold prefill of a long session is minutes on
+    /// this box — a default that costs that much is a default that has answered
+    /// for the operator.
+    #[test]
+    fn the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one() {
+        let mut a = app();
+        a.clock(1_000);
+        a.key(Key::CtrlC);
+        assert_eq!(a.key(Key::CtrlC), None);
+        assert!(a.quit_card);
+
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("leave this head"), "{screen}");
+        assert!(screen.contains("leave and stop the daemon"), "{screen}");
+        // The consequence is ON the row, not in a footnote: the two answers are
+        // not alike and the card must not make them look it.
+        assert!(screen.contains("prefills cold"), "{screen}");
+        // And the footer names the keys this card actually takes — it used to
+        // say "ctrl+c again to exit", which a third press no longer does.
+        assert!(screen.contains("esc stays"), "{screen}");
+        assert!(!screen.contains("ctrl+c again to exit"), "{screen}");
+
+        // Enter on an untouched card takes the smaller exit.
+        assert_eq!(a.key(Key::Enter), Some(Action::Quit));
+    }
+
+    #[test]
+    fn the_quit_card_can_stop_the_daemon_and_can_be_taken_back() {
+        let mut a = app();
+        a.clock(1_000);
+        a.key(Key::CtrlC);
+        a.key(Key::CtrlC);
+        a.key(Key::Down);
+        assert_eq!(a.key(Key::Enter), Some(Action::StopDaemon), "the second row");
+
+        // By number, without moving the cursor.
+        let mut b = app();
+        b.clock(1_000);
+        b.key(Key::CtrlC);
+        b.key(Key::CtrlC);
+        assert_eq!(b.key(Key::Char('2')), Some(Action::StopDaemon));
+
+        // **Esc takes it back.** A card opened by a habit keystroke has to have
+        // an answer that is not an exit.
+        let mut c = app();
+        c.clock(1_000);
+        c.key(Key::CtrlC);
+        c.key(Key::CtrlC);
+        assert!(c.quit_card);
+        assert_eq!(c.key(Key::Esc), None);
+        assert!(!c.quit_card, "esc closed it");
+        assert!(!c.quit, "and the head is staying");
+    }
+
+    /// A daemon serving more than this head says so, because stopping it is
+    /// then somebody else's business too.
+    #[test]
+    fn the_card_names_the_other_heads_that_would_lose_the_daemon() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(1, SessionEvent::HeadAttached {
+            head_id: "h2".into(),
+            kind: "tui".into(),
+            identity: "someone".into(),
+        })));
+        a.apply(ServerFrame::Event(env(2, SessionEvent::HeadAttached {
+            head_id: "h3".into(),
+            kind: "tui".into(),
+            identity: "another".into(),
+        })));
+        a.key(Key::CtrlC);
+        a.key(Key::CtrlC);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("other head"), "{screen}");
     }
 
     #[test]
