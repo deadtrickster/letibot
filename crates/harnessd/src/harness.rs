@@ -2975,6 +2975,10 @@ impl<'a> Harness<'a> {
         // `max_tool_rounds` below is the backstop it demotes; see `crate::progress`
         // for why a round count was the wrong instrument and what replaced it.
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
+        // Consecutive HTTP failures on the round being attempted. Not per turn:
+        // the thing being waited out is the endpoint, and it is as likely to go
+        // down on round nine as on round one.
+        let mut attempt = 0u32;
 
         for round in 0..self.cfg.max_tool_rounds {
             // **The wall can arrive MID-TURN, and the turn boundary is too late.**
@@ -3033,22 +3037,51 @@ impl<'a> Harness<'a> {
                 }
             }
             let mut sink = CapturingSink::new(self.hub.clone());
-            let mut steering = self.steering();
-            let outcome = match &self.provider {
-                None => self
-                    .engine
-                    .run_turn_steered(&mut self.session, &mut sink, &mut steering),
-                // A cloud turn: the transcript as messages, the ledger as the
-                // record. Same events, same verdicts, same TurnOk.
-                Some(p) => self.engine.run_turn_messages(
-                    &mut self.session,
-                    &mut sink,
-                    &mut steering,
-                    p.as_ref(),
-                    &self.prefix.system,
-                    &self.prefix.tools_json,
-                    None,
-                ),
+            // **Take the round again when the endpoint is the thing that
+            // failed.** An inner loop, so a retry does NOT spend one of
+            // `max_tool_rounds`: it produced nothing and appended nothing, and
+            // ending a turn early because a server was restarting would be the
+            // budget measuring the wrong thing. See `http_retry_after`.
+            let outcome = loop {
+                let mut steering = self.steering();
+                let attempted = match &self.provider {
+                    None => self
+                        .engine
+                        .run_turn_steered(&mut self.session, &mut sink, &mut steering),
+                    // A cloud turn: the transcript as messages, the ledger as the
+                    // record. Same events, same verdicts, same TurnOk.
+                    Some(p) => self.engine.run_turn_messages(
+                        &mut self.session,
+                        &mut sink,
+                        &mut steering,
+                        p.as_ref(),
+                        &self.prefix.system,
+                        &self.prefix.tools_json,
+                        None,
+                    ),
+                };
+                let Err(TurnFailure::Http(e)) = attempted else {
+                    attempt = 0;
+                    break attempted;
+                };
+                let Some(wait) = http_retry_after(&e, attempt) else {
+                    break Err(TurnFailure::Http(e));
+                };
+                attempt += 1;
+                self.hub.publish(SessionEvent::Warning {
+                    code: "model_endpoint_retry".into(),
+                    detail: format!(
+                        "the model server at {} did not answer: {e}. Taking this round \
+                         again in {:.0}s (attempt {attempt} of {MAX_HTTP_ATTEMPTS}). \
+                         Nothing was recorded, so the retry sends exactly the bytes this \
+                         one did.",
+                        self.cfg.endpoint.authority(),
+                        wait.as_secs_f64(),
+                    ),
+                });
+                if !self.sleep_unless_closed(wait) {
+                    break Err(TurnFailure::Http(e));
+                }
             };
             // Before the match, deliberately: three of the four arms below leave
             // this function, and the one that matters most for §4.5 is the `Err(e)`
@@ -3413,6 +3446,25 @@ impl<'a> Harness<'a> {
     /// `seq` that is not the next one and a `tok_offset` that does not continue the
     /// previous row — so a divergence between the ledger and the store is a failed
     /// INSERT rather than a quiet inconsistency.
+    /// Wait, unless this session is going away. `false` means it is: the hub
+    /// closed under us and there is nobody left to answer.
+    ///
+    /// Sliced rather than one `sleep`, because the longest wait here is
+    /// thirty-two seconds and a daemon asked to stop during one should not have
+    /// to sit it out — `Ctrl+C Ctrl+C` closes the registry from the connection's
+    /// thread, and this is the worker noticing.
+    fn sleep_unless_closed(&self, total: std::time::Duration) -> bool {
+        let slice = std::time::Duration::from_millis(250);
+        let deadline = std::time::Instant::now() + total;
+        while std::time::Instant::now() < deadline {
+            if self.hub.is_closed() {
+                return false;
+            }
+            std::thread::sleep(slice.min(deadline - std::time::Instant::now()));
+        }
+        !self.hub.is_closed()
+    }
+
     fn persist(&mut self) -> Result<(), HarnessError> {
         let Some(store) = &self.store else {
             self.persisted = self.session.ledger.rows().len();
@@ -3441,6 +3493,60 @@ impl<'a> Harness<'a> {
         }
         Ok(())
     }
+}
+
+
+/// How many times a round is re-attempted when the model endpoint fails.
+///
+/// Six, doubling from a second: 1, 2, 4, 8, 16, 32 — about a minute of waiting
+/// before the turn fails for real. That is long enough to sit out the thing this
+/// exists for (llama.cpp reloading a six-shard GGUF after `--sleep-idle-seconds`,
+/// which answers `503 Loading model` for as long as it takes) and short enough
+/// that an endpoint which is genuinely gone is reported rather than waited on.
+const MAX_HTTP_ATTEMPTS: u32 = 6;
+
+/// **Is this failure worth taking the round again, and how long to wait first?**
+///
+/// `None` means no: report it. The operator's rule (2026-09-17) is *"when model
+/// http endpoint doesnt answer or answers with error codes except
+/// unauthenticated"*, and the exception is the point — a credential the server
+/// rejected is rejected identically on every retry, so backing off on a 401 is a
+/// minute of waiting to be told the same thing, with the real cause buried under
+/// six notices.
+///
+/// What is retried, and the honest limits of the rule:
+///
+/// * **No answer at all** ([`HttpError::Io`]) — the connection was refused, or
+///   dropped, or timed out. The commonest case on this box: the model server
+///   restarting.
+/// * **A status that is not 2xx**, except `401` and `403`. `403` is on the
+///   exception with `401` because both mean *the credential is not the problem
+///   the server has with you*, and neither improves by asking again.
+/// * **A malformed response** — a stream that did not parse. Retried because the
+///   likeliest cause is a truncated body from a server going down mid-answer.
+///
+/// **What this rule knowingly retries that will never succeed**: a `400` from a
+/// prompt the server will not accept, and the `500 Context size has been
+/// exceeded` that the mid-turn wall check exists to prevent. Both are
+/// deterministic in the bytes, so all six attempts fail and the turn ends about
+/// a minute late. That is the cost of following the operator's rule rather than
+/// second-guessing which 5xx is which, and it is bounded — the alternative is a
+/// list of "codes we think are transient" that is wrong the first time a new one
+/// appears.
+///
+/// A turn is safe to take again because an HTTP failure commits NOTHING:
+/// `stream_turn` posts before it accumulates, so the prompt is rebuilt from the
+/// same ledger and the retry sends the same bytes.
+fn http_retry_after(e: &letibot_turn::HttpError, attempt: u32) -> Option<std::time::Duration> {
+    if attempt >= MAX_HTTP_ATTEMPTS {
+        return None;
+    }
+    let worth_it = match e {
+        letibot_turn::HttpError::Io(_) => true,
+        letibot_turn::HttpError::Malformed(_) => true,
+        letibot_turn::HttpError::Status { code, .. } => !matches!(code, 401 | 403),
+    };
+    worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
 }
 
 /// A few words from the first message, as a session name.
@@ -4541,4 +4647,84 @@ pub(crate) fn model_adjudicator(
             });
         }
     })))
+}
+
+#[cfg(test)]
+mod endpoint_retry {
+    //! **When the model server is not answering, take the round again.** The
+    //! operator, 2026-09-17: *"implement exponential backoff and auto turn
+    //! restart for when model http endpoint doesnt answer or answers with error
+    //! codes except unauthenticated"*.
+    use super::{MAX_HTTP_ATTEMPTS, http_retry_after};
+    use letibot_turn::HttpError;
+
+    fn status(code: u16) -> HttpError {
+        HttpError::Status { code, body: String::new() }
+    }
+
+    /// The exception is the whole point: a credential the server rejected is
+    /// rejected identically every time, so a minute of backoff buys nothing and
+    /// buries the real cause under six notices.
+    #[test]
+    fn a_credential_the_server_refuses_is_not_retried() {
+        assert!(http_retry_after(&status(401), 0).is_none());
+        assert!(http_retry_after(&status(403), 0).is_none());
+        // And not on a later attempt either — it is the code, not the streak.
+        assert!(http_retry_after(&status(401), 3).is_none());
+    }
+
+    /// The case this exists for: llama.cpp reloading a six-shard GGUF after
+    /// `--sleep-idle-seconds`, answering `503 Loading model` until it is up.
+    /// Seen repeatedly on this box on 2026-09-17.
+    #[test]
+    fn a_server_that_is_coming_back_up_is_waited_out() {
+        for code in [500, 502, 503, 504, 429] {
+            assert!(
+                http_retry_after(&status(code), 0).is_some(),
+                "{code} should be waited out"
+            );
+        }
+        // No answer at all, and a body that did not parse — both likeliest to be
+        // a server going down mid-answer.
+        assert!(
+            http_retry_after(
+                &HttpError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "no")),
+                0
+            )
+            .is_some()
+        );
+        assert!(http_retry_after(&HttpError::Malformed("truncated".into()), 0).is_some());
+    }
+
+    /// Doubling from a second, and a hard stop — so an endpoint that is
+    /// genuinely gone is REPORTED rather than waited on forever.
+    #[test]
+    fn the_wait_doubles_and_the_attempts_run_out() {
+        let secs: Vec<u64> = (0..MAX_HTTP_ATTEMPTS)
+            .map(|a| http_retry_after(&status(503), a).expect("retryable").as_secs())
+            .collect();
+        assert_eq!(secs, vec![1, 2, 4, 8, 16, 32]);
+        assert_eq!(secs.iter().sum::<u64>(), 63, "about a minute in total");
+        assert!(
+            http_retry_after(&status(503), MAX_HTTP_ATTEMPTS).is_none(),
+            "the cap is a cap"
+        );
+    }
+
+    /// Stated rather than hidden: the rule retries two failures that are
+    /// deterministic in the bytes and will never succeed. That costs about a
+    /// minute and is the price of following "every code except unauthenticated"
+    /// instead of keeping a list of which 5xx somebody thinks is transient.
+    #[test]
+    fn the_rule_knowingly_waits_on_two_things_it_cannot_fix() {
+        assert!(http_retry_after(&status(400), 0).is_some(), "a prompt the server will not take");
+        assert!(
+            http_retry_after(
+                &HttpError::Status { code: 500, body: "Context size has been exceeded".into() },
+                0
+            )
+            .is_some(),
+            "the context wall, which the mid-turn check exists to prevent reaching"
+        );
+    }
 }
