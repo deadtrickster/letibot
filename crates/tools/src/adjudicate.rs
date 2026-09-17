@@ -3795,6 +3795,51 @@ mod tests {
         }
     }
 
+    /// **At the widest point on the operator's box, the secret stores are still
+    /// shut.** The operator, adding `automode-edits` (2026-09-17): *"that being
+    /// said - .ssh and friends must stay protected"*.
+    ///
+    /// This is the claim the sixth point rests on, so it is checked where it
+    /// actually holds — at the gate, through the real admit path, with a mode
+    /// whose `write` disposition is `Admit` and whose decider is a model that
+    /// would say yes to anything. An ordinary edit goes through with nobody
+    /// consulted, which is the point of the mode; a write into `.ssh` is refused
+    /// by `NEVER_WRITE` at step 1, before any point or adjudicator is reached,
+    /// and a read of a key is refused as a disclosure at step 0.
+    #[test]
+    fn the_never_write_list_outranks_the_widest_point_on_this_box() {
+        let yes = |req: &AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(req, "allow_once", "model:test", "sure"))
+        };
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new("model:test", yes)))
+            .with_surroundings(pinned())
+            .with_mode(crate::mode::Mode::AUTO_EDITS);
+
+        // The point of the point: an ordinary edit inside the workspace, admitted
+        // with nobody asked at all.
+        let ordinary = json!({"path": "/w/src/lib.rs", "content": "fn main() {}"});
+        assert!(matches!(g.admit(&call("write", &ordinary)), GateDecision::Admit));
+
+        // And the stores, which the mode cannot reach.
+        for path in [
+            "/home/op/.ssh/authorized_keys",
+            "/home/op/.gnupg/trustdb.gpg",
+            "/home/op/.aws/credentials",
+            "/home/op/.config/gh/hosts.yml",
+        ] {
+            let args = json!({"path": path, "content": "x"});
+            let d = g.admit(&call("write", &args));
+            assert!(
+                !matches!(d, GateDecision::Admit),
+                "{path} was admitted at automode-edits: {d:?}"
+            );
+        }
+        // A read that would put a key in the transcript is a disclosure, and no
+        // point moves it either.
+        let read = json!({"command": "cat /home/op/.ssh/id_ed25519"});
+        assert!(!matches!(g.admit(&bash(&read)), GateDecision::Admit));
+    }
+
     /// opencode's `permission` config governs the gate before the mode: `deny`
     /// refuses, `allow` admits, `ask` falls through.
     #[test]

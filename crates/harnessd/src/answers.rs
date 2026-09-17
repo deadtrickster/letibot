@@ -655,20 +655,25 @@ mod tests {
         // answer it the way `letibot-tui` does.
         let hub2 = hub.clone();
         let head_id = head.head_id.clone();
-        // **The window is the budget, not a number that looked big enough.**
-        // 500 × 2ms is one second, and the adjudicator it is racing waits ten —
-        // so on a box running the whole workspace's test binaries at once the
-        // answerer gave up while the decide side was still happily waiting, and
-        // the panic read as "the decision never reached the head" when the
-        // decision was on its way. Seen once in a `cargo test --workspace` run
-        // on 2026-09-17 and never alone. A poller that gives up before the
-        // thing it polls for has to is testing the load on the box.
-        let deadline = std::time::Instant::now() + budget;
+        // **No second deadline.** The answerer used to poll 500 × 2ms — one
+        // second — while the adjudicator it races waits ten, so on a box running
+        // the whole workspace's test binaries at once it gave up first and
+        // panicked "the decision never reached the head" about a decision that
+        // was on its way. Widening it to the budget only moved the race: with
+        // both at ten seconds a loaded box lost it again the same afternoon.
+        //
+        // A poller racing a deadline it does not own cannot be made reliable by
+        // choosing a bigger number. This one stops when the thing it is helping
+        // has finished, and the FAILURE is then the assertion below — "the
+        // adjudicator did not come back with the answer" — which is a statement
+        // about the code rather than about the load on the box.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
         let answerer = std::thread::spawn(move || {
-            while std::time::Instant::now() < deadline {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
                 let open = hub2.snapshot().open_decisions;
                 if let Some(d) = open.first() {
-                    return hub2.submit(
+                    hub2.submit(
                         &head_id,
                         "c1",
                         0,
@@ -680,14 +685,20 @@ mod tests {
                             },
                         },
                     );
+                    return true;
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            panic!("the decision never reached the head inside the adjudicator's own budget")
+            // The adjudicator returned before a decision was ever open. Not a
+            // panic: whatever it returned is what the assertions below read,
+            // and they say more about why than this thread can.
+            false
         });
 
         let d = adj.decide(&req);
-        answerer.join().unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let submitted = answerer.join().unwrap();
+        assert!(submitted, "the head never got to answer: {d:?}");
 
         assert_eq!(
             d.outcome,
@@ -914,14 +925,13 @@ mod tests {
 
         let hub2 = hub.clone();
         let head_id = head.head_id.clone();
-        // The same rule as the answerer above: poll for as long as the thing
-        // being polled for is allowed to take, which is the adjudicator's own
-        // budget. A shorter window is a second deadline nobody declared, and
-        // the test then fails for the box's load rather than for the code's
-        // behaviour — which is the whole defect being fixed here.
-        let deadline = Instant::now() + budget;
+        // The same rule as the answerer above: no deadline of its own. It stops
+        // when the adjudicator it is racing has returned, and the assertions
+        // below are what fail if it never got its chance.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
         let interrupter = std::thread::spawn(move || {
-            while Instant::now() < deadline {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
                 if !hub2.snapshot().open_decisions.is_empty() {
                     hub2.submit(
                         &head_id,
@@ -931,16 +941,18 @@ mod tests {
                             reason: "operator pressed esc twice".into(),
                         },
                     );
-                    return;
+                    return true;
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            panic!("nothing was ever open")
+            false
         });
 
         let started = Instant::now();
         let d = adj.decide(&request());
-        interrupter.join().unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let interrupted = interrupter.join().unwrap();
+        assert!(interrupted, "nothing was ever open to interrupt: {d:?}");
         assert!(started.elapsed() < Duration::from_secs(30), "it waited out the budget");
         assert_eq!(d.outcome, DecisionOutcome::Cancelled, "{d:?}");
         assert!(d.basis.contains("esc twice"), "{}", d.basis);

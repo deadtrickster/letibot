@@ -381,6 +381,54 @@ impl Mode {
                   still reaches you and nothing promotes an blocked action.",
     };
 
+    /// **Writes go through and a model answers for the rest.** Claude Code's own
+    /// auto-accept posture, and the operator's ask (2026-09-17): *"if automode
+    /// inherits allow_edits, why i still asked about edits?"*
+    ///
+    /// It did not inherit it. [`Mode::AUTO`] is deliberately `write: Ask` — its
+    /// own doc says *"what automode changes is who answers, not what asks"* — so
+    /// every edit became a question the oracle normally cleared, and the moment
+    /// the oracle could not (down, past its budget, an intent outside its earned
+    /// scope) the question landed on the operator. Eighteen of them did on
+    /// 2026-09-15.
+    ///
+    /// This point is the honest way to have what that operator wanted: the write
+    /// disposition of [`Mode::WRITES_ALLOWED`] with the decider of
+    /// [`Mode::AUTO`]. **What it trades** is stated rather than implied: an edit
+    /// inside the boundary takes effect with nobody consulted at all — not the
+    /// operator, and not the model either. §3's asymmetry is why that is
+    /// defensible while the same move on `exec` is not: the boundary guards the
+    /// filesystem view, a `write` result is shaped by the tool, and `bash` is the
+    /// one tool whose result is an arbitrary byte stream. So exec and network
+    /// still ask, and the oracle still answers them.
+    ///
+    /// Unchanged from every other point: the always-ask list still reaches the
+    /// operator, and nothing promotes a blocked action. A write into a secret
+    /// store is `Blocked` before this dial is read.
+    pub const AUTO_EDITS: Mode = Mode {
+        name: "automode-edits",
+        role: "coder",
+        write: Disposition::Admit,
+        exec: Disposition::Ask,
+        network: Disposition::Ask,
+        grants: GrantScope::Session,
+        decider: Decider::Model,
+        boundary: Boundary::Operator,
+        // The same three as `automode`: this point still consults a model, so a
+        // session that cannot reach one must refuse the point by name rather
+        // than quietly standing at always-ask.
+        requires: &[
+            Prereq::WritableBackend,
+            Prereq::ReachableAdjudicator,
+            Prereq::Oracle,
+        ],
+        summary: "writes inside the boundary go through with nobody asked — not you \
+                  and not the model. Commands and anything that leaves the box still \
+                  ask, and a model answers those within the scope it has earned. The \
+                  always-ask list still reaches you and nothing promotes a blocked \
+                  action.",
+    };
+
     /// **Everything is admitted, nothing asks.** The firecode-native point.
     ///
     /// `write`, `exec` and `network` are all [`Disposition::Admit`] and the decider is
@@ -413,6 +461,10 @@ impl Mode {
         Mode::ALWAYS_ASK,
         Mode::WRITES_ALLOWED,
         Mode::AUTO,
+        // Wider than `automode` on exactly one axis — `write` — and identical on
+        // every other, which is why it sits here and not beside `writes
+        // allowed`.
+        Mode::AUTO_EDITS,
         Mode::ALLOW_ALL,
     ];
 
@@ -425,6 +477,11 @@ impl Mode {
             "always-ask" => Some("default"),
             "writes allowed" => Some("acceptEdits"),
             "allow-all" => Some("bypassPermissions"),
+            // `automode-edits` is the closest thing this build has to what
+            // Claude Code calls auto-accept-edits, and the operator named it as
+            // such. Not mapped to `acceptEdits` here, though: that name already
+            // belongs to `writes allowed`, and two points answering to one name
+            // would make `parse` pick by list order rather than by meaning.
             _ => None,
         }
     }
@@ -624,6 +681,54 @@ pub const UNSEEN_PROJECT: Mode = Mode::ALWAYS_ASK;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The sixth point widens exactly one dial, and the secret stores are not
+    /// behind it.** The operator, on adding it (2026-09-17): *"that being said -
+    /// .ssh and friends must stay protected"*.
+    ///
+    /// Three separate mechanisms keep that true, and none of them is the mode:
+    /// `Tier::Blocked` answers `false` here at every point; `Tier::AlwaysAsk`
+    /// answers `false` at every point whose boundary is the operator's; and
+    /// `NEVER_WRITE` is checked by the gate at step 1, before any point is
+    /// consulted at all. This pins the two this file owns.
+    #[test]
+    fn automode_edits_widens_write_and_nothing_else() {
+        let m = Mode::AUTO_EDITS;
+        // The one dial that moved, against `automode`.
+        assert!(m.admits_unasked(&Tier::MayApprove, Access::Write));
+        assert!(!Mode::AUTO.admits_unasked(&Tier::MayApprove, Access::Write));
+        // Everything else is `automode`'s, exactly.
+        assert_eq!(m.exec, Mode::AUTO.exec);
+        assert_eq!(m.network, Mode::AUTO.network);
+        assert_eq!(m.decider, Mode::AUTO.decider);
+        assert_eq!(m.boundary, Mode::AUTO.boundary);
+        assert_eq!(m.requires, Mode::AUTO.requires);
+        assert!(!m.admits_unasked(&Tier::MayApprove, Access::Exec));
+        assert!(!m.admits_unasked(&Tier::MayApprove, Access::Network));
+
+        // And the two tiers no point on the operator's box may move.
+        let blocked = Tier::Blocked {
+            rule: crate::adjudicate::FlowRule::SecretOffBox,
+            evidence: "a key, leaving".into(),
+        };
+        let always = Tier::AlwaysAsk { rule: "credential_use", why: "a key, used".into() };
+        for access in [Access::Read, Access::Write, Access::Exec, Access::Network] {
+            assert!(!m.admits_unasked(&blocked, access), "{access:?} at a blocked tier");
+            assert!(!m.admits_unasked(&always, access), "{access:?} at an always-ask tier");
+        }
+    }
+
+    /// It is in the ladder, it parses by name, and it does not answer to
+    /// `acceptEdits` — that name is `writes allowed`'s, and two points under one
+    /// name would be resolved by list order rather than by meaning.
+    #[test]
+    fn the_sixth_point_is_named_and_reachable() {
+        assert!(Mode::NAMED.iter().any(|m| m.name == "automode-edits"));
+        assert_eq!(Mode::parse("automode-edits").unwrap().name, "automode-edits");
+        assert_eq!(Mode::parse("automode_edits").unwrap().name, "automode-edits");
+        assert_eq!(Mode::parse("acceptEdits").unwrap().name, "writes allowed");
+        assert!(Mode::parse("automode-edit").is_err(), "a near miss is named, not guessed");
+    }
 
     /// The two tiers a point on the operator's box may not move, at every such point
     /// including automode. This is the property the design rests on, so it is checked
