@@ -191,10 +191,11 @@ fn run() -> Result<i32, String> {
         // operator believes they widened it, which is the shape of every other
         // "the banner says one thing and the session does another" defect this
         // tree refuses.
-        if !gk.intents.is_empty() || gk.max_scope.is_some() {
+        if !gk.intents.is_empty() || gk.max_scope.is_some() || !gk.tools.is_empty() {
             match letibot_tools::authorise::OracleScope::declared(
                 &gk.intents,
                 gk.max_scope.as_deref(),
+                &gk.tools,
             ) {
                 Ok(scope) => cfg.oracle_scope = Some(scope),
                 Err(why) => {

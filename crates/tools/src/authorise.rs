@@ -742,6 +742,24 @@ pub struct OracleScope {
     /// of the two they are looking at — and so a widening that a human chose can
     /// never be rendered as one that was earned.
     pub declared: bool,
+    /// **Tools this oracle may rule on however far their effect lands**, named
+    /// one at a time by the operator.
+    ///
+    /// [`EffectScope`] is a ladder and `external` is its top rung, so raising
+    /// `max_scope` to reach one off-box tool reaches every off-box tool. The
+    /// operator asked for the narrower thing (2026-09-17): *"i want web search
+    /// and web fetch to be automodable not curl or scp, just these two tools"* —
+    /// and `curl`/`scp` turn out not to be the question, because they run through
+    /// `bash`, which is `Access::Exec` and lands on a host rung. What `external`
+    /// actually holds is `web_search`, `web_fetch`, `github`, `mcp` and the flowy
+    /// verbs — and `flowy say` posts into the room the whole fleet reads, which
+    /// is the one nobody should hand to a guard by moving a ceiling.
+    ///
+    /// So this is a list of NAMES, not a rung: it grants past `max_scope` for the
+    /// tools on it and for nothing else. Empty by default, and a name on it is a
+    /// grant like every other line of `[gatekeeper]` — recorded as `declared`,
+    /// never as earned.
+    pub tools: std::collections::BTreeSet<String>,
 }
 
 impl OracleScope {
@@ -764,6 +782,7 @@ impl OracleScope {
             max_scope: EffectScope::HostProject,
             evidence: evidence.into(),
             declared: false,
+            tools: Default::default(),
         }
     }
 
@@ -786,7 +805,13 @@ impl OracleScope {
     /// Unparseable names are an error rather than a silent narrowing, for the
     /// reason every other refusal in this tree gives: a setting that quietly did
     /// not take is worse than one that refused.
-    pub fn declared(intents: &[String], max_scope: Option<&str>) -> Result<Self, String> {
+    pub fn declared(
+        intents: &[String],
+        max_scope: Option<&str>,
+        tool_names: &[String],
+    ) -> Result<Self, String> {
+        let tools: std::collections::BTreeSet<String> =
+            tool_names.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
         // **An unset list is the floor's list, never an empty one.**
         //
         // `max_scope = "host_other"` on its own is an operator saying *reach
@@ -805,6 +830,7 @@ impl OracleScope {
                 intents: floor.intents,
                 max_scope,
                 declared: true,
+                tools,
                 evidence: format!(
                     "the built-in intents, and you set the reach to `{}` in \
                      providers.toml under `[gatekeeper]`",
@@ -834,6 +860,7 @@ impl OracleScope {
             intents: set,
             max_scope,
             declared: true,
+            tools,
             evidence: "declared by the operator in providers.toml under                        `[gatekeeper]` — this is a grant, not a calibration: no                        corpus was replayed to arrive at it"
                 .into(),
         })
@@ -854,6 +881,7 @@ impl OracleScope {
             max_scope,
             evidence: evidence.into(),
             declared: false,
+            tools: Default::default(),
         }
     }
 
@@ -874,6 +902,23 @@ impl OracleScope {
     }
 
     /// Whether this oracle may be asked about this action at all.
+    ///
+    /// `tool` is the name the call was made under, because the reach may be
+    /// granted per tool as well as per rung — see [`OracleScope::tools`]. The
+    /// INTENT check is never waived by a named tool: a grant says how far the
+    /// effect may land, not what the action may be, so a `web_fetch` that somehow
+    /// carried `destroy` is still outside an authority nobody gave `destroy` to.
+    pub fn covers_tool(
+        &self,
+        tool: &str,
+        intents: &std::collections::BTreeSet<Intent>,
+        scope: EffectScope,
+    ) -> Result<(), String> {
+        let reach = if self.tools.contains(tool) { self.max_scope } else { scope };
+        self.covers(intents, reach)
+    }
+
+    /// The rung alone, without a tool name.
     pub fn covers(
         &self,
         intents: &std::collections::BTreeSet<Intent>,
@@ -898,6 +943,67 @@ impl OracleScope {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod named_tools {
+    //! A grant by NAME reaches past the ceiling for that tool and nothing else.
+    use super::*;
+
+    fn scope() -> OracleScope {
+        OracleScope::declared(
+            &["inspect".into(), "read_file".into(), "network".into()],
+            Some("host_other"),
+            &["web_search".into(), "web_fetch".into()],
+        )
+        .expect("declared")
+    }
+
+    fn intents(of: &[Intent]) -> std::collections::BTreeSet<Intent> {
+        of.iter().copied().collect()
+    }
+
+    /// The operator's ask (2026-09-17): *"i want web search and web fetch to be
+    /// automodable not curl or scp, just these two tools"*.
+    #[test]
+    fn the_named_tools_reach_past_the_ceiling_and_their_neighbours_do_not() {
+        let s = scope();
+        let reading = intents(&[Intent::ReadFile]);
+        // Both named tools land `external` — above `host_other` — and are covered.
+        assert!(s.covers_tool("web_search", &reading, EffectScope::External).is_ok());
+        assert!(s.covers_tool("web_fetch", &reading, EffectScope::External).is_ok());
+        // Their neighbours on the same rung are not. `flowy say` is the one that
+        // matters: it posts into the room the whole fleet reads.
+        for other in ["say", "github", "mcp__anything"] {
+            assert!(
+                s.covers_tool(other, &reading, EffectScope::External).is_err(),
+                "{other} rode in on a grant that named two tools"
+            );
+        }
+        // And the rung still governs anything unnamed.
+        assert!(s.covers(&reading, EffectScope::External).is_err());
+        assert!(s.covers(&reading, EffectScope::HostOther).is_ok());
+    }
+
+    /// A grant says how far an effect may LAND, never what the action may be.
+    #[test]
+    fn a_named_tool_does_not_get_an_intent_nobody_granted() {
+        let s = scope();
+        let destructive = intents(&[Intent::ReadFile, Intent::Destroy]);
+        let e = s
+            .covers_tool("web_fetch", &destructive, EffectScope::External)
+            .expect_err("destroy was never granted");
+        assert!(e.contains("destroy"), "{e}");
+    }
+
+    /// With no names the behaviour is exactly what it was.
+    #[test]
+    fn an_empty_list_changes_nothing() {
+        let s = OracleScope::declared(&["read_file".into()], Some("host_other"), &[]).unwrap();
+        let reading = intents(&[Intent::ReadFile]);
+        assert!(s.covers_tool("web_fetch", &reading, EffectScope::External).is_err());
+        assert!(s.covers_tool("web_fetch", &reading, EffectScope::HostOther).is_ok());
     }
 }
 
@@ -1864,7 +1970,7 @@ impl Adjudicator for ModelAdjudicator {
         // the oracle being asked: it cannot be wrong about a question nobody put to it,
         // and widening this is a configuration change with a measurement attached.
         let scope = self.oracle.scope();
-        if let Err(outside) = scope.covers(&baseline.intents, req.class.scope) {
+        if let Err(outside) = scope.covers_tool(&req.tool, &baseline.intents, req.class.scope) {
             return self.note(AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Escalate {
@@ -2053,6 +2159,7 @@ mod tests {
         let s = OracleScope::declared(
             &["inspect".into(), "write_file".into(), "unknown".into()],
             Some("host_other"),
+            &[],
         )
         .expect("the names are the ones the build prints");
         // Plain words about where the authority came from — the banner used to
@@ -2075,10 +2182,10 @@ mod tests {
         assert!(s.covers(&carries, EffectScope::External).is_err());
 
         // A typo refuses and lists the vocabulary rather than narrowing in silence.
-        let e = OracleScope::declared(&["wrtie_file".into()], None).unwrap_err();
+        let e = OracleScope::declared(&["wrtie_file".into()], None, &[]).unwrap_err();
         assert!(e.contains("wrtie_file"), "{e}");
         assert!(e.contains("write_file"), "the names are printed: {e}");
-        assert!(OracleScope::declared(&[], Some("the-moon")).is_err());
+        assert!(OracleScope::declared(&[], Some("the-moon"), &[]).is_err());
 
         // The floor is unchanged for a box that says nothing.
         let floor = OracleScope::narrowest("test fixture, not a calibration");
@@ -2087,7 +2194,7 @@ mod tests {
         // **`max_scope` alone widens the reach and keeps the intents.** Reading an
         // absent list as an EMPTY one would build a scope covering nothing —
         // narrower than the default the operator was widening, and silently so.
-        let reach = OracleScope::declared(&[], Some("host_other")).unwrap();
+        let reach = OracleScope::declared(&[], Some("host_other"), &[]).unwrap();
         let mut write = std::collections::BTreeSet::new();
         write.insert(Intent::WriteFile);
         assert!(

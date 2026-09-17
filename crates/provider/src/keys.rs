@@ -92,6 +92,14 @@ pub struct Gatekeeper {
     /// How far an effect may land and still be the guard's to answer about:
     /// `in_run`, `host_project` (the default), `host_other`, `external`.
     pub max_scope: Option<String>,
+    /// **Tools the guard may answer about whatever rung they land on**, by name:
+    /// `tools = "web_search, web_fetch"`.
+    ///
+    /// The scope is a ladder, so raising `max_scope` to reach one off-box tool
+    /// reaches all of them — `github`, `mcp` and the flowy verbs included, and
+    /// `flowy say` posts into a room the fleet reads. This names doors instead of
+    /// moving the ceiling. Empty by default.
+    pub tools: Vec<String>,
 }
 
 /// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
@@ -122,6 +130,17 @@ pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
             })
             .unwrap_or_default(),
         max_scope: sec.get("max_scope").or_else(|| sec.get("scope")).cloned(),
+        // Same spelling rules as `intents`: whitespace or commas, both accepted.
+        tools: sec
+            .get("tools")
+            .map(|v| {
+                v.split([' ', ',', '\t'])
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 

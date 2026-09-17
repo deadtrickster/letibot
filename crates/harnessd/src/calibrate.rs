@@ -304,6 +304,8 @@ pub fn replay_rows(
     oracle_cfg.oracle_scope = Some(OracleScope::declared(
         &Intent::ALL.iter().map(|i| i.as_str().to_string()).collect::<Vec<_>>(),
         Some("external"),
+        // The replay already reaches every rung; no per-tool grant to add.
+        &[],
     )?);
     let adjudicator = // No hub: a replay has no session to announce a wait on.
         crate::harness::model_adjudicator(&oracle_cfg, "`--calibrate`", None)
