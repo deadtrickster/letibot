@@ -1289,6 +1289,16 @@ impl<'a> Harness<'a> {
                 }
             }
         }
+        if cfg.web_fetch {
+            match letibot_webfetch::CurlFetcher::attach() {
+                Ok(f) => external.fetch = std::sync::Arc::new(f),
+                // Refuse at open, not at the first fetch: a missing curl
+                // three seconds into a turn names neither the binary nor the
+                // flag that would have attached it. `web_fetch` stays the
+                // refusing tool and the banner says why.
+                Err(why) => return Err(HarnessError::Setup(format!("--web-fetch: {why}"))),
+            }
+        }
         let external = external;
         // T21.3's two halves, both constructed for every session. The ledger is the
         // error signal and the sink is the encoder; attaching them costs nothing and
@@ -3851,6 +3861,13 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // started without `--web-search` is byte-identical to yesterday's.
     if cfg.web_search.is_some() && seat != Seat::Runner {
         r.tools.push("web_search".into());
+        r.max_tools += 1;
+    }
+    // **`web_fetch` seats on the same rule as `web_search`**: only when
+    // something is behind it, so a session started without `--web-fetch` is
+    // byte-identical to one from before the flag existed.
+    if cfg.web_fetch && seat != Seat::Runner {
+        r.tools.push("web_fetch".into());
         r.max_tools += 1;
     }
     r

@@ -286,6 +286,13 @@ pub struct Config {
     /// resolved at attach from `$BRAVE_API_KEY` or `providers.toml`, so a secret
     /// never rides in a struct that derives `Debug`.
     pub web_search: Option<String>,
+    /// Whether `curl` egress is attached behind `web_fetch`. A bool, not a
+    /// provider name: this build has exactly one fetcher and it takes no
+    /// credential, so there is nothing to choose. Off by default — a search
+    /// provider is opted into by a key the operator placed in a file; a page
+    /// fetch is the wider door (it reads whatever the address names), so it
+    /// waits for the flag.
+    pub web_fetch: bool,
     pub placement: letibot_tools::builtins::task::Placement,
     /// Extra arguments for `firecode up` when the placement is a VM — the
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
@@ -667,6 +674,7 @@ impl Config {
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             web_search: default_web_search(),
+            web_fetch: false,
             context_window: None,
             auto_compact: true,
             placement: letibot_tools::builtins::task::Placement::Host,
@@ -879,6 +887,12 @@ impl Config {
             "web_search",
             if self.web_search.is_some() { "configured".into() } else { "off".into() },
             "$BRAVE_API_KEY / providers.toml",
+            "",
+        ));
+        out.push(row(
+            "web_fetch",
+            if self.web_fetch { "curl".into() } else { "off".into() },
+            "--web-fetch",
             "",
         ));
         // The plumbing.

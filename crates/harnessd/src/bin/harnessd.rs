@@ -140,6 +140,9 @@ fn usage() -> String {
      \x20                           it the tool refuses and says so\n\
      \x20 --brave-key KEY           for this run; else $BRAVE_API_KEY, else\n\
      \x20                           [brave] key= in ~/.config/letibot/providers.toml\n\
+     \x20 --web-fetch             attach `curl` egress behind `web_fetch`: the page\n\
+     \x20                           is reader-mode extracted and rendered as\n\
+     \x20                           markdown before it reaches the model\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -393,6 +396,10 @@ fn run() -> Result<i32, String> {
             // `Debug`, and a secret in a struct that can be `{:?}`-printed is a
             // secret one `eprintln!` away from a log.
             "--brave-key" => letibot_websearch::set_flag_key(next()?),
+            // What is behind `web_fetch`: the curl subprocess the webfetch
+            // crate wraps. No key and no account — the flag is the whole
+            // opt-in, and the tool's refusal names it.
+            "--web-fetch" => cfg.web_fetch = true,
             "--prompt" => prompts.push(next()?),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?

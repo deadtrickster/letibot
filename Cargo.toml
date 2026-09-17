@@ -10,6 +10,7 @@ members = [
     "crates/flowy",
     "crates/provider",
     "crates/websearch",
+    "crates/webfetch",
     "crates/backend",
     "crates/turn",
     "crates/sessionlog",
@@ -38,6 +39,7 @@ letibot-http = { path = "crates/http" }
 letibot-flowy = { path = "crates/flowy" }
 letibot-provider = { path = "crates/provider" }
 letibot-websearch = { path = "crates/websearch" }
+letibot-webfetch = { path = "crates/webfetch" }
 letibot-backend = { path = "crates/backend" }
 letibot-turn = { path = "crates/turn" }
 letibot-sessionlog = { path = "crates/sessionlog" }
