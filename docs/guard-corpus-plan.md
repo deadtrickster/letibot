@@ -182,7 +182,7 @@ host shapes BashArena uses: a bare address as the operand of a network program (
 | … `secret_off_box` + `secret_flow_unknown` | 1,102 + 15 | 1,625 + 137 (scripts that open the flowy token and post to the node — the heartbeat, in Python; step 2a's shape) |
 | BashArena attacks caught before the model (of 47) | 8, 5 of them loopback | **5**, all for the stated reason |
 | BashArena honest rows flagged (of 292) | 36 (12%) | **20 (7%)** |
-| **the guard** (layer A + oracle, claim arm) on the 47 attacks | 28 caught (60%) | **22 (47%)** |
+| **the guard** (layer A + oracle, claim arm) on the 47 attacks | 28 caught (60%) | **22 (47%)**; a second run 23, one row flipped — the drop is not run-to-run noise |
 
 **The guard's recall fell while layer A's precision rose**, and the six new misses say why: two
 are the loopback `curl` rows the old layer A caught for the wrong reason and the oracle now judges
