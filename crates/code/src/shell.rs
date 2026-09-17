@@ -625,29 +625,69 @@ impl Normalised {
         self.stages.iter().flat_map(|s| s.redirect_reads()).collect()
     }
 
-    /// One line per unresolvable construct, for a refusal body.
+    /// The unresolvable constructs, for a refusal body — **one explanation per
+    /// distinct reason**, with the places it applies listed under it.
     ///
     /// The refusal has to carry the fix (`docs/tool-design-brief.md` §3), and the
     /// fix for an unresolvable construct is always the same shape: resolve it in the
     /// caller and pass the literal.
+    ///
+    /// # Why this groups
+    ///
+    /// It used to print two lines per entry — the position, then the `why` —
+    /// and the `why` is per CONSTRUCT KIND, not per occurrence. So a command
+    /// using one variable five times printed the same 220-character sentence
+    /// five times: 1,776 bytes to say one thing. The operator, 2026-09-17,
+    /// looking at a worse one: *"the explanation lines are repeated over and
+    /// over, also 66 lines???"*
+    ///
+    /// Sixty-six lines is a refusal nobody reads, and a refusal nobody reads is
+    /// the same as a refusal that did not say why — which is the thing this
+    /// whole report exists to avoid. So identical reasons collapse: the
+    /// sentence once, then the positions it covers, and past
+    /// [`MAX_PLACES_SHOWN`] a count rather than a list.
     pub fn unresolved_report(&self) -> String {
         if self.unresolved.is_empty() {
             return String::new();
         }
-        let mut s = String::new();
+        // Grouped by the sentence itself rather than by `construct`, because two
+        // kinds can share a reason and one kind can give different ones — the
+        // text is what a reader is being spared, so the text is the key. Order
+        // is first appearance: the earliest position in the command comes first,
+        // which is the order somebody reads their own command in.
+        let mut order: Vec<&str> = Vec::new();
+        let mut by_why: std::collections::HashMap<&str, Vec<&Unresolved>> = Default::default();
         for u in &self.unresolved {
-            s.push_str(&format!(
-                "  {} at {} decides the {}: {:?}{}\n      {}\n",
-                u.construct.as_str(),
-                u.span,
-                u.decides.as_str(),
-                u.text,
-                u.known_prefix
-                    .as_ref()
-                    .map(|p| format!(" (known prefix {p:?})"))
-                    .unwrap_or_default(),
-                u.why
-            ));
+            let at = by_why.entry(u.why.as_str()).or_default();
+            if at.is_empty() {
+                order.push(u.why.as_str());
+            }
+            at.push(u);
+        }
+
+        let mut s = String::new();
+        for why in order {
+            let places = &by_why[why];
+            let first = places[0];
+            s.push_str(&format!("  {}: {why}\n", first.construct.as_str()));
+            for u in places.iter().take(MAX_PLACES_SHOWN) {
+                s.push_str(&format!(
+                    "      at {} decides the {}: {:?}{}\n",
+                    u.span,
+                    u.decides.as_str(),
+                    u.text,
+                    u.known_prefix
+                        .as_ref()
+                        .map(|p| format!(" (known prefix {p:?})"))
+                        .unwrap_or_default(),
+                ));
+            }
+            if places.len() > MAX_PLACES_SHOWN {
+                s.push_str(&format!(
+                    "      … and {} more place(s) with the same cause\n",
+                    places.len() - MAX_PLACES_SHOWN
+                ));
+            }
         }
         s
     }
@@ -656,6 +696,14 @@ impl Normalised {
 // ---------------------------------------------------------------------------
 // Normalisation
 // ---------------------------------------------------------------------------
+
+/// How many positions one reason lists before it counts the rest.
+///
+/// Four: enough that a reader sees this is not a one-off, few enough that a
+/// command using a variable thirty times does not print thirty lines. The count
+/// is the disclosure — the same rule the spill and the miss report already keep,
+/// that a refusal may summarise but may never be silent about what it summarised.
+const MAX_PLACES_SHOWN: usize = 4;
 
 /// Parse `source` as bash and normalise it.
 ///
@@ -2068,5 +2116,59 @@ mod redirect_ownership {
         let n = normalise("cat <<'EOF' | bash\nx\nEOF\nls");
         assert_eq!(programs(&n), ["cat", "bash", "ls"]);
         assert!(!n.stages[2].pipe_in);
+    }
+}
+
+#[cfg(test)]
+mod unresolved_reporting {
+    //! **A refusal nobody reads is a refusal that did not say why.** The
+    //! operator, 2026-09-17, on a `not_run` body: *"the explanation lines are
+    //! repeated over and over, also 66 lines???"*
+    use super::*;
+
+    /// One variable, used five times, is one reason — not five copies of the
+    /// same 220-character sentence.
+    #[test]
+    fn one_cause_is_explained_once_however_many_places_it_has() {
+        let n = normalise(
+            "R=/tmp/x; grep q $R/a.rs $R/b.rs $R/c.rs; ls $R/d $R/e",
+        );
+        let report = n.unresolved_report();
+        assert!(n.unresolved.len() >= 5, "{} entries", n.unresolved.len());
+
+        // The sentence, once.
+        let sentence = "Substitute the value and pass the literal";
+        assert_eq!(
+            report.matches(sentence).count(),
+            1,
+            "the explanation repeated:\n{report}"
+        );
+        // Every place still reachable, up to the cap, and the rest counted
+        // rather than dropped — a summary may never be silent about what it
+        // summarised.
+        assert!(report.contains("… and 1 more place(s)"), "{report}");
+        assert!(report.lines().count() <= 7, "{} lines:\n{report}", report.lines().count());
+    }
+
+    /// Two different causes keep two explanations: the grouping is by the
+    /// sentence, not by the construct, because a reader is being spared the
+    /// text and the text is what differs.
+    #[test]
+    fn different_causes_keep_their_own_explanations() {
+        let n = normalise("cat $A && ls $(which foo)");
+        let report = n.unresolved_report();
+        assert!(report.contains("parameter_expansion"), "{report}");
+        assert!(report.contains("command_substitution"), "{report}");
+        // Two headers, one per cause.
+        assert_eq!(
+            report.lines().filter(|l| l.starts_with("  ") && !l.starts_with("      ")).count(),
+            2,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_resolved_command_reports_nothing() {
+        assert_eq!(normalise("ls /tmp").unresolved_report(), "");
     }
 }
