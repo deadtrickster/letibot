@@ -766,6 +766,45 @@ mod tests {
         assert!(!rows.iter().any(|r| r.contains("\x1b[35m")), "{rows:?}");
     }
 
+    /// **A language rano gains is letibot's without a second table.**
+    ///
+    /// `lang_for` delegates to rano's `detect` on purpose — the extension table
+    /// lives where the grammars live, and a copy here would drift the way the
+    /// head's own mode-name list drifted. Common Lisp is the first grammar
+    /// added after this dependency existed, so this pins the delegation end to
+    /// end: the extension is detected through the path dependency, and the
+    /// grammar's captures reach the palette through the shared vocabulary
+    /// (`defun` → keyword → magenta). When rano grows the next language, this
+    /// is the test that says nothing here had to move.
+    #[test]
+    fn a_language_rano_gains_arrives_without_a_second_table() {
+        assert_eq!(
+            lang_for("patch.lisp"),
+            Some(rano::syntax::Lang::CommonLisp)
+        );
+        let old = [";; greet"];
+        let new = ["(defun greet (name) t)"];
+        let cfg = Box::leak(Box::new(DiffConfig {
+            width: 160,
+            palette: Palette::Colour,
+            context: 1,
+            line_numbers: true,
+            intra_line: false,
+            max_rows: 60,
+        }));
+        let sc = SplitConfig {
+            cfg,
+            before_start: 1,
+            after_start: 1,
+            lang: lang_for("patch.lisp"),
+        };
+        let rows = render_split(&old, &new, &sc);
+        assert!(
+            rows.iter().any(|r| r.contains("\x1b[35m") && r.contains("defun")),
+            "{rows:?}"
+        );
+    }
+
     #[test]
     fn capture_names_fall_back_through_their_prefix() {
         assert_eq!(role_for_capture("comment"), Role::Comment);
