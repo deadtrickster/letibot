@@ -3069,9 +3069,18 @@ impl App {
     /// an *announced* assistant row whose content has not arrived yet, and two
     /// answers to "where does this round start" is one too many.
     fn round_head(&self, idx: usize) -> usize {
+        // A user row is its own head — a conversation of user rows must not
+        // rewind to zero on every one. Anything else belongs to the nearest
+        // assistant row above it, PAST any user rows in between, for the same
+        // reason `round_results` stops only at an assistant row: a result
+        // landing after a mid-round message must reach the row that proposed
+        // its call.
+        if self.items[idx].kind == "user" {
+            return idx;
+        }
         self.items[..=idx]
             .iter()
-            .rposition(|r| r.kind == "assistant" || r.kind == "user")
+            .rposition(|r| r.kind == "assistant")
             .unwrap_or(0)
     }
 
@@ -3553,6 +3562,16 @@ impl App {
         // Computed before the walk, because the walk needs it: it is the
         // difference between "the pane below is drawing this call" and "nothing
         // is".
+        //
+        // **And not while a call is still running.** The turn's text and its
+        // proposals are recorded before the calls run, so "the transcript owns the
+        // content" is true the moment the model stops speaking — minutes before
+        // a `task` call returns. Retiring on that fact handed the screen to the
+        // transcript row, which draws a call from its RESULT row, and the daemon
+        // appends the round's results as one batch after the last call. Measured
+        // 2026-09-17: a `todo_write` that finished in a millisecond stayed
+        // `→ no result` for the fifteen minutes the subagent behind it ran. The
+        // pane stands down when nothing is in flight, which is the fact.
         let superseded = !matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running) | None
@@ -3564,6 +3583,7 @@ impl App {
                         .find(|r| &r.item_id == id)
                         .is_some_and(|r| r.item.is_some())
                 })
+                && t.calls.iter().all(|c| matches!(c.state, CallState::Finished { .. }))
         });
         // The rows the live pane is still drawing. An assistant row in this set
         // does **not** draw its own unsettled calls: the pane below is drawing
@@ -6018,10 +6038,18 @@ fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet
             Some(TranscriptItem::ToolResult { call_id, .. }) => {
                 out.insert(call_id.clone());
             }
-            Some(TranscriptItem::Assistant { .. }) | Some(TranscriptItem::User { .. }) => break,
+            // Only the next assistant row ends a round. A USER row does not: a
+            // message sent while the calls run is appended between the calls
+            // and their results — measured in the store 2026-09-17 as
+            // `assistant, user, user, tool_result ×10` — and a user cannot
+            // produce a tool result, so whatever results follow still answer
+            // the calls above. Breaking here left every call of such a round
+            // `→ no result` after the results had landed and the model had
+            // moved on.
+            Some(TranscriptItem::Assistant { .. }) => break,
             // An announcement with no body yet, or a reasoning row between the
             // calls and their results. Neither ends the round.
-            _ if it.kind == "assistant" || it.kind == "user" => break,
+            _ if it.kind == "assistant" => break,
             _ => {}
         }
     }
@@ -8806,6 +8834,145 @@ mod tests {
             !after.contains("no result"),
             "a call that returned does not still read as one that did not:\n{after}"
         );
+    }
+
+    /// A block of calls with a slow one in the middle: the fast ones go green
+    /// as they finish, not when the block does.
+    ///
+    /// Measured 2026-09-17 in the operator's session: `todo_write`, then a
+    /// `task` that ran a subagent for fifteen minutes, then three searches. The
+    /// pane retired the moment the assistant row's body landed — which is
+    /// before the calls run — and the transcript row, which draws a call from
+    /// its result row, showed all five as `no result` until the batch landed.
+    #[test]
+    fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "r.a".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![
+                        letibot_transcript::ToolCall {
+                            id: "call_0".into(),
+                            name: "todo_write".into(),
+                            arguments: r#"{"todos":[]}"#.into(),
+                        },
+                        letibot_transcript::ToolCall {
+                            id: "call_1".into(),
+                            name: "task".into(),
+                            arguments: r#"{"prompt":"fix the compaction bug"}"#.into(),
+                        },
+                    ],
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(4, testing::proposed("t1", "call_0", "todo_write"))));
+        a.apply(ServerFrame::Event(env(5, testing::proposed("t1", "call_1", "task"))));
+        a.apply(ServerFrame::Event(env(6, testing::turn_finished("t1"))));
+        // The daemon's order: call_0 starts and finishes in a millisecond,
+        // call_1 starts and stays running. No result row lands for either yet.
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "call_0".into(),
+                name: "todo_write".into(),
+                access: Default::default(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            8,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "call_0".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "fnv1a:1".into(),
+                inline_bytes: 12,
+                full_bytes: 12,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            9,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "call_1".into(),
+                name: "task".into(),
+                access: Default::default(),
+            },
+        )));
+        let screen = a.screen(120, 40).join("\n");
+        assert!(
+            !screen.contains("no result"),
+            "a call that finished, and one still running, and neither is `no result`:\n{screen}"
+        );
+        assert!(screen.contains("● todo_write"), "the finished call is drawn finished:\n{screen}");
+        assert!(screen.contains("◐ task"), "and the running one running:\n{screen}");
+    }
+
+    /// A message the operator sends while the calls run lands BETWEEN the calls
+    /// and their results. It is not the end of the round.
+    ///
+    /// Measured in the store 2026-09-17: `assistant (5 calls), user, user,
+    /// tool_result ×10`. The results after the user rows still answer the calls
+    /// above them — a user cannot produce a tool result — and stopping at the
+    /// user row left every call `→ no result` after the model had moved on.
+    #[test]
+    fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "r.a".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "call_0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"TODO.md"}"#.into(),
+                    }],
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::appended("u", "user"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "u".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![UserPart::Text { text: "continue".into() }],
+                }),
+            },
+        )));
+        let _ = a.screen(120, 40);
+        a.apply(ServerFrame::Event(env(5, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::TranscriptContent {
+                item_id: "r.t".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "# rano TODO\n".into(),
+                }),
+            },
+        )));
+        let after = a.screen(120, 40).join("\n");
+        assert!(
+            !after.contains("no result"),
+            "the result after the operator's message still answers the call:\n{after}"
+        );
+        assert_eq!(after.matches("TODO.md").count(), 1, "{after}");
     }
 
     /// One turn, with all four of its levels on the screen at once.
