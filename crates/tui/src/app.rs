@@ -680,10 +680,16 @@ pub struct App {
     /// already under, so Enter on an untouched list is a no-op rather than a
     /// surprise — the same rule the session picker's cursor follows.
     mode_sel: usize,
-    /// How many rows the mode picker block actually drew on the last screen,
-    /// for the same click arithmetic the session picker does: a click into the
-    /// blank space under the list must not select a mode nobody can see.
+    /// How many choice rows the mode card actually drew on the last screen —
+    /// zero unless the whole card fit, because a click is only trusted for a
+    /// list the frame proved was all on screen. A partially drawn card is
+    /// exactly the case where trusting clicks picks a mode nobody saw.
     mode_rows_drawn: usize,
+    /// The screen row the card's first choice sat on, as the last frame
+    /// composed it. A click redoes this frame's arithmetic without a repaint —
+    /// the same trick the session picker's header arithmetic does, one card
+    /// lower.
+    mode_first_row: usize,
     /// The todos pane, a screen like the picker: the session's plan (what the
     /// model last wrote through `todo_write`) and the repo's own queue
     /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
@@ -944,6 +950,7 @@ impl App {
             mode_picker: false,
             mode_sel: 0,
             mode_rows_drawn: 0,
+            mode_first_row: 0,
             todos_pane: false,
             subagents_pane: false,
             jobs_pane: false,
@@ -2233,8 +2240,8 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                if self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
-                    || self.subagents_pane || self.jobs_pane || self.config_pane
+                if self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
+                    || self.jobs_pane || self.config_pane
                 {
                     return None;
                 }
@@ -2458,16 +2465,13 @@ impl App {
                     return self.take_mode(name);
                 }
                 Key::Click { y, .. } => {
-                    // The same arithmetic the screen did: the optional session
-                    // header takes a row, then the picker's title and a blank,
-                    // then the modes. Only a row the last render actually drew
-                    // is trusted — `mode_rows_drawn` knows where
-                    // `truncate(room)` cut the list off.
-                    let header_rows =
-                        usize::from(self.screen_rows >= 6 && !self.session_id.is_empty());
-                    let first = header_rows + 2;
-                    let row = usize::from(y).saturating_sub(first);
-                    if n > 0 && row < self.mode_rows_drawn.saturating_sub(2) {
+                    // The arithmetic the last frame did: the card's first
+                    // choice sat at `mode_first_row`, and only a row the card
+                    // provably drew in full is trusted — `mode_rows_drawn` is
+                    // zero when the fit loop or the backstop cut the card, so
+                    // a click into a list nobody saw whole moves nothing.
+                    let row = usize::from(y).saturating_sub(self.mode_first_row);
+                    if n > 0 && row < self.mode_rows_drawn {
                         self.mode_sel = row.min(n - 1);
                         self.redraw = true;
                     }
@@ -3420,8 +3424,16 @@ impl App {
         let dec: Vec<String> = match (&self.secret, self.open.first()) {
             (Some(ask), _) => self.secret_lines(ask, w),
             (None, Some(d)) => self.decision_lines(d, w),
+            // The mode card rides in the ask card's slot: a compact card at
+            // the bottom of the screen with the transcript still visible above
+            // it, which is where everything else that wants a choice sits.
+            // The two are never up at once — a decision owns the ladder keys,
+            // and a second cursor under it would be a cursor nothing moves —
+            // so the card waits out an ask and comes back when it is answered.
+            (None, None) if self.mode_picker => self.mode_picker_lines(w),
             (None, None) => Vec::new(),
         };
+        let dec_full = dec.len();
         let stuck = self.stuck_line(w);
         let notice = self
             .notice
@@ -3537,12 +3549,31 @@ impl App {
         if hint {
             chrome.push(self.hint_bar(w));
         }
+        // The mode card's click facts, redone without a repaint: the card is
+        // the front of chrome, so its first choice sits one row below the
+        // card's first line. Clicks are trusted only when the whole card
+        // survived — neither the fit loop (`dec_rows == dec_full`) nor this
+        // backstop cut it — because a click into a list nobody saw whole would
+        // pick a mode nobody saw. The arrows still work either way.
+        let pre_chrome = chrome.len();
         // Backstop. The ladder above cannot always win — `h` can be 2 — and a head
         // that returns more lines than the terminal has scrolls its own composer
         // off the bottom.
         if chrome.len() >= h {
             chrome.drain(..chrome.len() - h.max(1));
         }
+        let card_at = h.saturating_sub(chrome.len());
+        self.mode_first_row = card_at + 1;
+        self.mode_rows_drawn = if self.mode_picker
+            && self.open.is_empty()
+            && self.secret.is_none()
+            && dec_rows == dec_full
+            && pre_chrome == chrome.len()
+        {
+            self.mode_choices().len()
+        } else {
+            0
+        };
 
         // The session header, pinned above everything. One row, and it is the row
         // both surveyed heads spend first: opencode puts the title left and
@@ -3569,11 +3600,6 @@ impl App {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
             self.picker_rows_drawn = rows.len();
-            rows
-        } else if self.mode_picker {
-            let mut rows = self.mode_picker_lines(w);
-            rows.truncate(room);
-            self.mode_rows_drawn = rows.len();
             rows
         } else if self.todos_pane {
             let mut rows = self.todos_lines(w);
@@ -4834,19 +4860,26 @@ impl App {
         out
     }
 
-    /// The mode picker: the daemon's own mode names, one marked as the mode
-    /// this session runs under, one marked as the row Enter would take.
+    /// The mode card: the daemon's own mode names, in the ask card's slot at
+    /// the bottom of the screen — the transcript stays visible above it, the
+    /// way approvals sit, instead of the card taking the whole body the way
+    /// the session picker does.
     ///
     /// The names are `SettingRow::choices` verbatim — the head keeps no list
     /// of its own, because a second copy of a list is a copy that drifts. A
     /// daemon that sent none gets one dim line saying so, and `/mode NAME`
     /// keeps working for an operator who knows the name anyway.
+    ///
+    /// The card's shape is load-bearing: the first line is the title and the
+    /// second is the first choice, because the click arithmetic in `screen`
+    /// counts on it. No blank between them.
     fn mode_picker_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
-        let mut out = vec![
-            colour(&self.cfg, sgr::BOLD, "the mode this session runs under"),
-            String::new(),
-        ];
+        let mut out = vec![colour(
+            &self.cfg,
+            sgr::BOLD,
+            "the mode this session runs under",
+        )];
         let choices = self.mode_choices();
         if choices.is_empty() {
             out.push(dim(
@@ -4880,11 +4913,9 @@ impl App {
             };
             out.push(trim_to(&split_row(&left, &right, w), w));
         }
-        out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "  ↑↓ moves · enter switches · or type a name or the number on the left and \
-             press enter · esc closes",
+            "  ↑↓ moves · enter switches · or type a name or the number on the left · esc closes",
         ));
         out.push(dim(
             &self.cfg,
@@ -10257,10 +10288,20 @@ mod tests {
             a.mode_sel, 1,
             "the cursor starts on the mode the session is under"
         );
-        let screen = a.screen(110, 24).join("\n");
-        assert!(screen.contains("the mode this session runs under"), "{screen}");
+        let screen = a.screen(110, 24);
+        let card = screen
+            .iter()
+            .position(|l| l.contains("the mode this session runs under"))
+            .expect("the card is on the screen");
+        // A bottom card, not a body panel: the session header and the
+        // transcript's own rows are still above it, the way the ask card sits.
+        let header = screen
+            .iter()
+            .position(|l| l.contains("1/1"))
+            .expect("the session header is still drawn");
+        assert!(header < card, "transcript above, card below:\n{screen:?}");
         let row = screen
-            .lines()
+            .iter()
             .find(|l| l.contains("always-ask") && l.contains('▸'))
             .expect("the current mode is on the screen");
         assert!(row.contains("← now"), "the row says which mode is live: {row}");
@@ -10306,6 +10347,74 @@ mod tests {
             })
         );
         assert!(!a.mode_picker, "taking a mode closes the list");
+    }
+
+    #[test]
+    fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("read-only", MODES));
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        a.screen(110, 24);
+        // The frame recorded where the card's first choice sat; the click's y
+        // is the same 0-based coordinate.
+        let first = u16::try_from(a.mode_first_row).unwrap();
+        a.key(Key::Click { x: 6, y: first + 2 });
+        assert_eq!(a.mode_sel, 2);
+        let row = a
+            .screen(110, 24)
+            .into_iter()
+            .find(|l| l.contains("writes-allowed") && l.contains('▸'))
+            .unwrap();
+        assert!(row.contains('▸'), "the mark moved to the clicked row: {row}");
+        // A click into the blank space under the card moves nothing: the card
+        // proved six rows, and below them are its hints and the composer.
+        a.key(Key::Click { x: 6, y: first + 9 });
+        assert_eq!(a.mode_sel, 2);
+        // Select and confirm stay two acts: the click only moves the mark.
+        a.key(Key::Click { x: 6, y: first + 1 });
+        assert_eq!(a.mode_sel, 1);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "always-ask".into()
+            })
+        );
+        assert!(!a.mode_picker);
+    }
+
+    #[test]
+    fn the_mode_card_steps_aside_while_a_decision_is_up() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("read-only", MODES));
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        assert!(a
+            .screen(110, 24)
+            .iter()
+            .any(|l| l.contains("the mode this session runs under")));
+        // A permission ask arrives: it takes the card slot and the ladder
+        // keys — a second cursor under it would be a cursor nothing moves —
+        // and the mode card waits, then comes back once it is answered.
+        a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
+        assert!(!a
+            .screen(110, 24)
+            .iter()
+            .any(|l| l.contains("the mode this session runs under")));
+        assert!(a.mode_picker, "the card waits, it does not close");
+        a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
+        assert!(a
+            .screen(110, 24)
+            .iter()
+            .any(|l| l.contains("the mode this session runs under")));
     }
 
     #[test]
