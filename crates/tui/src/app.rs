@@ -2179,23 +2179,41 @@ impl App {
                 self.say("nothing is running to move to the background");
                 return None;
             }
-            Key::PageUp => {
-                self.scroll = (self.scroll + 10).min(self.body_len);
-                return None;
-            }
-            Key::PageDown => {
-                self.scroll = self.scroll.saturating_sub(10);
-                return None;
-            }
-            // Three lines a notch: a wheel notch is a row at a time in a pager,
-            // but a transcript row can be two screen rows after wrapping, and a
-            // notch that moves one wrapped row reads as nothing happened.
-            Key::WheelUp => {
-                self.scroll = (self.scroll + 3).min(self.body_len);
-                return None;
-            }
-            Key::WheelDown => {
-                self.scroll = self.scroll.saturating_sub(3);
+            // **The wheel and the page keys move what is on the screen.** They
+            // moved the transcript unconditionally, so a wheel in the subagent
+            // output view scrolled the conversation underneath it, and Esc
+            // came back to a transcript parked wherever the wheel had left it
+            // — the operator's report (2026-09-17): "if i scroll subagent
+            // output and return to the main conversation the scroll position
+            // saved for some reason". The output view takes them; any other
+            // screen on top swallows them, because a view that is not on the
+            // screen does not move.
+            Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown => {
+                let (up, by) = match k {
+                    Key::PageUp => (true, 10),
+                    Key::PageDown => (false, 10),
+                    // Three lines a notch: a wheel notch is a row at a time in
+                    // a pager, but a transcript row can be two screen rows after
+                    // wrapping, and a notch that moves one wrapped row reads as
+                    // nothing happened.
+                    Key::WheelUp => (true, 3),
+                    _ => (false, 3),
+                };
+                if let Some(v) = self.sub_out.as_mut() {
+                    v.scroll = if up { v.scroll + by } else { v.scroll.saturating_sub(by) };
+                    self.redraw = true;
+                    return None;
+                }
+                if self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
+                    || self.jobs_pane || self.config_pane
+                {
+                    return None;
+                }
+                self.scroll = if up {
+                    (self.scroll + by).min(self.body_len)
+                } else {
+                    self.scroll.saturating_sub(by)
+                };
                 return None;
             }
             _ => {}
@@ -8834,6 +8852,40 @@ mod tests {
             !after.contains("no result"),
             "a call that returned does not still read as one that did not:\n{after}"
         );
+    }
+
+    /// A wheel in the subagent output view scrolls that view, and leaves the
+    /// conversation under it where it was.
+    #[test]
+    fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
+        let mut a = app();
+        for i in 0..60u64 {
+            a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("u.{i}"), "user"))));
+            a.apply(ServerFrame::Event(env(i * 2 + 2, testing::content(&format!("u.{i}"), &format!("line {i}")))));
+        }
+        let _ = a.screen(80, 24);
+        assert_eq!(a.scroll, 0, "following the stream");
+        a.sub_out = Some(SubOut {
+            session_id: "sub-1".into(),
+            lines: (0..100).map(|i| format!("out {i}")).collect(),
+            scroll: 0,
+            spill: None,
+            dropped: 0,
+        });
+        a.key(Key::WheelUp);
+        a.key(Key::PageUp);
+        assert_eq!(a.sub_out.as_ref().unwrap().scroll, 13, "the view scrolled");
+        assert_eq!(a.scroll, 0, "the conversation did not");
+        a.key(Key::Esc);
+        assert!(a.sub_out.is_none());
+        assert_eq!(a.scroll, 0, "and coming back lands at the tail, not in the scrollback");
+        // A screen on top with no scroll of its own swallows the wheel.
+        a.todos_pane = true;
+        a.key(Key::WheelUp);
+        assert_eq!(a.scroll, 0);
+        a.todos_pane = false;
+        a.key(Key::WheelUp);
+        assert_eq!(a.scroll, 3, "with nothing on top the wheel moves the conversation");
     }
 
     /// A block of calls with a slow one in the middle: the fast ones go green
