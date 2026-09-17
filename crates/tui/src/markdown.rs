@@ -67,7 +67,29 @@ pub enum Block {
     Quote {
         lines: Vec<String>,
     },
+    /// A GFM pipe table. Held as cells, never as the lines it was written on:
+    /// the whole point is that the renderer decides the columns for the width it
+    /// has, and a table lexed as a paragraph is joined with spaces and wrapped as
+    /// prose — which is what the operator saw (2026-09-17, "table rendering is
+    /// broken"): three rows of a branch table became one grey block of pipes.
+    Table {
+        head: Vec<String>,
+        /// One per column of `head`, from the delimiter row.
+        align: Vec<Align>,
+        /// Ragged by construction: a row with fewer cells than the header is a
+        /// row with empty cells, and one with more keeps them. What the model
+        /// wrote is what is shown.
+        rows: Vec<Vec<String>>,
+    },
     Rule,
+}
+
+/// What the delimiter row's colons asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
 }
 
 impl Block {
@@ -83,6 +105,9 @@ impl Block {
             }
             Block::List { items, .. } => items.first().cloned().unwrap_or_default(),
             Block::Quote { lines } => lines.first().cloned().unwrap_or_default(),
+            Block::Table { head, rows, .. } => {
+                format!("table · {} × {}", rows.len(), head.len())
+            }
             Block::Rule => "───".into(),
         }
     }
@@ -372,6 +397,32 @@ pub fn lex(s: &str) -> Vec<Block> {
                 continue;
             }
         }
+        // A pipe table: this line has cells and the NEXT one is a delimiter row.
+        // Both halves are required — a paragraph line with a pipe in it is a
+        // paragraph, and `| --- |` on its own is not a table either.
+        if t.contains('|')
+            && let Some(next) = lines.peek()
+            && let Some(align) = delimiter_row(next.trim_start())
+            && !split_cells(t).is_empty()
+        {
+            flush!();
+            let head = split_cells(t);
+            lines.next();
+            let mut rows = Vec::new();
+            while let Some(peeked) = lines.peek() {
+                let rt = peeked.trim_start();
+                // The table ends at a blank line or at a line with no cells —
+                // markdown's own rule, and it is what lets prose follow a table
+                // without a blank line between them.
+                if rt.is_empty() || !rt.contains('|') {
+                    break;
+                }
+                rows.push(split_cells(rt));
+                lines.next();
+            }
+            out.push(Block::Table { head, align, rows });
+            continue;
+        }
         if is_rule(t) {
             flush!();
             out.push(Block::Rule);
@@ -420,6 +471,70 @@ pub fn lex(s: &str) -> Vec<Block> {
     }
     flush!();
     out
+}
+
+/// The cells of one table row, outer pipes dropped, `\|` kept as a literal pipe.
+///
+/// A row is split on unescaped pipes; the leading and trailing empty cell that
+/// `| a | b |` produces are dropped, and `a | b` (no outer pipes, which GFM
+/// allows) works the same way.
+fn split_cells(line: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut escaped = false;
+    for c in line.trim().chars() {
+        if escaped {
+            if c != '|' {
+                cur.push('\\');
+            }
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '|' => cells.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    if escaped {
+        cur.push('\\');
+    }
+    cells.push(cur);
+    // `| a | b |` splits to ["", " a ", " b ", ""]; the outer empties are the
+    // pipes, not cells.
+    if cells.first().is_some_and(|c| c.trim().is_empty()) {
+        cells.remove(0);
+    }
+    if cells.len() > 1 && cells.last().is_some_and(|c| c.trim().is_empty()) {
+        cells.pop();
+    }
+    cells.into_iter().map(|c| c.trim().to_string()).collect()
+}
+
+/// `|---|:--:|---:|` → the alignments, or `None` when the line is not one.
+fn delimiter_row(line: &str) -> Option<Vec<Align>> {
+    if !line.contains('-') || !line.contains('|') {
+        return None;
+    }
+    let cells = split_cells(line);
+    if cells.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(cells.len());
+    for c in &cells {
+        let c = c.trim();
+        let body = c.trim_start_matches(':').trim_end_matches(':');
+        if body.is_empty() || !body.chars().all(|ch| ch == '-') {
+            return None;
+        }
+        out.push(match (c.starts_with(':'), c.ends_with(':')) {
+            (true, true) => Align::Center,
+            (false, true) => Align::Right,
+            _ => Align::Left,
+        });
+    }
+    Some(out)
 }
 
 fn is_rule(t: &str) -> bool {
