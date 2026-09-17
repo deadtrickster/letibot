@@ -669,6 +669,21 @@ pub struct App {
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
     picker: bool,
+    /// The mode picker, the session picker's twin for one question: the mode
+    /// this session runs under. `/mode` with no name opens it instead of
+    /// printing a list to copy a name out of; the names are the daemon's own
+    /// (`SettingRow::choices`, protocol 18), so the head keeps no list to
+    /// drift. Each opener closes the other, so the screen holds one list and
+    /// the arrows mean one thing.
+    mode_picker: bool,
+    /// Which mode row the cursor is on. Seeded to the mode the session is
+    /// already under, so Enter on an untouched list is a no-op rather than a
+    /// surprise — the same rule the session picker's cursor follows.
+    mode_sel: usize,
+    /// How many rows the mode picker block actually drew on the last screen,
+    /// for the same click arithmetic the session picker does: a click into the
+    /// blank space under the list must not select a mode nobody can see.
+    mode_rows_drawn: usize,
     /// The todos pane, a screen like the picker: the session's plan (what the
     /// model last wrote through `todo_write`) and the repo's own queue
     /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
@@ -855,6 +870,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("tools", "fold or unfold tool output"),
     ("verbosity", "cycle the event-stream detail"),
     ("config", "every setting, the runtime-editable ones editable in place"),
+    ("mode", "the mode picker — or /mode NAME to type it"),
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
@@ -925,6 +941,9 @@ impl App {
             notice_ttl: 0,
             help: false,
             picker: false,
+            mode_picker: false,
+            mode_sel: 0,
+            mode_rows_drawn: 0,
             todos_pane: false,
             subagents_pane: false,
             jobs_pane: false,
@@ -2126,6 +2145,12 @@ impl App {
             Key::CtrlS => {
                 self.picker = !self.picker;
                 self.redraw = true;
+                // The two pickers are never open together: each opener closes
+                // the other, so the screen holds one list and the arrows mean
+                // one thing.
+                if self.picker {
+                    self.mode_picker = false;
+                }
                 // Opening it asks for a fresh list rather than drawing the one from
                 // the attach: sessions are a shared thing, and a picker showing what
                 // was true when this head connected is a picker that hides the
@@ -2208,8 +2233,8 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                if self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
-                    || self.jobs_pane || self.config_pane
+                if self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
+                    || self.subagents_pane || self.jobs_pane || self.config_pane
                 {
                     return None;
                 }
@@ -2281,12 +2306,13 @@ impl App {
                 _ => {}
             }
         }
-        if (self.help || self.picker || self.stats || self.todos_pane || self.subagents_pane
-            || self.jobs_pane || self.config_pane)
+        if (self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
+            || self.subagents_pane || self.jobs_pane || self.config_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
             self.picker = false;
+            self.mode_picker = false;
             self.stats = false;
             self.todos_pane = false;
             self.subagents_pane = false;
@@ -2385,6 +2411,64 @@ impl App {
                     let row = usize::from(y).saturating_sub(first);
                     if row < self.picker_rows_drawn.saturating_sub(2) {
                         self.picker_sel = row.min(n - 1);
+                        self.redraw = true;
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
+        // **An open mode picker owns Up and Down, and Enter on an empty line.**
+        //
+        // The session picker's twin, one question narrow: the mode this session
+        // runs under. It sits after the session picker, which keeps precedence
+        // while both are up — though neither ever is, each opener closing the
+        // other — and after the decision ladder for the same reason. The
+        // empty-composer rule is the ladder's own: a half-typed line's Enter
+        // still means the line, and the typed path lands in `pick_mode` through
+        // `submit`.
+        if self.mode_picker {
+            let choices = self.mode_choices();
+            let n = choices.len();
+            match k {
+                Key::Up if n > 0 => {
+                    self.mode_sel = if self.mode_sel == 0 {
+                        n - 1
+                    } else {
+                        self.mode_sel - 1
+                    };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down if n > 0 => {
+                    self.mode_sel = (self.mode_sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    if n == 0 {
+                        // A daemon older than protocol 18 sends no choices; the
+                        // pane says so rather than cycling a list it made up —
+                        // the same words the config pane's mode row says.
+                        self.say("this daemon does not send the mode list; use `/mode NAME`");
+                        return None;
+                    }
+                    let name = choices[self.mode_sel.min(n - 1)].clone();
+                    return self.take_mode(name);
+                }
+                Key::Click { y, .. } => {
+                    // The same arithmetic the screen did: the optional session
+                    // header takes a row, then the picker's title and a blank,
+                    // then the modes. Only a row the last render actually drew
+                    // is trusted — `mode_rows_drawn` knows where
+                    // `truncate(room)` cut the list off.
+                    let header_rows =
+                        usize::from(self.screen_rows >= 6 && !self.session_id.is_empty());
+                    let first = header_rows + 2;
+                    let row = usize::from(y).saturating_sub(first);
+                    if n > 0 && row < self.mode_rows_drawn.saturating_sub(2) {
+                        self.mode_sel = row.min(n - 1);
                         self.redraw = true;
                     }
                     return None;
@@ -2510,6 +2594,12 @@ impl App {
         if self.picker {
             return self.pick(text.trim());
         }
+        // The mode picker takes the line the same way — a row number or a name
+        // prefix — for the same reason: while the list is on the screen a bare
+        // `2` means the second mode and cannot sensibly mean anything else.
+        if self.mode_picker {
+            return self.pick_mode(text.trim());
+        }
         // An open decision takes the line as an option id or its first letter, so
         // answering does not require a second keymap.
         if let Some(d) = self.open.first().cloned()
@@ -2612,6 +2702,96 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Take a submitted line while the mode picker is up: a row number, or a
+    /// mode name — exact, or a prefix only one mode shares.
+    ///
+    /// The normalization is `Mode::parse`'s own, read-only side: case folds,
+    /// and `_` and a space fold to `-`, so `automode_edits` and `Automode
+    /// Edits` reach the mode the daemon spells `automode-edits`. An exact
+    /// match wins before prefixes are counted, so `automode` reaches
+    /// `automode` even though `automode-edits` also starts with it.
+    fn pick_mode(&mut self, typed: &str) -> Option<Action> {
+        if typed.is_empty() {
+            self.mode_picker = false;
+            self.redraw = true;
+            return None;
+        }
+        let choices = self.mode_choices();
+        if choices.is_empty() {
+            self.say("this daemon does not send the mode list; use `/mode NAME`");
+            return None;
+        }
+        if let Ok(n) = typed.parse::<usize>()
+            && n >= 1
+            && n <= choices.len()
+        {
+            let name = choices[n - 1].clone();
+            return self.take_mode(name);
+        }
+        let norm = |s: &str| s.to_ascii_lowercase().replace(['_', ' '], "-");
+        let want = norm(typed);
+        if let Some(exact) = choices.iter().find(|c| norm(c) == want) {
+            let name = exact.clone();
+            return self.take_mode(name);
+        }
+        let mut hits: Vec<String> = choices
+            .iter()
+            .filter(|c| norm(c).starts_with(&want))
+            .cloned()
+            .collect();
+        match hits.len() {
+            1 => self.take_mode(hits.remove(0)),
+            0 => {
+                self.say(&format!("no mode matches {typed:?} — esc closes the list"));
+                None
+            }
+            n => {
+                self.say(&format!(
+                    "{n} modes match {typed:?}; type the number on the left instead"
+                ));
+                None
+            }
+        }
+    }
+
+    /// Leave the mode picker for the mode the operator chose. The mode the
+    /// session already runs under closes the list and says so, the way the
+    /// session picker answers Enter on its own row — a round trip to the
+    /// daemon to be told what the screen already showed is not worth its
+    /// flicker.
+    fn take_mode(&mut self, name: String) -> Option<Action> {
+        self.mode_picker = false;
+        self.redraw = true;
+        if name == self.mode_current() {
+            self.say("already that mode");
+            return None;
+        }
+        Some(Action::Mode { name })
+    }
+
+    /// The mode row of the daemon's last settings answer, and the two facts
+    /// the picker and the config pane both read from it. `None` is a daemon
+    /// that has not answered yet, or one older than protocol 18.
+    fn mode_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
+        self.settings.iter().find(|r| r.key == "mode")
+    }
+
+    /// The mode names, as the daemon spelled them. Empty when it sent none —
+    /// the head keeps no list of its own to fall back on, because a second
+    /// copy of a list is a copy that drifts.
+    fn mode_choices(&self) -> Vec<String> {
+        self.mode_row().map(|r| r.choices.clone()).unwrap_or_default()
+    }
+
+    /// The mode this session runs under, as the row's first word spells it —
+    /// the same read the config pane's mode row cycles from.
+    fn mode_current(&self) -> String {
+        self.mode_row()
+            .and_then(|r| r.value.split_whitespace().next())
+            .unwrap_or("")
+            .to_string()
     }
 
     /// Take Tab on a `/`-prefixed line.
@@ -2807,13 +2987,24 @@ impl App {
                 return None;
             }
             if name.is_empty() {
-                self.say(
-                    "/mode NAME — read-only, always-ask, writes-allowed, automode, \
-                     automode-edits, allow-all (or the opencode names plan/default/\
-                     acceptEdits/bypassPermissions). Moves THIS session from its \
-                     next call, and every later session in this project.",
-                );
-                return None;
+                // Bare `/mode` opens the picker rather than printing a list to
+                // copy a name out of. The rows come from the daemon's last
+                // answer, and asking again — the way `/config` does on open —
+                // is what keeps the `← now` marker honest when the mode moved
+                // since this head last asked. The cursor is seeded to the mode
+                // the session is already under, so Enter on an untouched list
+                // is a no-op; the answer arriving does not re-seed it, so an
+                // arrow pressed while the ask was in flight is not undone.
+                self.mode_picker = true;
+                self.picker = false;
+                self.config_pane = false;
+                self.mode_sel = self
+                    .mode_choices()
+                    .iter()
+                    .position(|n| *n == self.mode_current())
+                    .unwrap_or(0);
+                self.redraw = true;
+                return Some(Action::Settings);
             }
             return Some(Action::Mode { name });
         }
@@ -2856,6 +3047,11 @@ impl App {
             "config" | "settings" => {
                 self.config_pane = !self.config_pane;
                 self.config_sel = 0;
+                // One list on the screen at a time, the same rule the pickers
+                // keep between themselves.
+                if self.config_pane {
+                    self.mode_picker = false;
+                }
                 self.redraw = true;
                 // Opening asks the daemon for its settings; the head's own are
                 // already here. A pane drawn from the last answer would show the
@@ -3374,6 +3570,11 @@ impl App {
             rows.truncate(room);
             self.picker_rows_drawn = rows.len();
             rows
+        } else if self.mode_picker {
+            let mut rows = self.mode_picker_lines(w);
+            rows.truncate(room);
+            self.mode_rows_drawn = rows.len();
+            rows
         } else if self.todos_pane {
             let mut rows = self.todos_lines(w);
             rows.truncate(room);
@@ -3543,6 +3744,8 @@ impl App {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
+        } else if self.mode_picker {
+            "↑↓ to choose · enter switches · type a name or a row · esc closes"
         } else if self.todos_pane {
             "the model's plan above, the repo's queue below · esc closes"
         } else if self.config_pane {
@@ -4627,6 +4830,66 @@ impl App {
             &self.cfg,
             "  switching does not stop anything: a turn keeps running in the session you \
              left, and it is still there when you come back.",
+        ));
+        out
+    }
+
+    /// The mode picker: the daemon's own mode names, one marked as the mode
+    /// this session runs under, one marked as the row Enter would take.
+    ///
+    /// The names are `SettingRow::choices` verbatim — the head keeps no list
+    /// of its own, because a second copy of a list is a copy that drifts. A
+    /// daemon that sent none gets one dim line saying so, and `/mode NAME`
+    /// keeps working for an operator who knows the name anyway.
+    fn mode_picker_lines(&self, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let mut out = vec![
+            colour(&self.cfg, sgr::BOLD, "the mode this session runs under"),
+            String::new(),
+        ];
+        let choices = self.mode_choices();
+        if choices.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "  this daemon has not named its modes — `/mode NAME` still works, \
+                 if you know the name.",
+            ));
+        }
+        let current = self.mode_current();
+        for (i, name) in choices.iter().enumerate() {
+            let here = *name == current;
+            let picked = i == self.mode_sel.min(choices.len().saturating_sub(1));
+            let mark = if picked { "▸" } else { " " };
+            let left = format!(
+                "{mark} {:>2}  {}",
+                i + 1,
+                p.paint(if here { Role::Strong } else { Role::Plain }, name),
+            );
+            // "Where am I" and "what Enter takes" stay two readable facts, the
+            // same split the session picker draws between its bold row and its
+            // inverse one.
+            let right = if here {
+                p.paint(Role::Faint, "← now")
+            } else {
+                String::new()
+            };
+            let left = if picked {
+                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+            } else {
+                left
+            };
+            out.push(trim_to(&split_row(&left, &right, w), w));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  ↑↓ moves · enter switches · or type a name or the number on the left and \
+             press enter · esc closes",
+        ));
+        out.push(dim(
+            &self.cfg,
+            "  a mode change moves THIS session from its next call, and every later \
+             session in this project.",
         ));
         out
     }
@@ -9948,6 +10211,198 @@ mod tests {
         a.key(Key::Click { x: 4, y: 5 });
         assert_eq!(a.picker_sel, 2);
         assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
+    }
+
+    fn mode_settings(value: &str, choices: &[&str]) -> ServerFrame {
+        ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: "mode".into(),
+                value: value.into(),
+                source: "project store (modes.tsv)".into(),
+                editable: "/mode NAME".into(),
+                choices: choices.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        }
+    }
+
+    const MODES: &[&str] = &[
+        "read-only",
+        "always-ask",
+        "writes-allowed",
+        "automode",
+        "automode-edits",
+        "allow-all",
+    ];
+
+    #[test]
+    fn bare_mode_opens_the_picker_seeded_to_the_current_mode() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("always-ask", MODES));
+        // The two pickers are never open together: each opener closes the other.
+        a.key(Key::CtrlS);
+        assert!(a.picker);
+        assert_eq!(
+            a.command("mode"),
+            Some(Action::Settings),
+            "opening asks the daemon for fresh rows"
+        );
+        assert!(a.mode_picker);
+        assert!(!a.picker, "one list on the screen at a time");
+        assert_eq!(
+            a.mode_sel, 1,
+            "the cursor starts on the mode the session is under"
+        );
+        let screen = a.screen(110, 24).join("\n");
+        assert!(screen.contains("the mode this session runs under"), "{screen}");
+        let row = screen
+            .lines()
+            .find(|l| l.contains("always-ask") && l.contains('▸'))
+            .expect("the current mode is on the screen");
+        assert!(row.contains("← now"), "the row says which mode is live: {row}");
+        // Enter on the untouched list is a no-op that closes: the session is
+        // already in the marked mode, and a round trip to be told what the
+        // screen already showed is not worth its flicker.
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(!a.mode_picker);
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("already that mode"), "{notice}");
+    }
+
+    #[test]
+    fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("read-only", MODES));
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        assert_eq!(a.mode_sel, 0);
+        a.key(Key::Down);
+        a.key(Key::Down);
+        assert_eq!(a.mode_sel, 2);
+        let row = a
+            .screen(110, 24)
+            .into_iter()
+            .find(|l| l.contains("writes-allowed") && l.contains('▸'))
+            .unwrap();
+        assert!(row.contains('▸'), "the mark moved with the arrows: {row}");
+        // Up wraps past the top; Up again wraps in from the bottom.
+        a.key(Key::Up);
+        a.key(Key::Up);
+        assert_eq!(a.mode_sel, 0);
+        a.key(Key::Up);
+        assert_eq!(a.mode_sel, 5);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "allow-all".into()
+            })
+        );
+        assert!(!a.mode_picker, "taking a mode closes the list");
+    }
+
+    #[test]
+    fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("read-only", MODES));
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        // A row number takes that row.
+        typed(&mut a, "5");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "automode-edits".into()
+            })
+        );
+        assert!(!a.mode_picker);
+        // Reopened: an exact name wins even though a longer mode starts with it.
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        typed(&mut a, "automode");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "automode".into()
+            })
+        );
+        // Reopened: the daemon's spelling is not the only one accepted — the
+        // fold is `Mode::parse`'s own, so what `/mode NAME` takes the list takes.
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        typed(&mut a, "automode_edits");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "automode-edits".into()
+            })
+        );
+        // Reopened: an ambiguous prefix is refused with a count, list still up.
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        typed(&mut a, "auto");
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(a.mode_picker, "an ambiguous prefix leaves the list up");
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("2 modes match"), "{notice}");
+        // A prefix nothing matches is refused the same way.
+        typed(&mut a, "nope");
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(a.mode_picker);
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("no mode matches"), "{notice}");
+    }
+
+    #[test]
+    fn mode_with_a_name_still_goes_straight_to_the_daemon() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(mode_settings("read-only", MODES));
+        assert_eq!(
+            a.command("mode automode-edits"),
+            Some(Action::Mode {
+                name: "automode-edits".into()
+            }),
+            "a named mode never opens the list"
+        );
+        assert!(!a.mode_picker);
+    }
+
+    #[test]
+    fn a_mode_picker_without_choices_says_so() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A daemon older than protocol 18 sends no choices; the head keeps no
+        // list of its own to fall back on.
+        a.apply(mode_settings("read-only", &[]));
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        assert!(a.mode_picker);
+        let screen = a.screen(110, 24).join("\n");
+        assert!(screen.contains("has not named its modes"), "{screen}");
+        // Enter says so rather than falling through to the composer, and a
+        // typed name is refused the same way — `/mode NAME` is still the door.
+        assert_eq!(a.key(Key::Enter), None);
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("does not send the mode list"), "{notice}");
+        typed(&mut a, "automode");
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(a.mode_picker);
     }
 
     #[test]
