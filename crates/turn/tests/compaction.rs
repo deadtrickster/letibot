@@ -441,4 +441,16 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         }
     );
     assert!(session.ledger.tokens().len() > before_compaction.len());
+
+    // The reuse the auto_compact message promises, checked rather than assumed:
+    // the failed turn committed nothing, so the retry's prompt extended the
+    // previous prompt-plus-generation exactly, and the exact-form prefix check
+    // — which raises `prefix_divergence` when it does not — had nothing to say.
+    // The server was asked to re-prefill only the notice, never the
+    // conversation.
+    assert!(
+        !sink.warnings().iter().any(|(c, _)| *c == "prefix_divergence"),
+        "the retry's prompt broke the prefix invariant: {:?}",
+        sink.warnings()
+    );
 }
