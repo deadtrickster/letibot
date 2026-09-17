@@ -3921,7 +3921,8 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// [`letibot_tools::Surroundings::from_env`] is the constructor that says
 /// reading the environment is a decision at a call site.
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
-    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
+    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
+        .with_known_hosts();
     // The shell is pinned whenever the backend can start a process. Both the
     // confined backend (coder/runner) and the unconfined leticode one (`--bash`)
     // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a
