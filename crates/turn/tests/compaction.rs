@@ -27,6 +27,7 @@ use support::chatml::{ChatMlParser, ChatMlRenderer};
 // Qwen's own ids, so the fixture and the vocabulary agree (same values the
 // engine-decision tests pin).
 const IM_END: u32 = 248046;
+const THINK_OPEN: u32 = 248068;
 const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
@@ -243,15 +244,24 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
     assert!(outcome.summary.is_empty(), "{:?}", outcome.summary);
 }
 
-/// A summary turn that fails under §5.7 fails the compaction, and nothing is
-/// reduced: the instruction stays in the ledger, which is where the next
-/// attempt appends over it.
+/// A summary turn that keeps saying nothing fails the compaction once the
+/// salvage budget is spent, and nothing is reduced: the instruction and the
+/// salvage notices stay in the ledger, which is where the next attempt appends
+/// over them.
+///
+/// The salvage is the tool loop's, bounded by the engine's own budget (cap 3):
+/// three say-nothing turns are answered with a notice and retried, and the
+/// fourth comes back `SalvageExhausted`, which is not a say-nothing failure and
+/// so propagates. That propagation is what keeps `auto_compact_failed` honest —
+/// a compaction that did not run must say so, not vanish into retries.
 #[test]
-fn a_failed_summary_turn_fails_the_compaction_and_reduces_nothing() {
+fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
     let _lock = serial();
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
-    // All budget spent thinking; `finish_reason: length`, no content.
+    // All budget spent thinking; `finish_reason: length`, no content. The same
+    // frames every time: a model that truncates once usually truncates again,
+    // which is the reason the budget exists.
     let mut frames = vec![Frame::Progress {
         total: 30,
         processed: 30,
@@ -264,7 +274,9 @@ fn a_failed_summary_turn_fails_the_compaction_and_reduces_nothing() {
         n_prompt: 30,
         cache_n: 0,
     });
-    let canned = Canned::serve(frames, 1);
+    // Four requests: three salvages, then the turn whose failure is the spent
+    // budget itself. The script cycles, so one list covers all of them.
+    let canned = Canned::serve_each(vec![frames], 4);
     let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
     let mut session = session(&engine, "compact-fail");
     let mut sink = RecordingSink::new();
@@ -274,16 +286,171 @@ fn a_failed_summary_turn_fails_the_compaction_and_reduces_nothing() {
     let before_compaction = session.ledger.tokens().to_vec();
 
     let err = letibot_turn::run_compaction(&mut engine, &mut session, &mut sink).unwrap_err();
-    assert!(matches!(err, TurnFailure::EmptyLength { .. }), "{err:?}");
-    // The failed turn committed nothing: the region grew by exactly the
-    // instruction, and no assistant or reasoning item exists anywhere.
-    assert!(session.ledger.tokens().len() > before_compaction.len());
+    match err {
+        TurnFailure::SalvageExhausted { streak, .. } => {
+            assert_eq!(streak, 4, "the cap is three salvages plus the spent turn");
+        }
+        other => panic!("the spent budget must propagate as itself: {other:?}"),
+    }
+
+    // The failed turns committed nothing — no assistant item, no reasoning item,
+    // no dangling half-summary anywhere. What the region gained is exactly the
+    // instruction and the three notices, which is also the prefix-reuse promise
+    // kept: the retry's prompt is the previous prompt plus those rows, so the
+    // server is re-prefilling only the notices, never the conversation.
     assert!(session.items.iter().all(|i| !matches!(
         i,
         TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
     )));
+    let notices = session
+        .items
+        .iter()
+        .filter(|i| match i {
+            TranscriptItem::User { parts } => match &parts[..] {
+                [UserPart::Text { text }] => text
+                    .starts_with("Your previous turn hit the output token limit"),
+                _ => false,
+            },
+            _ => false,
+        })
+        .count();
+    assert_eq!(notices, 3, "one notice per salvaged turn");
     assert!(matches!(
         session.items.last().unwrap(),
-        TranscriptItem::System { origin: SystemOrigin::Update, .. }
+        TranscriptItem::User { .. }
     ));
+    assert!(
+        session.ledger.tokens().len() > before_compaction.len(),
+        "the instruction and the notices are in the region"
+    );
+}
+
+/// The frames of the live finding, replayed: the stream stops with a normal
+/// `eos` while the reasoning block is still open and nothing but reasoning was
+/// produced — R7's `UnfinishedReasoning`, the shape the operator's session hit
+/// on 2026-09-15 at the context wall.
+fn an_unfinished_reasoning_turn(n_prompt: u64) -> Vec<Frame> {
+    let mut frames = vec![Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    let thought = ids_of("mid-summary, the think block never closed, so no");
+    frames.extend(token_frames(&thought));
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: 1 + thought.len() as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    frames
+}
+
+fn token_frames(ids: &[u32]) -> Vec<Frame> {
+    ids.iter()
+        .map(|id| Frame::Token {
+            id: *id,
+            text: "",
+        })
+        .collect()
+}
+
+/// The compaction path gets the tool loop's R7 salvage: a summary turn that
+/// stops inside its own reasoning block is answered with the notice and taken
+/// again, and the compaction completes. Before this loop existed the whole
+/// compaction failed, `auto_compact_failed` fired, and the session stayed at
+/// the wall with `/compact` retrying into the same wall.
+#[test]
+fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+
+    let summary_text = "decided: answer is forty-two; no files changed; open: none";
+    let salvaged = a_summary_turn(
+        &ids_of("gather the record, again"),
+        &ids_of(summary_text),
+        40,
+        39, // the server reused everything but the notice suffix
+    );
+    // Request one ends unfinished; request two is the retry and answers.
+    let canned = Canned::serve_each(vec![an_unfinished_reasoning_turn(30), salvaged], 2);
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "compact-salvage");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("summarise")], &mut sink)
+        .unwrap();
+    let before_compaction = session.ledger.tokens().to_vec();
+
+    let outcome = letibot_turn::run_compaction(&mut engine, &mut session, &mut sink)
+        .expect("the salvage takes the turn again, and the retry answers");
+
+    assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
+    assert_eq!(outcome.tool_calls, 0);
+
+    // What the failed turn left behind: nothing. No assistant row, no reasoning
+    // row, no dangling half-thought — §5.7 and R7 commit no items, so the
+    // transcript between the instruction and the notice is exactly where the
+    // failed turn would have spoken and is not.
+    let instruction_at = session
+        .items
+        .iter()
+        .position(|i| {
+            matches!(i, TranscriptItem::System { origin: SystemOrigin::Update, .. })
+                && match i {
+                    TranscriptItem::System { text, .. } => {
+                        text == letibot_turn::SUMMARY_INSTRUCTION
+                    }
+                    _ => false,
+                }
+        })
+        .expect("the instruction is in the ledger as a system update");
+    assert!(
+        session.items[..instruction_at]
+            .iter()
+            .all(|i| !matches!(i, TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. })),
+        "nothing the failed turn said is in the ledger"
+    );
+
+    // The notice is a user item directly after the instruction, carrying the
+    // ask the way the tool loop's EmptyLength arm carries it.
+    let letibot_transcript::TranscriptItem::User { parts } = &session.items[instruction_at + 1]
+    else {
+        panic!(
+            "the salvage notice is a user item, got {:?}",
+            session.items[instruction_at + 1]
+        );
+    };
+    let letibot_transcript::UserPart::Text { text } = &parts[0] else {
+        panic!("the notice is text, got {:?}", parts[0]);
+    };
+    assert_eq!(text, letibot_turn::UNFINISHED_REASONING_NOTICE);
+    assert!(text.contains("put the summary before the reasoning"), "{text}");
+
+    // And the retry's answer is the last item, one turn's worth of rows after
+    // the notice — the region grew by the instruction, the notice and the
+    // successful turn, and by nothing from the failed one.
+    assert_eq!(
+        outcome.summary,
+        match session.items.last().unwrap() {
+            TranscriptItem::Assistant { text, .. } => text.as_str(),
+            other => panic!("{other:?}"),
+        }
+    );
+    assert!(session.ledger.tokens().len() > before_compaction.len());
+
+    // The reuse the auto_compact message promises, checked rather than assumed:
+    // the failed turn committed nothing, so the retry's prompt extended the
+    // previous prompt-plus-generation exactly, and the exact-form prefix check
+    // — which raises `prefix_divergence` when it does not — had nothing to say.
+    // The server was asked to re-prefill only the notice, never the
+    // conversation.
+    assert!(
+        !sink.warnings().iter().any(|(c, _)| *c == "prefix_divergence"),
+        "the retry's prompt broke the prefix invariant: {:?}",
+        sink.warnings()
+    );
 }
