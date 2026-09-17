@@ -529,7 +529,10 @@ pub mod roles {
     pub fn orchestrator() -> Role {
         Role::new(
             "orchestrator",
-            &["task", "read", "grep", "glob", "ask_code", "ask_corpus"],
+            // `task_result` beside `task`: `task` hands back a handle now rather
+            // than blocking on the child, so a seat with `task` and no way to
+            // collect it would be a seat that can start work and never read it.
+            &["task", "task_result", "read", "grep", "glob", "ask_code", "ask_corpus"],
         )
     }
 
@@ -568,6 +571,7 @@ pub mod roles {
                 "skill",
                 "lsp",
                 "task",
+                "task_result",
                 // The background-job surface, so a `bash` call that is backgrounded
                 // (asked, promoted, or by the operator) can be waited, read, killed
                 // and listed — and a condition can be watched across turns. Seated
@@ -593,8 +597,9 @@ pub mod roles {
         );
         // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
         // when it holds a seat), `pkill` and `ps`. The ceiling is a guard against
-        // a prompt nobody counted, and this is the count, counted.
-        r.max_tools = 19;
+        // a prompt nobody counted, and this is the count, counted. Twenty since
+        // `task_result` joined `task`.
+        r.max_tools = 20;
         r
     }
 

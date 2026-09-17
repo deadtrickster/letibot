@@ -646,17 +646,26 @@ mod tests {
         hub.set_answer_sink(answers.clone());
         let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
 
-        let adj = HeadAdjudicator::new(hub.clone(), answers.clone()).with_budget(
-            Duration::from_secs(10),
-        );
+        // One value for the adjudicator's budget and the answerer's patience.
+        let budget = Duration::from_secs(10);
+        let adj = HeadAdjudicator::new(hub.clone(), answers.clone()).with_budget(budget);
         let req = request();
 
         // The head's side, on its own thread: wait for the question to appear, then
         // answer it the way `letibot-tui` does.
         let hub2 = hub.clone();
         let head_id = head.head_id.clone();
+        // **The window is the budget, not a number that looked big enough.**
+        // 500 × 2ms is one second, and the adjudicator it is racing waits ten —
+        // so on a box running the whole workspace's test binaries at once the
+        // answerer gave up while the decide side was still happily waiting, and
+        // the panic read as "the decision never reached the head" when the
+        // decision was on its way. Seen once in a `cargo test --workspace` run
+        // on 2026-09-17 and never alone. A poller that gives up before the
+        // thing it polls for has to is testing the load on the box.
+        let deadline = std::time::Instant::now() + budget;
         let answerer = std::thread::spawn(move || {
-            for _ in 0..500 {
+            while std::time::Instant::now() < deadline {
                 let open = hub2.snapshot().open_decisions;
                 if let Some(d) = open.first() {
                     return hub2.submit(
@@ -674,7 +683,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            panic!("the decision never reached the head")
+            panic!("the decision never reached the head inside the adjudicator's own budget")
         });
 
         let d = adj.decide(&req);
@@ -900,12 +909,19 @@ mod tests {
         let answers = Arc::new(Answers::new());
         hub.set_answer_sink(answers.clone());
         let head = hub.attach("tui", "alice", Caps::default(), 0);
-        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_secs(60));
+        let budget = Duration::from_secs(60);
+        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(budget);
 
         let hub2 = hub.clone();
         let head_id = head.head_id.clone();
+        // The same rule as the answerer above: poll for as long as the thing
+        // being polled for is allowed to take, which is the adjudicator's own
+        // budget. A shorter window is a second deadline nobody declared, and
+        // the test then fails for the box's load rather than for the code's
+        // behaviour — which is the whole defect being fixed here.
+        let deadline = Instant::now() + budget;
         let interrupter = std::thread::spawn(move || {
-            for _ in 0..500 {
+            while Instant::now() < deadline {
                 if !hub2.snapshot().open_decisions.is_empty() {
                     hub2.submit(
                         &head_id,

@@ -1466,7 +1466,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "emacsclient" => vec![ReadFile, WriteFile],
         // Query-only network tools: they reach a host, and the unseen-host rule
         // is the right judge of which host.
-        "dig" | "nslookup" | "traceroute" | "mtr" | "ping" | "ping6" | "nmap" | "arping" => vec![Network],
+        "dig" | "nslookup" | "traceroute" | "mtr" | "ping" | "ping6" | "arping" => vec![Network],
         "bzip2" | "bunzip2" => vec![ReadFile, WriteFile],
         "curl" | "wget" | "nc" | "netcat" | "socat" | "telnet" | "ftp" | "http" | "httpie"
         | "aria2c" => vec![Network],
@@ -1920,6 +1920,24 @@ impl Surroundings {
         self.seen_hosts.insert(host.into());
     }
 
+    /// **The hosts the operator's own tooling is already logged into are not
+    /// unseen.** `gh auth login` wrote `~/.config/gh/hosts.yml`; the workspace's
+    /// git remotes name where its code lives. A first contact with one of those
+    /// is not where an exfiltration and a fetch look identical — the operator
+    /// chose that host before the session existed. Measured 2026-09-17: the
+    /// operator said "use gh", and `git push https://github.com/…` asked twice as
+    /// a first contact, because github.com had never been *reached* in the
+    /// session — only logged into on the box.
+    ///
+    /// Read from files, not from running anything: a session start must not
+    /// shell out to `gh`.
+    pub fn with_known_hosts(mut self) -> Self {
+        for h in known_hosts(self.home.as_deref(), self.workspace.as_deref()) {
+            self.seen_hosts.insert(h);
+        }
+        self
+    }
+
     /// Declare the execution environment fixed, and say how.
     pub fn with_pinned_shell(mut self, how: impl Into<String>) -> Self {
         self.shell = ShellTrust::Pinned { how: how.into() };
@@ -1995,6 +2013,63 @@ impl Surroundings {
         // nobody said otherwise is the assumption this whole module exists to stop.
         Region::HostOther
     }
+}
+
+/// Hosts named by `~/.config/gh/hosts.yml` (the top-level keys) and by the
+/// `url = …` lines of the workspace's `.git/config` — or of the git dir a
+/// worktree's `.git` file points at.
+fn known_hosts(home: Option<&str>, workspace: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(h) = home
+        && let Ok(text) = std::fs::read_to_string(format!("{}/.config/gh/hosts.yml", h.trim_end_matches('/')))
+    {
+        for line in text.lines() {
+            // A top-level key: no indentation, ends with `:`.
+            if !line.starts_with([' ', '\t', '#'])
+                && let Some(host) = line.trim_end().strip_suffix(':')
+                && !host.is_empty()
+            {
+                out.push(host.to_string());
+            }
+        }
+    }
+    if let Some(ws) = workspace {
+        let dot = std::path::Path::new(ws).join(".git");
+        let config = if dot.is_dir() {
+            Some(dot.join("config"))
+        } else {
+            // A worktree: `.git` is a file, `gitdir: /repo/.git/worktrees/x`, and
+            // the remotes live in the common dir two levels up.
+            std::fs::read_to_string(&dot).ok().and_then(|t| {
+                let dir = t.trim().strip_prefix("gitdir:")?.trim();
+                let p = std::path::Path::new(dir);
+                let common = std::fs::read_to_string(p.join("commondir"))
+                    .ok()
+                    .map(|c| p.join(c.trim()))
+                    .unwrap_or_else(|| p.to_path_buf());
+                Some(common.join("config"))
+            })
+        };
+        if let Some(c) = config
+            && let Ok(text) = std::fs::read_to_string(c)
+        {
+            for line in text.lines() {
+                let l = line.trim();
+                if let Some(url) = l.strip_prefix("url").map(|r| r.trim_start()).and_then(|r| r.strip_prefix('=')) {
+                    let url = url.trim();
+                    if looks_remote(url) {
+                        let h = remote_host(url);
+                        if !h.is_empty() {
+                            out.push(h);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn collapse(p: &str) -> String {
@@ -2096,6 +2171,13 @@ fn looks_remote(s: &str) -> bool {
         // dots, dashes, and one `@` before it.
         && head.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | '[' | ']'))
         && (head.contains('@') || head.contains('.') || tail.starts_with('/'))
+        // `registry.rs:244` is a file and a line, the most common colon in a
+        // coding session, and it read as a host called `registry.rs`. A tail
+        // that starts with a digit is a line number — unless the head is an
+        // address, where it is a port (`192.168.1.55:8787`). Measured
+        // 2026-09-17: `grep -A8 "registry.rs:244"` and `grep -B3 "events.rs:21"`
+        // were "network egress to an unseen host" in the operator's session.
+        && !(tail.starts_with(|c: char| c.is_ascii_digit()) && !is_ipv4(head) && !head.contains('@'))
 }
 
 /// `127.0.0.0/8`, `::1`, `localhost` — with or without a port.
@@ -2123,6 +2205,14 @@ fn remote_host(s: &str) -> String {
         .map(|(h, _)| h.rsplit('@').next().unwrap_or(h).to_string())
         .unwrap_or_else(|| s.to_string())
 }
+
+/// Programs whose positional operands are words or numbers, never places: a
+/// region placed on `20` or `hello` is a fact about nothing.
+const NON_PATH_OPERANDS: &[&str] = &[
+    "sleep", "seq", "echo", "printf", "true", "false", "date", "uname", "hostname", "whoami",
+    "id", "nproc", "uptime", "free", "basename", "dirname", "expr", "bc", "yes", "kill", "wait",
+    "exit", "return", "shift", "let", "getconf", "tput", "tty",
+];
 
 /// Flags whose value is a credential the program consumes itself. §3's second row:
 /// handing `ssh` a key is the authorised case and must not need an exception.
@@ -2494,11 +2584,12 @@ impl Baseline {
             .intents
             .iter()
             .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile));
-        let only_inside = !self.regions.is_empty()
-            && self
-                .regions
-                .iter()
-                .all(|r| matches!(r, Region::Workspace | Region::None));
+        // No region at all is inside too: `pwd`, `date`, `nproc` look at
+        // nothing that has a place.
+        let only_inside = self
+            .regions
+            .iter()
+            .all(|r| matches!(r, Region::Workspace | Region::None));
         if only_looks && only_inside && matches!(self.tier, Tier::MayApprove) {
             self.tier = Tier::Auto;
         }
@@ -2892,6 +2983,18 @@ impl Baseline {
             for w in word.flatten() {
                 let Some(text) = w.text() else { continue };
                 if text.starts_with('-') || text.is_empty() || text.contains('\n') {
+                    continue;
+                }
+                // `sleep 20`, `echo hello`, `seq 1 5`: the operand is a number or
+                // a word, not a place. Placing it made it `host_other`, which
+                // made `sleep 20` reach outside the boundary and ask — the
+                // operator, 2026-09-17: "i was just asked to allow sleep 20,
+                // wtf". A number is never a path; a program whose operands are
+                // not paths gives them no region.
+                if (text.bytes().all(|b| b.is_ascii_digit() || b == b'.') && !is_ipv4(text))
+                    || NON_PATH_OPERANDS.contains(&effective.as_str())
+                {
+                    self.regions.insert(Region::None);
                     continue;
                 }
                 let mut region = env.region_of(text);
@@ -5072,5 +5175,83 @@ mod hosts_by_other_names {
         assert!(!looks_remote("Note:"));
         assert!(!looks_remote("Build:done"));
         assert!(looks_remote("git.example.org:repo/x.git"));
+    }
+}
+
+#[cfg(test)]
+mod known_and_seen_hosts {
+    //! The always-ask rule is `network_egress_to_an_UNSEEN_host`; these are the
+    //! two ways a host stops being unseen without the operator being asked twice.
+    use super::*;
+
+    #[test]
+    fn a_file_and_a_line_is_not_a_host_but_an_address_and_a_port_is() {
+        assert!(!looks_remote("registry.rs:244"));
+        assert!(!looks_remote("events.rs:21\\|view.rs:145"));
+        assert!(looks_remote("192.168.1.55:8787"));
+        assert!(looks_remote("192.168.1.55:8787/api"));
+        assert!(looks_remote("dead@lab2x1.home:2222"));
+        assert!(looks_remote("git.example.org:repo/x.git"));
+    }
+
+    #[test]
+    fn the_hosts_the_operators_tooling_is_logged_into_are_seen_from_the_start() {
+        let d = std::env::temp_dir().join(format!("letibot-known-hosts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let home = d.join("home");
+        let ws = d.join("ws");
+        std::fs::create_dir_all(home.join(".config/gh")).unwrap();
+        std::fs::write(home.join(".config/gh/hosts.yml"), "github.com:\n    user: dead\n    git_protocol: https\n").unwrap();
+        // A worktree: `.git` is a file pointing at the repo's worktrees dir.
+        let repo = d.join("repo/.git");
+        std::fs::create_dir_all(repo.join("worktrees/ws")).unwrap();
+        std::fs::write(repo.join("config"), "[remote \"origin\"]\n\turl = git@gitlab.example.org:dead/letibot.git\n[remote \"mirror\"]\n\turl = https://codeberg.org/dead/letibot.git\n").unwrap();
+        std::fs::write(repo.join("worktrees/ws/commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join(".git"), format!("gitdir: {}\n", repo.join("worktrees/ws").display())).unwrap();
+
+        let env = Surroundings {
+            home: Some(home.display().to_string()),
+            workspace: Some(ws.display().to_string()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: BTreeSet::new(),
+        }
+        .with_known_hosts();
+        for h in ["github.com", "gitlab.example.org", "codeberg.org"] {
+            assert!(env.seen_hosts.contains(h), "{h} missing from {:?}", env.seen_hosts);
+        }
+        let push = Baseline::of_command("git push https://github.com/dead/letibot.git main", &env);
+        assert!(!matches!(push.tier, Tier::AlwaysAsk { rule: "network_egress_to_an_unseen_host", .. }), "{:?}", push.tier);
+        let other = Baseline::of_command("curl https://example.net/x", &env);
+        assert!(matches!(other.tier, Tier::AlwaysAsk { rule: "network_egress_to_an_unseen_host", .. }));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod operands_that_are_not_places {
+    use super::*;
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: BTreeSet::new(),
+        }
+    }
+
+    /// "i was just asked to allow sleep 20, wtf" — 2026-09-17.
+    #[test]
+    fn a_number_or_a_word_given_to_a_looking_program_is_inside() {
+        for cmd in ["sleep 20", "echo hello world", "seq 1 5", "pwd", "date +%s", "nproc", "sleep 2 && date", "printf '%s\\n' done"] {
+            let x = Baseline::of_command(cmd, &env());
+            assert_eq!(x.tier, Tier::Auto, "{cmd}: {:?} {:?}", x.regions, x.findings);
+        }
+        // A path operand is still placed.
+        let x = Baseline::of_command("ls /etc", &env());
+        assert_ne!(x.tier, Tier::Auto);
+        let x = Baseline::of_command("cat /home/dead/.ssh/id_rsa", &env());
+        assert!(matches!(x.tier, Tier::Blocked { .. }));
     }
 }

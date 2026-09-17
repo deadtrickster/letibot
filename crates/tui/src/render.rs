@@ -25,7 +25,7 @@
 use letibot_ui::highlight::StreamingCode;
 use letibot_ui::style::{Painter, Palette, Role};
 
-use crate::markdown::{Block, IncrementalMarkdown};
+use crate::markdown::{Align, Block, IncrementalMarkdown};
 
 /// Columns, wrapping and truncation come from `letibot-ui`.
 ///
@@ -328,7 +328,169 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 .map(|l| cfg.c(sgr::DIM, &format!("│ {l}")))
                 .collect()
         }
+        Block::Table { head, align, rows } => table_lines(head, align, rows, cfg, w),
         Block::Rule => vec![cfg.c(FRAME, &"─".repeat(w.min(60)))],
+    }
+}
+
+/// A pipe table, at the width the terminal actually has.
+///
+/// The operator, 2026-09-17: *"table rendering is broken"*. It was not rendered
+/// at all — a table lexed as a paragraph, joined with spaces and wrapped as
+/// prose. What a table owes its reader is the column, so:
+///
+/// - **Columns are as wide as their content wants, until they do not fit.** Then
+///   the wide ones give way first (water-filling): a table of three short columns
+///   and one long one shrinks the long one and leaves the others alone, rather
+///   than taking an equal slice off each and truncating the short ones to nothing.
+/// - **A cell too narrow wraps, it does not get cut.** A row is as tall as its
+///   tallest cell. Truncation would lose bytes the model wrote and a table is
+///   most often where the numbers are.
+/// - **No outer box.** The frame is one faint rule under the header and a faint
+///   `│` between columns — the same weight as the quote rail and the code fence,
+///   so a table sits in a turn rather than shouting from it.
+fn table_lines(
+    head: &[String],
+    align: &[Align],
+    rows: &[Vec<String>],
+    cfg: &RenderConfig,
+    w: usize,
+) -> Vec<String> {
+    let p = cfg.painter();
+    // The column count is the header's; a row with more cells than the header has
+    // is showing something the header does not name, so the table widens to it
+    // rather than dropping it.
+    let cols = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    fn cell(r: &[String], i: usize) -> &str {
+        r.get(i).map(String::as_str).unwrap_or("")
+    }
+
+    // Painted once: the paint is what gets measured, wrapped and padded, so a
+    // `**bold**` cell does not measure its escape bytes as columns.
+    let head_p: Vec<String> = (0..cols)
+        .map(|i| p.paint(Role::Strong, &inline(cell(head, i), p)))
+        .collect();
+    let rows_p: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| (0..cols).map(|i| inline(cell(r, i), p)).collect())
+        .collect();
+
+    let natural: Vec<usize> = (0..cols)
+        .map(|i| {
+            std::iter::once(visible_width(&head_p[i]))
+                .chain(rows_p.iter().map(|r| visible_width(&r[i])))
+                .max()
+                .unwrap_or(0)
+                .max(1)
+        })
+        .collect();
+
+    // Three columns per gap: `" │ "`.
+    let gaps = 3 * cols.saturating_sub(1);
+    let available = w.saturating_sub(gaps).max(cols);
+    let widths = fit_columns(&natural, available);
+
+    let sep = p.paint(Role::Faint, " │ ");
+    let mut out = Vec::new();
+    let mut push_row = |cells: &[String], out: &mut Vec<String>| {
+        // Wrap every cell to its column, then emit one screen line per wrapped
+        // line, padding the cells that ran out.
+        let wrapped: Vec<Vec<String>> = cells
+            .iter()
+            .zip(&widths)
+            .map(|(c, wd)| {
+                let v = wrap(c, *wd);
+                if v.is_empty() { vec![String::new()] } else { v }
+            })
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line in 0..height {
+            let mut row = String::new();
+            for i in 0..cols {
+                if i > 0 {
+                    row.push_str(&sep);
+                }
+                let text = wrapped[i].get(line).cloned().unwrap_or_default();
+                row.push_str(&pad(&text, widths[i], align.get(i).copied().unwrap_or(Align::Left)));
+            }
+            // The last column's padding is trailing whitespace on the screen and
+            // in a copy-paste; the columns are already established by the ones
+            // before it.
+            out.push(row.trim_end().to_string());
+        }
+    };
+
+    push_row(&head_p, &mut out);
+    let rule: String = widths
+        .iter()
+        .map(|wd| "─".repeat(*wd))
+        .collect::<Vec<_>>()
+        .join("─┼─");
+    out.push(p.paint(Role::Faint, &rule));
+    for r in &rows_p {
+        push_row(r, &mut out);
+    }
+    out
+}
+
+/// Give each column its natural width if they all fit; otherwise let the wide
+/// ones give way first.
+///
+/// Water-filling: every column narrower than an equal share keeps what it wants,
+/// and the slack they leave is shared again among the rest. An equal cut instead
+/// would take the same columns off a two-character `n` column as off a sixty-
+/// character `status` one, and the short columns are the ones that cannot spare it.
+fn fit_columns(natural: &[usize], available: usize) -> Vec<usize> {
+    let n = natural.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if natural.iter().sum::<usize>() <= available {
+        return natural.to_vec();
+    }
+    let mut widths = vec![0usize; n];
+    let mut settled = vec![false; n];
+    loop {
+        let taken: usize = widths.iter().zip(&settled).filter(|(_, s)| **s).map(|(w, _)| *w).sum();
+        let free = settled.iter().filter(|s| !**s).count();
+        if free == 0 {
+            break;
+        }
+        let share = available.saturating_sub(taken) / free;
+        let mut moved = false;
+        for i in 0..n {
+            if !settled[i] && natural[i] <= share {
+                widths[i] = natural[i];
+                settled[i] = true;
+                moved = true;
+            }
+        }
+        if !moved {
+            // Everything left wants more than its share. A floor of four columns:
+            // narrower than that and a wrapped word is one letter per line, which
+            // is not a table any more.
+            for i in 0..n {
+                if !settled[i] {
+                    widths[i] = share.max(4);
+                }
+            }
+            break;
+        }
+    }
+    widths
+}
+
+fn pad(s: &str, width: usize, align: Align) -> String {
+    let have = visible_width(s);
+    let slack = width.saturating_sub(have);
+    match align {
+        Align::Left => format!("{s}{:slack$}", ""),
+        Align::Right => format!("{:slack$}{s}", ""),
+        Align::Center => {
+            let left = slack / 2;
+            let right = slack - left;
+            format!("{:left$}{s}{:right$}", "", "")
+        }
     }
 }
 
@@ -892,5 +1054,118 @@ mod tests {
         for b in lex(MARKDOWN) {
             assert!(!render_block(&b, &cfg()).is_empty(), "{b:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tables {
+    //! **The operator's own table, on the operator's own terminal.** 2026-09-17:
+    //! *"table rendering is broken"* — a GFM table had no block of its own, so it
+    //! lexed as a paragraph, joined with spaces and wrapped as prose.
+    use super::*;
+    use crate::markdown::lex;
+
+    /// The table from the session that reported this, verbatim.
+    const BOARD: &str = "| branch | commits | status |\n\
+        |---|---|---|\n\
+        | `autocompact` | `1129111`, `aeee854`, `2c0c6c4` | done, tested, unmerged |\n\
+        | `webfetch` | `f363cb0` | done, tested (18 + tools 509 + harnessd offline), unmerged |\n\
+        | `main` | moved to `7056c64` (your intent + plan commits) | — |\n";
+
+    fn cfg(width: usize) -> RenderConfig {
+        RenderConfig { width, color: false, ..RenderConfig::default() }
+    }
+
+    fn render(src: &str, width: usize) -> Vec<String> {
+        lex(src).iter().flat_map(|b| render_block(b, &cfg(width))).collect()
+    }
+
+    #[test]
+    fn a_table_is_a_table_and_not_a_paragraph_of_pipes() {
+        let blocks = lex(BOARD);
+        assert_eq!(blocks.len(), 1, "{blocks:#?}");
+        let Block::Table { head, align, rows } = &blocks[0] else {
+            panic!("not a table: {blocks:#?}");
+        };
+        assert_eq!(head, &["branch", "commits", "status"]);
+        assert_eq!(align, &[Align::Left, Align::Left, Align::Left]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2], ["`main`", "moved to `7056c64` (your intent + plan commits)", "—"]);
+    }
+
+    #[test]
+    fn the_columns_line_up_and_nothing_is_lost() {
+        let out = render(BOARD, 120);
+        let screen = out.join("\n");
+        // Every cell's text survives.
+        for want in ["branch", "autocompact", "1129111", "webfetch", "f363cb0", "harnessd offline", "7056c64"] {
+            assert!(screen.contains(want), "{want} missing:\n{screen}");
+        }
+        // The separator column sits at the same place on the header and on the
+        // first body row — which is the whole claim a table makes.
+        let bar = |l: &str| l.char_indices().filter(|(_, c)| *c == '│').map(|(i, _)| i).collect::<Vec<_>>();
+        assert!(!bar(&out[0]).is_empty(), "no column separators:\n{screen}");
+        assert_eq!(bar(&out[0]), bar(&out[2]), "header and first row disagree:\n{screen}");
+        // Nothing runs past the terminal.
+        for l in &out {
+            assert!(visible_width(l) <= 120, "{} columns: {l:?}", visible_width(l));
+        }
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_wide_column_and_keeps_the_short_ones() {
+        let out = render(BOARD, 60);
+        let screen = out.join("\n");
+        for l in &out {
+            assert!(visible_width(l) <= 60, "{} columns: {l:?}", visible_width(l));
+        }
+        // The long status text is wrapped, not cut: every word still there.
+        assert!(screen.contains("harnessd"), "{screen}");
+        assert!(screen.contains("unmerged"), "{screen}");
+        // And the narrow `branch` column was not taken down with it.
+        assert!(screen.contains("autocompact"), "{screen}");
+    }
+
+    #[test]
+    fn alignment_and_escaped_pipes_are_honoured() {
+        let src = "| n | name | size |\n|--:|:----:|:-----|\n| 1 | a\\|b | wide |\n";
+        let blocks = lex(src);
+        let Block::Table { align, rows, .. } = &blocks[0] else { panic!("{blocks:#?}") };
+        assert_eq!(align, &[Align::Right, Align::Center, Align::Left]);
+        assert_eq!(rows[0][1], "a|b", "an escaped pipe is a pipe, not a cell break");
+        let out = render(src, 40);
+        // Right-aligned `n`: the digit sits at the column's right edge, under the
+        // header's own right edge.
+        let col = |l: &str| l.find('│').unwrap_or(0);
+        assert_eq!(col(&out[0]), col(&out[2]), "{out:#?}");
+    }
+
+    #[test]
+    fn a_paragraph_with_a_pipe_in_it_is_still_a_paragraph() {
+        for src in [
+            "run `a | b` to pipe it\n",
+            "| this looks like a row |\nbut the next line is prose\n",
+            "|---|---|\n",
+        ] {
+            let blocks = lex(src);
+            assert!(
+                !blocks.iter().any(|b| matches!(b, Block::Table { .. })),
+                "{src:?} lexed as a table: {blocks:#?}"
+            );
+        }
+    }
+
+    /// A table arriving a few bytes at a time renders the same as one that
+    /// arrived whole — the incremental lexer freezes only at blank lines, and a
+    /// table has none inside it.
+    #[test]
+    fn a_streamed_table_is_the_same_table() {
+        let mut md = IncrementalMarkdown::new();
+        for chunk in BOARD.as_bytes().chunks(7) {
+            md.push(std::str::from_utf8(chunk).unwrap());
+        }
+        let streamed: Vec<&Block> = md.blocks().collect();
+        assert_eq!(streamed.len(), 1, "{streamed:#?}");
+        assert!(matches!(streamed[0], Block::Table { .. }), "{streamed:#?}");
     }
 }

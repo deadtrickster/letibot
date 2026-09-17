@@ -2154,6 +2154,24 @@ impl AdjudicatedGate {
         direction: String,
     ) {
         let shown = self.shown.take();
+        // **An admitted contact makes the host seen.** The always-ask rule is
+        // `network_egress_to_an_UNSEEN_host`, and its whole design is that the
+        // second contact is not a first one — "by then the operator has seen
+        // one". `Surroundings::saw_host` existed for that and nothing called it,
+        // so every contact was a first contact and the asks never tapered.
+        // Measured 2026-09-17 in the operator's store: the same session asked
+        // about the same worktree five times in twenty minutes. Recorded here,
+        // where every decision passes, and only for an admit: a refused
+        // contact is still unseen.
+        if effect == "admit"
+            && let Some(b) = request.reading.as_ref()
+        {
+            for r in &b.regions {
+                if let crate::intent::Region::Remote(h) = r {
+                    self.surroundings.saw_host(h.clone());
+                }
+            }
+        }
         // **Asked is read off who decided, not off the adjudicator's name.** A
         // human adjudicator that timed out did not ask anybody, and a model
         // adjudicator that escalated did. `by` is the only field that records
@@ -3311,6 +3329,38 @@ fn never_hit(args: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A host the operator admitted once is not a first contact again.** The
+    /// rule is `network_egress_to_an_UNSEEN_host`; `saw_host` existed for the
+    /// second contact and nothing called it, so a session asked about the same
+    /// host on every call. A refused contact stays unseen.
+    #[test]
+    fn an_admitted_contact_makes_the_host_seen_and_a_refused_one_does_not() {
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                let opt = if req.target.contains("refused.example") { "deny" } else { "allow_once" };
+                Some(AdjudicationDecision::selected(req, opt, "human:test", "ruled"))
+            },
+        )))
+        .with_surroundings(pinned());
+        let unseen = |g: &AdjudicatedGate, cmd: &str| {
+            matches!(
+                g.baseline_for(&bash_at(&json!({"command": cmd}), "probe")).tier,
+                Tier::AlwaysAsk { rule: "network_egress_to_an_unseen_host", .. }
+            )
+        };
+
+        assert!(unseen(&g, "curl -s https://api.example.org/v1/x"), "a first contact");
+        let one = json!({"command": "curl -s https://api.example.org/v1/x"});
+        assert!(matches!(g.admit(&bash_at(&one, "s#1")), GateDecision::Admit));
+        assert!(!unseen(&g, "curl -s https://api.example.org/v1/y"), "the second contact with an admitted host is not a first one");
+
+        assert!(unseen(&g, "curl -s https://refused.example/x"));
+        let bad = json!({"command": "curl -s https://refused.example/x"});
+        assert!(!matches!(g.admit(&bash_at(&bad, "s#2")), GateDecision::Admit));
+        assert!(unseen(&g, "curl -s https://refused.example/y"), "a refused host is still unseen");
+    }
 
     /// **A shape the operator approved is not asked again — and the things that
     /// must always ask, still do.**

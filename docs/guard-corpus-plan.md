@@ -374,9 +374,46 @@ can also start a daemon with a different config); that is the sudo/PAM boundary'
 this plan does not pretend to fix it. It does not stop a person from being fooled; a head that
 is a person answering a brief is exactly what layer B is for.
 
+3. **The operator's words as a one-shot grant, recorded.** Added 2026-09-17, from the session
+   where the operator said "use gh" and was asked twice about `git push https://github.com/…` —
+   an always-ask (`network_egress_to_an_unseen_host`, then `credential_use`), which by design no
+   model reading of the trail may lift, and which in `--adjudicator head` mode no model reads at
+   all. The mechanism: when an always-ask fires and the trail holds an operator utterance that
+   names the host, the credential, or the program, the head shows the ask *with the utterance
+   quoted* — "you said: use gh — allow github.com and gh for this session?" — and a yes is a
+   stored decision (`by: human:dead`, the utterance cited) that seeds the seen-host set and the
+   grant table for that session. Nothing is lifted by the model's reading; the human's click is
+   the grant, the human's sentence is the evidence beside it. The always-ask stays always-ask for
+   anything the sentence did not name. What was done immediately instead, without words (commit
+   `6a3e720` on `gatekeeper`): a host the operator's tooling is logged into (`~/.config/gh/hosts.yml`,
+   the workspace's git remotes) is seen from the start, and an admitted contact makes its host
+   seen — `saw_host` had never been called, so no session ever tapered.
+
 **Measured by:** the corpus — how many `human:dead` rows would have been read-only under (1); the
 tier table — how many `blocked` rows the operator overrides under (2), which is the list of rules
-to revisit.
+to revisit; under (3), the asks whose trail already held the answer.
+
+## 7c. What the store says about balance (2026-09-17)
+
+*The operator: "more and more often i think this permission thing we built is not balanced … i
+got asked about edits even … there is no point when i no longer asked, so i always have to keep
+an eye which defeats the whole agentic purpose."* Read against the adjudication table:
+
+- **Edits asked: 18, all on 2026-09-15 between 20:04 and 20:17**, all `edit` in the splitdiff
+  worktree at automode. Cause: the oracle was handed a second, re-derived reading of the call
+  that carried `unknown`, outside its earned scope → escalate to the human. Fixed the same
+  evening (`6f19f16`, "one reading of a call, not two"); 14 edits and writes since, 0 asked.
+- **No taper, ever**: `saw_host` never called (above). Fixed `6a3e720`.
+- **`file.rs:LINE` was a host**: `grep -A8 "registry.rs:244"` was network egress. Fixed `6a3e720`.
+- **In `--adjudicator head` mode no adjudication row is written.** 635 tool results in the
+  operator's session since 2026-09-16, zero rows; the subagents (automode) write theirs. The
+  operator's own denials — the rows the etalon is starving for — are lost, and the shape cache
+  cannot learn from them either. Not yet fixed; it belongs with step 6 (1).
+- Loopback as egress (4,573 prompts on the corpus): fixed `bb1ae26`.
+
+The pattern in every line: the asks were not the rules being strict, they were the rules being
+fed the wrong fact (a host that was a file, a contact that was a repeat, a reading that was a
+second one). The list of rules has not needed to shrink yet.
 
 ## 8. Order
 

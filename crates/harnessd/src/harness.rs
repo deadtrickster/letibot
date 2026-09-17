@@ -1351,6 +1351,7 @@ impl<'a> Harness<'a> {
                 tasks: parts.tasks.clone(),
                 skills: parts.skills.clone(),
                 lsp: parts.lsp.clone(),
+                slots: Default::default(),
             });
         registry = letibot_tools::with_session_tools(
             registry,
@@ -3507,6 +3508,43 @@ impl letibot_tools::Adjudicator for SubagentAdjudicator {
 /// The subagent seats [`Seat::Coder`] (read, write, edit, grep, glob) — nothing
 /// that spawns further subagents — so delegation is one level by construction, not
 /// by convention.
+/// One spawned subagent, as the parent can see it: where it has got to, and a
+/// door to knock on until it gets further.
+///
+/// A `Condvar` rather than a poll loop, for the same reason [`letibot_tools::exec`]
+/// gives a job one: a `task_result` with a `timeout_ms` should wake when the
+/// child answers, not on the next tick of somebody's chosen interval.
+struct TaskSlot {
+    state: std::sync::Mutex<letibot_tools::builtins::task::TaskStatus>,
+    settled: std::sync::Condvar,
+}
+
+impl TaskSlot {
+    fn new() -> TaskSlot {
+        TaskSlot {
+            state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
+                note: None,
+            }),
+            settled: std::sync::Condvar::new(),
+        }
+    }
+
+    /// The child's own last word about what it is doing. Kept only while it is
+    /// running: a note on a settled subagent would overwrite its answer.
+    fn note(&self, text: &str) {
+        let mut g = self.state.lock().expect("task slot");
+        if let letibot_tools::builtins::task::TaskStatus::Running { note } = &mut *g {
+            *note = Some(text.to_string());
+        }
+    }
+
+    fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        *self.state.lock().expect("task slot") = status;
+        self.settled.notify_all();
+    }
+}
+
+#[derive(Clone)]
 struct HarnessTaskRunner {
     /// The shared pieces, held as `Arc` so the runner is `'static` while the parent
     /// harness still borrows them. Reassembled into a temporary [`Parts`] inside
@@ -3528,11 +3566,115 @@ struct HarnessTaskRunner {
     /// tools so a subagent sees the same capabilities the parent does.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
     lsp: Arc<letibot_tools::builtins::lsp::LspConfig>,
+    /// The subagents this session has started, in the order it started them.
+    /// Shared with every clone of this runner — the thread that runs a child
+    /// holds one, and so does the tool that collects it.
+    slots: Arc<std::sync::Mutex<Vec<(String, Arc<TaskSlot>)>>>,
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
-    fn run(
+    /// **Start the child and come back.** The body below is the work, and it
+    /// runs on its own thread: the daemon executes a round's calls in order on
+    /// one thread, so a `task` that waited for its child held every call behind
+    /// it for the child's whole life — fifteen minutes, measured 2026-09-17, of
+    /// four other calls sitting unfinished while the operator and the model both
+    /// read it as a hang.
+    ///
+    /// What is NOT deferred is the failure to start: a bad role, a spec that does
+    /// not parse. Those are answered by this call, because they are facts about
+    /// the request rather than about the child.
+    fn start(
         &self,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+    ) -> Result<String, String> {
+        // The id is minted here rather than inside the body, because it is what
+        // this call returns and the body has not run yet.
+        let sub_id = format!(
+            "{}-sub-{}",
+            self.base.session_id,
+            letibot_sessionlog::registry::now_ms()
+        );
+        // The seat is checked NOW: a role this build does not know is a fact
+        // about the call, and answering it from a thread would report "started"
+        // for something that never could.
+        let role = spec.role.as_str();
+        if !(role.is_empty() || role == "coder") {
+            Seat::parse(role)?;
+        }
+        let slot = Arc::new(TaskSlot::new());
+        self.slots
+            .lock()
+            .expect("task slots")
+            .push((sub_id.clone(), slot.clone()));
+
+        let me = self.clone();
+        let prompt = prompt.to_string();
+        let spec = letibot_tools::builtins::task::TaskSpec {
+            role: spec.role.clone(),
+            downgrade: spec.downgrade.clone(),
+            placement: spec.placement,
+        };
+        let id = sub_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("subagent-{}", letibot_sessionlog::registry::short_id(&sub_id)))
+            .spawn(move || {
+                let slot2 = slot.clone();
+                let status = match me.run_to_completion(&id, &prompt, &spec, &mut |n| slot2.note(n))
+                {
+                    Ok(answer) => letibot_tools::builtins::task::TaskStatus::Done { answer },
+                    Err(why) => letibot_tools::builtins::task::TaskStatus::Failed { why },
+                };
+                slot.settle(status);
+            });
+        if let Err(e) = spawned {
+            // Nothing is running; say so rather than handing back a handle for a
+            // child that was never started.
+            self.slots.lock().expect("task slots").retain(|(h, _)| h != &sub_id);
+            return Err(format!("the subagent thread could not be started: {e}"));
+        }
+        Ok(sub_id)
+    }
+
+    fn collect(
+        &self,
+        handle: &str,
+        timeout: std::time::Duration,
+    ) -> letibot_tools::builtins::task::TaskStatus {
+        let slot = self
+            .slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .find(|(h, _)| h == handle)
+            .map(|(_, s)| s.clone());
+        let Some(slot) = slot else {
+            return letibot_tools::builtins::task::TaskStatus::Unknown;
+        };
+        let g = slot.state.lock().expect("task slot");
+        let (g, _) = slot
+            .settled
+            .wait_timeout_while(g, timeout, |s| {
+                matches!(s, letibot_tools::builtins::task::TaskStatus::Running { .. })
+            })
+            .expect("task slot");
+        g.clone()
+    }
+
+    fn started(&self) -> Vec<String> {
+        self.slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .map(|(h, _)| h.clone())
+            .collect()
+    }
+}
+
+impl HarnessTaskRunner {
+    fn run_to_completion(
+        &self,
+        sub_id: &str,
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
         progress: &mut dyn FnMut(&str),
@@ -3555,11 +3697,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // new one). The title is the subtask's first line, so a picker row says what
         // the subagent was for.
         let spawned = std::time::Instant::now();
-        let sub_id = format!(
-            "{}-sub-{}",
-            self.base.session_id,
-            letibot_sessionlog::registry::now_ms()
-        );
+        let sub_id = sub_id.to_string();
         let title = derive_title(prompt);
         // The subagent seats the role it was asked for — any seat this build knows
         // — and coder when none was named, which is the `task` tool's own default.
@@ -3938,7 +4076,8 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// [`letibot_tools::Surroundings::from_env`] is the constructor that says
 /// reading the environment is a decision at a call site.
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
-    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string());
+    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
+        .with_known_hosts();
     // The shell is pinned whenever the backend can start a process. Both the
     // confined backend (coder/runner) and the unconfined leticode one (`--bash`)
     // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a

@@ -2275,7 +2275,7 @@ mod tests {
             }
             None => OracleAnswer::NotAuthorised { why: "no".into() },
         });
-        let d = adj.decide(&request("/bin/ls", trail_saying("list it", 0)));
+        let d = adj.decide(&request("/bin/ls /etc", trail_saying("list it", 0)));
         assert_eq!(
             d.outcome,
             DecisionOutcome::Selected {
@@ -2345,7 +2345,7 @@ mod tests {
     #[test]
     fn an_uncollected_trail_refuses_rather_than_deciding_without_one() {
         let adj = adjudicator(|_: &mut ModelBrief| OracleAnswer::NotAuthorised { why: "n".into() });
-        let d = adj.decide(&request("/bin/ls", AuthorisationTrail::default()));
+        let d = adj.decide(&request("/bin/ls /etc", AuthorisationTrail::default()));
         assert_eq!(d.outcome, DecisionOutcome::Unavailable);
         assert!(d.basis.contains("never collected"), "{}", d.basis);
     }
@@ -2381,9 +2381,12 @@ mod tests {
     }
 
     #[test]
+    // `/bin/ls /etc` rather than `/bin/ls`: a look at the working directory is
+    // clause 4's `auto` since 2026-09-17 and has no witness to take; the
+    // fixture needs a may-approve look, and `/etc` is outside the boundary.
     fn the_witness_can_only_be_taken_once() {
-        let req = request("/bin/ls", trail_saying("go", 0));
-        let b = Baseline::of_command("/bin/ls", &env());
+        let req = request("/bin/ls /etc", trail_saying("go", 0));
+        let b = Baseline::of_command("/bin/ls /etc", &env());
         let mut brief = ModelBrief::new(&req, &b);
         assert!(brief.adjudicable().is_some());
         assert!(brief.adjudicable().is_none(), "one witness, one widening");
@@ -2404,7 +2407,7 @@ mod tests {
             }
         }
         let b = Budgeted::new(Arc::new(Slow), Duration::from_millis(30));
-        let d = b.decide(&request("/bin/ls", trail_saying("go", 0)));
+        let d = b.decide(&request("/bin/ls /etc", trail_saying("go", 0)));
         assert_eq!(d.outcome, DecisionOutcome::Timeout);
         assert!(
             d.basis.contains("abandoned rather than applied late"),
@@ -2447,7 +2450,7 @@ mod tests {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let b = Budgeted::new(Arc::new(Boom), Duration::from_millis(200));
-        let d = b.decide(&request("/bin/ls", trail_saying("go", 0)));
+        let d = b.decide(&request("/bin/ls /etc", trail_saying("go", 0)));
         std::panic::set_hook(prev);
         assert_eq!(d.outcome, DecisionOutcome::Timeout);
     }
