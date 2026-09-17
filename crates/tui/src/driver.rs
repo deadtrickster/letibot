@@ -183,6 +183,17 @@ pub fn tick(
             Action::Quit => {
                 let _ = client.detach();
             }
+            // **Ask, then leave.** The daemon announces the stop to every other
+            // head before it goes, so the request has to reach it while this
+            // head is still attached — a detach first would close the socket
+            // the notice travels on.
+            Action::StopDaemon => {
+                // The identity is the client's own — the name it attached
+                // under — rather than anything the head could make up.
+                let who = client.identity().to_string();
+                let _ = client.stop(app.seq, &who);
+                let _ = client.detach();
+            }
         }
     }
     Ok(())

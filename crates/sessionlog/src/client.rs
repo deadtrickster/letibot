@@ -56,6 +56,9 @@ pub struct HeadClient {
     writer: FrameWriter<UnixStream>,
     head_id: String,
     next_request: u64,
+    /// The name this head attached under, kept so a frame that has to say WHO
+    /// asked can take it from the attach rather than from a caller's guess.
+    identity: String,
 }
 
 impl HeadClient {
@@ -89,6 +92,7 @@ impl HeadClient {
                         writer,
                         head_id,
                         next_request: 0,
+                        identity: identity.to_string(),
                     },
                     hello,
                     reader,
@@ -150,6 +154,26 @@ impl HeadClient {
             client_request_id: client_request_id.clone(),
             expected_seq,
             reason: reason.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// The name this head attached under.
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    /// **Ask the daemon to stop**, not just this head.
+    ///
+    /// `who` is the identity this head attached under; it rides along because
+    /// the notice every other head gets names the asker, and a daemon that
+    /// said only "stopping" would leave a shared session guessing.
+    pub fn stop(&mut self, expected_seq: u64, who: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::Stop {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            who: who.to_string(),
         })?;
         Ok(client_request_id)
     }

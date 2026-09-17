@@ -738,6 +738,12 @@ fn run() -> Result<i32, String> {
             r.summary_turn.reusable
         ),
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
+        // `run` returns after this line; `daemon.shutdown()` below is the same
+        // orderly stop a SIGTERM takes, which is the point of routing it here
+        // rather than raising a signal from inside the worker.
+        Outcome::Stopped { who } => {
+            eprintln!("  {session} · {who} asked this daemon to stop")
+        }
         Outcome::Ignored => {}
     });
     daemon.shutdown();
