@@ -188,7 +188,17 @@ use crate::view::Snapshot;
 /// already exist (`Mode`, `/supervise`), so this adds a way to SEE and not a
 /// second way to set; a settings frame that also wrote would be a second path
 /// into the same state, and the mode store already has one.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// # 19: a head can take back what it queued
+///
+/// [`ClientFrame::WithdrawPrompts`] is a new client frame, so a version-18
+/// daemon would fail to parse it — the version-4 argument, and the same
+/// ATTACH-time refusal. It exists because the queue it names is real: a prompt
+/// typed behind a long tool call sits unconsumed for minutes, and the operator
+/// who pulls it back into the composer to edit it needs the original gone, not
+/// stacked under the edit. The same version makes the operator's consecutive
+/// queued messages **one** message: the engine merges them before the boundary,
+/// so the model reads one user turn instead of a stack of fragments.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +306,16 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         text: String,
+    },
+    /// Take back what this head queued: every [`ClientFrame::Prompt`] from this
+    /// head that has not been consumed by the running turn yet is dropped, and
+    /// the operator's held steering text with it. The head that recalls its
+    /// queued line into the composer to edit it sends this first, so the edited
+    /// resend replaces the original instead of stacking onto it. Between turns
+    /// there is nothing held to drop, and the frame is a quiet no-op.
+    WithdrawPrompts {
+        client_request_id: String,
+        expected_seq: u64,
     },
     /// Idempotent, issuable by any attached head, announced with the issuer.
     Interrupt {
@@ -773,6 +793,10 @@ mod tests {
                 client_request_id: "r1".into(),
                 expected_seq: 12,
                 text: "hello".into(),
+            },
+            ClientFrame::WithdrawPrompts {
+                client_request_id: "r1w".into(),
+                expected_seq: 12,
             },
             ClientFrame::Interrupt {
                 client_request_id: "r2".into(),

@@ -1325,6 +1325,13 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            // A take-back reaching the worker means the turn ended before the
+            // steering poll saw it: whatever prompts it named have already run
+            // as their own turns or are about to, and are no longer the
+            // operator's to take back. Quietly nothing — the head cleared its
+            // own echo when it recalled the line, and a warning here would be
+            // noise about a no-op.
+            CommandKind::WithdrawPrompts => Outcome::Ignored,
             // The request is honoured mid-turn by the `bash` wait loop, which reads
             // the hub's promote channel. Reaching here means nothing was running, so
             // the request is stale — clear it and say so, rather than leaving it for

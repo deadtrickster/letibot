@@ -956,6 +956,52 @@ mod tests {
     }
 
     #[test]
+    fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
+        let r = reg();
+        let a = r.create("s-a", "", SessionWiring::default()).unwrap();
+        let ha = a.attach("tui", "alice", Caps::default(), 0);
+        let hb = a.attach("tui", "bob", Caps::default(), 0);
+
+        a.submit(
+            &ha.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "alice one".into(),
+            },
+        );
+        a.submit(
+            &hb.head_id,
+            "c2",
+            0,
+            CommandKind::Prompt {
+                text: "bob".into(),
+            },
+        );
+        a.submit(
+            &ha.head_id,
+            "c3",
+            0,
+            CommandKind::Prompt {
+                text: "alice two".into(),
+            },
+        );
+        a.submit(&ha.head_id, "c4", 0, CommandKind::WithdrawPrompts);
+
+        assert!(
+            a.try_withdraw_command(),
+            "the take-back was found and acted on"
+        );
+        // Alice's prompts are gone — both of them — and bob's is not alice's to
+        // take back.
+        let left: Vec<_> = (0..2).filter_map(|_| a.try_steering_command()).collect();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].kind, CommandKind::Prompt { text: "bob".into() });
+        // And the take-back itself is consumed: a second one finds nothing.
+        assert!(!a.try_withdraw_command());
+    }
+
+    #[test]
     fn a_ring_whose_command_was_already_drained_does_not_return_an_empty_wake() {
         // What happens for real: a turn is running, `HubSteering` drains the queue
         // at a step boundary, and the ring is still outstanding.

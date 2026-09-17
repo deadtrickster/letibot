@@ -128,6 +128,10 @@ pub enum Action {
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     Mode { name: String },
+    /// Take back every prompt this head queued that the running turn has not
+    /// consumed yet — the companion of a recall: Up pulled the queued line into
+    /// the composer to edit it, and the original must not land behind the edit.
+    WithdrawPrompts,
     /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
     Slash { line: String },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
@@ -1287,9 +1291,8 @@ impl App {
                     UserPart::Text { text } => Some(text.clone()),
                     _ => None,
                 })
-                && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
             {
-                self.pending_prompts.remove(at);
+                self.retire_pending(&text);
             }
         }
         // The snapshot's in-flight calls are **not** seeded into `call_targets`.
@@ -2343,9 +2346,11 @@ impl App {
         // the ladder and cannot sensibly mean anything else -- the same argument the
         // picker arm above already makes for a bare row number.
         //
-        // Only with an EMPTY composer, so nothing is taken away: a half-typed line
-        // still scrolls, still edits, and Enter still sends it. That keeps `/command`,
-        // a typed option id and the tests working unchanged.
+        // Up/Down only with an EMPTY composer, so nothing is taken away: a half-typed
+        // line still scrolls and still edits. Enter is the ask's in both states —
+        // with an empty line the marked row is the answer here; with a typed line
+        // `submit` answers the ask and holds the words, because a permission arriving
+        // mid-typing must not turn Enter into "send the half-thought".
         if !self.open.is_empty() && self.editor.text().is_empty() {
             let n = self.open[0].options.len();
             match k {
@@ -2360,17 +2365,7 @@ impl App {
                     return None;
                 }
                 Key::Enter if n > 0 => {
-                    let d = &self.open[0];
-                    let opt = d.options[self.sel.min(n - 1)].option_id.clone();
-                    let req_id = d.req_id.clone();
-                    return Some(Action::Answer {
-                        req_id,
-                        option_id: opt,
-                        // Enter on the ladder is the no-glob path by construction:
-                        // there is nothing typed to read one from. A glob is given
-                        // by typing `allow_always <pattern>` on the line.
-                        pattern: None,
-                    });
+                    return self.answer_marked();
                 }
                 _ => {}
             }
@@ -2536,6 +2531,32 @@ impl App {
             }
         }
 
+        // **Up with an empty composer recalls the queued line.**
+        //
+        // The echo above the composer is the operator's own words, held only
+        // until the next step boundary — and the one thing this head can do
+        // about a message it already sent is take it back before it lands. Up
+        // is the key readline taught for "the previous entry", and behind a
+        // running turn the queue is one entry now. The take-back rides with the
+        // recall: the daemon drops the queued prompts and the held operator
+        // text, so the edited resend replaces the original instead of stacking
+        // onto it. Parked in the scrollback, Up still scrolls — reading history
+        // is what the operator is there for — and a half-typed line keeps the
+        // editor's own Up: readline history, not the queue's recall. No take-back
+        // rides on browsing history, or one press of Up behind a running turn
+        // would silently drop the queue under the operator.
+        if matches!(k, Key::Up)
+            && self.editor.text().is_empty()
+            && self.scroll == 0
+            && !self.pending_prompts.is_empty()
+        {
+            let text = self.pending_prompts.join("\n");
+            self.pending_prompts.clear();
+            self.set_composer(&text);
+            self.redraw = true;
+            return Some(Action::WithdrawPrompts);
+        }
+
         // Tab: slash-command completion. The composer's own keys run after it
         // because Tab means nothing to the editor — its byte used to be eaten
         // by the decoder — and every other key leaves a running completion
@@ -2585,6 +2606,28 @@ impl App {
         }
     }
 
+    /// The marked row is the answer: the marker IS the thing Enter takes, the
+    /// same contract the pickers keep. `None` when the ask offers no options —
+    /// the ladder arm refuses to move through one, and this refuses to answer
+    /// one.
+    fn answer_marked(&mut self) -> Option<Action> {
+        let d = self.open.first()?;
+        let n = d.options.len();
+        if n == 0 {
+            return None;
+        }
+        let option_id = d.options[self.sel.min(n - 1)].option_id.clone();
+        let req_id = d.req_id.clone();
+        Some(Action::Answer {
+            req_id,
+            option_id,
+            // The ladder is the no-glob path by construction: there is nothing
+            // typed to read one from. A glob is given by typing
+            // `allow_always <pattern>` on the line.
+            pattern: None,
+        })
+    }
+
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     fn submit(&mut self, text: String) -> Option<Action> {
@@ -2604,16 +2647,30 @@ impl App {
         if self.mode_picker {
             return self.pick_mode(text.trim());
         }
-        // An open decision takes the line as an option id or its first letter, so
-        // answering does not require a second keymap.
-        if let Some(d) = self.open.first().cloned()
-            && let Some((opt, pattern)) = match_option(&d, text.trim())
-        {
-            return Some(Action::Answer {
-                req_id: d.req_id,
-                option_id: opt,
-                pattern,
-            });
+        // An open decision owns Enter, typed line or not. A line that names an
+        // option is that answer. Any other line is not disposable: the ask
+        // arrived while it was being typed, and Enter on a card means "answer
+        // this" — the marked row — so the words go back to the composer and
+        // the next Enter, with the ask settled, sends them. Sending them here
+        // is how a permission arriving mid-typing turned Enter into "send the
+        // half-thought" (the operator, 2026-09-17).
+        if let Some(d) = self.open.first().cloned() {
+            if let Some((opt, pattern)) = match_option(&d, text.trim()) {
+                return Some(Action::Answer {
+                    req_id: d.req_id,
+                    option_id: opt,
+                    pattern,
+                });
+            }
+            self.set_composer(&text);
+            if let Some(a) = self.answer_marked() {
+                self.say("answered the ask — your line is held, enter sends it");
+                return Some(a);
+            }
+            // An ask with no options cannot be taken by Enter at all; the
+            // line stays held rather than becoming a prompt sent under it.
+            self.say("this ask offers no options — your line is held");
+            return None;
         }
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
@@ -2625,7 +2682,20 @@ impl App {
         // queues the prompt as a follow-up user item and appends it at the next
         // step boundary, and until then this is the only place the sentence exists
         // where the person who typed it can see it.
-        self.pending_prompts.push(text.clone());
+        //
+        // **Behind a running turn the queue is one message.** The engine merges
+        // the operator's consecutive steering into one held item (one user turn
+        // for the model, not a stack of fragments), so the echo joins the same
+        // way — the landing row retires the echo by being its text. Idle submits
+        // land each as their own row within a tick, so they stay separate.
+        if self.turn_running()
+            && let Some(last) = self.pending_prompts.last_mut()
+        {
+            last.push('\n');
+            last.push_str(&text);
+        } else {
+            self.pending_prompts.push(text.clone());
+        }
         Some(Action::Prompt(text))
     }
 
@@ -3119,6 +3189,34 @@ impl App {
         }
     }
 
+    /// Stand down the echo of a queued prompt whose row has landed.
+    ///
+    /// The transcript takes the words over by being their text, so the exact
+    /// match is the rule. One refinement: behind a running turn the operator's
+    /// consecutive messages are **one** message — the engine merges them — and
+    /// a notice landing between them splits the run, so a landing row may be a
+    /// *piece* of a coalesced echo. A row that is the front piece of an echo
+    /// strips itself off it, and the rest stays queued until its own rows land.
+    fn retire_pending(&mut self, text: &str) {
+        if let Some(at) = self.pending_prompts.iter().position(|p| *p == text) {
+            self.pending_prompts.remove(at);
+            return;
+        }
+        let prefix = format!("{text}\n");
+        if let Some(at) = self
+            .pending_prompts
+            .iter()
+            .position(|p| p.starts_with(&prefix))
+        {
+            let rest = self.pending_prompts[at][prefix.len()..].to_string();
+            if rest.is_empty() {
+                self.pending_prompts.remove(at);
+            } else {
+                self.pending_prompts[at] = rest;
+            }
+        }
+    }
+
     /// Post a transient line. It lives for a few frames and then gets out of the
     /// way; it does **not** take the input line's place, which is what the old one
     /// did — after the first prompt of a session there was nowhere to see what you
@@ -3149,9 +3247,8 @@ impl App {
                 UserPart::Text { text } => Some(text.clone()),
                 _ => None,
             })
-            && let Some(at) = self.pending_prompts.iter().position(|p| *p == text)
         {
-            self.pending_prompts.remove(at);
+            self.retire_pending(&text);
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
@@ -7192,6 +7289,141 @@ mod tests {
         );
     }
 
+    #[test]
+    fn queued_prompts_behind_a_running_turn_are_one_message() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("also fix the parser".into()))
+        );
+        typed(&mut a, "and add a test for it");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("and add a test for it".into()))
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec!["also fix the parser\nand add a test for it".to_string()],
+            "one echo, the way the engine holds one message"
+        );
+        // Idle submits land each as their own row within a tick, so they stay
+        // separate entries.
+        a.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+        typed(&mut a, "fresh question");
+        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("fresh question".into())));
+        assert_eq!(a.pending_prompts.len(), 2);
+    }
+
+    #[test]
+    fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        a.key(Key::Enter);
+        typed(&mut a, "and add a test for it");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts.len(), 1);
+        // Up with an empty composer: the queue comes back, the take-back rides.
+        assert_eq!(a.key(Key::Up), Some(Action::WithdrawPrompts));
+        assert_eq!(a.input(), "also fix the parser\nand add a test for it");
+        assert!(a.pending_prompts.is_empty(), "recalled, not held");
+        // The operator edits and sends; the edited line queues fresh, and the
+        // daemon's take-back means it replaces the original rather than
+        // stacking onto it.
+        typed(&mut a, " — no, just the parser");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt(
+                "also fix the parser\nand add a test for it — no, just the parser".into()
+            ))
+        );
+        assert_eq!(a.pending_prompts.len(), 1);
+    }
+
+    #[test]
+    fn up_with_a_half_typed_line_still_belongs_to_the_editor() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "queued one");
+        a.key(Key::Enter);
+        typed(&mut a, "half a thought");
+        assert_eq!(a.key(Key::Up), None, "the editor keeps its own Up");
+        // What the editor does with it is the editor's own readline semantics,
+        // unchanged here: Up at the top row walks its submitted-line history,
+        // which replaces the half-typed line — same as main, same as any shell.
+        // The queue's part in this is only the negative one: no take-back rode
+        // along, and the mirror still holds what the daemon still holds.
+        assert_eq!(a.input(), "queued one");
+        assert_eq!(a.pending_prompts.len(), 1, "the queue is untouched");
+    }
+
+    #[test]
+    fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "first");
+        a.key(Key::Enter);
+        typed(&mut a, "second");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts, vec!["first\nsecond".to_string()]);
+        // The whole coalesced message lands: the echo stands down whole.
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "first\nsecond".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty());
+        // A notice split the run, so the pieces land around it: the front piece
+        // strips itself off the echo, the rest waits for its own row.
+        typed(&mut a, "third");
+        a.key(Key::Enter);
+        typed(&mut a, "fourth");
+        a.key(Key::Enter);
+        a.record_item(
+            "s.1",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "third".into(),
+                }],
+            },
+        );
+        assert_eq!(a.pending_prompts, vec!["fourth".to_string()]);
+        a.record_item(
+            "s.2",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "fourth".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty());
+    }
+
     /// **A refusal the harness made is one dim line, not a wall in red.**
     ///
     /// The operator's report, about a `bash` one-liner the normaliser could not
@@ -7997,18 +8229,35 @@ mod tests {
 
     /// The arrows belong to the decision only while the composer is empty.
     ///
-    /// A half-typed line still edits and still sends, so nothing was taken away from
-    /// the person who prefers typing — including `/command`, which shares Enter.
+    /// A half-typed line still edits, so nothing was taken away from the person
+    /// who prefers typing — including `/command`, which shares Enter. Enter does
+    /// NOT send the line while an ask is open: the ask arrived while the line
+    /// was being typed, and Enter on a card means "answer this" (the operator,
+    /// 2026-09-17: *"when i hit enter my unfinished prompt gets sent first"*).
+    /// The line is held and the next Enter, with the ask settled, sends it.
     #[test]
-    fn a_half_typed_line_keeps_the_arrows_and_enter() {
+    fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
         typed(&mut a, "some prose");
-        // Enter sends the line as a prompt, not as an answer to the decision.
-        assert!(
-            matches!(a.key(Key::Enter), Some(Action::Prompt(t)) if t == "some prose"),
-            "a typed line must still submit while a decision is open"
+        // The arrows still belong to the composer while a line is typed: the
+        // ladder cursor does not move under the operator's feet.
+        a.key(Key::Up);
+        assert_eq!(a.sel, 0);
+        // Enter answers the ask with the marked row and holds the line.
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Answer {
+                req_id: "r1".into(),
+                option_id: "allow".into(),
+                pattern: None
+            })
         );
+        assert_eq!(a.input(), "some prose", "the words are held, not sent");
+        assert!(a.pending_prompts.is_empty(), "nothing was sent");
+        // With the ask settled, the next Enter sends the held line.
+        a.apply(ServerFrame::Event(env(2, testing::answered("r1", "allow"))));
+        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("some prose".into())));
     }
 
     #[test]
@@ -8024,6 +8273,7 @@ mod tests {
                 pattern: None
             })
         );
+        assert_eq!(a.input(), "", "the typed id is consumed, not held");
     }
 
     #[test]

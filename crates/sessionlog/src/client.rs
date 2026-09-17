@@ -131,6 +131,19 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Take back every prompt this head queued that the running turn has not
+    /// consumed yet. The companion of [`Self::prompt`] for the recall-to-edit
+    /// flow: the head pulls the queued line into its composer and sends this,
+    /// so the edited resend replaces the original instead of stacking onto it.
+    pub fn withdraw_prompts(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::WithdrawPrompts {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+        })?;
+        Ok(client_request_id)
+    }
+
     pub fn interrupt(&mut self, expected_seq: u64, reason: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Interrupt {
