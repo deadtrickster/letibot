@@ -9,10 +9,8 @@
 //!     → the GATE (clause 4, in the runtime) — refuses with no adjudicator
 //!       → the file exists?        no  → the nearest listing, and `write` named
 //!         → the backend writable? no  → which of the two gates stopped this
-//!           → read this session?  no  → the file, recorded, so the retry works
-//!             → unchanged since?  no  → what changed, recorded, so the retry works
-//!               → exactly one match? no → what IS there (§8.1 clause 1)
-//!                 → apply, atomically
+//!           → exactly one match?  no  → what IS there (§8.1 clause 1)
+//!             → apply, atomically
 //! ```
 //!
 //! Every `no` on that ladder produces **more** output than the `yes` does, and
@@ -20,6 +18,36 @@
 //! another call. That is the module-level rule the read-only built-ins already
 //! keep; it costs more here, because the alternative to a good miss report is a
 //! model guessing at a file it is about to write to.
+//!
+//! # Two rungs that used to be on that ladder, and why they are not
+//!
+//! **read-before-write** — refuse an edit to a file this session had not read,
+//! *"so that a write can never be aimed at a file the model is remembering
+//! rather than reading"* — and **staleness**, refuse when the file's bytes had
+//! changed since this session was shown them. Both went on 2026-09-17, for
+//! reasons the operator put better than the code had:
+//!
+//! *"if before region matches what is in file it just looks dumb"*. It did: the
+//! read rung ran BEFORE the match, and the match already refuses a miss and an
+//! ambiguity — so every edit that lands has proved `old_string` occurs exactly
+//! once in the file's current bytes, which is not something a model does from a
+//! faulty memory. The rung was asking for evidence that had just been produced.
+//!
+//! *"if a file was never truly read what is the value"*. None: over the paste
+//! ceiling the refusal showed an EXCERPT, recorded the file as seen, and let the
+//! retry through — so on exactly the large files where being wrong about
+//! surroundings is likeliest, it pasted a fragment and stood aside. It was
+//! bookkeeping that cleared its own flag.
+//!
+//! The staleness rung was the better of the two — it stated a fact rather than
+//! guessing — but the fact it stated was too coarse to act on: the digest is of
+//! the WHOLE file, so a formatter touching line 900 refused an edit at line 12
+//! whose target was verified current. Making it mean what it says needs the set
+//! of lines the model was actually shown, across `read` ranges and grep hits,
+//! which is a real piece of work and is on the board rather than half-done here.
+//!
+//! What is left is one check that is true by construction: the text being
+//! replaced is in the file, exactly once, right now.
 
 use serde_json::Value;
 
@@ -59,9 +87,7 @@ impl Tool for Edit {
             // file.
             "Replace exact text in a file. Give `path`, `old_string` (the text to \
              replace, copied exactly — whitespace, indentation and all) and \
-             `new_string`. Read the file first; an edit to a file this session has \
-             not read is refused and the file comes back with the refusal. \
-             `old_string` must occur exactly once unless `replace_all` is true; if it \
+             `new_string`. `old_string` must occur exactly once unless `replace_all` is true; if it \
              occurs more than once the reply lists every line it occurs on. If it is \
              not found, the reply says what is at the nearest matching place instead, \
              and whether the difference is whitespace, indentation or case.",
@@ -149,10 +175,6 @@ impl Tool for Edit {
                  was written.",
             );
         }
-        if let Some(refusal) = read_before_write(ctx, path, &file, &bytes, old) {
-            return refusal;
-        }
-
         let hits = occurrences(&file.lf, old);
         match (hits.len(), replace_all) {
             (0, _) => no_match(&file, path, old),
@@ -415,122 +437,6 @@ fn missing_file(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     ))
 }
 
-/// Read-before-write, and the staleness check that is the reason for it.
-///
-/// Returns `Some(refusal)` when the edit must not proceed. In **both** refusing
-/// cases it records the content it is refusing over, so the immediate retry
-/// succeeds — see [`crate::files`] for why that does not weaken the rule.
-fn read_before_write(
-    ctx: &mut InvokeCtx<'_>,
-    path: &str,
-    file: &FileText,
-    bytes: &[u8],
-    old: &str,
-) -> Option<Invocation> {
-    let seen = ctx.files.seen(path);
-    let now = crate::spill::content_hash(bytes);
-
-    let Some(seen) = seen else {
-        // Same ceiling, same reason, same honesty about what was shown — see
-        // `PASTE_CEILING`. A file this session has never read is the commoner of
-        // the two refusals and the likelier to be large.
-        let whole = file.lf.len() <= PASTE_CEILING;
-        ctx.files.record(path, bytes, whole);
-        let read = ctx.files.paths();
-        let also = if read.len() > 1 {
-            format!(
-                "\nthis session has read: {}\n",
-                read.iter()
-                    .filter(|p| *p != &crate::files::normalise(path))
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        } else {
-            String::new()
-        };
-        return Some(
-            Invocation::failed(
-                format!("this session has not read `{path}`"),
-                if whole {
-                    format!(
-                        "an edit may only land on content this session has been shown, so \
-                         that a write can never be aimed at a file the model is remembering \
-                         rather than reading. `{path}` is below, in full, and it is now \
-                         recorded as read — call `edit` again with the same arguments and \
-                         it will proceed.{also}\n{}",
-                        numbered(&file.lf)
-                    )
-                } else {
-                    format!(
-                        "an edit may only land on content this session has been shown, so \
-                         that a write can never be aimed at a file the model is remembering \
-                         rather than reading.\n\n`{path}` is too large to paste back in \
-                         full ({} bytes, over the {PASTE_CEILING} byte ceiling), so an \
-                         excerpt around your target is below and the file is recorded as \
-                         read — `edit` will proceed on the next call. Read more of it \
-                         first if your `old_string` needs surrounding context to be \
-                         unambiguous.{also}\n\n{}",
-                        bytes.len(),
-                        excerpt(&file.lf, old)
-                    )
-                },
-            )
-            .with_note(format!(
-                "nothing was written. `{path}` is {} bytes, {} line(s).",
-                bytes.len(),
-                display_lines(&file.lf).len()
-            )),
-        );
-    };
-
-    if seen.digest != now {
-        // Whether the whole file goes back depends on its size, and so does what
-        // may be claimed about it: `record(.., true)` asserts the model has been
-        // shown the WHOLE file, and asserting that after pasting forty lines of it
-        // would be the read-before-write rule lying on its own behalf. The
-        // digest is recorded either way, which is what licenses the retry —
-        // `edit` gates on the content being current, and verifies the target by
-        // matching `old_string` against the real bytes.
-        let whole = file.lf.len() <= PASTE_CEILING;
-        ctx.files.record(path, bytes, whole);
-        let body = if whole {
-            format!(
-                "the file was {} bytes when it was read and is {} bytes now, so \
-                 somebody else — the operator, a formatter, a build — has written to \
-                 it. An edit aimed at the old contents could land in the wrong place. \
-                 The current contents are below and are now recorded as read; check \
-                 that your `old_string` is still what you want and call `edit` \
-                 again.\n\n{}",
-                seen.bytes,
-                bytes.len(),
-                numbered(&file.lf)
-            )
-        } else {
-            format!(
-                "the file was {} bytes when it was read and is {} bytes now, so \
-                 somebody else — the operator, a formatter, a build — has written to \
-                 it. An edit aimed at the old contents could land in the wrong place.\n\n\
-                 It is too large to paste back in full ({} bytes, over the {PASTE_CEILING} \
-                 byte ceiling), and pasting it would cost more context than the edit is \
-                 worth, so an excerpt around your target is below. The CURRENT contents \
-                 are recorded as read, so `edit` will proceed on the next call — but \
-                 check the excerpt first, and `read` more of the file if your \
-                 `old_string` needs surrounding context to be unambiguous.\n\n{}",
-                seen.bytes,
-                bytes.len(),
-                bytes.len(),
-                excerpt(&file.lf, old)
-            )
-        };
-        return Some(
-            Invocation::failed(format!("`{path}` changed since this session read it"), body)
-                .with_note("nothing was written."),
-        );
-    }
-    None
-}
-
 /// A write the backend refused. Says **which** gate stopped it, because a
 /// refusal that does not is the refusal that costs an hour.
 fn write_failed(ctx: &mut InvokeCtx<'_>, path: &str, e: BackendError) -> Invocation {
@@ -575,93 +481,8 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
     )
 }
 
-/// A file, numbered the way `read` numbers it, so two tools do not teach the
-/// model two formats for one thing.
-/// The most text either refusal below will paste in to re-establish the read.
-///
-/// **Measured 2026-09-15, and this is why the constant exists.** A `--supervise`
-/// session edited `crates/tui/src/app.rs` while another session was writing the
-/// same file; the staleness guard fired and pasted the file in full, and that one
-/// tool result was **123,648 tokens** — for an edit whose target had moved by
-/// 1,283 bytes. The guard was right and the recovery was ruinous: it spent a
-/// third of a context window to say "try again".
-///
-/// **4 KiB, which is about the size of the excerpt itself.** That is deliberate:
-/// it means there is no cliff. A file small enough to take the whole-file path is
-/// one where "the whole file" and "eighty lines around the target" are nearly the
-/// same text, so the two paths agree rather than trading a round trip for eight
-/// thousand tokens.
-///
-/// An earlier version of this fix set it at 32 KiB — ~8k tokens — on the argument
-/// that the fast path should cover almost every file in this tree. The operator's
-/// answer, 2026-09-15: *"no I dont want 32kb ingected into context"*. He is
-/// right, and the reasoning was backwards: this is the budget for a REFUSAL, not
-/// for a read. The model asked to change two lines; what it needs back is enough
-/// to see whether its target is still there, and `read` is one call away for the
-/// rest.
-const PASTE_CEILING: usize = 4 * 1024;
 
-/// Lines around the first occurrence of `needle`, numbered, with what was left
-/// out named rather than silently dropped.
-///
-/// The target is what the caller needs to look at: it is deciding whether its
-/// `old_string` is still the text it meant. When the needle is gone — which is
-/// the usual reason an edit went stale — the head of the file is shown and the
-/// result says the needle is no longer there, which is itself the answer.
-fn excerpt(text: &str, needle: &str) -> String {
-    const RADIUS: usize = 40;
-    let lines: Vec<&str> = text.lines().collect();
-    let first = needle.lines().next().unwrap_or("").trim();
-    let hit = if first.is_empty() {
-        None
-    } else {
-        lines.iter().position(|l| l.contains(first))
-    };
-    let (start, why) = match hit {
-        Some(i) => (
-            i.saturating_sub(RADIUS),
-            format!(
-                "the first line of your `old_string` still occurs, at line {}; \
-                 lines {}-{} are below",
-                i + 1,
-                i.saturating_sub(RADIUS) + 1,
-                (i + RADIUS + 1).min(lines.len())
-            ),
-        ),
-        None => (
-            0,
-            format!(
-                "the first line of your `old_string` does NOT occur in the file any \
-                 more, so the text you meant to replace is gone; the first {} lines \
-                 are below for orientation",
-                RADIUS * 2
-            ),
-        ),
-    };
-    let end = (start + RADIUS * 2).min(lines.len());
-    let mut out = format!("{why}.\n\n");
-    if start > 0 {
-        out.push_str(&format!("       … {start} earlier line(s) not shown\n"));
-    }
-    for (n, l) in lines[start..end].iter().enumerate() {
-        out.push_str(&format!("{:>6}| {l}\n", start + n + 1));
-    }
-    if end < lines.len() {
-        out.push_str(&format!(
-            "       … {} later line(s) not shown\n",
-            lines.len() - end
-        ));
-    }
-    out
-}
 
-fn numbered(text: &str) -> String {
-    let mut out = String::new();
-    for (i, l) in text.lines().enumerate() {
-        out.push_str(&format!("{:>6}| {l}\n", i + 1));
-    }
-    out
-}
 
 /// Lines containing the most distinctive token of `first`.
 ///
@@ -726,78 +547,9 @@ mod tests {
     /// work, so the current digest is recorded), and it has to be BOUNDED (an
     /// excerpt, not the file). A fix that only did the second would trade a huge
     /// refusal for an infinite loop of small ones.
-    #[test]
-    fn a_stale_edit_on_a_large_file_is_bounded_and_still_lets_the_retry_through() {
-        let mut h = crate::testing::writable_harness();
-        let filler = "// a line of perfectly ordinary source\n".repeat(2_000);
-        let body = format!("{filler}pub fn target() {{}}\n{filler}");
-        assert!(
-            body.len() > super::PASTE_CEILING * 2,
-            "fixture must exceed the ceiling"
-        );
-        h.write_file("big.rs", &body);
-
-        // Read it, so the session has seen it...
-        let _ = h.call("read", r#"{"path":"big.rs"}"#);
-        // ...then have somebody else change it underneath.
-        h.write_file("big.rs", &format!("{body}// somebody else appended this\n"));
-
-        let r = h.call("edit", r#"{"path":"big.rs","old_string":"pub fn target() {}","new_string":"pub fn target(x: u8) {}"}"#);
-        assert!(!r.is_grounded(), "a stale edit must refuse: {}", r.render());
-        // BOUNDED. Not against PASTE_CEILING — that is the threshold for CHOOSING
-        // the excerpt, and the excerpt plus its explanation is legitimately a
-        // little larger. What matters is that the refusal is a fixed small cost
-        // that does not scale with the file: ~4.5 KiB here, about 1k tokens, for
-        // a file of any size.
-        assert!(
-            r.payload.len() < 8 * 1024 && r.payload.len() < body.len() / 10,
-            "the refusal pasted {} bytes for a {} byte file — this is the 123k-token bug",
-            r.payload.len(),
-            body.len()
-        );
-        // ACTIONABLE: it points at the target rather than the top of the file.
-        assert!(r.payload.contains("pub fn target()"), "{}", r.payload);
-        assert!(r.payload.contains("still occurs, at line"), "{}", r.payload);
-        assert!(
-            r.payload.contains("not shown"),
-            "the elision must be named: {}",
-            r.payload
-        );
-
-        // And the retry goes through, which is what the recorded digest buys.
-        let again = h.call("edit", r#"{"path":"big.rs","old_string":"pub fn target() {}","new_string":"pub fn target(x: u8) {}"}"#);
-        assert!(
-            again.is_grounded(),
-            "the retry must proceed: {}",
-            again.render()
-        );
-    }
-
     /// The fast path is untouched: an ordinary file still comes back whole, which
     /// is what makes the common retry one call instead of two.
-    #[test]
-    fn a_stale_edit_on_an_ordinary_file_still_pastes_it_in_full() {
-        let mut h = crate::testing::writable_harness();
-        h.write_file("small.rs", "pub fn a() {}\npub fn b() {}\n");
-        let _ = h.call("read", r#"{"path":"small.rs"}"#);
-        h.write_file("small.rs", "pub fn a() {}\npub fn b() {}\n// changed\n");
-        let r = h.call(
-            "edit",
-            r#"{"path":"small.rs","old_string":"pub fn a() {}","new_string":"pub fn a(x: u8) {}"}"#,
-        );
-        assert!(!r.is_grounded());
-        assert!(
-            r.payload.contains("// changed"),
-            "the whole file is shown: {}",
-            r.payload
-        );
-        assert!(
-            !r.payload.contains("not shown"),
-            "no elision for a small file: {}",
-            r.payload
-        );
-    }
-    use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
+   use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]
     fn an_edit_replaces_exactly_and_hands_the_head_both_sides() {
@@ -817,43 +569,49 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_without_a_read_is_refused_and_the_file_comes_back() {
+    fn an_edit_lands_on_its_target_whatever_this_session_has_read() {
+        // Read-before-write and the staleness refusal are both gone. What is
+        // left is the check that was always doing the work: `old_string` occurs
+        // exactly once in the file's CURRENT bytes. See the module note for the
+        // two findings that retired the other two.
         let mut h = writable_harness();
         let r = h.call(
             "edit",
-            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"x"}"#,
-        );
-        assert!(!r.is_grounded());
-        let out = r.render();
-        assert!(out.contains("has not read"), "{out}");
-        assert!(out.contains("     1| use std::io;"), "{out}");
-        assert!(
-            h.read_file("src/lib.rs").contains("parse_args"),
-            "untouched"
-        );
-
-        // …and the retry, with the same arguments, works. That is the whole point
-        // of recording on the refusal.
-        let r = h.call(
-            "edit",
-            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"x"}"#,
+            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
         );
         assert!(r.is_grounded(), "{}", r.render());
-    }
+        assert!(h.read_file("src/lib.rs").contains("parse_argv"), "it landed");
 
-    #[test]
-    fn a_file_that_changed_underneath_is_refused_with_the_new_contents() {
-        let mut h = writable_harness();
+        // And a file somebody else rewrote under this session still edits, so
+        // long as the target is there exactly once — the bytes it lands on are
+        // the bytes that were matched.
         h.call("read", r#"{"path":"README.md"}"#);
         h.write_file("README.md", "somebody else was here\n");
         let r = h.call(
             "edit",
-            r#"{"path":"README.md","old_string":"letibot","new_string":"x"}"#,
+            r#"{"path":"README.md","old_string":"somebody","new_string":"nobody"}"#,
         );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert_eq!(h.read_file("README.md"), "nobody else was here\n");
+    }
+
+    /// An unread file whose target is NOT unambiguous is refused by the match,
+    /// which is the check that was always doing the work — and it says more than
+    /// the read rule did: near misses, anchor lines, line numbers.
+    #[test]
+    fn an_unread_file_with_a_bad_target_is_refused_by_the_match() {
+        let mut h = writable_harness();
+        let r = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","old_string":"fn nothing_like_this_exists","new_string":"x"}"#,
+        );
+        assert!(!r.is_grounded());
         let out = r.render();
-        assert!(out.contains("changed since"), "{out}");
-        assert!(out.contains("somebody else was here"), "{out}");
-        assert_eq!(h.read_file("README.md"), "somebody else was here\n");
+        assert!(out.contains("matches that text"), "{out}");
+        assert!(
+            h.read_file("src/lib.rs").contains("parse_args"),
+            "untouched"
+        );
     }
 
     #[test]
