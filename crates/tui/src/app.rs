@@ -816,9 +816,11 @@ pub struct App {
     /// be drawn only by the LIVE card, and the transcript takes a call over the
     /// moment its result row lands — so the diff existed for the milliseconds
     /// between `ToolFinished` and `TranscriptAppended`, and the operator, who
-    /// asked for it twice, reported *"nothing really shown"*. Absent for a row
-    /// this head did not watch run, and the row then shows the tool's own
-    /// text, which is the `Replayed` rule again.
+    /// asked for it twice, reported *"nothing really shown"*. Seeded from the
+    /// snapshot too, for the turn it carries: a restart is not a reason to lose
+    /// the change (operator, 2026-09-17: *"past edits lose their diff panels"*).
+    /// Absent for rows older than that — the view keeps one turn's calls — and
+    /// the row then shows the tool's own text, which is the `Replayed` rule.
     call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
@@ -1323,6 +1325,34 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // The snapshot's turn carries its calls **with their edit excerpts**, and
+        // the rows it appended in order — the same two facts the live hand-off
+        // used when it moved a card's excerpt into `call_edits` as the row landed.
+        // Only the live path filled that map, so a restarted head drew every
+        // landed edit panel-less even though the wire had just handed it the
+        // excerpt (operator, 2026-09-17: past edits lose their diff panels on
+        // restart). Seed it the same way the live arm does: positionally, the
+        // Nth tool_result row is the Nth call. Rows from turns before this one
+        // are not on the wire — the view keeps one turn's calls — and render as
+        // they always did.
+        if let Some(t) = &s.turn {
+            let kinds: std::collections::HashMap<&str, &str> = self
+                .items
+                .iter()
+                .map(|it| (it.item_id.as_str(), it.kind.as_str()))
+                .collect();
+            let mut call_idx = 0usize;
+            for item_id in &t.appended {
+                if kinds.get(item_id.as_str()).copied() == Some("tool_result") {
+                    if let Some(CallState::Finished { edit: Some(e), .. }) =
+                        t.calls.get(call_idx).map(|c| &c.state)
+                    {
+                        self.call_edits.insert(item_id.clone(), e.clone());
+                    }
+                    call_idx += 1;
+                }
+            }
+        }
         self.invalidate_history();
         self.open = s.open_decisions;
         // A snapshot can replace the open set wholesale; keep the highlight in range.
@@ -7040,7 +7070,15 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // ctrl-t` over `  /target` was two, and the second of them carried the
             // count and the chord for a fold that has nothing to fold. At 34 rows
             // that halving is the difference between four calls fitting and eight.
-            let inline = (!bad && lines.len() == 1)
+            let inline = (!bad
+                && lines.len() == 1
+                // An edit with an excerpt draws its diff, not the tool's prose —
+                // the rule the folded arm below already follows. The one-line
+                // shortcut used to preempt it: a landed edit whose payload was a
+                // single line put the prose on the header and returned before the
+                // diff block, so the change was nowhere on the screen even when
+                // the head held both sides.
+                && edit.is_none())
                 .then(|| strip_gutter(lines[0]))
                 .filter(|l| !l.is_empty())
                 .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
@@ -11374,6 +11412,68 @@ mod tests {
         let text = narrow.join("\n");
         assert!(text.contains('│'), "narrow pane drew no split: {narrow:?}");
         assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
+    }
+
+    /// **A restarted head still draws the last turn's edit panels.**
+    ///
+    /// The excerpt rides the `ToolFinished` event and the transcript row does
+    /// not carry it — display data stays off the model-facing transcript. Live,
+    /// the head copied the excerpt into `call_edits` as the row landed, and
+    /// history rows render their panels from that map; the map was memory-only,
+    /// so a restart drew every landed edit panel-less even though the snapshot
+    /// had just handed the head the turn's calls with the excerpt still on them
+    /// (operator, 2026-09-17). The fix seeds the map from the snapshot,
+    /// positionally, the way the live hand-off matched rows to calls. This
+    /// walks the whole restart: a hub whose turn edited a file and then
+    /// finished, a fresh head attaching to its snapshot — attach replays no
+    /// events, so the snapshot's turn is the excerpt's only carrier — and the
+    /// panel on the screen.
+    #[test]
+    fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(testing::proposed("t1", "c1", "edit"));
+        hub.publish(SessionEvent::ToolStarted {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            name: "edit".into(),
+            access: "write".into(),
+        });
+        hub.publish(SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "fnv1a:1".into(),
+            inline_bytes: 12,
+            full_bytes: 12,
+            spill: None,
+            repairs: 0,
+            edit: Some(edit_excerpt()),
+        });
+        hub.publish(testing::appended("s.1", "tool_result"));
+        hub.record_item(
+            "s.1",
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "done".into(),
+            },
+        );
+        hub.publish(testing::turn_finished("t1"));
+
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        // The operator watches tool output open; the fold is a preference, not
+        // the bug. The bug is the excerpt the snapshot carried and the head
+        // dropped.
+        a.tools = Fold::Open;
+
+        let screen = a.screen(120, 40).join("\n");
+        assert!(
+            screen.contains("x();"),
+            "the edit's after-side must render after a restart:\n{screen}"
+        );
     }
 
     /// **The clip the operator photographed.** The card built its diff for the
