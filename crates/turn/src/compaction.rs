@@ -42,7 +42,7 @@ use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
-use crate::events::EventSink;
+use crate::events::{EventSink, NullSink};
 use crate::length::EmptyReason;
 
 /// What is appended as the compaction turn's instruction.
@@ -69,9 +69,24 @@ Do not call tools. Answer with the record and nothing else.";
 /// reasons past its budget is exactly the turn that must hear *put the answer
 /// first*, because the summary is the only thing this turn is for. Exported so a
 /// test can assert the notice itself, not just that something was appended.
+///
+/// **Worded as the operator worded it**, because theirs is the only version with
+/// evidence behind it. Measured in the transcript, 2026-09-18: three machine
+/// notices in a row -- "continue or say why not", then "put the answer before
+/// the reasoning if you are close to the limit", then the first again --
+/// produced three more empty turns. The operator then typed "you keep
+/// overthinking cut it short and do things", and the next reasoning block opened
+/// "The operator is frustrated. Let me cut it short and just do the thing",
+/// followed by the work, in 34 tokens of thinking instead of thousands.
+///
+/// What was wrong with the old ones, specifically: "continue or say why not" is
+/// an OPEN QUESTION, and a model that just overthought accepts the invitation to
+/// deliberate; "if you are close to the limit" is a CONDITION it must evaluate,
+/// which is more thinking, and it is already true. Neither said the thing that
+/// worked. Imperative, short, no question, no condition.
 pub const UNFINISHED_REASONING_NOTICE: &str = "\
-Your previous turn ended inside a reasoning block and said nothing; continue or say \
-why not. Answer again, and put the summary before the reasoning if you reason at all.";
+You keep overthinking. Cut it short and do things. Your last turn thought until it ran \
+out and said nothing. Write the summary now, first, before any reasoning.";
 
 /// What is appended when the summary turn hits the output limit with nothing
 /// usable in it (§5.7's hard fail, given the loop's salvage).
@@ -80,9 +95,9 @@ why not. Answer again, and put the summary before the reasoning if you reason at
 /// this turn owes is the summary.
 fn empty_length_notice(reason: EmptyReason) -> String {
     format!(
-        "Your previous turn hit the output token limit with nothing usable in it ({}). \
-         Nothing was recorded. Answer again, and put the summary before the reasoning \
-         if you are close to the limit.",
+        "You keep overthinking. Cut it short and do things. Your last turn spent its \
+         whole output on reasoning ({}) and nothing was recorded. Write the summary now, \
+         first, before any reasoning.",
         reason.as_str()
     )
 }
@@ -358,6 +373,13 @@ const BATCH_DENOMINATOR: u64 = 4;
 const TAIL_NUMERATOR: u64 = 1;
 const TAIL_DENOMINATOR: u64 = 8;
 
+/// What a summary turn is given to write in, when deciding whether a region can
+/// be done in one pass. Far more than a record needs -- the measured ones run to
+/// a couple of thousand tokens -- because the failure being avoided is a summary
+/// turn that runs out of room, and erring the other way costs only an extra
+/// batch.
+const SUMMARY_ALLOWANCE: u64 = 32_768;
+
 /// The least usable room worth planning against. Below this the batches and the
 /// tail are rounding errors and the honest answer is [`CompactionPlan::Hopeless`].
 const MIN_USABLE: u64 = 1024;
@@ -393,9 +415,29 @@ pub fn plan_compaction(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> 
         return CompactionPlan::NothingToDo;
     }
 
-    // Everything older, cut into batches that fit the batch budget. An item
-    // larger than the budget on its own still gets its own batch -- it cannot be
-    // split, and refusing it would stall compaction on one big tool result.
+    // **One batch when one batch fits.** The operator, watching four parts go by:
+    // "why it tried to batch summary when there was enough tokens". Right --
+    // `batch_budget` is a CEILING for splitting, not a target. If the whole
+    // summarisable region fits in one prompt and still leaves generous room to
+    // write, splitting it buys nothing and costs: four turns instead of one, and
+    // three part-boundaries across which the model cannot see, so a decision made
+    // in part 1 and revised in part 3 is summarised twice and reconciled never.
+    //
+    // "Fits" is measured against the room a summary actually needs, not against
+    // the ceiling: the region plus a generous allowance for the record itself.
+    let whole: u64 = item_tokens[..split].iter().sum();
+    if whole + SUMMARY_ALLOWANCE <= usable {
+        return CompactionPlan::Batched {
+            summarise_before: split,
+            batches: vec![0..split],
+            tail_tokens,
+            summarised_tokens: whole,
+        };
+    }
+
+    // Otherwise, cut into batches that fit the batch budget. An item larger than
+    // the budget on its own still gets its own batch -- it cannot be split, and
+    // refusing it would stall compaction on one big tool result.
     let mut batches = Vec::new();
     let mut start = 0usize;
     let mut acc = 0u64;
@@ -522,20 +564,39 @@ pub fn summarise_batch(
     prefix: &StablePrefix,
     scratch_id: &str,
     batch: &[TranscriptItem],
-    sink: &mut dyn EventSink,
 ) -> Result<Harvest, TurnFailure> {
+    // **The scratch session is silent.**
+    //
+    // It emits nothing to the caller's sink, and the first version of this did,
+    // which put lines like
+    //
+    //     [tool_result — waiting for the body of …#compact-batch-0.66]
+    //     [reasoning   — waiting for the body of …#compact-batch-0.67]
+    //
+    // on the operator's screen, one per row restaged, for a session that is
+    // thrown away as soon as it has answered. A head receiving
+    // `TranscriptAppended` for an item id shows a placeholder and waits for the
+    // body; these bodies never arrive, because they belong to a transcript that
+    // is never persisted and never attached.
+    //
+    // Nothing here is the operator's conversation. The rows are a copy of
+    // history they have already seen, restaged so a model can read it in one
+    // piece, and the only thing worth announcing is that a batch is being
+    // summarised at all -- which is the CALLER's to say, once per batch, not
+    // this function's to say once per row.
+    let mut quiet = NullSink;
     let mut scratch = engine
         .open(scratch_id, prefix)
         .map_err(TurnFailure::from)?;
     scratch
-        .append_items(engine, batch, sink)
+        .append_items(engine, batch, &mut quiet)
         .map_err(TurnFailure::from)?;
     let instruction = TranscriptItem::System {
         text: BATCH_SUMMARY_INSTRUCTION.to_string(),
         origin: SystemOrigin::Update,
     };
     scratch
-        .append_items(engine, &[instruction], sink)
+        .append_items(engine, &[instruction], &mut quiet)
         .map_err(TurnFailure::from)?;
 
     // Same lead as the whole-conversation summary, for the same reason: this is a
@@ -543,14 +604,14 @@ pub fn summarise_batch(
     // the next batch also wants.
     let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
         loop {
-            match engine.run_turn(&mut scratch, sink) {
+            match engine.run_turn(&mut scratch, &mut quiet) {
                 Ok(ok) => break Ok(ok),
                 Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                    append_salvage_notice(&mut scratch, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+                    append_salvage_notice(&mut scratch, engine, &mut quiet, UNFINISHED_REASONING_NOTICE)?;
                 }
                 Err(TurnFailure::EmptyLength { reason, .. }) => {
                     let notice = empty_length_notice(reason);
-                    append_salvage_notice(&mut scratch, engine, sink, &notice)?;
+                    append_salvage_notice(&mut scratch, engine, &mut quiet, &notice)?;
                 }
                 Err(e) => return Err(e),
             }
@@ -579,4 +640,73 @@ fn append_salvage_notice(
     session
         .append_items(engine, &[item], sink)
         .map_err(TurnFailure::from)
+}
+
+#[cfg(test)]
+mod the_scratch_session_is_silent {
+    //! **A throwaway session must not appear on the operator's screen.**
+    //!
+    //! The first version of `summarise_batch` took the caller's sink and handed
+    //! it to the scratch session's `append_items`, so every restaged row was
+    //! announced as `TranscriptAppended`. A head shows a placeholder for an item
+    //! id and waits for the body; these bodies never arrive, because the
+    //! transcript is never persisted and never attached. The operator saw, one
+    //! line per row:
+    //!
+    //!     [tool_result — waiting for the body of …#compact-batch-0.66]
+    //!     [reasoning   — waiting for the body of …#compact-batch-0.67]
+    //!
+    //! This asserts the property structurally: `summarise_batch` has no sink to
+    //! pass, so there is no way to make that mistake again by wiring one
+    //! through. What the operator is told is one line per batch, said by the
+    //! caller, which is the thing they are actually waiting through.
+
+    /// A compile-time assertion about the signature. If a sink parameter is ever
+    /// added back, this stops building and the doc above says why it should not.
+    #[allow(dead_code)]
+    fn summarise_batch_takes_no_sink() {
+        let _: fn(
+            &mut super::TurnEngine<'_>,
+            &super::StablePrefix,
+            &str,
+            &[super::TranscriptItem],
+        ) -> Result<super::Harvest, super::TurnFailure> = super::summarise_batch;
+    }
+}
+
+#[cfg(test)]
+mod batching_only_when_it_has_to {
+    use super::*;
+
+    const W: u64 = 262_144;
+
+    /// The operator's case: ~214k to summarise, ~255k usable. One turn fits with
+    /// 41k to write in, and four were being used.
+    #[test]
+    fn a_region_that_fits_in_one_prompt_is_one_batch() {
+        let items: Vec<u64> = std::iter::repeat(1_000).take(246).collect();
+        let CompactionPlan::Batched { batches, summarise_before, .. } =
+            plan_compaction(&items, 6_880, W)
+        else {
+            panic!("246k needs compacting");
+        };
+        assert_eq!(batches.len(), 1, "one prompt, not four: {batches:?}");
+        assert_eq!(batches[0], 0..summarise_before);
+    }
+
+    /// And a region that genuinely does not fit is still split.
+    #[test]
+    fn a_region_too_big_for_one_prompt_is_still_split() {
+        // A million tokens of history against a 262k window.
+        let items: Vec<u64> = std::iter::repeat(4_000).take(250).collect();
+        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 6_880, W) else {
+            panic!("a million tokens needs compacting");
+        };
+        assert!(batches.len() > 1, "this cannot be done in one prompt: {batches:?}");
+        let usable = W - 6_880;
+        for b in &batches {
+            let n: u64 = items[b.clone()].iter().sum();
+            assert!(n <= usable / 4, "batch {b:?} is {n}, over budget");
+        }
+    }
 }

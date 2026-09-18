@@ -2928,14 +2928,21 @@ impl<'a> Harness<'a> {
         let batches = batches_ranges.len();
         for (n, range) in batches_ranges.iter().enumerate() {
             let scratch = format!("{}#compact-batch-{n}", self.transcript_id);
-            let h = summarise_batch(
-                &mut self.engine,
-                &prefix,
-                &scratch,
-                &items[range.clone()],
-                &mut sink,
-            )
-            .map_err(HarnessError::Turn)?;
+            // One line per BATCH, which is the thing the operator is waiting
+            // through. The batch's own rows say nothing: they are a copy of
+            // history already seen, restaged for a model to read in one piece,
+            // and announcing them put a `waiting for the body of …` placeholder
+            // on the screen for every one.
+            self.hub.publish(SessionEvent::Warning {
+                code: "auto_compact".into(),
+                detail: format!(
+                    "summarising part {} of {batches} ({} item(s))",
+                    n + 1,
+                    range.len()
+                ),
+            });
+            let h = summarise_batch(&mut self.engine, &prefix, &scratch, &items[range.clone()])
+                .map_err(HarnessError::Turn)?;
             tool_calls += h.tool_calls;
             truncated |= h.truncated;
             if batches > 1 {
@@ -3360,12 +3367,35 @@ impl<'a> Harness<'a> {
                         self.append_notice(&notices.join("\n"))?;
                         continue;
                     }
+                    // **The operator's own sentence, because it is the only one with evidence.**
+                    //
+                    // Measured in the transcript, 2026-09-18. The model overthought its way past the
+                    // output limit and said nothing. It was sent three machine notices in a row --
+                    // "continue or say why not", "Answer again, and put the answer before the
+                    // reasoning if you are close to the limit", then the first again -- and produced
+                    // three more empty turns. Then the operator typed:
+                    //
+                    //     you keep overthinking cut it short and do things
+                    //
+                    // and the very next reasoning block opened "The operator is frustrated. Let me
+                    // cut it short and just do the thing", followed by the work, in 34 tokens of
+                    // thinking instead of thousands.
+                    //
+                    // Why the old ones failed, specifically:
+                    //   * "continue or say why not" is an OPEN QUESTION. A model that just
+                    //     overthought is being invited to deliberate, and it accepts.
+                    //   * "if you are close to the limit" is a CONDITION it has to evaluate --
+                    //     more thinking -- and it is already true, so the hedge is pure cost.
+                    //   * Neither says the thing that worked: stop thinking, act.
+                    //
+                    // So: imperative, short, no question, no condition, and it names the behaviour
+                    // rather than the mechanism. A model does not need to be told about token
+                    // limits; it needs to be told what to do next.
                     Err(TurnFailure::EmptyLength { reason, .. }) => {
                         self.append_notice(&format!(
-                            "Your previous turn hit the output token limit with nothing \
-                             usable in it ({}). Nothing was recorded. Answer again, and \
-                             put the answer before the reasoning if you are close to the \
-                             limit.",
+                            "You keep overthinking. Cut it short and do things. Your last \
+                             turn spent its whole output on reasoning ({}) and nothing was \
+                             recorded. Answer first. Reason after, or not at all.",
                             reason.as_str()
                         ))?;
                         continue;
@@ -3379,8 +3409,9 @@ impl<'a> Harness<'a> {
                     // this arm never sees another unfinished turn.
                     Err(TurnFailure::UnfinishedReasoning { .. }) => {
                         self.append_notice(
-                            "Your previous turn ended inside a reasoning block and said \
-                             nothing; continue or say why not.",
+                            "You keep overthinking. Cut it short and do things. Your last \
+                             turn thought until it ran out and said nothing. Stop reasoning \
+                             and act now.",
                         )?;
                         continue;
                     }
