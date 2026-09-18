@@ -56,6 +56,7 @@ fn outcome(summary: &str) -> CompactionOutcome {
         turn_id: "test-turn".into(),
         summary: summary.into(),
         tool_calls: 0,
+        truncated: false,
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
