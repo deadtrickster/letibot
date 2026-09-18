@@ -10096,6 +10096,7 @@ mod tests {
                 item: Box::new(TranscriptItem::Reasoning {
                     text: "working it out".into(),
                     field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
                 }),
             },
         )));

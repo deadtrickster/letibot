@@ -1106,6 +1106,7 @@ impl TurnEngine<'_> {
             produced.push(TranscriptItem::Reasoning {
                 text: done.reasoning.clone(),
                 field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
             });
         }
         produced.push(TranscriptItem::Assistant {

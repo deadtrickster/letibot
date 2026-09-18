@@ -86,8 +86,14 @@ impl Produced {
 
     pub fn mark_truncated(&mut self, truncated: bool) {
         for produced in &mut self.items {
-            if let TranscriptItem::Assistant { truncated: cut, .. } = &mut produced.item {
-                *cut = truncated;
+            match &mut produced.item {
+                TranscriptItem::Assistant { truncated: cut, .. } => *cut = truncated,
+                // **A stopped turn stops the thought too**, and the thought is
+                // what a renderer may decline to replay. Marked on the same pass
+                // and from the same fact, so an interrupted turn cannot end up
+                // with a cut answer beside a thought that claims to be whole.
+                TranscriptItem::Reasoning { truncated: cut, .. } => *cut = truncated,
+                _ => {}
             }
         }
     }
@@ -202,6 +208,9 @@ pub fn produce(
                     item: TranscriptItem::Reasoning {
                         text,
                         field: reasoning_field,
+                        // Stamped by `mark_truncated` once the engine knows how
+                        // the turn ended; `produce` cannot see that from here.
+                        truncated: false,
                     },
                     range: covered_to..end,
                 });
@@ -372,7 +381,8 @@ mod tests {
             p.items[0].item,
             TranscriptItem::Reasoning {
                 text: "thinking".into(),
-                field: ReasoningField::ReasoningContent
+                field: ReasoningField::ReasoningContent,
+                truncated: false,
             }
         );
         // The reasoning row owns the turn-start tokens the generation prompt gave,
