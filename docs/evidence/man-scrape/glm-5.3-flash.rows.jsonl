@@ -1,0 +1,91 @@
+{"program":"7z","flag":"d","why":"The delete command removes the files you name from an existing archive, permanently changing that archive."}
+{"program":"7z","flag":"-sdel","why":"After the files are compressed into the archive, the original files are deleted from disk."}
+{"program":"7z","flag":"-ao{a|s|t|u}","why":"Sets the overwrite mode used when extracting, so in the overwrite modes, files that already exist on disk are replaced by archive contents."}
+{"program":"cp","flag":"-f, --force","why":"If an existing destination file cannot be opened, cp removes that file and tries the copy again (this is ignored when -n is also used)."}
+{"program":"cp","flag":"--remove-destination","why":"Removes each existing destination file before attempting to open it, so the old file is destroyed even if the copy then fails."}
+{"program":"curl","flag":"-o, --output (unless --no-clobber)","why":"Writes the transfer output to the named file, replacing the contents of a file that already exists under that name."}
+{"program":"curl","flag":"-O, --remote-name (unless --no-clobber)","why":"Saves the transfer under the filename taken from the URL, and a local file with that name is overwritten if it already exists."}
+{"program":"curl","flag":"--clobber","why":"Allows curl to overwrite a file that already exists in the destination directory when the server specifies that filename; without it curl reports an error instead."}
+{"program":"curl","flag":"--remove-on-error","why":"If an error occurs during the transfer, curl removes the output file (only applies when the output is a regular file)."}
+{"program":"curl","flag":"--cookie-jar <file>","why":"At the end of the run curl rewrites the given file with its current cookies, so any cookies the file held before are removed."}
+{"program":"curl","flag":"-X, --request DELETE","why":"Sends an HTTP DELETE request instead of GET, asking the server to delete the resource at the target URL."}
+{"program":"dd","flag":"of= (without conv=notrunc)","why":"dd truncates the output file to zero length when it opens it for writing; only with conv=notrunc is the existing content left in place."}
+{"program":"find","flag":"-delete","why":"Deletes the files and directories that match the expression (a directory only if it is empty); it also turns on -depth, so putting it first can delete everything below the starting points."}
+{"program":"ftp","flag":"delete (remote command)","why":"Inside the ftp interpreter, this command deletes the named file on the remote machine."}
+{"program":"ftp","flag":"mdelete (remote command)","why":"Deletes the named remote files on the remote machine; with prompting disabled it deletes all of them without asking."}
+{"program":"ftp","flag":"rmdir (remote command)","why":"Deletes a directory on the remote machine."}
+{"program":"git","flag":"clean","why":"Removes untracked files from the working tree."}
+{"program":"git","flag":"rm","why":"Removes files from the working tree and from the index."}
+{"program":"git","flag":"branch","why":"This subcommand can delete branches, removing a branch that existed before."}
+{"program":"git","flag":"tag","why":"This subcommand can delete tags that existed before."}
+{"program":"git","flag":"reset","why":"Moves the branch tip in order to add or remove commits from the branch, changing the commit history."}
+{"program":"git","flag":"replace","why":"This subcommand can delete refs to replace objects that existed before."}
+{"program":"git","flag":"symbolic-ref","why":"This subcommand can delete symbolic refs that existed before."}
+{"program":"git","flag":"prune-packed","why":"Removes the extra loose object files whose objects are already stored in pack files."}
+{"program":"gzip","flag":"(default, unless -k/--keep)","why":"When compressing or decompressing, gzip deletes the input file afterwards; only -k/--keep keeps the input files."}
+{"program":"journalctl","flag":"--vacuum-size=","why":"Removes the oldest archived journal files until the disk space they use falls below the given size."}
+{"program":"journalctl","flag":"--vacuum-time=","why":"Removes archived journal files older than the given timespan."}
+{"program":"journalctl","flag":"--vacuum-files=","why":"Removes archived journal files to reduce the number of journal files (active journal files are never removed)."}
+{"program":"ln","flag":"-f, --force","why":"Removes existing destination files so the new link can be created in their place."}
+{"program":"mv","flag":"-f, --force","why":"Do not prompt before overwriting, so an existing destination file is silently replaced."}
+{"program":"patch","flag":"-E, --remove-empty-files","why":"Removes output files that are empty after the patches have been applied, and also tries to remove any empty ancestor directories."}
+{"program":"rm","flag":"(no flag) FILE...","why":"rm removes (unlinks) each specified file by default; directories are only removed with -r or -d."}
+{"program":"rm","flag":"-f, --force","why":"Ignores nonexistent files and never prompts, so removal proceeds without asking."}
+{"program":"rm","flag":"-r, -R, --recursive","why":"Removes each listed directory together with all of its contents, recursively."}
+{"program":"rm","flag":"-d, --dir","why":"Removes empty directories, which plain rm would not touch."}
+{"program":"rmdir","flag":"(no flag) DIRECTORY...","why":"rmdir removes each named directory, provided it is empty."}
+{"program":"rmdir","flag":"-p, --parents","why":"Removes the named directory and then its ancestor directories as well, e.g. rmdir -p a/b/c also removes a/b and a."}
+{"program":"rsync","flag":"--delete (or --delete-before/--delete-during/--delete-delay/--delete-after; --del is an alias)","why":"Deletes extraneous files from the receiving side, i.e. files in the synchronized directories that do not exist on the sending side."}
+{"program":"rsync","flag":"--delete-excluded","why":"Also deletes excluded files from the destination directories, which --delete alone would leave alone."}
+{"program":"rsync","flag":"--delete-missing-args","why":"Turns each missing source argument into a deletion request for the corresponding file on the receiving side."}
+{"program":"rsync","flag":"--remove-source-files","why":"After files are successfully duplicated on the receiving side, rsync removes those files from the sending side."}
+{"program":"rsync","flag":"--ignore-errors","why":"Tells --delete to go ahead and delete files even when I/O errors have occurred."}
+{"program":"rsync","flag":"--force","why":"Tells rsync to delete a non-empty directory on the receiver when it is to be replaced by a non-directory."}
+{"program":"rsync","flag":"--inplace","why":"Writes the updated data directly over the destination file instead of a temp file, destroying the original content as the transfer proceeds and leaving a partial file if interrupted."}
+{"program":"rsync","flag":"--compare-dest=DIR","why":"If an exact match of a destination file is found in DIR, rsync removes that file from the destination hierarchy (since 3.1.0)."}
+{"program":"setcap","flag":"-r (capability string)","why":"Removes the capability set from the named file, dropping the capabilities that file had (an empty set is not the same thing)."}
+{"program":"setfacl","flag":"-x, --remove","why":"Removes the given ACL entries from the file, so access rules that existed before are gone."}
+{"program":"setfacl","flag":"-X, --remove-file","why":"Removes the ACL entries listed in the given file from the target file ACL."}
+{"program":"setfacl","flag":"-b, --remove-all","why":"Removes all extended ACL entries from the file, keeping only the base owner, group and others entries."}
+{"program":"setfacl","flag":"-k, --remove-default","why":"Removes the Default ACL from the directory."}
+{"program":"sftp","flag":"(default, unless -a)","why":"When getting files, sftp overwrites existing local partial or complete copies of the files by default; -a instead tries to continue the interrupted transfer."}
+{"program":"sftp","flag":"rm (interactive command)","why":"Deletes the remote file at the given path."}
+{"program":"sftp","flag":"rmdir (interactive command)","why":"Removes the remote directory at the given path."}
+{"program":"ssh-add","flag":"-D","why":"Deletes all identities (keys) currently held in the ssh-agent."}
+{"program":"ssh-add","flag":"-d","why":"Instead of adding identities, removes the given identities (or the default ones if no arguments) from the agent."}
+{"program":"ssh-add","flag":"-e pkcs11","why":"Removes the keys provided by the named PKCS#11 shared library from the agent."}
+{"program":"sudo","flag":"-K, --remove-timestamp","why":"Removes every cached session record for the user, so the next sudo run requires full authentication again."}
+{"program":"tar","flag":"--delete","why":"Deletes the named members from an existing archive (does not work on compressed archives)."}
+{"program":"tar","flag":"--level=0","why":"For a listed-incremental dump, truncates the snapshot file before dumping, discarding its previous contents."}
+{"program":"tar","flag":"--overwrite","why":"When extracting, overwrites files that already exist on disk with the archive contents."}
+{"program":"tar","flag":"--overwrite-dir","why":"When extracting, overwrites the metadata of existing directories (this is the default)."}
+{"program":"tar","flag":"--recursive-unlink","why":"Recursively removes all files in an existing directory before extracting the archive directory over it."}
+{"program":"tar","flag":"--remove-files","why":"Removes the files from disk after they have been added to the archive."}
+{"program":"tar","flag":"-U, --unlink-first","why":"Removes each existing file before extracting over it instead of simply overwriting it."}
+{"program":"tee","flag":"(default, unless -a/--append)","why":"tee writes its input into the named files, replacing the contents of files that already exist; -a appends instead of overwriting."}
+{"program":"truncate","flag":"(no flag) FILE...","why":"truncate shrinks or extends each named file to the specified size; shrinking cuts the file down and destroys whatever content lay beyond the new end."}
+{"program":"unlink","flag":"(no flag) FILE","why":"unlink removes the named file, deleting its directory entry."}
+{"program":"unzip","flag":"-o","why":"Overwrites existing files with the extracted archive contents without prompting (the man page calls it a dangerous option)."}
+{"program":"unzip","flag":"-f","why":"Freshens: extracts only entries that already exist on disk and are newer in the archive, replacing the existing disk copies (querying first unless -o is also given)."}
+{"program":"unzip","flag":"-B","why":"Saves a backup copy of each overwritten file, but together with -o it deletes existing backup files without notice, so old backups can be lost."}
+{"program":"shred","flag":"(no flag) FILE...","why":"shred overwrites the named files repeatedly in place to destroy their data."}
+{"program":"shred","flag":"-u","why":"After overwriting, deallocates and removes the file."}
+{"program":"shred","flag":"--remove[=HOW]","why":"Like -u, removes the file after overwriting, with control over how it is deleted (unlink, wipe or wipesync)."}
+{"program":"socat","flag":"unlink-early (address option)","why":"Unlinks (removes) the file before opening it, so an existing file at that name is gone."}
+{"program":"socat","flag":"unlink (address option)","why":"Unlinks (removes) the file before accessing it."}
+{"program":"socat","flag":"unlink-late (address option)","why":"Unlinks (removes) the file after opening it, making it inaccessible to other processes."}
+{"program":"socat","flag":"unlink-close (address option)","why":"Removes the address file system entry when the address is closed; for named pipes, UNIX domain sockets and pty symbolic links this is the default."}
+{"program":"socat","flag":"trunc (address option)","why":"Truncates the file to size 0 during opening, destroying its contents."}
+{"program":"socat","flag":"ftruncate=<offset> (address option)","why":"Applies ftruncate to the file, truncating it at the given position."}
+{"program":"zstd","flag":"--rm","why":"Removes the source file(s) after successful compression or decompression (with -o it asks for confirmation unless -f silences it)."}
+{"program":"zstd","flag":"-f, --force","why":"Disables input and output checks, allowing existing files to be overwritten."}
+{"program":"wget","flag":"-o logfile","why":"Writes the log to the named file, overwriting the old log file; -a appends instead."}
+{"program":"wget","flag":"-O file","why":"The output file is truncated immediately when the download starts and all downloaded content is written there, destroying its previous contents."}
+{"program":"wget","flag":"-c","why":"With continue, if the server does not support resumed downloads, Wget restarts from scratch and overwrites the existing file entirely."}
+{"program":"wget","flag":"--unlink","why":"Unlinks (removes) the existing file before writing the download instead of clobbering it in place."}
+{"program":"xz","flag":"(default, unless -k/--keep)","why":"After successfully compressing or decompressing, xz removes the source file; -k/--keep keeps it, and the source is never removed when writing to stdout or on error."}
+{"program":"zip","flag":"-d, --delete","why":"Selects entries in an existing zip archive and deletes them."}
+{"program":"zip","flag":"-u (update mode)","why":"When updating an archive, entries that have no matching file on disk are deleted from the archive."}
+{"program":"zip","flag":"-FS","why":"Syncs the archive with the file system: archive entries that no longer match a file on disk are deleted from the archive."}
+{"program":"zip","flag":"--out outarchive","why":"Writes the output archive to the named file, overwriting it and any existing split files without warning."}
+{"program":"zip","flag":"-J","why":"Removes the SFX stub from a self-extracting archive, altering the existing archive."}
