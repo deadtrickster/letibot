@@ -782,6 +782,16 @@ mod tests {
             lang_for("patch.lisp"),
             Some(rano::syntax::Lang::CommonLisp)
         );
+        // The batch of 2026-09-17 took rano from seven grammars to twenty-seven.
+        // A few of them, across the table's shapes — extension, multi-extension,
+        // filename — assert the delegation stayed a delegation.
+        assert_eq!(lang_for("app.ts"), Some(rano::syntax::Lang::TypeScript));
+        assert_eq!(lang_for("README.md"), Some(rano::syntax::Lang::Markdown));
+        assert_eq!(lang_for("style.css"), Some(rano::syntax::Lang::Css));
+        assert_eq!(lang_for("init.lua"), Some(rano::syntax::Lang::Lua));
+        assert_eq!(lang_for("Makefile"), Some(rano::syntax::Lang::Make));
+        assert_eq!(lang_for("schema.sql"), Some(rano::syntax::Lang::Sql));
+        assert_eq!(lang_for("deps.edn"), Some(rano::syntax::Lang::Clojure));
         let old = [";; greet"];
         let new = ["(defun greet (name) t)"];
         let cfg = Box::leak(Box::new(DiffConfig {
