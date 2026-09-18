@@ -84,15 +84,36 @@ impl Produced {
             .collect()
     }
 
+    /// Mark what this turn left unfinished.
+    ///
+    /// **The answer and the thought are cut by different facts**, and using one
+    /// for both was a bug this nearly shipped with. `truncated` says the TURN
+    /// stopped early — an interrupt, or the output limit — and that is right for
+    /// an assistant item however the turn ended. It is wrong for reasoning: a
+    /// turn that thought, CLOSED its block, answered, and only then ran out of
+    /// room has a complete thought in it, and marking that thought unfinished
+    /// would elide a finished one from every later prompt.
+    ///
+    /// [`Produced::ended_in_reasoning`] is the fact that actually applies, and it
+    /// was already here — the operator pointed at it. It says the stream stopped
+    /// before any `ThinkClose`, computed over the same tokens the spans were
+    /// parsed from, so the item view and the stream view cannot disagree.
+    ///
+    /// Only the LAST reasoning item can be the open one. A turn that reasons,
+    /// speaks, and reasons again has two blocks and the first of them is closed
+    /// by the speaking.
     pub fn mark_truncated(&mut self, truncated: bool) {
-        for produced in &mut self.items {
+        let open_thought = self.ended_in_reasoning.then(|| {
+            self.items
+                .iter()
+                .rposition(|p| matches!(p.item, TranscriptItem::Reasoning { .. }))
+        });
+        for (i, produced) in self.items.iter_mut().enumerate() {
             match &mut produced.item {
                 TranscriptItem::Assistant { truncated: cut, .. } => *cut = truncated,
-                // **A stopped turn stops the thought too**, and the thought is
-                // what a renderer may decline to replay. Marked on the same pass
-                // and from the same fact, so an interrupted turn cannot end up
-                // with a cut answer beside a thought that claims to be whole.
-                TranscriptItem::Reasoning { truncated: cut, .. } => *cut = truncated,
+                TranscriptItem::Reasoning { truncated: cut, .. } => {
+                    *cut = open_thought == Some(Some(i));
+                }
                 _ => {}
             }
         }
@@ -534,5 +555,160 @@ mod tests {
         let (body, stripped) = split_trailing_stops(&[1, EOT, 2, EOT, EOT], &[EOT]);
         assert_eq!(body, vec![1, EOT, 2]);
         assert_eq!(stripped, vec![EOT, EOT]);
+    }
+}
+
+#[cfg(test)]
+mod stopping_a_turn_stops_the_thought {
+    //! **The middle link of the abandoned-draft fix**, tested where it lives.
+    //!
+    //! Both real parsers emit a `Reasoning` span for a block that was cut before
+    //! its `</think>` — GLM's says so in as many words, Qwen's has always done
+    //! it. What this asserts is the next step: that the stamp the engine applies
+    //! from the interrupt reaches that span, and not only the assistant item
+    //! beside it.
+    //!
+    //! Asserted separately because the engine-level test for it used the ChatMl
+    //! double, whose parser drops an unclosed block entirely — so it proved
+    //! nothing about either dialect that ships.
+
+    use super::*;
+    use letibot_transcript::ReasoningField;
+
+    fn produced_ending_in_reasoning(items: Vec<TranscriptItem>, ended_in_reasoning: bool) -> Produced {
+        Produced {
+            items: items
+                .into_iter()
+                .map(|item| ProducedItem { item, range: 0..1 })
+                .collect(),
+            tokens: vec![],
+            stripped_stops: vec![],
+            visible_text: String::new(),
+            reasoning_text: String::new(),
+            ended_in_reasoning,
+        }
+    }
+
+    /// **The case `ended_in_reasoning` exists to tell apart**, and the one this
+    /// nearly shipped wrong: a turn that thought, CLOSED the block, answered, and
+    /// only then hit the limit. The turn is truncated; the thought is not, and
+    /// eliding it would delete a finished thought from every later prompt.
+    #[test]
+    fn a_thought_that_finished_before_the_turn_was_cut_is_not_marked() {
+        let mut p = produced_ending_in_reasoning(
+            vec![
+            TranscriptItem::Reasoning {
+                text: "a complete thought, closed properly".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "an answer that ran out of room".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            ],
+            // The block was closed, so the stream did not end inside it.
+            false,
+        );
+        p.mark_truncated(true);
+
+        let TranscriptItem::Reasoning { truncated, .. } = &p.items[0].item else {
+            unreachable!()
+        };
+        assert!(!truncated, "a closed thought is finished, whatever happened after it");
+        let TranscriptItem::Assistant { truncated, .. } = &p.items[1].item else {
+            unreachable!()
+        };
+        assert!(truncated, "the ANSWER is what was cut");
+    }
+
+    /// Two blocks in one turn: the model thought, spoke, thought again, and was
+    /// stopped inside the second. Only the second is open.
+    #[test]
+    fn only_the_last_thought_can_be_the_open_one() {
+        let mut p = produced_ending_in_reasoning(
+            vec![
+            TranscriptItem::Reasoning {
+                text: "first, closed by the speaking that follows".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "let me check".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            TranscriptItem::Reasoning {
+                text: "second, stopped mid-flow + 0 + 0 + 0".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            ],
+            true,
+        );
+        p.mark_truncated(true);
+
+        let marks: Vec<bool> = p
+            .items
+            .iter()
+            .filter_map(|i| match &i.item {
+                TranscriptItem::Reasoning { truncated, .. } => Some(*truncated),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks, vec![false, true], "only the open one is abandoned");
+    }
+
+    #[test]
+    fn an_interrupted_turn_marks_its_reasoning_and_not_only_its_answer() {
+        let mut p = produced_ending_in_reasoning(
+            vec![
+            TranscriptItem::Reasoning {
+                text: "let me count them by hand + 0 + 0 + 0".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            ],
+            // Stopped mid-thought: the block never closed.
+            true,
+        );
+        p.mark_truncated(true);
+
+        for item in p.items.iter().map(|i| &i.item) {
+            match item {
+                TranscriptItem::Reasoning { truncated, .. } => assert!(
+                    *truncated,
+                    "a thought the operator stopped must be marked, or the renderer \
+                     hands it back as though it were finished"
+                ),
+                TranscriptItem::Assistant { truncated, .. } => assert!(*truncated),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// And a turn that ended on its own marks neither.
+    #[test]
+    fn a_turn_that_finished_marks_nothing() {
+        let mut p = produced_ending_in_reasoning(
+            vec![TranscriptItem::Reasoning {
+                text: "a complete thought".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            }],
+            // A turn that finished did not finish inside its own reasoning.
+            false,
+        );
+        p.mark_truncated(false);
+        let TranscriptItem::Reasoning { truncated, .. } = &p.items[0].item else {
+            unreachable!()
+        };
+        assert!(!truncated);
     }
 }
