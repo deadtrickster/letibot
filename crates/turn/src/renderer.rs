@@ -55,6 +55,27 @@ pub trait PromptRenderer: Send + Sync {
     /// message. The engine submits it as an uncommitted tail and commits it as the
     /// leading tokens of the first item the turn produces.
     fn generation_prompt(&self) -> Vec<RenderSpan>;
+
+    /// **The same, with the reasoning block already closed.**
+    ///
+    /// Every dialect here opens one: Qwen hands the model
+    /// `<|im_start|>assistant\n<think>\n` and GLM `<|assistant|><think>`, so a turn
+    /// cannot begin except by thinking. That is right for work and wrong for the
+    /// one turn that is not work.
+    ///
+    /// Measured 2026-09-18. A session sat at 260390 of a 262144 window, which
+    /// left the summary turn 1754 tokens. It spent them reasoning, was cut off
+    /// before writing a word of summary, and the salvage loop asked it to try
+    /// again — four times, thinking first each time, until the cap was spent:
+    /// `compaction FAILED: 4 consecutive length salvages`. The compaction that
+    /// exists to rescue a full window cannot be the thing that needs a roomy one.
+    ///
+    /// A summary is a record, not a decision, so closing the block costs nothing
+    /// it needed. The default is `generation_prompt`, so a dialect that has no
+    /// separate notion of reasoning is unaffected and correct by doing nothing.
+    fn generation_prompt_closing_reasoning(&self) -> Vec<RenderSpan> {
+        self.generation_prompt()
+    }
 }
 
 /// `GlmRenderer` behind the seam.
@@ -64,7 +85,7 @@ pub trait PromptRenderer: Send + Sync {
 #[cfg(feature = "glm")]
 pub mod glm {
     use super::*;
-    use letibot_dialect_glm::{GlmRenderer, generation_prompt, glm_spec};
+    use letibot_dialect_glm::{GlmRenderer, generation_prompt, generation_prompt_closing_reasoning, glm_spec};
 
     pub struct GlmPromptRenderer {
         renderer: GlmRenderer,
@@ -105,6 +126,9 @@ pub mod glm {
 
         fn generation_prompt(&self) -> Vec<RenderSpan> {
             generation_prompt()
+        }
+        fn generation_prompt_closing_reasoning(&self) -> Vec<RenderSpan> {
+            generation_prompt_closing_reasoning()
         }
     }
 }

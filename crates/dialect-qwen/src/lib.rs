@@ -98,7 +98,10 @@ mod render;
 
 pub use json::{hf_tojson, parameter_value_text, qwen_tool_json};
 pub use parse::{QwenParser, TableDecoder};
-pub use render::{QwenRenderer, ends_mid_turn, generation_prompt, outcome_envelope, tools_json};
+pub use render::{
+    QwenRenderer, ends_mid_turn, generation_prompt, generation_prompt_closing_reasoning,
+    outcome_envelope, tools_json,
+};
 
 /// The shipped jinja this dialect renders, verbatim, extracted with
 /// `python3 tests/fidelity/extract_template.py <model-00001-of-00006.gguf>`.

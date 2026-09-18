@@ -113,7 +113,8 @@ mod sha256;
 pub use json::{arg_value_text, glm_tool_json, hf_tojson};
 pub use parse::{GlmParser, TableDecoder};
 pub use render::{
-    Anomaly, GlmRenderer, check_transcript, ends_mid_turn, generation_prompt, outcome_envelope,
+    Anomaly, GlmRenderer, check_transcript, ends_mid_turn, generation_prompt,
+    generation_prompt_closing_reasoning, outcome_envelope,
 };
 
 /// The shipped jinja this dialect was validated against, verbatim.

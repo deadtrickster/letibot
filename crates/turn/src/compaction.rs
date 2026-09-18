@@ -40,7 +40,7 @@
 
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
-use crate::engine::{Session, TurnEngine, TurnFailure};
+use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
 use crate::events::EventSink;
 use crate::length::EmptyReason;
 
@@ -161,9 +161,20 @@ pub fn run_compaction(
     // directly after the instruction and the retry's prompt extends the bytes
     // the server already prefilled — the prefix reuse the auto-compact message
     // promises survives the salvage.
-    let ok = loop {
+    // **The summary turn does not think.**
+    //
+    // It runs when the window is nearly full -- that is the only time it runs --
+    // and a lead that opens `<think>` spends what little is left before writing a
+    // word of summary. Measured 2026-09-18 at 260390 of 262144: 1754 tokens of
+    // room, four salvages, each one thinking first, and
+    // `compaction FAILED: 4 consecutive length salvages; the cap is spent`.
+    //
+    // The whole loop is inside the scope, salvages included: a retry that thinks
+    // again is the failure repeating itself with fewer tokens each time.
+    let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
+        loop {
         match engine.run_turn(session, sink) {
-            Ok(ok) => break ok,
+            Ok(ok) => break Ok(ok),
             Err(TurnFailure::UnfinishedReasoning { .. }) => {
                 append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
             }
@@ -177,7 +188,8 @@ pub fn run_compaction(
             // must say so, not disappear into a retry that never ends.
             Err(e) => return Err(e),
         }
-    };
+        }
+    })?;
 
     let mut summary = String::new();
     let mut tool_calls = 0usize;

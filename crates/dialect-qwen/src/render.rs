@@ -432,6 +432,21 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
 /// The trailing newline is the template's, and it is load-bearing: the model was
 /// trained to begin its reasoning on the line after `<think>`. Dropping it is a
 /// one-token divergence that costs a cold prefill on every turn.
+/// [`generation_prompt`] with the reasoning block opened and immediately closed.
+///
+/// The model is handed `<think></think>` rather than an open `<think>`, so it
+/// starts on assistant text instead of reasoning. Used for the summary turn,
+/// which has to fit in whatever a full context window has left -- 1754 tokens,
+/// the day this was written -- and cannot spend it thinking.
+///
+/// `lead_opens_reasoning` reads the lead the engine is about to submit, so
+/// nothing downstream has to be told which of the two it got.
+pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
+    let mut v = generation_prompt();
+    v.push(RenderSpan::Control(tk::THINK_CLOSE.clone()));
+    v
+}
+
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
         RenderSpan::Control(tk::IM_START.clone()),
@@ -731,5 +746,50 @@ mod tests {
             "",
         );
         assert!(e.starts_with("NO_RESULT\noutcome: abstained\n"));
+    }
+}
+
+#[cfg(test)]
+mod summary_turn_does_not_think {
+    use super::*;
+
+    /// **The lead a summary turn is handed has its reasoning block closed.**
+    ///
+    /// The ordinary lead ends on `<think>`, which is right for work: the model
+    /// reasons, then answers. A summary turn runs only when the window is nearly
+    /// full, so those are the tokens it does not have. Measured 2026-09-18 at
+    /// 260390 of 262144 — 1754 left, spent thinking, four salvages, no summary.
+    #[test]
+    fn the_ordinary_lead_opens_reasoning_and_the_summary_lead_closes_it() {
+        let open = generation_prompt();
+        let closed = generation_prompt_closing_reasoning();
+
+        // The summary lead is the ordinary one plus a close, so nothing about how
+        // the turn begins changes except that the block is already finished.
+        assert_eq!(closed.len(), open.len() + 1);
+        assert_eq!(&closed[..open.len()], &open[..]);
+
+        let roles = |v: &Vec<RenderSpan>| -> Vec<letibot_dialect::ControlRole> {
+            v.iter()
+                .filter_map(|s| match s {
+                    RenderSpan::Control(c) => Some(c.role),
+                    _ => None,
+                })
+                .collect()
+        };
+        use letibot_dialect::ControlRole::{ThinkClose, ThinkOpen};
+
+        // The ordinary lead opens the block and leaves it open — the model reasons
+        // from its first token.
+        let o = roles(&open);
+        assert!(o.contains(&ThinkOpen), "{o:?}");
+        assert!(!o.contains(&ThinkClose), "the ordinary lead must leave it open: {o:?}");
+
+        // The summary lead opens and closes it, in that order, so the model's first
+        // token is assistant text.
+        let c = roles(&closed);
+        let i = c.iter().position(|r| *r == ThinkOpen).expect("opens");
+        let j = c.iter().position(|r| *r == ThinkClose).expect("and closes");
+        assert!(i < j, "the close has to come after the open: {c:?}");
     }
 }
