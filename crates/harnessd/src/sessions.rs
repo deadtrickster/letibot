@@ -1024,17 +1024,24 @@ impl<'a> Sessions<'a> {
                         });
                     }
                 } else {
-                    eprintln!("  compacted: {after} tokens resident now, was {resident}");
+                    // Two facts, not one: the compaction happened, AND the summary
+                    // it produced may be partial. Collapsing them into "compacted"
+                    // is how a truncated record reaches the operator looking whole.
+                    let cut = if report.fork.truncated {
+                        " The summary was CUT OFF at the model's length limit — it is                          incomplete, and the base says so too."
+                    } else {
+                        ""
+                    };
+                    eprintln!("  compacted: {after} tokens resident now, was {resident}.{cut}");
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "auto_compact".into(),
                             detail: format!(
-                                "compacted: {after} tokens resident now, was {resident}."
+                                "compacted: {after} tokens resident now, was {resident}.{cut}"
                             ),
                         });
                     }
                 }
-                let _ = report;
             }
             Err(e) => {
                 // Said on stderr too. The first run of this code printed

@@ -97,6 +97,21 @@ pub struct CompactionOutcome {
     /// calling tools; surfaced rather than swallowed, and a caller that is about
     /// to trust the summary should refuse on a non-zero count.
     pub tool_calls: usize,
+    /// **The model ran out of room before it finished the summary.**
+    ///
+    /// The engine already stamps this on the assistant item from the finish
+    /// reason, and this function used to discard it with a `..` — so a summary
+    /// cut off mid-word was committed as the new base looking whole, and the
+    /// only way to find out was to read it. Measured 2026-09-18: a summary of a
+    /// 260390-token conversation ended at "`super::quarantine(call_id,
+    /// &page.final_url, &page" and became the entire record of everything before
+    /// it.
+    ///
+    /// Surfaced, not refused, and the distinction is the operator's: a session at
+    /// the wall has nowhere else to go, so an incomplete record that SAYS it is
+    /// incomplete beats both a silent one and a refusal to compact at all. The
+    /// caller writes that sentence into the base.
+    pub truncated: bool,
     /// `cached_tokens` from the turn's metrics: how much of the prefix the
     /// server says it reused. This is the point of the whole design, and it is
     /// disclosed rather than assumed — on the hybrid/recurrent model this box
@@ -191,17 +206,7 @@ pub fn run_compaction(
         }
     })?;
 
-    let mut summary = String::new();
-    let mut tool_calls = 0usize;
-    for item in &ok.items {
-        match item {
-            TranscriptItem::Assistant { text, tool_calls: c, .. } => {
-                summary.push_str(text);
-                tool_calls += c.len();
-            }
-            _ => {}
-        }
-    }
+    let Harvest { summary, tool_calls, truncated } = harvest(&ok.items);
     let reusable = match &ok.metrics.prefix_check {
         crate::prefix::PrefixCheck::Held {
             expected_cached_min, ..
@@ -215,10 +220,76 @@ pub fn run_compaction(
         turn_id: ok.turn_id,
         summary,
         tool_calls,
+        truncated,
         cached_tokens: ok.metrics.cached_tokens,
         reusable,
         generated_tokens: ok.metrics.predicted_tokens,
     })
+}
+
+
+/// What a summary turn produced, read off its items.
+///
+/// A free function because it is the part worth testing: `truncated` used to be
+/// discarded here in a `..`, so a summary cut off mid-sentence was committed as
+/// the new base looking whole. The engine stamps that flag from the finish
+/// reason precisely so somebody downstream reads it, and the one caller that
+/// most needed it was the one throwing it away.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Harvest {
+    summary: String,
+    tool_calls: usize,
+    truncated: bool,
+}
+
+fn harvest(items: &[TranscriptItem]) -> Harvest {
+    let mut h = Harvest::default();
+    for item in items {
+        if let TranscriptItem::Assistant { text, tool_calls, truncated, .. } = item {
+            h.summary.push_str(text);
+            h.tool_calls += tool_calls.len();
+            // ANY truncated part truncates the whole: the summary is the
+            // concatenation, so a cut in the middle is a cut in the result.
+            h.truncated |= *truncated;
+        }
+    }
+    h
+}
+
+#[cfg(test)]
+mod harvesting_a_summary {
+    use super::*;
+
+    fn assistant(text: &str, truncated: bool) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: text.into(),
+            tool_calls: vec![],
+            truncated,
+        }
+    }
+
+    #[test]
+    fn a_whole_summary_is_not_marked_cut() {
+        let h = harvest(&[assistant("# Session Record\n…complete…", false)]);
+        assert!(!h.truncated);
+        assert_eq!(h.tool_calls, 0);
+        assert!(h.summary.contains("complete"));
+    }
+
+    /// The measured case: the model ran out of room mid-expression.
+    #[test]
+    fn a_summary_that_ran_out_of_room_is_marked_cut() {
+        let h = harvest(&[assistant("…`super::quarantine(call_id, &page.final_url, &page", true)]);
+        assert!(h.truncated, "the flag the engine stamped must survive the harvest");
+    }
+
+    /// One cut part cuts the whole, because the summary is their concatenation.
+    #[test]
+    fn a_cut_anywhere_cuts_the_result() {
+        let h = harvest(&[assistant("first ", false), assistant("second", true)]);
+        assert!(h.truncated);
+        assert_eq!(h.summary, "first second");
+    }
 }
 
 /// Append one salvage notice as a user item, the tool loop's `append_notice`

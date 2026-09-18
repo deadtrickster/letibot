@@ -829,6 +829,11 @@ pub struct ForkReport {
     pub was_tokens: usize,
     /// The new base: the prefix plus the one summary item.
     pub base_tokens: usize,
+    /// **The summary ran out of room before it finished.** Carried so the
+    /// operator is told on the same line that says compaction worked -- it did
+    /// work, and what it produced is partial, and those are two facts rather
+    /// than one.
+    pub truncated: bool,
 }
 
 /// What a compaction left behind: the fork's numbers and the summary turn's.
@@ -2932,11 +2937,29 @@ impl<'a> Harness<'a> {
             .engine
             .open(&new_id, &onto)
             .map_err(|e| HarnessError::Setup(format!("opening the compacted transcript: {e}")))?;
+        // **A record that was cut off says so, in the record.**
+        //
+        // This is the base every later turn reads as the whole of what came
+        // before. When the summary turn ran out of room mid-sentence, that base
+        // used to claim to be "the summary, written over the full history" — with
+        // the last third missing and nothing anywhere saying it. A model reading
+        // it cannot tell, and neither could the operator until they read to the
+        // end and found `&page.final_url, &page`.
+        //
+        // Not a refusal: a session at the wall has nowhere else to go, and an
+        // incomplete record that admits it is more useful than no compaction at
+        // all. The sentence goes FIRST, before the summary, because a reader who
+        // stops early is exactly the reader who needs it.
+        let cut = if outcome.truncated {
+            " It was CUT OFF at the model's length limit before it finished: what              follows is incomplete, it stops mid-sentence, and anything the              conversation established after the point it reaches is not in it.              Treat a gap as unknown rather than as settled, and re-read the earlier              transcript if something is missing."
+        } else {
+            ""
+        };
         let note = TranscriptItem::System {
             text: format!(
                 "This conversation was compacted: everything said before this point is \
                  replaced by the summary below, which was written over the full history \
-                 of transcript {old_id} and proposed no tool calls.\n\n{}",
+                 of transcript {old_id} and proposed no tool calls.{cut}\n\n{}",
                 outcome.summary
             ),
             origin: SystemOrigin::Update,
@@ -2958,6 +2981,7 @@ impl<'a> Harness<'a> {
             forked_at,
             was_tokens,
             base_tokens: self.session.ledger.len(),
+                    truncated: outcome.truncated,
         })
     }
 
@@ -4844,3 +4868,4 @@ mod endpoint_retry {
         );
     }
 }
+
