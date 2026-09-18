@@ -390,10 +390,35 @@ const MIN_USABLE: u64 = 1024;
 /// which compaction cannot touch and every plan must therefore subtract first.
 /// Measured 2026-09-18: a planner that forgot to answered "this conversation
 /// already fits" about a session whose prefix alone was over the window.
-pub fn plan_compaction(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> CompactionPlan {
+pub fn plan_compaction(
+    item_tokens: &[u64],
+    prefix_tokens: u64,
+    window: u64,
+    headroom: u64,
+) -> CompactionPlan {
     let usable = window.saturating_sub(prefix_tokens);
     if usable < MIN_USABLE {
         return CompactionPlan::Hopeless { prefix_tokens, window };
+    }
+
+    // **Does this conversation need compacting at all?**
+    //
+    // The operator, watching a 70k conversation get batched against a 250k
+    // ceiling: "it doesnt". Quite right, and the first version of this planner
+    // could not tell -- it asked only whether history fitted the TAIL budget,
+    // which is a quite different question. The tail budget says how much recent
+    // history to keep verbatim, around an eighth; anything older than that got
+    // planned into batches, so a 70k conversation with 180k of room to spare
+    // planned a summary of its first 38k for no reason at all.
+    //
+    // The caller is supposed to only ask at the wall, and relying on that is what
+    // made this possible: an assumption doing no work is an assumption that gets
+    // violated. This is the same arithmetic `Config::should_compact` does, asked
+    // again here, because a planner that cannot say "nothing" is a planner that
+    // always says something.
+    let resident = prefix_tokens + item_tokens.iter().sum::<u64>();
+    if resident + headroom < window {
+        return CompactionPlan::NothingToDo;
     }
     let tail_budget = usable * TAIL_NUMERATOR / TAIL_DENOMINATOR;
     let batch_budget = usable * BATCH_NUMERATOR / BATCH_DENOMINATOR;
@@ -470,7 +495,7 @@ mod planning {
 
     #[test]
     fn a_conversation_that_fits_is_not_compacted() {
-        assert_eq!(plan_compaction(&[1000, 1000, 1000], 2_000, W), CompactionPlan::NothingToDo);
+        assert_eq!(plan_compaction(&[1000, 1000, 1000], 2_000, W, W / 16), CompactionPlan::NothingToDo);
     }
 
     /// **The case an existing test caught.** The prefix alone is past the window,
@@ -479,7 +504,7 @@ mod planning {
     /// problem. Nothing that summarises the CONVERSATION can help here.
     #[test]
     fn a_prefix_that_does_not_leave_room_is_hopeless_not_nothing_to_do() {
-        let p = plan_compaction(&[10, 10, 10], 2_700, 512);
+        let p = plan_compaction(&[10, 10, 10], 2_700, 512, 128);
         assert_eq!(p, CompactionPlan::Hopeless { prefix_tokens: 2_700, window: 512 });
     }
 
@@ -489,7 +514,7 @@ mod planning {
     fn the_distant_past_is_batched_and_the_recent_past_is_kept() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(260).collect();
         let CompactionPlan::Batched { summarise_before, batches, tail_tokens, .. } =
-            plan_compaction(&items, 2_000, W)
+            plan_compaction(&items, 2_000, W, W / 16)
         else {
             panic!("260k needs compacting");
         };
@@ -516,7 +541,7 @@ mod planning {
     #[test]
     fn an_oversized_item_gets_its_own_batch() {
         let items = vec![W, 1_000, 1_000];
-        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 2_000, W) else {
+        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 2_000, W, W / 16) else {
             panic!("oversized still plans");
         };
         assert_eq!(batches[0], 0..1);
@@ -585,8 +610,30 @@ pub fn summarise_batch(
     // summarised at all -- which is the CALLER's to say, once per batch, not
     // this function's to say once per row.
     let mut quiet = NullSink;
+    // **The summary turn is given no tools, because it may not use any.**
+    //
+    // `compact_inner` rejects a summary that proposed tool calls -- a summary is
+    // a record, not an action -- and the first version of this handed the scratch
+    // session the conversation's own prefix, tool schemas and all. A model that
+    // has just re-read a stretch of history full of tool calls, and is then asked
+    // to write about it, calls one. The summary was discarded, nothing was
+    // compacted, the session was still over the wall, and compaction fired again:
+    // an infinite loop the operator watched in the head, with "summary discarded"
+    // on every pass.
+    //
+    // Refusing the answer afterwards was always the wrong shape. A tool the model
+    // cannot see is one it cannot call, so the schemas come out of the prefix and
+    // the check below becomes the belt to this braces rather than the only thing
+    // standing between a compaction and a loop.
+    //
+    // It is also cheaper: the schemas are thousands of tokens that every batch
+    // was carrying for no reason.
+    let recording_only = StablePrefix {
+        system: prefix.system.clone(),
+        tools_json: vec![],
+    };
     let mut scratch = engine
-        .open(scratch_id, prefix)
+        .open(scratch_id, &recording_only)
         .map_err(TurnFailure::from)?;
     scratch
         .append_items(engine, batch, &mut quiet)
@@ -686,7 +733,7 @@ mod batching_only_when_it_has_to {
     fn a_region_that_fits_in_one_prompt_is_one_batch() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(246).collect();
         let CompactionPlan::Batched { batches, summarise_before, .. } =
-            plan_compaction(&items, 6_880, W)
+            plan_compaction(&items, 6_880, W, W / 16)
         else {
             panic!("246k needs compacting");
         };
@@ -699,7 +746,7 @@ mod batching_only_when_it_has_to {
     fn a_region_too_big_for_one_prompt_is_still_split() {
         // A million tokens of history against a 262k window.
         let items: Vec<u64> = std::iter::repeat(4_000).take(250).collect();
-        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 6_880, W) else {
+        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 6_880, W, W / 16) else {
             panic!("a million tokens needs compacting");
         };
         assert!(batches.len() > 1, "this cannot be done in one prompt: {batches:?}");
@@ -707,6 +754,68 @@ mod batching_only_when_it_has_to {
         for b in &batches {
             let n: u64 = items[b.clone()].iter().sum();
             assert!(n <= usable / 4, "batch {b:?} is {n}, over budget");
+        }
+    }
+}
+
+#[cfg(test)]
+mod a_conversation_with_room_is_left_alone {
+    //! **The operator's case, and the sharpest statement of the bug.**
+    //!
+    //! "why a conversation with 70k tokens with ceiling of 250k needs batches?
+    //! it doesnt."
+    //!
+    //! It does not, and the first version of this planner could not say so. It
+    //! asked only whether history fitted the TAIL budget -- about an eighth of
+    //! the window -- which is a question about how much recent history to keep
+    //! verbatim, not about whether there is a problem. So a conversation with
+    //! 180k of room to spare planned a summary of its first 38k, and if anything
+    //! called compaction in a loop, it kept planning one.
+
+    use super::*;
+
+    const W: u64 = 262_144;
+    const HEADROOM: u64 = W / 16;
+
+    #[test]
+    fn seventy_thousand_against_a_quarter_million_is_nothing_to_do() {
+        let items: Vec<u64> = std::iter::repeat(1_000).take(64).collect(); // 64k
+        assert_eq!(
+            plan_compaction(&items, 6_880, W, HEADROOM),
+            CompactionPlan::NothingToDo,
+            "a conversation with room does not get compacted, whoever asks"
+        );
+    }
+
+    /// And the wall is still the wall: one token past it and there is work.
+    #[test]
+    fn a_conversation_at_the_wall_still_plans() {
+        let items: Vec<u64> = std::iter::repeat(1_000).take(246).collect(); // 246k
+        assert!(
+            matches!(
+                plan_compaction(&items, 6_880, W, HEADROOM),
+                CompactionPlan::Batched { .. }
+            ),
+            "246k of a 262k window with 16k reserved is over the line"
+        );
+    }
+
+    /// The boundary is `Config::should_compact`'s, asked with the same numbers,
+    /// so the planner and the trigger cannot disagree about where the wall is.
+    #[test]
+    fn the_planner_agrees_with_the_trigger_about_where_the_wall_is() {
+        for resident_k in [200u64, 240, 244, 245, 246, 250] {
+            let items: Vec<u64> = std::iter::repeat(1_000).take(resident_k as usize).collect();
+            let prefix = 0;
+            let trigger_says_compact = resident_k * 1_000 + HEADROOM >= W;
+            let planned = !matches!(
+                plan_compaction(&items, prefix, W, HEADROOM),
+                CompactionPlan::NothingToDo
+            );
+            assert_eq!(
+                planned, trigger_says_compact,
+                "at {resident_k}k the trigger says {trigger_says_compact} and the plan says {planned}"
+            );
         }
     }
 }

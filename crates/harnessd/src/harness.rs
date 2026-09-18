@@ -2887,7 +2887,7 @@ impl<'a> Harness<'a> {
         let prefix_tokens = self.session.ledger.prefix_len() as u64;
 
         let (summarise_before, batches) =
-            match plan_compaction(&per_item, prefix_tokens, window) {
+            match plan_compaction(&per_item, prefix_tokens, window, self.cfg.headroom()) {
                 CompactionPlan::Batched { summarise_before, batches, .. } => {
                     (summarise_before, batches)
                 }
