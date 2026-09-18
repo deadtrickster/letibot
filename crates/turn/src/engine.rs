@@ -796,13 +796,66 @@ impl TurnEngine<'_> {
         );
 
         // Commit. The rows are cut out of the id array the server streamed; nothing
-        // is re-rendered and nothing is re-tokenized.
+        // is re-rendered and nothing is re-tokenized — with **one** exception,
+        // below, and it is the only place in this engine where the ledger
+        // deliberately stops being byte-identical to what the model produced.
         let mut appended = Vec::new();
         for (n, produced_item) in produced.items.iter().enumerate() {
             let item_id = format!("{turn_id}.{n}");
+
+            // **An abandoned thought is committed as the sentence that replaces
+            // it, not as the thought.**
+            //
+            // The next turn's prompt is `session.ledger.tokens()` and nothing
+            // else — items are never re-rendered on the ordinary path. So a
+            // renderer that elides a stopped reasoning block does nothing for the
+            // very next turn, which was the defect in the first attempt at this:
+            // the row was marked correctly and the mark was never reached.
+            //
+            // Measured on the operator's own session, 2026-09-18: a model began
+            // counting parentheses by hand, produced 25464 tokens of `+ 0 + 0 +
+            // 0`, and was stopped. Every later turn replayed those tokens from
+            // the ledger — and the model, reading its own abandoned loop as
+            // history, went back to counting by hand. "it counts them again by
+            // hand lol".
+            //
+            // WHY THIS DOES NOT BREAK §18.1-I1. The generation-inclusive prefix
+            // invariant exists so that a CONTINUING generation is never
+            // re-tokenized: tokens the model produced and will keep building on
+            // must be replayed exactly, because detokenize/retokenize does not
+            // round-trip. An aborted draft is not continuing. It was stopped on
+            // purpose, by a person, and the next turn begins a new generation
+            // whose prefix this row is merely history. Handing it back verbatim
+            // is what made the model resume it.
+            //
+            // What is NOT lost: `item_json` keeps the whole text, so the store,
+            // a resume, `/gate` and any later reader still see every token the
+            // model produced. The split is the one the dialect re-render already
+            // relies on — the item is the record, the ledger is what gets
+            // replayed — and here they are deliberately different.
+            //
+            // The cost is a re-prefill of the tail from this row on. That is what
+            // was happening anyway, over 25464 tokens; it now happens over about
+            // forty.
+            let elided;
+            let ids: &[TokenId] = if matches!(
+                &produced_item.item,
+                TranscriptItem::Reasoning { truncated: true, .. }
+            ) {
+                // Rendered against the history as it stands before this item,
+                // which is `render_incremental`'s contract and the same one
+                // `Session::append_items` renders under.
+                let spans = self
+                    .renderer
+                    .render_incremental(&session.items, std::slice::from_ref(&produced_item.item));
+                elided = self.tokenize(&spans)?;
+                &elided
+            } else {
+                &produced.tokens[produced_item.range.clone()]
+            };
             let row = session
                 .ledger
-                .append(&item_id, &produced.tokens[produced_item.range.clone()])
+                .append(&item_id, ids)
                 .map_err(|e| TurnFailure::Engine(EngineError::Ledger(e.to_string())))?;
             let head = head_hex(&row.h_k);
             let tokens = row.tok_len;

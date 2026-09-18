@@ -1197,3 +1197,101 @@ fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
             .any(|(c, _)| *c == "frame_capture_disabled")
     );
 }
+
+
+/// Urgent, but not until `after` polls — so the interrupt lands mid-thought
+/// rather than before the model has said anything.
+struct After {
+    left: usize,
+    msg: Option<SteeringMessage>,
+}
+
+impl SteeringSource for After {
+    fn try_next(&mut self) -> Option<SteeringMessage> {
+        if self.left > 0 {
+            self.left -= 1;
+            return None;
+        }
+        self.msg.take()
+    }
+}
+
+/// **The whole chain, on the path the operator is actually on.**
+///
+/// The first attempt at this fix elided a stopped thought in the RENDERER, and
+/// the renderer is not on that path: the next turn's prompt is
+/// `session.ledger.tokens()` and items are never re-rendered on the ordinary
+/// path. The row was marked correctly and the mark was never reached — which is
+/// exactly what the operator saw when they asked "why it reprefills and includes
+/// aborted reasoning then?".
+///
+/// So this asserts the LEDGER, which is the thing that gets replayed: a thought
+/// stopped mid-flow costs the next turn a sentence, not the thought.
+#[test]
+fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+
+    // Open a reasoning block and fill it with the shape that caused this: a model
+    // counting by hand, at length, never closing the block because it is stopped.
+    let mut frames = vec![Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    }];
+    frames.extend(token_frames(&ids_of(
+        "let me count them by hand + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0",
+    )));
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: 99,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "abandoned");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("how many parens are there")], &mut sink)
+        .unwrap();
+    let before = session.ledger.len();
+
+    // Let it think for a while, then stop it.
+    let mut steering = After {
+        left: 12,
+        msg: Some(SteeringMessage::urgent("ABORT")),
+    };
+    let _ = engine.run_turn_steered(&mut session, &mut sink, &mut steering);
+
+    let reasoning: Vec<&TranscriptItem> = session
+        .items
+        .iter()
+        .filter(|i| matches!(i, TranscriptItem::Reasoning { .. }))
+        .collect();
+    assert!(
+        !reasoning.is_empty(),
+        "the interrupted thought was kept as an item: {:?}",
+        session.items
+    );
+    for item in &reasoning {
+        let TranscriptItem::Reasoning { truncated, text, .. } = item else {
+            unreachable!()
+        };
+        assert!(*truncated, "and marked: {text:?}");
+        // **The record keeps the whole thing.** This is a projection, not a
+        // deletion: the store, a resume and any later reader still see it.
+        assert!(
+            text.contains("+ 0"),
+            "the item still carries what the model actually produced: {text:?}"
+        );
+    }
+
+    // And the ledger — the thing the next turn is prefilled from — does not.
+    let grew = session.ledger.len() - before;
+    assert!(
+        grew < 60,
+        "a stopped thought must cost the next turn a sentence, not the thought: \
+         the ledger grew by {grew} tokens"
+    );
+}
