@@ -164,6 +164,9 @@ impl PromptRenderer for GlmAdapter {
     fn generation_prompt(&self) -> Vec<RenderSpan> {
         letibot_dialect_glm::generation_prompt()
     }
+    fn generation_prompt_closing_reasoning(&self) -> Vec<RenderSpan> {
+        letibot_dialect_glm::generation_prompt_closing_reasoning()
+    }
 }
 
 struct QwenAdapter {
@@ -187,6 +190,9 @@ impl PromptRenderer for QwenAdapter {
     }
     fn generation_prompt(&self) -> Vec<RenderSpan> {
         letibot_dialect_qwen::generation_prompt()
+    }
+    fn generation_prompt_closing_reasoning(&self) -> Vec<RenderSpan> {
+        letibot_dialect_qwen::generation_prompt_closing_reasoning()
     }
 }
 

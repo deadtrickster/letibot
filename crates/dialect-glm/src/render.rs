@@ -182,6 +182,21 @@ fn render_prefix(effort: ReasoningEffort, prefix: &StablePrefix, out: &mut Vec<R
 /// conversation whose next item is a user message: the appended bytes would have to be
 /// un-appended first. The template-driven renderer says the same thing with
 /// `add_generation_prompt`, which is where the contract now leaves it.
+/// [`generation_prompt`] with the reasoning block opened and immediately closed.
+///
+/// The model is handed `<think></think>` rather than an open `<think>`, so it
+/// starts on assistant text instead of reasoning. Used for the summary turn,
+/// which has to fit in whatever a full context window has left -- 1754 tokens,
+/// the day this was written -- and cannot spend it thinking.
+///
+/// `lead_opens_reasoning` reads the lead the engine is about to submit, so
+/// nothing downstream has to be told which of the two it got.
+pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
+    let mut v = generation_prompt();
+    v.push(RenderSpan::Control(tk::THINK_CLOSE.clone()));
+    v
+}
+
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
         RenderSpan::Control(tk::ASSISTANT.clone()),

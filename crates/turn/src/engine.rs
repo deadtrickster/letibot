@@ -239,6 +239,28 @@ pub struct TurnEngine<'a> {
     /// Where a refused frame and its neighbours are written (T23). On by default;
     /// see [`FrameCapture`] for why the default is on rather than off.
     pub frame_capture: FrameCapture,
+    /// **Hand the next turn a lead with reasoning already closed.**
+    ///
+    /// False for every turn but the summary. Not a config field and not a
+    /// constructor argument: it is a property of ONE turn, set around it by
+    /// [`crate::compaction::run_compaction`] and cleared however that turn ends.
+    /// A session-lifetime switch here would be a way to turn a model's reasoning
+    /// off by accident and never notice.
+    suppress_reasoning: bool,
+}
+
+impl TurnEngine<'_> {
+    /// Run `f` with the next turn's lead closing the reasoning block.
+    ///
+    /// Scoped rather than a pair of setters, so the flag cannot outlive the turn
+    /// it was set for — including when that turn fails, which for a summary is the
+    /// common case and exactly when a leaked flag would be hardest to see.
+    pub fn without_reasoning<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let was = std::mem::replace(&mut self.suppress_reasoning, true);
+        let out = f(self);
+        self.suppress_reasoning = was;
+        out
+    }
 }
 
 /// Whether diagnostic-only verdicts are wanted this run: `LETIBOT_DEBUG=1`.
@@ -307,6 +329,8 @@ impl<'a> TurnEngine<'a> {
             sampling,
             salvage: SalvageBudget::default(),
             frame_capture: FrameCapture::default(),
+            // Every turn reasons unless one asks not to; see `without_reasoning`.
+            suppress_reasoning: false,
         })
     }
 
@@ -495,7 +519,15 @@ impl TurnEngine<'_> {
         // correction would be silently dropped — which is worse than not
         // implementing steering at all.
         let mut pending = Pending::new();
-        let lead = self.tokenize(&self.renderer.generation_prompt())?;
+        // **Which lead this turn gets**, and the only turn that gets the other one
+        // is the summary. See `PromptRenderer::generation_prompt_closing_reasoning`:
+        // a summary turn runs when the window is nearly full, and a lead that opens
+        // `<think>` spends the little that is left before it writes a word.
+        let lead = self.tokenize(&if self.suppress_reasoning {
+            self.renderer.generation_prompt_closing_reasoning()
+        } else {
+            self.renderer.generation_prompt()
+        })?;
         let mut prompt = session.ledger.tokens().to_vec();
         prompt.extend_from_slice(&lead);
         let prompt_tokens = prompt.len() as u64;
