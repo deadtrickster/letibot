@@ -62,7 +62,8 @@ use letibot_tools::{
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
     CompactionOutcome, Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine,
-    TurnEvent, TurnFailure, TurnMetrics, TurnOk, run_compaction,
+    TurnEvent, TurnFailure, TurnMetrics, TurnOk, OverrunPlan, plan_fold, plan_overrun, run_compaction,
+    summarise_first_half, summarise_overrun,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -2851,49 +2852,126 @@ impl<'a> Harness<'a> {
         out
     }
 
-    /// **Compaction is one summary turn, appended to the conversation itself.**
+    /// **Compaction is one summary turn appended to the conversation itself** --
+    /// unless the conversation arrived with no room to hold one.
     ///
-    /// Reverted here on 2026-09-18 after a batched rewrite that was worse in
-    /// every way that mattered, and the measurements are kept because the idea
-    /// will look attractive again.
+    /// The ordinary path is the cheap one and is used whenever it can be: the
+    /// server already holds the prompt, so the prefill is one message. The
+    /// operator's rule, after a batched rewrite that used a fallback for
+    /// everything and was reverted for it: *"when no overrun - normal
+    /// compaction"*.
     ///
-    /// The rewrite ran each stretch in a SCRATCH session so the summary turn
-    /// would always have room to write. It does, and that is not the constraint
-    /// that binds. What binds is the cache: this appends one message to a
-    /// conversation the server already holds, so the prefill is that message.
-    /// A scratch session's token stream is one the server has never seen, so it
-    /// is a cold prefill of the whole region -- measured at `progress = 0.11`
-    /// after 60 seconds of a 240k prompt, about ten minutes before a summary
-    /// even began. The banner has said so all along: "as one more message so the
-    /// prefix the server already holds is reused".
+    /// OVERRUN is when it arrives over the budget -- *"either unlucky tool like a
+    /// file read or model change"* -- so the summary turn has nowhere to write.
+    /// Then, and only then, the conversation is summarised somewhere else, and
+    /// WHICH way depends on the backend rather than on the conversation:
     ///
-    /// It was also worse at the job. Keeping a verbatim tail produced a 44197
-    /// token base where this produces about 7500, and against a model spending
-    /// 79000-118000 tokens a round that is one round of runway instead of ten.
-    /// Better context, bought with almost all of the headroom, on a box that had
-    /// none to spare.
+    ///   * a cloud provider takes messages rather than tokens, and a prefix-cache
+    ///     miss is priced rather than waited on, so the clean fold is affordable:
+    ///     summarise the first half, continue on `summary ++ second half`, with
+    ///     the recent past kept VERBATIM.
+    ///   * the local server prefills at 200-375 tok/s, where that same fold is ten
+    ///     minutes of silence. So both halves are summarised instead, overlapping
+    ///     at the seam, with the expensive half arranged to be a true prefix of
+    ///     what the server already holds.
     ///
-    /// What survives from that work, because it was right: the summary turn is
-    /// handed a closed reasoning block (`generation_prompt_closing_reasoning`),
-    /// a truncated summary says so in the base it becomes, and the notices are
-    /// worded the way the operator words them. Those are in `crates/turn`.
+    /// See `crates/turn/src/compaction.rs` for the arithmetic and for why the
+    /// cache and the log are two different things.
     fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
-        let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
-            .map_err(HarnessError::Turn)?;
-        if outcome.tool_calls > 0 {
-            return Err(HarnessError::Setup(format!(
-                "the summary turn proposed {} tool call(s); a summary is a record, not an \
-                 action, so nothing was compacted. The transcript is unchanged apart from \
-                 the instruction and the turn themselves — try again.",
-                outcome.tool_calls
-            )));
+
+        let per_item: Vec<u64> = (0..self.session.ledger.rows().len())
+            .map(|i| self.session.ledger.item_tokens(i).map(|t| t.len() as u64).unwrap_or(0))
+            .collect();
+        let prefix_tokens = self.session.ledger.prefix_len() as u64;
+        let window = self.cfg.context_window.unwrap_or(u64::MAX);
+
+        match plan_overrun(&per_item, prefix_tokens, window) {
+            // The ordinary path, and the one that runs almost always.
+            OverrunPlan::NotOverrun => {
+                let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
+                    .map_err(HarnessError::Turn)?;
+                if outcome.tool_calls > 0 {
+                    return Err(HarnessError::Setup(format!(
+                        "the summary turn proposed {} tool call(s); a summary is a record, \
+                         not an action, so nothing was compacted. The transcript is \
+                         unchanged apart from the instruction and the turn themselves — \
+                         try again.",
+                        outcome.tool_calls
+                    )));
+                }
+                let fork = self.fork_to_summary(&outcome, None, None, &[])?;
+                Ok(CompactReport { fork, summary_turn: outcome })
+            }
+
+            OverrunPlan::Hopeless { prefix_tokens, window } => Err(HarnessError::Setup(format!(
+                "this session's PROMPT is {prefix_tokens} token(s) of a {window} token \
+                 window, so no summary of the conversation can make room however short it \
+                 is. Message zero is the system prompt and the tool schemas, and compaction \
+                 never rewrites it. What helps is a larger --context-window if the server \
+                 has one, a shorter --system, or fewer seated tools. Nothing was compacted."
+            ))),
+
+            plan @ OverrunPlan::Cut { .. } => {
+                let items: Vec<TranscriptItem> = self.session.items.clone();
+                let prefix = self.prefix.clone();
+                let scratch = format!("{}#overrun", self.transcript_id);
+
+                // A cloud provider is the affordable case; see the doc above.
+                let (harvest, tail) = if self.provider.is_some() {
+                    match plan_fold(&per_item, prefix_tokens, window) {
+                        Some(split) => {
+                            self.hub.publish(SessionEvent::Warning {
+                                code: "auto_compact".into(),
+                                detail: format!(
+                                    "over budget: summarising the first {split} item(s) and \
+                                     continuing on the summary plus the rest, verbatim"
+                                ),
+                            });
+                            let h = summarise_first_half(
+                                &mut self.engine, &prefix, &scratch, &items, split, &mut sink,
+                            )
+                            .map_err(HarnessError::Turn)?;
+                            (h, items[split..].to_vec())
+                        }
+                        // No workable fold: fall through to the two-half plan,
+                        // which asks less of the split.
+                        None => {
+                            let h = summarise_overrun(
+                                &mut self.engine, &prefix, &scratch, &items, &plan, &mut sink,
+                            )
+                            .map_err(HarnessError::Turn)?;
+                            (h, Vec::new())
+                        }
+                    }
+                } else {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "auto_compact".into(),
+                        detail: "over budget: summarising the conversation in two \
+                                 overlapping halves, off to one side, so the prompt the \
+                                 server already holds is reused for the larger one"
+                            .into(),
+                    });
+                    let h = summarise_overrun(
+                        &mut self.engine, &prefix, &scratch, &items, &plan, &mut sink,
+                    )
+                    .map_err(HarnessError::Turn)?;
+                    (h, Vec::new())
+                };
+
+                let outcome = CompactionOutcome {
+                    turn_id: format!("{}#overrun", self.transcript_id),
+                    summary: harvest.summary,
+                    tool_calls: harvest.tool_calls,
+                    truncated: harvest.truncated,
+                    cached_tokens: 0,
+                    reusable: 0,
+                    generated_tokens: 0,
+                };
+                let fork = self.fork_to_summary(&outcome, None, None, &tail)?;
+                Ok(CompactReport { fork, summary_turn: outcome })
+            }
         }
-        let fork = self.fork_to_summary(&outcome, None, None, &[])?;
-        Ok(CompactReport {
-            fork,
-            summary_turn: outcome,
-        })
     }
 
     /// **The fork.** Replace the resident history with one summary item, in a new

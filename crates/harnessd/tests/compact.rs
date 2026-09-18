@@ -446,9 +446,25 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         detail.contains("the automatic compaction did not run"),
         "the failure says the compaction did not run: {detail}"
     );
+    // **What it names has been both things, so read this before changing it.**
+    //
+    // This fixture is a 2719-token PROMPT in a 512-token window: hopeless, and
+    // hopeless before any turn runs. It used to discover that by attempting a
+    // summary and spending the salvage budget, and the assertion here named the
+    // spent budget. Compaction now does the arithmetic first, so the same fixture
+    // is refused up front and names the actual cause.
+    //
+    // The test is not about either message. It is about the failure COMING OUT --
+    // `Sessions::compact` errs and the automatic path publishes
+    // `auto_compact_failed` -- and that is why it survives the behaviour changing
+    // underneath it twice.
     assert!(
-        detail.contains("consecutive length salvages; the cap is spent"),
-        "the failure names the spent salvage budget, not a socket error: {detail}"
+        detail.contains("PROMPT is") && detail.contains("token window"),
+        "the failure names the prompt against the window, which is the cause here: {detail}"
+    );
+    assert!(
+        detail.contains("--context-window") || detail.contains("--system"),
+        "and says what would help, since shortening the conversation would not: {detail}"
     );
 
     // And nothing was reduced: no fork, the transcript is the prompt turn plus
@@ -474,5 +490,8 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
                     if text.as_str() == letibot_turn::UNFINISHED_REASONING_NOTICE))
         })
         .count();
-    assert_eq!(notices, 3, "one notice per salvaged turn: {items:?}");
+    assert_eq!(
+        notices, 0,
+        "a compaction refused before it was attempted appends nothing: {items:?}"
+    );
 }

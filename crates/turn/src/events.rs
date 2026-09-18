@@ -229,3 +229,57 @@ mod tests {
         assert_ne!(args_digest(r#"{"a":1}"#), args_digest(r#"{"a":2}"#));
     }
 }
+
+/// **A sink that forwards progress and swallows rows.**
+///
+/// For a session that is real work but not part of the operator's conversation:
+/// the overrun summariser's scratchpads, which restage history a model has
+/// already seen so it can be read in one piece, then are thrown away.
+///
+/// Two things went wrong on the way to this, in opposite directions, and both
+/// were visible on the operator's screen. Passing the live sink announced every
+/// restaged row as `TranscriptAppended`, and a head shows a placeholder for an
+/// item id and waits for a body that never comes:
+///
+///     [tool_result — waiting for the body of …#compact-batch-0.66]
+///
+/// Passing [`NullSink`] instead fixed that and broke the other half: a scratchpad
+/// is a large prompt and prefilling it takes minutes, during which the head had
+/// nothing to show — "tui doesnt show any prefill tho".
+///
+/// So `PromptProgress` goes through, because it is the only honest answer to
+/// "what is it doing", and everything else is dropped, because everything else is
+/// about a transcript nobody will read.
+pub struct ProgressOnly<'a>(pub &'a mut dyn EventSink);
+
+impl EventSink for ProgressOnly<'_> {
+    fn emit(&mut self, event: TurnEvent) {
+        if matches!(event, TurnEvent::PromptProgress { .. }) {
+            self.0.emit(event);
+        }
+    }
+}
+
+#[cfg(test)]
+mod progress_only {
+    use super::*;
+
+    #[test]
+    fn rows_are_dropped_and_progress_is_not() {
+        let mut inner = RecordingSink::new();
+        {
+            let mut s = ProgressOnly(&mut inner);
+            s.emit(TurnEvent::TranscriptAppended {
+                item_id: "scratch.0".into(),
+                kind: "tool_result",
+                ledger_head: "abc".into(),
+                tokens: 10,
+            });
+        }
+        assert!(
+            inner.kinds().is_empty(),
+            "a throwaway transcript must not reach the head: {:?}",
+            inner.kinds()
+        );
+    }
+}
