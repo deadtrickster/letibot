@@ -51,6 +51,21 @@ pub enum TranscriptItem {
         name: String,
         outcome: ToolOutcome,
         payload: String,
+        /// Both sides of the file a file-editing call changed, bounded to what
+        /// differs — the raw material of the two-panel diff a head draws.
+        ///
+        /// It lives on the row and not only on the `ToolFinished` event because
+        /// the row is the durable artifact: the event log is the daemon's
+        /// memory, and a head that attaches after a restart is handed rows, not
+        /// events. Without it the card rendered from history and the change it
+        /// made did not (operator, 2026-09-18: *"it renders history, why can it
+        /// render the edit card and not the diff"*). Display-only: the prompt
+        /// builders read `payload` and never this, so the tokens a row renders
+        /// to — and the hash chain over them — do not move. Absent on rows
+        /// written before the field existed, and `#[serde(default)]` is what
+        /// lets them still load.
+        #[serde(default)]
+        edit: Option<ToolEditExcerpt>,
     },
     /// A zero-width delimiter. **Renders to nothing.**
     ///
@@ -63,6 +78,39 @@ pub enum TranscriptItem {
         kind: String,
         edge: SegmentEdge,
     },
+}
+
+/// The before/after of a file-editing call, bounded to what differs — the raw
+/// material of the two-panel diff a head draws.
+///
+/// One definition, here, because this is the one crate both sides of the old
+/// lift can see: `letibot-tools` (which builds it at the call site) and
+/// `letibot-sessionlog` (which carries it on the wire) cannot name each other,
+/// and two copies of a nine-field struct with a field-by-field lift between
+/// them is how copies drift. The runtime and the log re-export it; the wire
+/// shape is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolEditExcerpt {
+    /// Relative to the session root, as the head should label it.
+    pub path: String,
+    /// The tool created the file: `before` is empty and a two-panel view
+    /// renders the left side as nothing rather than as deleted content.
+    pub created: bool,
+    /// 1-based line of the old file that `before` starts at, so a gutter
+    /// numbers the left panel exactly as `read` would.
+    pub before_start: usize,
+    /// 1-based line of the new file that `after` starts at.
+    pub after_start: usize,
+    /// Line counts of each **whole** file, so "… N unchanged lines" is a
+    /// fact rather than a guess.
+    pub before_lines: usize,
+    pub after_lines: usize,
+    /// The cap cut the excerpt: there is more change than this carries.
+    pub truncated: bool,
+    /// The excerpt lines, LF-joined, no trailing newline. Empty when the
+    /// side has no lines in the range (a pure insertion has no `before`).
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +310,54 @@ mod tests {
                 truncated: false,
             }
         );
+    }
+
+    #[test]
+    fn an_edit_excerpt_survives_a_round_trip_on_its_row() {
+        // The row is the durable artifact: the store persists it and a resumed
+        // head replays it, so the excerpt has to come back byte-equal or the
+        // panels a restart draws are not the panels the edit made.
+        let item = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "edit".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "done".into(),
+            edit: Some(ToolEditExcerpt {
+                path: "crates/ui/src/style.rs".into(),
+                created: false,
+                before_start: 3,
+                after_start: 3,
+                before_lines: 64,
+                after_lines: 65,
+                truncated: false,
+                before: "fn a() {".into(),
+                after: "fn a() {\n    x();".into(),
+            }),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: TranscriptItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, item, "the excerpt rides the row both ways");
+    }
+
+    #[test]
+    fn a_row_written_before_the_edit_existed_reads_as_none() {
+        // Rows the store already holds predate the field. `#[serde(default)]`
+        // is what lets them still load — and what keeps a resumed daemon from
+        // refusing a session it served yesterday. The old row is built by
+        // stripping the key off a real serialisation, not by hand-typing the
+        // wire shape and hoping.
+        let item = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "edit".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "done".into(),
+            edit: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let old = json.replace(",\"edit\":null", "");
+        assert_ne!(json, old, "the fixture must actually strip the key");
+        let back: TranscriptItem = serde_json::from_str(&old).unwrap();
+        assert_eq!(back, item);
     }
 
     #[test]

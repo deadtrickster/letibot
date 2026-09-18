@@ -67,33 +67,14 @@ pub struct PromptProgress {
 /// Both sides of a file-editing call, bounded to what differs, as a
 /// [`SessionEvent::ToolFinished`] carries it.
 ///
-/// The log's own shape, lifted field by field from `letibot_tools`'s
-/// `ToolEditExcerpt` in `lift_tools.rs`: the event enum is compiled with the
-/// `tools` feature off as often as on, so it cannot name a `letibot-tools`
-/// type, and the wire shape belongs to the log anyway.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolEdit {
-    /// Relative to the session root, as the head should label it.
-    pub path: String,
-    /// The tool created the file: `before` is empty and a two-panel view
-    /// renders the left side as nothing rather than as deleted content.
-    pub created: bool,
-    /// 1-based line of the old file that `before` starts at, so a gutter
-    /// numbers the left panel exactly as `read` would.
-    pub before_start: usize,
-    /// 1-based line of the new file that `after` starts at.
-    pub after_start: usize,
-    /// Line counts of each **whole** file, so "… N unchanged lines" is a
-    /// fact rather than a guess.
-    pub before_lines: usize,
-    pub after_lines: usize,
-    /// The cap cut the excerpt: there is more change than this carries.
-    pub truncated: bool,
-    /// The excerpt lines, LF-joined, no trailing newline. Empty when the
-    /// side has no lines in the range (a pure insertion has no `before`).
-    pub before: String,
-    pub after: String,
-}
+/// The log's own name for the excerpt, which now lives in
+/// [`letibot_transcript::ToolEditExcerpt`] — the one crate this crate and the
+/// runtime can both see. It used to be defined here and lifted field by field
+/// from `letibot_tools` in `lift_tools.rs`; two copies of a nine-field struct
+/// with a lift between them is how copies drift, and the transcript row now
+/// carries the excerpt too, so a third copy was about to exist. The wire shape
+/// is unchanged: same fields, same names.
+pub use letibot_transcript::ToolEditExcerpt as ToolEdit;
 
 /// A todo's state, on the wire. The same three words the store spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

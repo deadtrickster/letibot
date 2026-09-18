@@ -6970,7 +6970,16 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             outcome,
             payload,
             call_id,
+            edit: row_edit,
         } => {
+            // The row's own excerpt, when it has one — every row the runtime
+            // builds now carries the same bounded pair the event does, so a
+            // row read out of a store draws its diff without this head having
+            // watched the call run. The live copy wins when both exist: it is
+            // what this head saw, and the two are built by the same helper
+            // (`runtime::bounded_edit`), so disagreement would mean a bug
+            // rather than a choice.
+            let edit = edit.or(row_edit.as_ref());
             // **The envelope is addressed to the model, not to the operator.**
             //
             // `<<<TOOL_ERROR 5ebfdef6>>>` and its `<<<END_…>>>` are how a result
@@ -8198,6 +8207,7 @@ mod tests {
                             name: "bash".into(),
                             outcome: letibot_transcript::ToolOutcome::Ok,
                             payload: "line one\nline two".into(),
+                            edit: None,
                         }),
                     },
                 ),
@@ -8264,6 +8274,7 @@ mod tests {
                         name: "bash".into(),
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload,
+                        edit: None,
                     }),
                 },
             )],
@@ -9596,6 +9607,7 @@ mod tests {
                         name: name.into(),
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload: payload.into(),
+                        edit: None,
                     }),
                 },
             )));
@@ -9682,6 +9694,7 @@ mod tests {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -9761,6 +9774,7 @@ mod tests {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -9973,6 +9987,7 @@ mod tests {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -10015,6 +10030,7 @@ mod tests {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "one\ntwo\nthree\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -10090,6 +10106,7 @@ mod tests {
                         reason: "no such path".into(),
                     },
                     payload: "a\nb\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -10123,6 +10140,7 @@ mod tests {
                         name: "grep".into(),
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload: "x\n".repeat(n),
+                        edit: None,
                     }),
                 },
             )));
@@ -10169,6 +10187,7 @@ mod tests {
                         why: "no retrieval backend is attached to this session".into(),
                     },
                     payload: "a\nb\nc\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -10382,6 +10401,7 @@ mod tests {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "hello\n".into(),
+                    edit: None,
                 }),
             },
         )));
@@ -11416,18 +11436,22 @@ mod tests {
 
     /// **A restarted head still draws the last turn's edit panels.**
     ///
-    /// The excerpt rides the `ToolFinished` event and the transcript row does
-    /// not carry it — display data stays off the model-facing transcript. Live,
-    /// the head copied the excerpt into `call_edits` as the row landed, and
-    /// history rows render their panels from that map; the map was memory-only,
-    /// so a restart drew every landed edit panel-less even though the snapshot
-    /// had just handed the head the turn's calls with the excerpt still on them
-    /// (operator, 2026-09-17). The fix seeds the map from the snapshot,
-    /// positionally, the way the live hand-off matched rows to calls. This
-    /// walks the whole restart: a hub whose turn edited a file and then
-    /// finished, a fresh head attaching to its snapshot — attach replays no
-    /// events, so the snapshot's turn is the excerpt's only carrier — and the
-    /// panel on the screen.
+    /// The excerpt rides the `ToolFinished` event, and the snapshot's turn
+    /// carries the turn's calls with it. Live, the head copied the excerpt into
+    /// `call_edits` as the row landed, and history rows render their panels from
+    /// that map; the map was memory-only, so a restart drew every landed edit
+    /// panel-less even though the snapshot had just handed the head the turn's
+    /// calls with the excerpt still on them (operator, 2026-09-17). The fix
+    /// seeds the map from the snapshot, positionally, the way the live hand-off
+    /// matched rows to calls. This walks the whole restart: a hub whose turn
+    /// edited a file and then finished, a fresh head attaching to its snapshot —
+    /// attach replays no events, so the snapshot's turn is the excerpt's only
+    /// carrier — and the panel on the screen.
+    ///
+    /// The row here deliberately carries **no** excerpt of its own: rows written
+    /// before the field existed read as `None`, and this is the case where the
+    /// seeded map is the only thing between the operator and a panel-less edit.
+    /// The row-borne path has its own test below.
     #[test]
     fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
         let hub = Hub::new("s");
@@ -11458,6 +11482,9 @@ mod tests {
                 name: "edit".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "done".into(),
+                // A row from before the field existed: the seeded map is the
+                // only carrier here, which is the point of this test.
+                edit: None,
             },
         );
         hub.publish(testing::turn_finished("t1"));
@@ -11473,6 +11500,48 @@ mod tests {
         assert!(
             screen.contains("x();"),
             "the edit's after-side must render after a restart:\n{screen}"
+        );
+    }
+
+    /// **A resumed daemon's rows draw their panels with no turn on the wire.**
+    ///
+    /// The seed above needs the snapshot's turn: it matches rows to calls
+    /// positionally through `t.appended`. The operator's second report
+    /// (2026-09-18) was a daemon that had *resumed from the store* — its view
+    /// was rebuilt from rows alone, the resume publishes no turn events, and
+    /// the snapshot it handed a fresh head had `turn: None` with the rows in
+    /// it. Nothing to seed from, and every landed edit drew panel-less again
+    /// even after the first fix. The row now carries the excerpt itself, so
+    /// the row is the carrier: no turn, no event, no map — and the panel
+    /// still renders.
+    #[test]
+    fn a_row_from_a_resumed_daemon_draws_its_panel_without_a_turn() {
+        let hub = Hub::new("s");
+        // Rows only, as a resumed daemon's republish() emits them: no
+        // TurnStarted, no ToolStarted, no ToolFinished. The store has the
+        // transcript, and the excerpt rides the row.
+        hub.publish(testing::appended("s.1", "tool_result"));
+        hub.record_item(
+            "s.1",
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "done".into(),
+                edit: Some(edit_excerpt()),
+            },
+        );
+
+        let mut a = app();
+        let snap = hub.snapshot();
+        assert!(snap.turn.is_none(), "a resumed daemon's snapshot has no turn");
+        a.apply(hello("s", vec![brief("s", "one", false)], snap));
+        a.tools = Fold::Open;
+
+        let screen = a.screen(120, 40).join("\n");
+        assert!(
+            screen.contains("x();"),
+            "the edit's after-side must render from the row alone:\n{screen}"
         );
     }
 
@@ -11610,6 +11679,7 @@ mod tests {
                     name: "edit".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "a.rs: 1 replacement(s). lines 1-3\n\n     1| fn a() {\n     2|     x();\n     3| }\n".into(),
+                    edit: None,
                 }),
             },
         )));

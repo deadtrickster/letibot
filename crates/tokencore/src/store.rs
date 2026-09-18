@@ -1800,6 +1800,7 @@ mod tests {
             name: "read".into(),
             outcome: letibot_transcript::ToolOutcome::Abstained { reason: "no cover".into() },
             payload: "{}".into(),
+            edit: None,
         };
         let row = ledger.append("it", &[1]).unwrap().clone();
         s.append_item(&tr, 0, &item, &row, &[1]).unwrap();

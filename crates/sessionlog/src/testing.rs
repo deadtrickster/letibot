@@ -388,6 +388,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "…276 lines…".into(),
+                edit: None,
             },
         ),
         (

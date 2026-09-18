@@ -82,6 +82,8 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                 name,
                 outcome,
                 payload,
+                // Display-only; the prompt never sees it.
+                edit: _,
             } => {
                 let content = match outcome {
                     ToolOutcome::Ok => payload.clone(),
@@ -168,6 +170,7 @@ mod tests {
                     reason: "no such dir".into(),
                 },
                 payload: "nothing".into(),
+                edit: None,
             },
         ];
         let m = convert("be terse", &items);

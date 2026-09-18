@@ -1272,15 +1272,26 @@ impl ToolRuntime {
 
     /// The transcript row for a finished call. The payload is the **rendered**
     /// result, envelope included, because that is the byte sequence the next
-    /// prompt replays.
+    /// prompt replays. The row also carries the bounded edit excerpt, the same
+    /// one the event carries: the row is what a store persists and what a
+    /// resumed head replays, so without it the panels died with the turn.
     pub fn transcript_item(result: &ToolResult) -> TranscriptItem {
         TranscriptItem::ToolResult {
             call_id: result.call_id.clone(),
             name: result.name.clone(),
             outcome: result.outcome.clone(),
             payload: result.render(),
+            edit: bounded_edit(result),
         }
     }
+}
+
+/// The excerpt both the [`ToolEvent::Finished`] and the transcript row carry:
+/// three lines of context either side of the change, four hundred lines the
+/// cap, so the fan-out cost is known here and not a property of whatever file
+/// the model chose. One bound, two carriers — they must not drift apart.
+fn bounded_edit(r: &ToolResult) -> Option<crate::edit::ToolEditExcerpt> {
+    r.edit.as_ref().map(|e| e.excerpt(3, 400))
 }
 
 fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {
@@ -1298,10 +1309,7 @@ fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {
             .unwrap_or(rendered.len() as u64),
         spill: r.spill.as_ref().map(|s| s.hash.clone()),
         repairs: r.repairs.len() as u32,
-        // Bounded where it is built: three lines of context either side of
-        // the change, four hundred lines the cap, so the fan-out cost is
-        // known here and not a property of whatever file the model chose.
-        edit: r.edit.as_ref().map(|e| e.excerpt(3, 400)),
+        edit: bounded_edit(r),
     }
 }
 
@@ -1512,5 +1520,41 @@ mod tests {
         let mut sink = RecordingToolSink::new();
         rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
         assert_eq!(sink.kinds(), vec!["ToolStarted", "ToolFinished"]);
+    }
+
+    #[test]
+    fn the_row_and_the_event_carry_the_same_bounded_excerpt() {
+        // One bound, two carriers: the `ToolFinished` event reaches the heads
+        // watching live, the transcript row reaches every head after a
+        // restart. They are built by the same helper at the same bounds, and
+        // this pins that — a row whose panels disagree with the card the
+        // operator watched draw would be a defect, not a choice.
+        let before: String = (1..=50).map(|i| format!("line {i}\n")).collect();
+        let after = before.replacen("line 25", "line 25 changed", 1);
+        let r = ToolResult {
+            call_id: "c1".into(),
+            name: "edit".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "done".into(),
+            repairs: Vec::new(),
+            notes: Vec::new(),
+            spill: None,
+            edit: Some(crate::edit::FileEdit {
+                path: "f".into(),
+                before: before.clone(),
+                after: after.clone(),
+                created: false,
+                before_digest: String::new(),
+                after_digest: String::new(),
+                replacements: 1,
+                changed: crate::edit::changed_span(&before, &after),
+            }),
+        };
+        let item = ToolRuntime::transcript_item(&r);
+        let TranscriptItem::ToolResult { edit: row, .. } = &item else {
+            panic!("transcript_item built a {item:?}");
+        };
+        let expected = r.edit.as_ref().unwrap().excerpt(3, 400);
+        assert_eq!(row.as_ref(), Some(&expected), "same bound, same excerpt");
     }
 }

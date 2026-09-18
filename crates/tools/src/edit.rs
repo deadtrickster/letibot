@@ -492,34 +492,13 @@ pub fn display_lines(text: &str) -> Vec<&str> {
 /// The before/after of a file-editing call, bounded to what differs, as it
 /// rides the tool event to a head.
 ///
-/// Serde lives here and not in the log crate because the event carrying it
-/// is emitted before any log exists, and `letibot-tools` must stay free of
-/// `letibot-sessionlog` (see `sessionlog/src/lift_tools.rs`): the runtime
-/// cannot know the log's types, so the log lifts this into its own shape
-/// field by field.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ToolEditExcerpt {
-    /// Relative to the session root, as the head should label it.
-    pub path: String,
-    /// The tool created the file: `before` is empty and a two-panel view
-    /// renders the left side as nothing rather than as deleted content.
-    pub created: bool,
-    /// 1-based line of the old file that `before` starts at, so a gutter
-    /// numbers the left panel exactly as `read` would.
-    pub before_start: usize,
-    /// 1-based line of the new file that `after` starts at.
-    pub after_start: usize,
-    /// Line counts of each **whole** file, so "… N unchanged lines" is a
-    /// fact rather than a guess.
-    pub before_lines: usize,
-    pub after_lines: usize,
-    /// The cap cut the excerpt: there is more change than this carries.
-    pub truncated: bool,
-    /// The excerpt lines, LF-joined, no trailing newline. Empty when the
-    /// side has no lines in the range (a pure insertion has no `before`).
-    pub before: String,
-    pub after: String,
-}
+/// One definition, in `letibot-transcript` — the one crate this crate and the
+/// log can both see — re-exported here under the name the runtime has always
+/// used. It used to be defined in this file and lifted field by field into the
+/// log's own shape; two copies of a nine-field struct with a lift between them
+/// is how copies drift, and the transcript row now carries the excerpt too, so
+/// a third copy was about to exist.
+pub use letibot_transcript::ToolEditExcerpt;
 
 impl FileEdit {
     /// The bounded before/after a head draws a two-panel diff from: the

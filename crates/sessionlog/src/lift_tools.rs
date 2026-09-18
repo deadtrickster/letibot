@@ -60,21 +60,12 @@ pub fn from_tool_event(e: ToolEvent) -> SessionEvent {
             full_bytes,
             spill,
             repairs,
-            // Field by field, runtime shape into wire shape: the event enum
-            // compiles with `tools` off, so it cannot carry the runtime's
-            // type, and a lift that dropped the pair would send a head that
-            // never saw the call live away unable to draw it.
-            edit: edit.map(|e| crate::event::ToolEdit {
-                path: e.path,
-                created: e.created,
-                before_start: e.before_start,
-                after_start: e.after_start,
-                before_lines: e.before_lines,
-                after_lines: e.after_lines,
-                truncated: e.truncated,
-                before: e.before,
-                after: e.after,
-            }),
+            // One type on both sides now: the runtime's excerpt *is*
+            // `letibot_transcript::ToolEditExcerpt`, and the event enum
+            // depends on transcript, not on `tools`, so the lift is the
+            // value itself. The old field-by-field map was how two copies
+            // of the struct stayed in step; there is one copy now.
+            edit,
         },
     }
 }
