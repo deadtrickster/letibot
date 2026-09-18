@@ -315,17 +315,20 @@ pub fn external_harness_with_gate(
         false,
         gate,
         Some(backends),
+        false,
     )
 }
 
-/// A **writable** session with the network tools registered, over whatever is
-/// behind them.
+/// A **writable, unconfined** session with the network tools registered, over
+/// whatever is behind them.
 ///
 /// The read-only [`external_harness`] cannot exercise the `web_fetch` scratchpad:
 /// the page is written to disk through the backend, and a backend that was opened
-/// read-only has no scratchpad to write to. This one opens the backend writable
-/// and allows the gate, so a `web_fetch` call reaches the tool and the tool can
-/// put the page where it says it did.
+/// read-only has no scratchpad to write to. The scratchpad is under `/tmp`, which
+/// a backend rooted at the fixture tree cannot see, so this one roots the backend
+/// at `/` with the fixture tree as cwd — the leticode seat's shape — and allows
+/// the gate, so a `web_fetch` call reaches the tool and the tool can put the page
+/// where it says it did.
 pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
     build_ext(
         Spiller::unset(),
@@ -333,6 +336,7 @@ pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
         true,
         Some(allow_all()),
         Some(backends),
+        true,
     )
 }
 
@@ -342,7 +346,7 @@ fn build(
     writable: bool,
     gate: Option<Box<dyn crate::runtime::Gate>>,
 ) -> Harness {
-    build_ext(spiller, retrieval, writable, gate, None)
+    build_ext(spiller, retrieval, writable, gate, None, false)
 }
 
 fn build_ext(
@@ -351,10 +355,21 @@ fn build_ext(
     writable: bool,
     gate: Option<Box<dyn crate::runtime::Gate>>,
     external: Option<crate::ExternalBackends>,
+    unconfined: bool,
 ) -> Harness {
     let dir = TempDir::new();
     fixture_tree(dir.path());
-    let (backend, registry): (HostBackend, Registry) = if writable {
+    // `unconfined` roots the backend at `/` with the fixture tree as cwd, the way
+    // the leticode seat does: relative paths still start in the tree, but an
+    // absolute path — the `web_fetch` scratchpad under `/tmp` — is reachable.
+    let (backend, registry): (HostBackend, Registry) = if writable && unconfined {
+        (
+            HostBackend::writable("/").expect("root")
+                .with_cwd(dir.path())
+                .expect("fixture cwd"),
+            crate::coder_tools(retrieval).expect("built-ins register"),
+        )
+    } else if writable {
         (
             HostBackend::writable(dir.path()).expect("fixture root"),
             crate::coder_tools(retrieval).expect("built-ins register"),
