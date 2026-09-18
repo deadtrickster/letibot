@@ -38,6 +38,7 @@
 //!   a map would keep — events, decisions, outcomes — so the summary this
 //!   version produces is the material that map would be built from.
 
+use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
@@ -236,13 +237,13 @@ pub fn run_compaction(
 /// reason precisely so somebody downstream reads it, and the one caller that
 /// most needed it was the one throwing it away.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Harvest {
-    summary: String,
-    tool_calls: usize,
-    truncated: bool,
+pub struct Harvest {
+    pub summary: String,
+    pub tool_calls: usize,
+    pub truncated: bool,
 }
 
-fn harvest(items: &[TranscriptItem]) -> Harvest {
+pub fn harvest(items: &[TranscriptItem]) -> Harvest {
     let mut h = Harvest::default();
     for item in items {
         if let TranscriptItem::Assistant { text, tool_calls, truncated, .. } = item {
@@ -290,6 +291,272 @@ mod harvesting_a_summary {
         assert!(h.truncated);
         assert_eq!(h.summary, "first second");
     }
+}
+
+
+
+/// **What compaction is going to do, decided before any of it is done.**
+///
+/// The operator's design, 2026-09-18: *"after prefill finished calculate how
+/// many tokens left and just tell that we cant afford summary here and offer to
+/// either replace distance past with a summary and then summarize the rest once
+/// context freed ... or, if we are at the limit or nothing really left - say
+/// so"*.
+///
+/// Three answers, because there are three situations and collapsing them is how
+/// the useless message gets printed. The arithmetic happening FIRST is what
+/// catches the loop: a plan that says "this batch is 65536 tokens and the window
+/// is 262144" cannot enter the failure it replaces, where a summary turn ran with
+/// 1754 tokens, said nothing, was asked to try again, and spent the salvage
+/// budget four times over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionPlan {
+    /// The conversation already fits the tail budget. Summarising it would spend
+    /// turns to replace history with a shorter description of the same history.
+    NothingToDo,
+    /// **The prefix alone leaves no usable room, so no summary can help.**
+    ///
+    /// The system prompt and the tool schemas are message zero and compaction
+    /// never touches them — rewriting them is what forces a cold re-prefill, and
+    /// it is the one thing a fork keeps. So when they do not leave room for a
+    /// conversation, shortening the conversation is not the lever, and reporting
+    /// "nothing to summarise" is true and useless. What helps is a bigger window,
+    /// a shorter system prompt, or fewer seated tools.
+    Hopeless {
+        prefix_tokens: u64,
+        window: u64,
+    },
+    /// Summarise the distant past in batches and keep the recent past verbatim.
+    Batched {
+        /// Items `[0, summarise_before)` are replaced by summaries, oldest first.
+        summarise_before: usize,
+        /// How those are split. Each entry is a half-open range of item indices.
+        batches: Vec<std::ops::Range<usize>>,
+        /// Tokens the kept tail is carrying, verbatim.
+        tail_tokens: u64,
+        /// Tokens the summarised part was carrying, before summarising.
+        summarised_tokens: u64,
+    },
+}
+
+/// How much of the USABLE room one batch may occupy on its way in.
+///
+/// A quarter, so three quarters are left to write the record into. That is far
+/// more than any record needs, and the generosity is the point: the failure this
+/// replaces was a summary turn with 0.7% of the window, and a batch size chosen
+/// to be nearly-enough would be the same bug with a bigger constant.
+const BATCH_NUMERATOR: u64 = 1;
+const BATCH_DENOMINATOR: u64 = 4;
+
+/// How much recent history stays verbatim rather than becoming prose.
+///
+/// An eighth. Compaction used to keep NONE of it -- the new base was the summary
+/// and nothing else -- which is why a compacted session reads as though it just
+/// woke up: the turn it was in the middle of is now a sentence about a turn. The
+/// distant past is what prose serves; the last few exchanges are what the model
+/// is actually doing.
+const TAIL_NUMERATOR: u64 = 1;
+const TAIL_DENOMINATOR: u64 = 8;
+
+/// The least usable room worth planning against. Below this the batches and the
+/// tail are rounding errors and the honest answer is [`CompactionPlan::Hopeless`].
+const MIN_USABLE: u64 = 1024;
+
+/// Plan a compaction over `item_tokens`, the per-item token counts in order.
+///
+/// `prefix_tokens` is message zero — the system prompt and the tool schemas —
+/// which compaction cannot touch and every plan must therefore subtract first.
+/// Measured 2026-09-18: a planner that forgot to answered "this conversation
+/// already fits" about a session whose prefix alone was over the window.
+pub fn plan_compaction(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> CompactionPlan {
+    let usable = window.saturating_sub(prefix_tokens);
+    if usable < MIN_USABLE {
+        return CompactionPlan::Hopeless { prefix_tokens, window };
+    }
+    let tail_budget = usable * TAIL_NUMERATOR / TAIL_DENOMINATOR;
+    let batch_budget = usable * BATCH_NUMERATOR / BATCH_DENOMINATOR;
+
+    // Walk back from the newest, keeping what fits in the tail budget. The split
+    // lands on an item boundary, never inside one: half a tool result is not a
+    // tool result.
+    let mut tail_tokens = 0u64;
+    let mut split = item_tokens.len();
+    while split > 0 {
+        let next = tail_tokens + item_tokens[split - 1];
+        if next > tail_budget {
+            break;
+        }
+        tail_tokens = next;
+        split -= 1;
+    }
+    if split == 0 {
+        return CompactionPlan::NothingToDo;
+    }
+
+    // Everything older, cut into batches that fit the batch budget. An item
+    // larger than the budget on its own still gets its own batch -- it cannot be
+    // split, and refusing it would stall compaction on one big tool result.
+    let mut batches = Vec::new();
+    let mut start = 0usize;
+    let mut acc = 0u64;
+    for (i, t) in item_tokens[..split].iter().enumerate() {
+        if acc > 0 && acc + t > batch_budget {
+            batches.push(start..i);
+            start = i;
+            acc = 0;
+        }
+        acc += t;
+    }
+    if start < split {
+        batches.push(start..split);
+    }
+
+    CompactionPlan::Batched {
+        summarise_before: split,
+        batches,
+        tail_tokens,
+        summarised_tokens: item_tokens[..split].iter().sum(),
+    }
+}
+
+#[cfg(test)]
+mod planning {
+    use super::*;
+
+    /// 262144, the window this box serves.
+    const W: u64 = 262_144;
+
+    #[test]
+    fn a_conversation_that_fits_is_not_compacted() {
+        assert_eq!(plan_compaction(&[1000, 1000, 1000], 2_000, W), CompactionPlan::NothingToDo);
+    }
+
+    /// **The case an existing test caught.** The prefix alone is past the window,
+    /// the items are a few hundred tokens, and the first version of this planner
+    /// answered "already fits" -- true about the items and useless about the
+    /// problem. Nothing that summarises the CONVERSATION can help here.
+    #[test]
+    fn a_prefix_that_does_not_leave_room_is_hopeless_not_nothing_to_do() {
+        let p = plan_compaction(&[10, 10, 10], 2_700, 512);
+        assert_eq!(p, CompactionPlan::Hopeless { prefix_tokens: 2_700, window: 512 });
+    }
+
+    /// The measured case: ~260k across many items. The tail is kept, the rest is
+    /// batched, and every batch fits the budget with room to write.
+    #[test]
+    fn the_distant_past_is_batched_and_the_recent_past_is_kept() {
+        let items: Vec<u64> = std::iter::repeat(1_000).take(260).collect();
+        let CompactionPlan::Batched { summarise_before, batches, tail_tokens, .. } =
+            plan_compaction(&items, 2_000, W)
+        else {
+            panic!("260k needs compacting");
+        };
+
+        let usable = W - 2_000;
+        assert!(tail_tokens <= usable / 8, "tail within its budget: {tail_tokens}");
+        assert!(tail_tokens > 0, "some recent history is kept verbatim");
+        assert_eq!(summarise_before + (tail_tokens / 1000) as usize, items.len());
+
+        for b in &batches {
+            let n: u64 = items[b.clone()].iter().sum();
+            assert!(n <= usable / 4, "batch {b:?} is {n}, over budget");
+        }
+        assert_eq!(batches.first().unwrap().start, 0);
+        assert_eq!(batches.last().unwrap().end, summarise_before);
+        for w in batches.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "no gap and no overlap");
+        }
+    }
+
+    /// An item bigger than a whole batch budget still gets summarised, alone. It
+    /// cannot be split, and stalling compaction on one huge tool result is how a
+    /// session becomes permanently uncompactable.
+    #[test]
+    fn an_oversized_item_gets_its_own_batch() {
+        let items = vec![W, 1_000, 1_000];
+        let CompactionPlan::Batched { batches, .. } = plan_compaction(&items, 2_000, W) else {
+            panic!("oversized still plans");
+        };
+        assert_eq!(batches[0], 0..1);
+    }
+}
+
+/// What a batch is asked for, as distinct from the whole conversation.
+///
+/// The difference matters in one place and it is the one a reader trips on: a
+/// batch summary is not the record of a session, it is the record of a STRETCH
+/// of one, and the next stretch's summary follows it. Saying so stops each batch
+/// from opening with its own "this conversation was about…" preamble and from
+/// concluding things the later batches contradict.
+pub const BATCH_SUMMARY_INSTRUCTION: &str = "\
+The messages above are one stretch from the middle of a longer conversation, and \
+this message asks for their record, which will stand in for them. Later stretches \
+follow yours and will be recorded the same way, so do not open with a preamble, do \
+not introduce the project, and do not conclude -- write only what THIS stretch \
+established. A compact factual record, not prose: every decision taken and the \
+reason for it; every file created or changed and what the change was; every command \
+run and its outcome; every number, name and path that is still needed; every \
+question left open. Drop tool output bodies and reasoning. Do not call tools. \
+Answer with the record and nothing else.";
+
+/// **Summarise a slice of history in a session of its own.**
+///
+/// The whole reason compaction could not afford itself: `run_compaction` appends
+/// the instruction to the LIVE session, so the turn needs the entire history
+/// resident and room to write from the same window -- and it only ever runs when
+/// that window is nearly full. Measured 2026-09-18 at 260390 of 262144: 1754
+/// tokens to summarise 260390, which produced nothing, then produced a summary
+/// cut off mid-expression.
+///
+/// A summary turn does not need the conversation it is not summarising. Given a
+/// scratch session holding one batch and nothing else, the room available is the
+/// whole window minus the batch, and the batch is a size this function's caller
+/// chooses. So the turn can always be afforded; it is only the all-at-once
+/// framing that could not be.
+///
+/// The scratch session is never persisted and never linked: it exists to be
+/// prompted once and dropped. Its `transcript_id` is only what the ledger calls
+/// its rows.
+pub fn summarise_batch(
+    engine: &mut TurnEngine<'_>,
+    prefix: &StablePrefix,
+    scratch_id: &str,
+    batch: &[TranscriptItem],
+    sink: &mut dyn EventSink,
+) -> Result<Harvest, TurnFailure> {
+    let mut scratch = engine
+        .open(scratch_id, prefix)
+        .map_err(TurnFailure::from)?;
+    scratch
+        .append_items(engine, batch, sink)
+        .map_err(TurnFailure::from)?;
+    let instruction = TranscriptItem::System {
+        text: BATCH_SUMMARY_INSTRUCTION.to_string(),
+        origin: SystemOrigin::Update,
+    };
+    scratch
+        .append_items(engine, &[instruction], sink)
+        .map_err(TurnFailure::from)?;
+
+    // Same lead as the whole-conversation summary, for the same reason: this is a
+    // record and not a decision, and a batch that reasons first is spending room
+    // the next batch also wants.
+    let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
+        loop {
+            match engine.run_turn(&mut scratch, sink) {
+                Ok(ok) => break Ok(ok),
+                Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                    append_salvage_notice(&mut scratch, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+                }
+                Err(TurnFailure::EmptyLength { reason, .. }) => {
+                    let notice = empty_length_notice(reason);
+                    append_salvage_notice(&mut scratch, engine, sink, &notice)?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })?;
+    Ok(harvest(&ok.items))
 }
 
 /// Append one salvage notice as a user item, the tool loop's `append_notice`

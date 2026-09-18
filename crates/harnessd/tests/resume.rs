@@ -249,7 +249,7 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
 }
 
 #[test]
-fn a_session_recorded_under_another_dialect_is_refused_by_name() {
+fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
     // The failure the chain cannot catch. Every row in that transcript is correctly
     // hashed by whoever wrote it, so `verify_chain` passes and the tokens are still
     // another renderer's — appending this one's bytes to them builds a prompt no
@@ -277,22 +277,33 @@ fn a_session_recorded_under_another_dialect_is_refused_by_name() {
     let cfg = config(&path, &session_id, &workspace);
     let parts = empty_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new(&session_id);
-    let err = Harness::open(&parts, cfg, hub.clone())
-        .err()
-        .expect("a dialect mismatch must refuse");
-    let text = err.to_string();
+
+    // **It is no longer refused, and that is the change this asserts.**
+    //
+    // The refusal was right about the path it was on -- a resume replays the
+    // stored TOKENS, and two renderers' bytes in one prompt is a prompt no model
+    // was trained on -- and wrong about the data. `item_json` sits beside
+    // `tokens` in every row and is dialect-neutral, so the conversation is
+    // rebuilt for this renderer instead of being turned away. The old assertion
+    // is kept in the negative below: what must NOT happen now is a refusal.
+    let h = Harness::open(&parts, cfg, hub.clone())
+        .expect("a dialect mismatch re-renders rather than refusing");
+
+    let report = h.resumed().expect("a resume reports");
+    let notes = report.notes.join(" ");
     assert!(
-        text.contains("was NOT resumed") || text.contains("NOT resumed"),
-        "the refusal must say nothing happened: {text}"
+        notes.contains("RE-RENDERED"),
+        "the operator is told the conversation was rebuilt, not quietly given a new one: {notes}"
     );
     assert!(
-        text.contains(&session_id),
-        "the refusal must name the session: {text}"
+        notes.contains("fork"),
+        "and told the old transcript is kept: {notes}"
     );
-    assert_eq!(
-        hub.snapshot().items.len(),
-        0,
-        "a refused resume must not have published half a transcript first"
+    // The fork is a NEW transcript; the old one is untouched, which is what makes
+    // this safe to do without asking.
+    assert_ne!(
+        report.transcript_id, session_id,
+        "the re-render lands in a fork, not on top of the recorded tokens"
     );
 }
 

@@ -61,8 +61,8 @@ use letibot_tools::{
 };
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
-    CompactionOutcome, Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine,
-    TurnEvent, TurnFailure, TurnMetrics, TurnOk, run_compaction,
+    CompactionOutcome, CompactionPlan, Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine,
+    TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_compaction, run_compaction, summarise_batch,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -834,6 +834,10 @@ pub struct ForkReport {
     /// work, and what it produced is partial, and those are two facts rather
     /// than one.
     pub truncated: bool,
+    /// How many of the newest items were carried into the new base verbatim
+    /// rather than summarised. Zero is the old behaviour and is still what a
+    /// re-seat does, where the point is to change the prefix and not to shorten.
+    pub tail_items: usize,
 }
 
 /// What a compaction left behind: the fork's numbers and the summary turn's.
@@ -2830,7 +2834,7 @@ impl<'a> Harness<'a> {
                     outcome.tool_calls
                 )));
             }
-            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id))?;
+            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &[])?;
             // Only after the fork has landed: until then this harness is still
             // speaking the old prompt, and a `self.prefix` that ran ahead of the
             // transcript would make every later turn build the wrong bytes.
@@ -2847,19 +2851,120 @@ impl<'a> Harness<'a> {
         out
     }
 
+    /// **Plan first, then summarise the distant past in batches.**
+    ///
+    /// The old shape asked the model to summarise the whole conversation by
+    /// appending the instruction to it — so the turn needed the entire history
+    /// resident AND room to write, out of one window, at the only moment that
+    /// window is ever full. Measured 2026-09-18 at 260390 of 262144: 1754 tokens
+    /// to describe 260390. It said nothing, was asked four times, and spent the
+    /// salvage budget; with the reasoning block closed it instead produced a
+    /// record cut off mid-expression.
+    ///
+    /// A summary turn does not need the conversation it is not summarising.
+    /// `summarise_batch` runs each stretch in a session of its own, so the room
+    /// available is the window minus one batch — a size chosen here rather than
+    /// discovered by failing. The arithmetic happens before any turn runs, which
+    /// is what makes the loop unenterable rather than merely detectable.
+    ///
+    /// One fork, at the end, by the operator's ruling. Every batch summary and
+    /// the kept tail land in it together, so a session has one new transcript per
+    /// compaction however many batches it took. The cost is that a crash midway
+    /// leaves nothing done rather than something.
     fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
-        let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
+
+        let Some(window) = self.cfg.context_window else {
+            return Err(HarnessError::Setup(
+                "this session has no context window configured, so there is no number to \
+                 plan a compaction against. Pass --context-window."
+                    .into(),
+            ));
+        };
+        let per_item: Vec<u64> = (0..self.session.ledger.rows().len())
+            .map(|i| self.session.ledger.item_tokens(i).map(|t| t.len() as u64).unwrap_or(0))
+            .collect();
+        let prefix_tokens = self.session.ledger.prefix_len() as u64;
+
+        let (summarise_before, batches) =
+            match plan_compaction(&per_item, prefix_tokens, window) {
+                CompactionPlan::Batched { summarise_before, batches, .. } => {
+                    (summarise_before, batches)
+                }
+                CompactionPlan::NothingToDo => {
+                    return Err(HarnessError::Setup(format!(
+                        "this conversation's {} item(s) already fit the tail budget, so \
+                         there is nothing whose summary would be shorter than itself. \
+                         Nothing was compacted.",
+                        per_item.len()
+                    )));
+                }
+                // **Say so**, and say what would help, because none of it is this.
+                CompactionPlan::Hopeless { prefix_tokens, window } => {
+                    return Err(HarnessError::Setup(format!(
+                        "this session's PROMPT is {prefix_tokens} token(s) of a {window} \
+                         token window, leaving {} for the conversation — so no summary of \
+                         the conversation can make room, however short it is. Message zero \
+                         is the system prompt and the tool schemas, and compaction never \
+                         rewrites it: that is what a fork keeps, and rewriting it is the \
+                         cold re-prefill a fork exists to avoid. What helps is a larger \
+                         --context-window if the server has one, a shorter --system, or \
+                         fewer seated tools. Nothing was compacted.",
+                        window.saturating_sub(prefix_tokens)
+                    )));
+                }
+            };
+
+        // The prefix the batches are summarised under is this conversation's own —
+        // the same one the fork will open on — so the scratch turns speak the
+        // dialect and see the tools the conversation actually has.
+        let prefix = self.prefix.clone();
+        let items: Vec<TranscriptItem> = self.session.items.clone();
+
+        let mut summary = String::new();
+        let mut truncated = false;
+        let mut tool_calls = 0usize;
+        let batches_ranges = batches;
+        let batches = batches_ranges.len();
+        for (n, range) in batches_ranges.iter().enumerate() {
+            let scratch = format!("{}#compact-batch-{n}", self.transcript_id);
+            let h = summarise_batch(
+                &mut self.engine,
+                &prefix,
+                &scratch,
+                &items[range.clone()],
+                &mut sink,
+            )
             .map_err(HarnessError::Turn)?;
-        if outcome.tool_calls > 0 {
+            tool_calls += h.tool_calls;
+            truncated |= h.truncated;
+            if batches > 1 {
+                // Numbered, because the reader is a model that will be told these
+                // are consecutive stretches and needs to know it has them all.
+                summary.push_str(&format!("\n\n## Part {} of {batches}\n\n", n + 1));
+            }
+            summary.push_str(h.summary.trim());
+        }
+
+        if tool_calls > 0 {
             return Err(HarnessError::Setup(format!(
-                "the summary turn proposed {} tool call(s); a summary is a record, not an \
-                 action, so nothing was compacted. The transcript is unchanged apart from \
-                 the instruction and the turn themselves — try again.",
-                outcome.tool_calls
+                "the summary turns proposed {tool_calls} tool call(s); a summary is a \
+                 record, not an action, so nothing was compacted. The transcript is \
+                 unchanged — try again."
             )));
         }
-        let fork = self.fork_to_summary(&outcome, None, None)?;
+
+        let outcome = CompactionOutcome {
+            turn_id: format!("{}#compact", self.transcript_id),
+            summary,
+            tool_calls,
+            truncated,
+            cached_tokens: 0,
+            reusable: 0,
+            generated_tokens: 0,
+        };
+        let tail: Vec<TranscriptItem> = items[summarise_before..].to_vec();
+        let fork = self.fork_to_summary(&outcome, None, None, &tail)?;
         Ok(CompactReport {
             fork,
             summary_turn: outcome,
@@ -2884,6 +2989,7 @@ impl<'a> Harness<'a> {
         outcome: &CompactionOutcome,
         onto: Option<&StablePrefix>,
         onto_id: Option<&str>,
+        tail: &[TranscriptItem],
     ) -> Result<ForkReport, HarnessError> {
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
@@ -2955,7 +3061,7 @@ impl<'a> Harness<'a> {
         } else {
             ""
         };
-        let note = TranscriptItem::System {
+        let note: TranscriptItem = TranscriptItem::System {
             text: format!(
                 "This conversation was compacted: everything said before this point is \
                  replaced by the summary below, which was written over the full history \
@@ -2964,8 +3070,20 @@ impl<'a> Harness<'a> {
             ),
             origin: SystemOrigin::Update,
         };
+        // **The recent past is carried over verbatim, not described.**
+        //
+        // Compaction used to keep none of it: the new base was the summary and
+        // nothing else, so a session came back from a compaction unable to see the
+        // turn it was in the middle of -- that turn was now a sentence about a
+        // turn. `tail` is the newest items, under their own budget, appended after
+        // the summary so the order of the conversation is preserved: everything
+        // old as prose, then the last stretch as itself.
+        let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail.len());
+        body.push(note);
+        body.extend_from_slice(tail);
+
         let mut sink = CapturingSink::new(self.hub.clone());
-        next.append_items(&self.engine, std::slice::from_ref(&note), &mut sink)?;
+        next.append_items(&self.engine, &body, &mut sink)?;
         // The swap is the point of no return, and it is deliberately **after** every
         // store write that could fail: a harness that swapped and then could not
         // persist would be a session whose transcript row exists but whose body does
@@ -2973,7 +3091,7 @@ impl<'a> Harness<'a> {
         self.session = next;
         self.transcript_id = new_id.clone();
         self.persisted = 0;
-        self.reconcile(&mut sink, std::slice::from_ref(&note));
+        self.reconcile(&mut sink, &body);
         self.persist()?;
         Ok(ForkReport {
             transcript_id: new_id,
@@ -2982,6 +3100,7 @@ impl<'a> Harness<'a> {
             was_tokens,
             base_tokens: self.session.ledger.len(),
                     truncated: outcome.truncated,
+            tail_items: tail.len(),
         })
     }
 

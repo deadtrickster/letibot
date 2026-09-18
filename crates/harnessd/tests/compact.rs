@@ -53,6 +53,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
 /// not know how the summary was produced and must not care.
 fn outcome(summary: &str) -> CompactionOutcome {
     CompactionOutcome {
+        truncated: false,
         turn_id: "test-turn".into(),
         summary: summary.into(),
         tool_calls: 0,
@@ -86,7 +87,7 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let summary = "decided A because B; changed crates/x/src/lib.rs; `cargo test` green; \
                    the open question is whether Y holds";
     let report = h
-        .fork_to_summary(&outcome(summary), None, None)
+        .fork_to_summary(&outcome(summary), None, None, &[])
         .expect("the fork must land");
 
     // (1) The store now holds two transcripts for the session, and the second is
@@ -147,10 +148,10 @@ fn a_second_compaction_forks_off_the_first_fork() {
     let mut h = opened(&cfg, &parts);
 
     let first = h
-        .fork_to_summary(&outcome("first summary"), None, None)
+        .fork_to_summary(&outcome("first summary"), None, None, &[])
         .expect("the first fork");
     let second = h
-        .fork_to_summary(&outcome("second summary"), None, None)
+        .fork_to_summary(&outcome("second summary"), None, None, &[])
         .expect("the second fork");
     assert_eq!(first.transcript_id, format!("{session_id}#t1"));
     assert_eq!(second.transcript_id, format!("{session_id}#t2"));
@@ -183,7 +184,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
     let e = h
-        .fork_to_summary(&outcome("anything"), None, None)
+        .fork_to_summary(&outcome("anything"), None, None, &[])
         .expect_err("no store, no fork");
     assert!(
         e.to_string().contains("store"),
@@ -357,7 +358,14 @@ fn an_unfinished_reasoning_turn(
     frames
 }
 
-/// **The salvage spending itself is still a failure the log announces.**
+/// **A compaction that cannot run still says so, in the log.**
+///
+/// Renamed in substance on 2026-09-18: the fixture used to reach a summary turn
+/// and fail by spending the salvage budget, and now it is refused by the plan
+/// before any turn runs, because the prompt alone is over the window. What the
+/// test is FOR is unchanged and is the reason it survives that rewrite — the
+/// failure must come out, and an event disappearing behind retries (or now
+/// behind an early return) would be the dishonest version of either fix.
 ///
 /// The compaction path now salvages a say-nothing summary turn the way the tool
 /// loop does, bounded by the engine's budget. What must hold when the budget is
@@ -375,7 +383,7 @@ fn an_unfinished_reasoning_turn(
 /// ending unfinished, three of which are salvaged before the fourth comes back
 /// `SalvageExhausted`.
 #[test]
-fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() {
+fn a_compaction_that_cannot_run_still_publishes_auto_compact_failed() {
     use letibot_harnessd::Sessions;
     use letibot_sessionlog::event::SessionEvent;
     use letibot_sessionlog::registry::Registry;
@@ -445,9 +453,21 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         detail.contains("the automatic compaction did not run"),
         "the failure says the compaction did not run: {detail}"
     );
+    // **It names the cause, and the cause is no longer a spent budget.**
+    //
+    // This used to assert "consecutive length salvages; the cap is spent",
+    // because that is how the fixture failed: compaction attempted a summary of a
+    // conversation whose prompt alone was over the window, said nothing, and was
+    // retried until the budget went. Compaction now does the arithmetic first, so
+    // the same fixture is refused before a single turn runs — and what it says is
+    // the actual problem rather than the symptom.
     assert!(
-        detail.contains("consecutive length salvages; the cap is spent"),
-        "the failure names the spent salvage budget, not a socket error: {detail}"
+        detail.contains("PROMPT is") && detail.contains("token window"),
+        "the failure names the prompt against the window, which is the real cause here: {detail}"
+    );
+    assert!(
+        detail.contains("--context-window") || detail.contains("--system"),
+        "and says what would help, since shortening the conversation would not: {detail}"
     );
 
     // And nothing was reduced: no fork, the transcript is the prompt turn plus
@@ -461,6 +481,12 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         format!("{session_id}#t0"),
         "a failed compaction forks nothing"
     );
+    // **And it appended nothing**, which is the part that improved.
+    //
+    // The old path left one salvage notice per doomed retry in the transcript —
+    // three of them here — so a conversation that could not be compacted got
+    // LONGER every time something tried. Planning first means the refusal costs
+    // no rows at all, and `/compact` retries over exactly what was there before.
     let items = h.items();
     let notices = items
         .iter()
@@ -471,5 +497,8 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
                     if text.starts_with("Your previous turn ended inside a reasoning block")))
         })
         .count();
-    assert_eq!(notices, 3, "one notice per salvaged turn: {items:?}");
+    assert_eq!(
+        notices, 0,
+        "a compaction that was never attempted leaves no salvage notices: {items:?}"
+    );
 }
