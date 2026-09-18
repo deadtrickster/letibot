@@ -153,6 +153,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "thinking…".into(),
                 field: ReasoningField::ReasoningContent,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: String::new(),

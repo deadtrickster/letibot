@@ -1688,6 +1688,7 @@ mod tests {
         let item = TranscriptItem::Reasoning {
             text: "t".into(),
             field: ReasoningField::Inline,
+            truncated: false,
         };
         let good = LedgerRow { item_id: "a".into(), tok_offset: 4, tok_len: 2, h_k: [1; 32] };
         s.append_item(&tr, 0, &item, &good, &[1, 2]).unwrap();

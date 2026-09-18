@@ -36,6 +36,7 @@ fn reasoning(t: &str) -> TranscriptItem {
     TranscriptItem::Reasoning {
         text: t.into(),
         field: ReasoningField::ReasoningContent,
+        truncated: false,
     }
 }
 fn assistant(t: &str) -> TranscriptItem {

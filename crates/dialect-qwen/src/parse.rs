@@ -347,6 +347,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "Read it.".into(),
                 field: ReasoningField::Inline,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: "Here goes.".into(),

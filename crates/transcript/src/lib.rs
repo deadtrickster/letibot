@@ -35,6 +35,25 @@ pub enum TranscriptItem {
     Reasoning {
         text: String,
         field: ReasoningField,
+        /// **The operator stopped this thought, or it ran out of room.**
+        ///
+        /// Not the same claim as `Assistant::truncated`, which marks an answer
+        /// that was cut. This marks a DRAFT that was abandoned -- and a draft is
+        /// the one thing in a transcript that nothing downstream depends on, so
+        /// it is the one thing a renderer may decline to replay.
+        ///
+        /// Why it has to be marked at all, measured 2026-09-18: a session where
+        /// the model began counting parentheses by hand produced 25464 tokens of
+        /// `+ 0 + 0 + 0 + 0` before the operator stopped it. That block was
+        /// committed and replayed on every later turn -- a tenth of the window,
+        /// forever -- and the model, reading its own abandoned loop as history,
+        /// started counting by hand again. The operator: "it counts them again by
+        /// hand lol".
+        ///
+        /// Absent on the wire means `false`, so rows written before the field
+        /// existed still read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
     Assistant {
         text: String,
@@ -256,6 +275,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "first".into(),
                 field: ReasoningField::ReasoningContent,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: String::new(),
@@ -269,6 +289,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "second".into(),
                 field: ReasoningField::ReasoningContent,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: "done".into(),

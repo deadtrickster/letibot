@@ -301,9 +301,28 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             // the reasoning already opened, and closing here would split one turn
             // into two — which the oracle caught on the first run of this corpus,
             // and which no unit test in this file would have.
-            TranscriptItem::Reasoning { text, .. } => {
+            TranscriptItem::Reasoning { text, truncated, .. } => {
                 close_assistant(st, out);
-                open_assistant(st, out, text);
+                // **An abandoned draft is not replayed.**
+                //
+                // The store keeps it -- `item_json` is the record and this is a
+                // projection of it, the same split the dialect re-render relies
+                // on -- but the prompt gets a sentence instead of the thought.
+                //
+                // Measured 2026-09-18: a model began counting parentheses by
+                // hand, produced 25464 tokens of `+ 0 + 0 + 0` before the
+                // operator stopped it, and every later turn carried that block.
+                // It was not only a tenth of the window: the model read its own
+                // abandoned loop as history and counted by hand again. The
+                // operator, watching it happen twice: "it counts them again by
+                // hand lol".
+                //
+                // Reasoning is the one kind that can be elided this way. An
+                // assistant turn and a tool result are things the conversation
+                // refers back to; a draft the operator killed is referred to by
+                // nothing, and saying it was killed is more use to the next turn
+                // than the draft is.
+                open_assistant(st, out, if *truncated { ABANDONED_REASONING } else { text });
             }
 
             TranscriptItem::Assistant { text, tool_calls, .. } => {
@@ -447,6 +466,10 @@ pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
     v
 }
 
+/// What stands in for a reasoning block the operator stopped.
+pub const ABANDONED_REASONING: &str =
+    "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
+
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
         RenderSpan::Control(tk::IM_START.clone()),
@@ -580,6 +603,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "Look at it.".into(),
                 field: ReasoningField::Inline,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: String::new(),
@@ -638,6 +662,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "Read both.".into(),
                 field: ReasoningField::Inline,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: String::new(),
@@ -674,6 +699,7 @@ mod tests {
             TranscriptItem::Reasoning {
                 text: "They differ.".into(),
                 field: ReasoningField::Inline,
+                truncated: false,
             },
             TranscriptItem::Assistant {
                 text: "They differ.".into(),
@@ -791,5 +817,72 @@ mod summary_turn_does_not_think {
         let i = c.iter().position(|r| *r == ThinkOpen).expect("opens");
         let j = c.iter().position(|r| *r == ThinkClose).expect("and closes");
         assert!(i < j, "the close has to come after the open: {c:?}");
+    }
+}
+
+#[cfg(test)]
+mod an_abandoned_draft_is_not_replayed {
+    //! **The measured case.** A model began counting parentheses by hand and
+    //! produced 25464 tokens of `+ 0 + 0 + 0` before the operator stopped it.
+    //! Committed, it was replayed on every later turn — a tenth of the window —
+    //! and the model read its own abandoned loop as history and counted by hand
+    //! again. The operator, watching it happen twice: *"it counts them again by
+    //! hand lol"*.
+    //!
+    //! Reasoning is the one kind that can be elided like this. An assistant turn
+    //! and a tool result are things the conversation refers back to; a draft the
+    //! operator killed is referred to by nothing.
+
+    use super::*;
+    use letibot_transcript::ReasoningField;
+
+    fn rendered(truncated: bool) -> String {
+        // The shape of the real thing, at a size a test can hold.
+        let loop_text = " + 0".repeat(4_000);
+        let items = vec![TranscriptItem::Reasoning {
+            text: format!("Let me count them by hand.{loop_text}"),
+            field: ReasoningField::Inline,
+            truncated,
+        }];
+        QwenRenderer::new()
+            .render_incremental(&[], &items)
+            .iter()
+            .map(|s| match s {
+                RenderSpan::Text(t) => t.clone(),
+                RenderSpan::Control(c) => c.literal.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_finished_thought_is_replayed_whole() {
+        let out = rendered(false);
+        assert!(out.contains("+ 0 + 0"), "an ordinary reasoning block is history");
+        assert!(out.len() > 10_000, "and is carried at its own size: {}", out.len());
+    }
+
+    #[test]
+    fn a_stopped_thought_is_replaced_by_a_sentence() {
+        let out = rendered(true);
+        assert!(
+            !out.contains("+ 0 + 0"),
+            "the abandoned loop must not reach the prompt again"
+        );
+        assert!(out.contains("Do not resume it"), "and the model is told why: {out}");
+        assert!(
+            out.len() < 500,
+            "a sentence, not a thought: {} chars",
+            out.len()
+        );
+    }
+
+    /// The saving, stated as the ratio it actually is.
+    #[test]
+    fn the_prompt_stops_carrying_the_draft() {
+        let (whole, stopped) = (rendered(false).len(), rendered(true).len());
+        assert!(
+            whole / stopped > 30,
+            "elision has to be worth doing: {whole} -> {stopped}"
+        );
     }
 }

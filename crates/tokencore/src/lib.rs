@@ -526,6 +526,7 @@ mod tests {
             items.push(TranscriptItem::Reasoning {
                 text: format!("thinking about turn {k}"),
                 field: letibot_transcript::ReasoningField::Inline,
+                truncated: false,
             });
             if k % 3 == 0 {
                 items.push(TranscriptItem::SegmentMark {
