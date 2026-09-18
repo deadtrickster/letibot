@@ -1886,18 +1886,133 @@ impl<'a> Harness<'a> {
                     .map_err(|e| HarnessError::Store(e.to_string()))?
                     .map(|m| m.dialect_sha)
                     .unwrap_or_default();
+                // **A rendering that cannot be reused is not a conversation that
+                // cannot be continued.**
+                //
+                // This refused, and the reason it gave was sound about the path it
+                // was on: a resume REPLAYS the stored tokens, and two renderers'
+                // bytes in one prompt is a prompt no model was trained on, which
+                // the hash chain cannot catch because every row is correctly hashed
+                // by whoever wrote it.
+                //
+                // What it was not sound about is the data. `transcript_item` keeps
+                // `item_json` beside `tokens`, and `item_json` is dialect-neutral —
+                // a tool call is `{name, arguments}`, not `<function=…>` markup.
+                // So the tokens are a CACHE of one rendering and the items are the
+                // record, and the conversation can be rebuilt for this renderer.
+                //
+                // Measured on the session that made this visible
+                // (s-1789462738453908838, 619 items, GLM -> Qwen dense, 2026-09-18):
+                // every item re-rendered, 222176 stored tokens becoming 252128. The
+                // cost is one cold prefill, once, and it is paid here rather than
+                // discovered — the note says what it was before the head draws.
+                //
+                // It FORKS rather than rewriting: the old transcript keeps its
+                // tokens and its chain, exactly as a compaction leaves what it
+                // stopped carrying. Nothing stored is edited, so the append-only
+                // triggers stay honest.
                 if stored_sha != dialect_sha {
-                    return Err(HarnessError::Setup(format!(
-                        "session {} was recorded under dialect template {stored_sha} and \
-                         this daemon renders {dialect_sha}. It was NOT resumed: the stored \
-                         tokens came out of the other renderer, and appending this one's \
-                         bytes to them would build a prompt no model was ever trained on \
-                         — which the hash chain cannot catch, because every row is \
-                         correctly hashed by whoever wrote it. Start the daemon with the \
-                         dialect this session was recorded under.",
-                        cfg.session_id
-                    )));
-                }
+                    let store = s;
+                    let items: Vec<letibot_transcript::TranscriptItem> =
+                        loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
+
+                    let probe = engine
+                        .open(&format!("{transcript_id}#reprefill-probe"), &prefix)
+                        .map_err(|e| {
+                            HarnessError::Setup(format!("rendering the new prompt: {e}"))
+                        })?;
+                    let rec = StablePrefixRecord {
+                        dialect_sha: dialect_sha.clone(),
+                        system: prefix.system.clone(),
+                        tools_json: prefix.tools_json.clone(),
+                        tokens: probe.ledger.prefix_tokens().to_vec(),
+                        h_init: probe.ledger.h_init(),
+                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                    };
+                    drop(probe);
+                    let new_prefix_id = store
+                        .put_stable_prefix(&rec)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                    // `#tN`, N counted the way `fork_to_summary` counts it, so the
+                    // two forks cannot collide on an id.
+                    let n: i64 = store
+                        .connection()
+                        .query_row(
+                            "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
+                            [cfg.session_id.as_str()],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    let new_id = format!("{}#t{}", cfg.session_id, n);
+
+                    let mut rebuilt = engine
+                        .open(&new_id, &prefix)
+                        .map_err(|e| HarnessError::Setup(format!("opening the fork: {e}")))?;
+                    // Each item rendered against the history as it stood before it,
+                    // which is `render_incremental`'s contract and what keeps the
+                    // ledger rows aligned with the items.
+                    rebuilt
+                        .append_items(&engine, &items, &mut letibot_turn::events::NullSink)
+                        .map_err(|e| {
+                            HarnessError::Setup(format!(
+                                "re-rendering this conversation under {}: {e}",
+                                parts.wiring.spec().name
+                            ))
+                        })?;
+
+                    store
+                        .put_fork(
+                            &new_id,
+                            &cfg.session_id,
+                            &new_prefix_id,
+                            &transcript_id,
+                            items.len() as u32,
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                    // Written before the head attaches, so a daemon that dies now
+                    // leaves a fork that resumes rather than one that has to be
+                    // rebuilt again.
+                    let rows = rebuilt.ledger.rows();
+                    for i in 0..rows.len() {
+                        let tokens = rebuilt.ledger.item_tokens(i).ok_or_else(|| {
+                            HarnessError::Store(format!("no tokens for re-rendered row {i}"))
+                        })?;
+                        store
+                            .append_item(&new_id, i as u32, &rebuilt.items[i], &rows[i], tokens)
+                            .map_err(|e| HarnessError::Store(format!("re-rendered row {i}: {e}")))?;
+                    }
+
+                    let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
+                    notes.push(format!(
+                        "this conversation was recorded under dialect template {} and this \
+                         daemon renders {}. Its {} item(s) were RE-RENDERED for this one — \
+                         the stored tokens are a cache of the other rendering, the items \
+                         themselves are the record, and nothing was detokenized to do it. \
+                         {} token(s) became {}, which is one cold prefill, once, on the next \
+                         turn. The old transcript {} keeps its tokens and its chain; this is \
+                         a fork, and nothing stored was rewritten.",
+                        &stored_sha[..16],
+                        &dialect_sha[..16],
+                        items.len(),
+                        before,
+                        rebuilt.ledger.len(),
+                        transcript_id,
+                    ));
+
+                    let rows = rebuilt.ledger.rows().len();
+                    let report = ResumeReport {
+                        transcript_id: new_id.clone(),
+                        rows,
+                        tokens: rebuilt.ledger.len(),
+                        head: rebuilt.ledger_head(),
+                        workspace: cfg.workspace.display().to_string(),
+                        notes: std::mem::take(&mut notes),
+                    };
+                    // Every row was written above, so none is pending.
+                    (new_id, rebuilt, rows, Some(report), prefix.clone(), new_prefix_id)
+                } else {
 
                 let session = Session::restore(&loaded).map_err(|e| {
                     HarnessError::Store(format!("session {}: {e}", cfg.session_id))
@@ -2018,6 +2133,7 @@ impl<'a> Harness<'a> {
                     own_prefix,
                     loaded.stable_prefix_id,
                 )
+                }
             }
             None => {
                 let transcript_id = format!("{}#t0", cfg.session_id);
