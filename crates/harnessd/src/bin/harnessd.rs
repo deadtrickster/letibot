@@ -216,6 +216,7 @@ fn run() -> Result<i32, String> {
     let mut model_given: Option<String> = None;
 
     let mut query: Option<Query> = None;
+    let mut dialect_seen = false;
     let mut tsv = false;
     // `--workspace` defaults to the process's cwd for a daemon, and to *nothing* for
     // a listing: "every session" and "every session under this directory" are
@@ -228,7 +229,7 @@ fn run() -> Result<i32, String> {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--list-sessions" => query = Some(Query::List),
-            "--latest-session" => query = Some(Query::Latest),
+            "--latest-session" => query = Some(Query::Latest { by_dialect: dialect_seen }),
             "--tsv" => tsv = true,
             "--rename" => {
                 let id = next()?;
@@ -419,6 +420,12 @@ fn run() -> Result<i32, String> {
                 let n = next()?;
                 cfg.dialect =
                     Dialect::parse(&n).ok_or_else(|| format!("unknown dialect {n:?}"))?;
+                // Order-independent: `--dialect` may come before or after
+                // `--latest-session`, and both spellings must filter.
+                if let Some(Query::Latest { by_dialect }) = query.as_mut() {
+                    *by_dialect = true;
+                }
+                dialect_seen = true;
             }
             "--endpoint" => {
                 let v = next()?;
@@ -804,7 +811,10 @@ fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
 /// What a store query was asked for.
 enum Query {
     List,
-    Latest,
+    /// `by_dialect` is true only when `--dialect` was GIVEN. Filtering by a
+    /// default nobody typed would hide sessions for a reason the caller never
+    /// stated, which is the same defect as a silent narrowing anywhere else.
+    Latest { by_dialect: bool },
     Rename(String, String),
     Delete(String),
     Calibrate { write: bool },
@@ -1058,7 +1068,7 @@ fn run_query(
             }
             Err(e) => Err(e.to_string()),
         },
-        Query::Latest => {
+        Query::Latest { by_dialect } => {
             let mut all = scoped(&store, scope)?;
             // An **exact** workspace match beats a descendant of it. Standing in
             // `~` and asking to continue should not hand back the conversation you
@@ -1076,10 +1086,48 @@ fn run_query(
             // resume being broken, and is how this would have been reported as still
             // not working.
             let skipped = all.iter().filter(|s| s.items == 0).count();
-            let rows: Vec<_> = all.into_iter().filter(|s| s.items > 0).collect();
+            let mut rows: Vec<_> = all.into_iter().filter(|s| s.items > 0).collect();
             if skipped > 0 {
                 eprintln!(
                     "skipped {skipped} session(s) with no rows: nothing was ever said in them"
+                );
+            }
+
+            // **A session this daemon cannot render is not one to continue either.**
+            //
+            // The same argument as the empty rows above, for the other reason a
+            // resume cannot happen. Measured 2026-09-18: the box swapped GLM for
+            // Qwen dense, `--continue` picked the newest session in the workspace —
+            // recorded under GLM — and the daemon refused it on the dialect check,
+            // correctly. But the launcher does not know that is terminal, so it
+            // started a daemon, waited, and tried again, four times, printing the
+            // same paragraph each time. The operator saw a hang.
+            //
+            // Answering with a session that CAN be continued is the honest reply to
+            // "continue", and naming the ones held back is what stops that reading
+            // as the older sessions having been lost. They have not: they need the
+            // dialect they were recorded under, and the line says so.
+            let ours: String = cfg
+                .dialect
+                .wiring(None)
+                .spec()
+                .template_sha
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let foreign = if by_dialect {
+                rows.iter().filter(|s| s.dialect_sha != ours).count()
+            } else {
+                0
+            };
+            if foreign > 0 {
+                rows.retain(|s| s.dialect_sha == ours);
+                eprintln!(
+                    "skipped {foreign} session(s) recorded under a different dialect: this \
+                     daemon renders {}, and a resume replays the stored tokens rather than \
+                     re-rendering them. They are not lost — start the daemon on the dialect \
+                     they were recorded under, or `letibot --sessions` to see them.",
+                    cfg.dialect.name()
                 );
             }
             match rows.first() {
