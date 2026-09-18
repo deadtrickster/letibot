@@ -274,6 +274,38 @@ impl AuthorisationTrail {
         v
     }
 
+    /// **Which of the cited numbers name an operator utterance that was shown.**
+    ///
+    /// The prompt's own promise is that "an ALLOW citing none is discarded and the
+    /// operator is asked instead". For that sentence to be true, something has to
+    /// decide what counts as citing one — and the only check that existed was
+    /// `cites.is_empty()`, which any number satisfies.
+    ///
+    /// Two ways a number fails here, and they are different failures:
+    ///
+    /// 1. **Out of range.** The model named a line that was never on the page. It
+    ///    read something that is not there, and an authorisation resting on it
+    ///    rests on nothing.
+    /// 2. **In range, but the agent's own words.** The trail carries agent lines
+    ///    too — a compaction notice, a claim about what it is doing — and an ALLOW
+    ///    citing one of those is the agent authorising itself. That is the exact
+    ///    move the trail exists to make impossible, so it is refused even though
+    ///    the line is real and was shown.
+    ///
+    /// Returns the surviving indices. Empty means nothing was cited that could
+    /// authorise anything, whatever the model wrote.
+    pub fn cited_operator_words(&self, cites: &[usize]) -> Vec<usize> {
+        cites
+            .iter()
+            .copied()
+            .filter(|i| {
+                self.utterances
+                    .get(*i)
+                    .is_some_and(|u| u.speaker == Speaker::Operator)
+            })
+            .collect()
+    }
+
     /// What the model reads. Every line carries its distance, because the distance is
     /// half the evidence.
     pub fn render(&self) -> String {
@@ -293,13 +325,24 @@ impl AuthorisationTrail {
                 ));
             }
         }
-        for u in &self.utterances {
+        // **The number is the citation.**
+        //
+        // The prompt asks the oracle to answer `ALLOW <indices of the operator
+        // utterances that ask for this>` and this rendered no index at all — only
+        // `turn(s) ago`. So the model cited the only numbers it had been shown, the
+        // turn counts, and a 12-entry trail came back cited as `87, 114, 125`
+        // (rano, 2026-09-18 09:36). Those were the right utterances, read correctly
+        // off the page; nothing about the mechanism made them so.
+        //
+        // An index printed here is an index `cited_operator_words` can check, which
+        // is the difference between a citation and a number.
+        for (i, u) in self.utterances.iter().enumerate() {
             let when = match u.seconds_ago {
                 Some(sec) => format!("{} turn(s) ago, {sec}s", u.turns_ago),
                 None => format!("{} turn(s) ago, clock not recorded", u.turns_ago),
             };
             s.push_str(&format!(
-                "  [{} · {when}] {:?}{}\n",
+                "  [{i}] [{} · {when}] {:?}{}\n",
                 u.speaker.as_str(),
                 u.text,
                 if u.clipped { " …(clipped)" } else { "" }
@@ -931,8 +974,36 @@ impl OracleScope {
                 self.max_scope.as_str()
             ));
         }
+        // **`Unknown` is the absence of an intent, not an intent to withhold.**
+        //
+        // Layer A already decided this case and wrote the decision down: an
+        // unrecognised program "lands at `MayApprove` -- which is *ask somebody*,
+        // and the somebody may be the oracle if the operator's own words authorise
+        // it" (`intent.rs`, `an_unlisted_program_is_asked_about_rather_than_refused_or_admitted`).
+        // This check then read `unknown` as an intent the oracle had not earned and
+        // escalated without asking it -- so the two layers disagreed and the
+        // operator paid the difference.
+        //
+        // Measured on the store, 2026-09-18: 117 decisions were kept from the guard
+        // by this branch and 115 of them carried `[unknown]` alone. 74 were rescued
+        // by the mode, 13 by the preapproved list, 28 landed on the operator, and 2
+        // reached nobody at all -- `ar t target/debug/librano.rlib`, twice, at 00:48
+        // and 00:54, refused at the 300s timeout because the operator was asleep.
+        // Listing archive members is not a thing a guard needs protecting from.
+        //
+        // What still holds the line, none of which reads the intent table:
+        //   * the effect scope, checked above -- an unknown program reaching past
+        //     `max_scope` escalates exactly as before, and that rung is computed
+        //     from the paths, not from the program's name;
+        //   * `brief.adjudicable()`, the witness layer A takes once: an oracle that
+        //     answers ALLOW on an action the baseline did not mark adjudicable is
+        //     refused, so `AlwaysAsk` and `Blocked` cannot be promoted out of;
+        //   * the never-write list, which is enforced before any mode or scope is
+        //     read at all.
+        // What is lost is the pretence that not naming a program protected anybody.
         let outside: Vec<&str> = intents
             .iter()
+            .filter(|i| **i != Intent::Unknown)
             .filter(|i| !self.intents.contains(i))
             .map(Intent::as_str)
             .collect();
@@ -943,6 +1014,127 @@ impl OracleScope {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod a_citation_is_checked_against_the_page {
+    //! **What the oracle cites has to be something it was shown.**
+    //!
+    //! Written after finding that the brief printed no index and the check was
+    //! `cites.is_empty()`, so `ALLOW 87,114,125` against a twelve-line trail was
+    //! accepted as an authorisation. The numbers were, by luck, the right
+    //! utterances' turn counts.
+
+    use super::*;
+
+    fn trail() -> AuthorisationTrail {
+        AuthorisationTrail {
+            utterances: vec![
+                Utterance {
+                    speaker: Speaker::Operator,
+                    text: "lets do the rest of the languages".into(),
+                    clipped: false,
+                    turns_ago: 114,
+                    seconds_ago: None,
+                },
+                Utterance {
+                    speaker: Speaker::Agent,
+                    text: "Your previous turn was stopped at the context wall".into(),
+                    clipped: false,
+                    turns_ago: 1,
+                    seconds_ago: None,
+                },
+            ],
+            provenance: TrailProvenance::Scanned {
+                messages_scanned: 60,
+                operator_messages: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn the_render_numbers_every_line_so_there_is_something_to_cite() {
+        let r = trail().render();
+        assert!(r.contains("[0] [operator"), "{r}");
+        assert!(r.contains("[1] [agent"), "{r}");
+    }
+
+    /// The rano case: turn counts, cited as though they were line numbers.
+    #[test]
+    fn a_number_that_was_never_on_the_page_cites_nothing() {
+        assert_eq!(trail().cited_operator_words(&[87, 114, 125]), Vec::<usize>::new());
+    }
+
+    /// **The agent may not authorise the agent.** Index 1 is real and was shown;
+    /// it is still not an operator asking for anything.
+    #[test]
+    fn an_agents_own_line_is_not_an_authorisation() {
+        assert_eq!(trail().cited_operator_words(&[1]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_real_operator_line_survives_and_the_junk_beside_it_is_dropped() {
+        assert_eq!(trail().cited_operator_words(&[0, 1, 99]), vec![0]);
+    }
+}
+
+#[cfg(test)]
+mod unclassified_reaches_the_oracle {
+    //! **A program the table cannot name is the guard's question, not the
+    //! operator's.**
+    //!
+    //! The two facts this holds apart: an oracle is not consulted about intents it
+    //! has not earned, and `unknown` is not one of those — it is the table saying
+    //! nothing. The first is the rule; reading the second as an instance of it was
+    //! the defect, and it cost the operator 28 prompts and two 300s timeouts in the
+    //! measured window.
+
+    use super::*;
+
+    fn scope() -> OracleScope {
+        OracleScope::narrowest("seven hand-written cases; not a calibration")
+    }
+
+    fn set(intents: &[Intent]) -> std::collections::BTreeSet<Intent> {
+        intents.iter().cloned().collect()
+    }
+
+    /// `ar t target/debug/librano.rlib` — the command that reached nobody.
+    #[test]
+    fn an_unnameable_program_inside_the_project_is_the_oracles_to_rule_on() {
+        assert_eq!(
+            scope().covers(&set(&[Intent::Unknown]), EffectScope::HostProject),
+            Ok(()),
+            "an unclassified program in the operator's own project must reach the guard"
+        );
+    }
+
+    /// `unknown` beside a real intent changes nothing about the real one.
+    #[test]
+    fn unknown_does_not_smuggle_an_unearned_intent_past_the_check() {
+        let outside = scope()
+            .covers(
+                &set(&[Intent::Unknown, Intent::PrivilegeEscalation]),
+                EffectScope::HostProject,
+            )
+            .expect_err("privilege escalation was never granted");
+        assert!(outside.contains("privilege_escalation"), "{outside}");
+        assert!(
+            !outside.contains("unknown"),
+            "`unknown` must not be named as an unearned intent: {outside}"
+        );
+    }
+
+    /// **The rung is what still stops it**, and the rung is computed from where the
+    /// effect lands rather than from the program's name — so widening the intent
+    /// check does not widen the reach.
+    #[test]
+    fn an_unnameable_program_reaching_past_the_ceiling_still_escalates() {
+        let why = scope()
+            .covers(&set(&[Intent::Unknown]), EffectScope::External)
+            .expect_err("external is past `narrowest`");
+        assert!(why.contains("external"), "{why}");
     }
 }
 
@@ -2231,9 +2423,22 @@ mod tests {
         assert!(e.contains("write_file"), "the names are printed: {e}");
         assert!(OracleScope::declared(&[], Some("the-moon"), &[]).is_err());
 
-        // The floor is unchanged for a box that says nothing.
+        // **The floor covers `unknown` too, and did not used to.**
+        //
+        // This asserted `is_err()` — a box that said nothing in `providers.toml`
+        // kept every unclassified program away from its own guard, and the only way
+        // out was for the operator to know that `unknown` was a name they could
+        // write in the intents list. The assertion two blocks up is the evidence
+        // that the hatch existed; the 115 `[unknown]` escalations measured on the
+        // store, 28 of them landing on a person and 2 on nobody, are the evidence
+        // that nobody found it.
+        //
+        // `unknown` is the table declining to answer, not an intent, so it is no
+        // longer read as one. The reach is what still bounds this, and the line
+        // below is unchanged: `External` is refused whatever the intents say.
         let floor = OracleScope::narrowest("test fixture, not a calibration");
-        assert!(floor.covers(&carries, EffectScope::HostProject).is_err());
+        assert!(floor.covers(&carries, EffectScope::HostProject).is_ok());
+        assert!(floor.covers(&carries, EffectScope::External).is_err());
 
         // **`max_scope` alone widens the reach and keeps the intents.** Reading an
         // absent list as an EMPTY one would build a scope covering nothing —

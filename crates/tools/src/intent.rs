@@ -1066,6 +1066,8 @@ impl FlagRule {
     }
 }
 
+include!("documented_flags.rs");
+
 /// The rows. Ordered by program so a reader can find one.
 ///
 /// Every entry here was found by surveying fourteen known-destructive commands
@@ -1232,9 +1234,18 @@ const FLAG_RULES: &[FlagRule] = &[
 /// Intents a FLAG adds that the program's name did not imply.
 ///
 /// Only ever additive — see [`FlagRule`].
+/// **Both tables, hand-written first.**
+///
+/// The order is not cosmetic: `flag_reasons` renders these into the brief in the
+/// order they arrive, and a sentence somebody argued about is worth more to a
+/// reader than one a model wrote. They are otherwise the same kind of row and
+/// obey the same rule — additive only — so nothing downstream distinguishes them.
+fn all_flag_rules() -> impl Iterator<Item = &'static FlagRule> {
+    FLAG_RULES.iter().chain(DOCUMENTED_FLAG_RULES.iter())
+}
+
 fn flag_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
-    FLAG_RULES
-        .iter()
+    all_flag_rules()
         .filter(|r| r.matches(program, argv))
         .map(|r| r.intent)
         .collect()
@@ -1242,8 +1253,7 @@ fn flag_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
 
 /// Why a flag rule fired, for the brief. Empty when none did.
 pub fn flag_reasons(program: &str, argv: &[Word]) -> Vec<&'static str> {
-    FLAG_RULES
-        .iter()
+    all_flag_rules()
         .filter(|r| r.matches(program, argv))
         .map(|r| r.why)
         .collect()
@@ -1278,7 +1288,15 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "cat" | "head" | "tail" | "less" | "more" | "strings" | "od" | "xxd" | "base64"
         | "hexdump" | "cut" | "nl" | "rev" | "sort" | "uniq" | "column" | "diff" | "cmp"
         | "md5sum" | "sha256sum" | "sha1sum" | "grep" | "egrep" | "fgrep" | "rg" | "jq" | "yq"
-        | "zcat" | "gunzip" => vec![ReadFile],
+        | "zcat" | "gunzip"
+        // **The binutils readers.** Every one of these opens a binary and prints
+        // what is in it, which is `ReadFile` and has been since binutils existed.
+        // None of them was named, so a build-debugging session spent its prompts
+        // here: `ar t target/debug/librano.rlib` went to the operator twice at
+        // 00:48 and 00:54 on 2026-09-18 and reached nobody, because listing the
+        // members of an archive was a program this table could not name.
+        | "nm" | "objdump" | "readelf" | "size" | "addr2line" | "c++filt" | "ldd"
+        | "nm-new" | "elfedit" | "dwarfdump" | "otool" => vec![ReadFile],
         // An interpreter, not a filter, and this arm used to say `ReadFile` alone.
         // An awk program has `system()` and `print | "cmd"`, and the program text
         // arrives as the first POSITIONAL as readily as via `-f` — so no flag test
@@ -1539,6 +1557,21 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 | "version" | "help" | "check-ignore" | "ls-remote" | "fsck" => vec![Inspect],
                 // A new repository, on the operator's disk: a write, not a mystery.
                 "init" => vec![WriteFile],
+                // **The write half of the plumbing.** The read half above was filled
+                // from the etalon and this was not, so `git update-ref` — which moves
+                // or deletes a ref, and is how a branch is rewritten without a
+                // porcelain verb — fell to `Unknown`. Measured on the store,
+                // 2026-09-18: it reached the operator by hand at 09:37:27 because no
+                // arm named it.
+                //
+                // `update-ref -d` deletes the ref outright; the rest overwrite what
+                // it pointed at. Both are the repository losing a reachable history,
+                // so this is the same pair `reset` and `branch` already carry, and
+                // `FLAG_RULES` adds `Destroy` for the spellings that delete.
+                "update-ref" | "update-index" | "symbolic-ref" | "write-tree"
+                | "commit-tree" | "hash-object" | "mktree" | "mktag" | "replace"
+                | "prune" | "prune-packed" | "gc" | "repack" | "pack-refs"
+                | "reflog-expire" | "fast-import" => vec![ReadFile, WriteFile],
                 // **Subcommands that both read and write, by their own verb.**
                 // `worktree` was on the inspect list whole, and `worktree add`
                 // creates a directory and a branch; `stash` with no verb PUSHES,
@@ -1574,6 +1607,34 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "gh" | "glab" => vec![Network, VersionControlPublish],
         "docker" | "podman" | "kubectl" | "helm" | "flowy" | "docker-compose" => {
             vec![Network, ExecuteCode]
+        }
+        // **`ar`'s first operand is the verb**, and it is a bare letter rather than
+        // a flag, so nothing that reads flags could classify this. `ar t` lists,
+        // `ar p` prints a member, `ar x` extracts to disk, `ar d` deletes members
+        // from the archive, and `r`/`q`/`m`/`s` rewrite it. Same shape as git's
+        // subcommand arm, one character wide.
+        //
+        // Ordered least to most consequential, and anything unrecognised falls
+        // through to the pair rather than to `Inspect`: a letter this build has not
+        // heard of is not a letter that reads.
+        "ar" | "gar" => {
+            let op = arg(0).trim_start_matches('-');
+            match op.chars().next() {
+                Some('t') => vec![Inspect],
+                Some('p') => vec![ReadFile],
+                Some('x') => vec![ReadFile, WriteFile],
+                Some('d') => vec![ReadFile, WriteFile, Destroy],
+                _ => vec![ReadFile, WriteFile],
+            }
+        }
+        // `strip` rewrites the file it is given, in place unless `-o` names another,
+        // and what it removes is not recoverable from the result.
+        "strip" | "objcopy" => {
+            if has("-o") || argv.iter().filter_map(|w| w.text()).any(|t| t.starts_with("--output")) {
+                vec![ReadFile, WriteFile]
+            } else {
+                vec![ReadFile, WriteFile, Destroy]
+            }
         }
         "vi" | "vim" | "nvim" | "nano" | "emacs" => vec![ReadFile, WriteFile],
         _ => vec![Unknown],
@@ -4672,6 +4733,58 @@ mod flag_rules {
     /// This test asserted `!MayApprove` when it was written and failed, because the
     /// assertion was wrong rather than the code. Keeping the corrected version with
     /// the reason attached, so nobody "fixes" the table to refuse unknown programs.
+    /// **The two programs that cost the operator a night.**
+    ///
+    /// `ar t …` was asked about twice and answered by nobody (00:48, 00:54 on
+    /// 2026-09-18, refused at the 300s timeout with the operator asleep), and
+    /// `git update-ref …` was answered by hand at 09:37:27 the next morning. Both
+    /// for the same reason: no arm named the program, so the whole call read as
+    /// `Unknown`.
+    ///
+    /// This asserts what they classify as now. It does NOT assert they stop being
+    /// asked about — that is the guard's business, and the guard is reached now
+    /// rather than skipped.
+    #[test]
+    fn the_programs_that_fell_to_unknown_in_the_rano_session_are_named() {
+        let listing = Baseline::of_command("ar t target/debug/librano.rlib", &sur());
+        assert!(
+            !listing.intents.contains(&Intent::Unknown),
+            "listing an archive's members is not an unknown act: {:?}",
+            listing.intents
+        );
+        assert!(listing.intents.contains(&Intent::Inspect), "{:?}", listing.intents);
+        assert!(
+            !listing.intents.contains(&Intent::Destroy),
+            "`t` lists and nothing more: {:?}",
+            listing.intents
+        );
+
+        // The same program, the operation that removes members.
+        let deleting = Baseline::of_command("ar d libfoo.a old.o", &sur());
+        assert!(deleting.intents.contains(&Intent::Destroy), "{:?}", deleting.intents);
+
+        let ref_write = Baseline::of_command("git update-ref refs/remotes/origin/master b76ca31", &sur());
+        assert!(
+            !ref_write.intents.contains(&Intent::Unknown),
+            "moving a ref is a write, not a mystery: {:?}",
+            ref_write.intents
+        );
+        assert!(ref_write.intents.contains(&Intent::WriteFile), "{:?}", ref_write.intents);
+
+        // And the readers stay readers.
+        for c in ["nm -C target/debug/librano.rlib", "objdump -d /bin/ls", "readelf -h /bin/ls"] {
+            let b = Baseline::of_command(c, &sur());
+            assert!(!b.intents.contains(&Intent::Unknown), "{c}: {:?}", b.intents);
+            assert!(!b.intents.contains(&Intent::WriteFile), "{c}: {:?}", b.intents);
+        }
+
+        // `strip FILE` rewrites it where it lies; `strip -o OUT FILE` does not.
+        let inplace = Baseline::of_command("strip /tmp/a.out", &sur());
+        assert!(inplace.intents.contains(&Intent::Destroy), "{:?}", inplace.intents);
+        let copied = Baseline::of_command("strip -o /tmp/b.out /tmp/a.out", &sur());
+        assert!(!copied.intents.contains(&Intent::Destroy), "{:?}", copied.intents);
+    }
+
     #[test]
     fn an_unlisted_program_is_asked_about_rather_than_refused_or_admitted() {
         let b = Baseline::of_command("/usr/local/bin/frobnicate --wipe /data", &sur());
@@ -4693,16 +4806,78 @@ mod flag_rules {
     /// Every row can say why it exists, and no two rows are the same row.
     #[test]
     fn the_table_is_well_formed() {
-        for r in FLAG_RULES {
+        for r in all_flag_rules() {
             assert!(!r.why.is_empty(), "{} has no reason", r.program);
             assert!(r.why.len() > 30, "{}: `{}` is not an explanation", r.program, r.why);
         }
         let mut keys: Vec<(&str, Option<&str>, &[&str])> =
-            FLAG_RULES.iter().map(|r| (r.program, r.subcommand, r.flags)).collect();
+            all_flag_rules().map(|r| (r.program, r.subcommand, r.flags)).collect();
         let before = keys.len();
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), before, "a duplicate row is a row nobody can maintain");
+    }
+
+    /// **A generated row names a flag, never a verb.**
+    ///
+    /// The extraction prompt asked for "flags or subcommands that DESTROY", and both
+    /// models answered with verbs that CAN — `reset`, `branch`, `tag` arrived in the
+    /// flag field as bare words. A rule built from one fires on every use of the
+    /// verb, so `git reset HEAD~5` came back destructive when it leaves every commit
+    /// reachable. The answer key's negative twins caught it as the single false
+    /// positive in thirteen, which is what they are there for.
+    ///
+    /// `scripts/man-rows-to-table.py` draws the line at the leading dash. This is
+    /// that line, asserted here so a regenerated table cannot quietly cross it.
+    #[test]
+    fn a_documented_row_is_a_flag_and_not_a_verb() {
+        for r in DOCUMENTED_FLAG_RULES {
+            assert!(
+                !r.flags.is_empty(),
+                "{}: a documented row with no flag fires on the program itself",
+                r.program
+            );
+            for f in r.flags {
+                assert!(
+                    f.starts_with('-'),
+                    "{}: `{f}` is a verb, not a flag — see this test's doc",
+                    r.program
+                );
+            }
+            assert!(
+                matches!(r.provenance, Provenance::Documented { .. }),
+                "{}: a generated row must cite the page it came from",
+                r.program
+            );
+        }
+    }
+
+    /// **The generated rows do not fire on anything the key says is harmless.**
+    ///
+    /// `measure_recall_against_the_hand_written_key` deliberately asserts no
+    /// threshold — it exists to learn a number, and a target nobody agreed is not a
+    /// test. This asserts something narrower and already agreed: the table is
+    /// additive, so a row that fires on a negative twin costs a prompt somebody has
+    /// to dismiss. Thirteen negatives, none of them destruction, and that stays true
+    /// across a regeneration or it is not a table anybody can regenerate.
+    #[test]
+    fn no_rule_fires_on_the_keys_negative_twins() {
+        let key = include_str!("../tests/data/answer-key.tsv");
+        let sur = Surroundings {
+            home: Some("/home/op".into()),
+            workspace: Some("/home/op/project".into()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: Default::default(),
+        };
+        let mut spurious: Vec<&str> = Vec::new();
+        for line in key.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+            let mut f = line.split('\t');
+            let (cmd, want) = (f.next().unwrap_or(""), f.next().unwrap_or(""));
+            if want == "no" && Baseline::of_command(cmd, &sur).intents.contains(&Intent::Destroy) {
+                spurious.push(cmd);
+            }
+        }
+        assert!(spurious.is_empty(), "these destroy nothing and were marked destructive: {spurious:?}");
     }
 }
 
