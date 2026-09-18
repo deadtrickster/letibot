@@ -5354,7 +5354,12 @@ impl App {
             .iter()
             .any(|o| o.kind == letibot_sessionlog::event::OptionKind::AllowAlways)
         {
-            "  ↑↓ to choose · Enter to answer · or type the id ·              `allow_always <glob>` to set what the rule covers"
+            // The rule the *Always allow* answer will write is in the option's
+            // own label now, so the hint points at editing it rather than at
+            // inventing it: the operator's report (2026-09-18) was that the
+            // offer never said which tool and verb it would permit, and a
+            // pattern they cannot see is a pattern they cannot adjust.
+            "  ↑↓ to choose · Enter to answer · or type the id ·              `allow_always <glob>` to widen or narrow the rule shown above"
         } else {
             "  ↑↓ to choose · Enter to answer · or type the id"
         };

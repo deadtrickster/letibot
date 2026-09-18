@@ -538,7 +538,14 @@ pub fn always_ask_options() -> Vec<DecisionOption> {
 
 /// The allow/deny ladder every permission carries. opencode's permission *model*
 /// is the part §11.9 says is worth vendoring, and this is it.
-pub fn permission_options() -> Vec<DecisionOption> {
+///
+/// `derived` is the rule an *Always allow* answer will write for the call in
+/// front of the operator — the path, or the program and its verb. It is in the
+/// label so the button names what it does: the operator's report (2026-09-18)
+/// was that the offer said "add tool and verb to the permissions file" without
+/// ever saying **which**, and a rule nobody can read is one nobody should be
+/// asked to sign.
+pub fn permission_options(derived: &str) -> Vec<DecisionOption> {
     vec![
         DecisionOption {
             id: "allow_once".into(),
@@ -552,7 +559,9 @@ pub fn permission_options() -> Vec<DecisionOption> {
         },
         DecisionOption {
             id: "allow_always".into(),
-            label: "Always allow this (written to ~/.config/letibot/permission.json)".into(),
+            label: format!(
+                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
+            ),
             kind: OptionKind::AllowAlways,
         },
         DecisionOption {
@@ -568,10 +577,18 @@ pub fn permission_options() -> Vec<DecisionOption> {
     ]
 }
 
-/// The ladder for an exec-class call: no session grant (the operator's rule of
-/// 2026-09-11, a shell asks every time), and *Always allow* as a durable rule
-/// over the program and its verb (the revision of 2026-09-14).
-pub fn exec_options() -> Vec<DecisionOption> {
+/// The ladder for an exec-class call.
+///
+/// The operator's rule of 2026-09-11 was that a shell asks every time, and the
+/// revision of 2026-09-14 added *Always allow* as a durable rule over the
+/// program and its verb. That revision is what unbalanced the ladder: a durable
+/// rule that outlives the session was offered while the session-scoped grant —
+/// strictly weaker, gone when the daemon stops — was not. The operator,
+/// 2026-09-18: *"if I'm offered to permanently enable — it is stronger than
+/// allow_session — so allow_session should always be offered too."* It is, and
+/// the grant it records is scoped the way the rule is: the program and the
+/// class, never exec at large.
+pub fn exec_options(derived: &str, program: &str) -> Vec<DecisionOption> {
     vec![
         DecisionOption {
             id: "allow_once".into(),
@@ -579,10 +596,15 @@ pub fn exec_options() -> Vec<DecisionOption> {
             kind: OptionKind::AllowOnce,
         },
         DecisionOption {
+            id: "allow_session".into(),
+            label: format!("Allow `{program}` (this class) for the rest of the session"),
+            kind: OptionKind::AllowSession,
+        },
+        DecisionOption {
             id: "allow_always".into(),
-            label:
-                "Always allow this program and verb (written to ~/.config/letibot/permission.json)"
-                    .into(),
+            label: format!(
+                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
+            ),
             kind: OptionKind::AllowAlways,
         },
         DecisionOption {
@@ -600,11 +622,18 @@ pub fn exec_options() -> Vec<DecisionOption> {
 
 /// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
 ///
-/// Same as [`permission_options`] without `allow_session`, and the label says where
-/// the missing option went rather than leaving its absence to be guessed at. An
-/// operator who wants to stop being asked needs a different point, not a different
-/// answer, and naming it is the difference between a dead end and a next step.
-pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
+/// It used to be [`permission_options`] without `allow_session`, on the theory
+/// that the mode's contract and the option list had to agree — and that an
+/// operator who wants to stop being asked needs a different point, not a
+/// different answer. What broke the theory was *Always allow*: the one option
+/// that reaches past the session was on the ladder at a point that was not
+/// supposed to grant past the call, so the contract was already broken in the
+/// stronger direction. The operator, 2026-09-18: *"if I'm offered to
+/// permanently enable — it is stronger than allow_session — so allow_session
+/// should always be offered too."* The weaker option is back, and the gate
+/// honours it: an explicit answer is the operator overriding the point's
+/// default, which is what answering an ask has always meant.
+pub fn once_only_options(mode_name: &'static str, derived: &str) -> Vec<DecisionOption> {
     vec![
         DecisionOption {
             id: "allow_once".into(),
@@ -612,8 +641,15 @@ pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
             kind: OptionKind::AllowOnce,
         },
         DecisionOption {
+            id: "allow_session".into(),
+            label: "Allow this class for the rest of the session".into(),
+            kind: OptionKind::AllowSession,
+        },
+        DecisionOption {
             id: "allow_always".into(),
-            label: "Always allow this (written to ~/.config/letibot/permission.json)".into(),
+            label: format!(
+                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
+            ),
             kind: OptionKind::AllowAlways,
         },
         DecisionOption {
@@ -624,8 +660,9 @@ pub fn once_only_options(mode_name: &'static str) -> Vec<DecisionOption> {
         DecisionOption {
             id: "deny_and_tell".into(),
             label: format!(
-                "Deny, and tell the model why  (mode `{mode_name}` settles one call at a \
-                 time; start with `--mode writes-allowed` to allow a class for the session)"
+                "Deny, and tell the model why  (mode `{mode_name}` asks once per call by \
+                 default; `allow_session` above lifts that for this class until the \
+                 daemon stops)"
             ),
             kind: OptionKind::DenyAndTell,
         },
@@ -2036,29 +2073,33 @@ impl AdjudicatedGate {
             boundary_facts: facts,
             kind: RequestKind::Permission,
             // **Offer only what the gate will honour.** The recording site below
-            // requires BOTH that the tier is not `AlwaysAsk` AND that the mode grants
-            // for the session; this used to test only the first, so at a point with
-            // `GrantScope::Once` -- which `always-ask`, the default, is -- an operator
-            // was shown *"Allow this class for the rest of the session"*, chose it, and
-            // the grant was silently dropped.
+            // requires that the tier is not `AlwaysAsk`; the session-grant arm
+            // there and the grant matcher were once narrower still, and every
+            // narrowing here has to move with them. This used to test only the
+            // tier, so at a point with `GrantScope::Once` an operator was shown
+            // *"Allow this class for the rest of the session"*, chose it, and
+            // the grant was silently dropped. Reported twice before it was
+            // found, and the comment at the recording site already stated the
+            // rule: *"an operator is never shown a button whose effect the gate
+            // would then decline to honour."*
             //
-            // Reported twice before it was found here, and the comment at the recording
-            // site already stated the rule this violated: *"an operator is never shown a
-            // button whose effect the gate would then decline to honour."* Two guards
-            // for one decision, and only one of them was kept in step.
+            // The exec branch once offered no session grant at all — the
+            // operator's rule of 2026-09-11, a shell asks every time — while
+            // offering *Always allow*, which outlives the session. The
+            // operator, 2026-09-18: *"if I'm offered to permanently enable — it
+            // is stronger than allow_session — so allow_session should always
+            // be offered too."* The ladder is complete again at every point
+            // that offers the durable rule, and the grant an exec answer
+            // records is scoped to the program and the class, the way the
+            // durable rule is scoped to the program and its verb.
             options: if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                 always_ask_options()
             } else if call.access == Access::Exec {
-                // The operator's rule (2026-09-11): exec asks every time, so a SESSION
-                // grant is never offered. Revised 2026-09-14 — *"good old Allow Always"*:
-                // a durable rule, written to a file the operator reads and edits, is
-                // the operator's own preapproval and is offered. `git log; rm x` under
-                // a `git log*` rule still asks: the rule is tested per segment.
-                exec_options()
+                exec_options(&derived_pattern(call), &grant_program(baseline))
             } else if self.mode.grants == crate::mode::GrantScope::Session {
-                permission_options()
+                permission_options(&derived_pattern(call))
             } else {
-                once_only_options(self.mode.name)
+                once_only_options(self.mode.name, &derived_pattern(call))
             },
             // §11.5: `Deny` for a permission, and `AgentDecides` only for a
             // question. Nothing here is a question yet.
@@ -2744,12 +2785,18 @@ impl Gate for AdjudicatedGate {
         //    `Grant::covers` is the only reader, and it refuses an unresolved action,
         //    an always-ask and an blocked before it looks at coverage at all.
         let program = grant_program(&baseline);
-        //    The operator's rule excepts exec here too: a standing permission never
-        //    covers an exec-class call, so an `allow_session` taken over `cargo test`
-        //    cannot quietly become a session where every later `cargo test` runs
-        //    unasked. The prompt does not offer the option either (see `request_from`)
-        //    and the recording site refuses one — the same three mechanisms the
-        //    always-ask list uses, and for the same reason.
+        //    The operator's rule of 2026-09-11 excepted exec here: a standing
+        //    permission never covered an exec-class call, so an `allow_session`
+        //    taken over `cargo test` could not quietly become a session where
+        //    every later `cargo test` runs unasked. Retired 2026-09-18 — the
+        //    durable *Always allow* rule was already offered over exec (the
+        //    revision of 2026-09-14), and the operator, *"if I'm offered to
+        //    permanently enable — it is stronger than allow_session — so
+        //    allow_session should always be offered too."* The grant an exec
+        //    answer records is keyed on the program and the class with the
+        //    intents a subset of what was shown, so it is the same scope the
+        //    durable rule has and never exec at large; a vehicle flag that adds
+        //    an intent still falls out, per `Grant::covers`.
         // **A shape the operator already approved, this session.**
         //
         // The operator, after answering the same question about a different file
@@ -2802,15 +2849,14 @@ impl Gate for AdjudicatedGate {
         }
 
         if let Some(g) = self.grants.iter().find(|g| {
-            call.access != Access::Exec
-                && g.covers(
-                    &req.tier,
-                    req.resolved,
-                    &program,
-                    req.class,
-                    &baseline.intents,
-                )
-                .is_ok()
+            g.covers(
+                &req.tier,
+                req.resolved,
+                &program,
+                req.class,
+                &baseline.intents,
+            )
+            .is_ok()
         }) {
             let basis = format!(
                 "a standing permission granted this session covers this call: {}",
@@ -2934,11 +2980,14 @@ impl Gate for AdjudicatedGate {
                         // place, so an operator is never shown a button whose effect
                         // the gate would then decline to honour.
                         //
-                        // The grant is also refused when the mode's scope is `Once`.
-                        // At `always-ask` an answer settles that call and nothing else,
-                        // which is what the point means; recording a session grant
-                        // there would be the point saying one thing and the gate doing
-                        // another.
+                        // (A `GrantScope::Once` POINT used to refuse the grant here
+                        // too, on the same theory — the point's contract and the gate
+                        // had to agree. The operator's revision of 2026-09-18, below,
+                        // retired it: the durable *Always allow* was already offered
+                        // at those points, so the contract was already broken in the
+                        // stronger direction, and an explicit answer is the operator
+                        // overriding the point's default.)
+                        //
                         // *Always allow* is a RULE, not a grant: it goes into the
                         // permission ruleset (and the file behind it), at any point
                         // whose decider is a person, exec included — the operator's
@@ -2962,12 +3011,7 @@ impl Gate for AdjudicatedGate {
                             // would be a grant nobody named.
                             let pattern = match typed_pattern {
                                 Some(p) => p,
-                                None => match call.args.get("command").and_then(|v| v.as_str()) {
-                                    Some(cmd) if call.access == Access::Exec => {
-                                        crate::permission::always_pattern_for_command(cmd)
-                                    }
-                                    _ => permission_pattern(call.args),
-                                },
+                                None => derived_pattern(call),
                             };
                             let rule = crate::permission::Rule::new(
                                 call.name,
@@ -2988,13 +3032,26 @@ impl Gate for AdjudicatedGate {
                             self.permission.push(rule);
                         } else if k == OptionKind::AllowSession
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
-                            // The operator's exec rule, guarded here as well even
-                            // though the option list never offers it to an exec
-                            // call: a safety property with one mechanism ships
-                            // broken the first time somebody refactors the mechanism.
-                            && call.access != Access::Exec
-                            && self.mode.grants == crate::mode::GrantScope::Session
                         {
+                            // The operator's exec rule of 2026-09-11 refused a session
+                            // grant to an exec call, and a `GrantScope::Once` point
+                            // refused one to anything; both refusals are gone as of
+                            // 2026-09-18, because *Always allow* — strictly stronger,
+                            // durable past the session — was offered at both points
+                            // while the weaker grant was not. The operator: *"if I'm
+                            // offered to permanently enable — it is stronger than
+                            // allow_session — so allow_session should always be
+                            // offered too."* What remains is the always-ask TIER,
+                            // whose option list offers neither and whose three
+                            // mechanisms stay as they are: an ask that exists because
+                            // the call crosses a line the operator drew in advance is
+                            // settled by that call alone.
+                            //
+                            // The grant is scoped, not blanket: keyed on the program
+                            // and the class, with the intents a subset of what the
+                            // call was shown to carry — the same scoping the durable
+                            // rule gets, and the reason `git -c core.pager=… log`
+                            // still falls out of a grant taken over `git status`.
                             self.grants.push(crate::grant::Grant {
                                 written: crate::grant::Written::Enumerated {
                                     patterns: vec![format!("{program} ({})", req.class)],
@@ -3296,6 +3353,24 @@ fn permission_pattern(args: &Value) -> String {
         return c.to_string();
     }
     "*".to_string()
+}
+
+/// The pattern an *Always allow* answer over this call writes down, unless the
+/// operator typed one: the program and its verb for a command, the path for a
+/// file tool, `*` when the call names neither.
+///
+/// One helper for both readers — the option label, which shows the rule before
+/// anybody signs it, and the recording site, which writes it — so the rule the
+/// operator agreed to and the rule that lands in the file cannot drift apart.
+/// The operator-typed glob wins at the recording site; this is the default the
+/// label shows.
+fn derived_pattern(call: &GateCall<'_>) -> String {
+    match call.args.get("command").and_then(|v| v.as_str()) {
+        Some(cmd) if call.access == Access::Exec => {
+            crate::permission::always_pattern_for_command(cmd)
+        }
+        _ => permission_pattern(call.args),
+    }
 }
 
 /// A baseline's command as a shape, when it has one.
@@ -3622,9 +3697,11 @@ mod tests {
         assert_eq!(g.mode().name, "always-ask");
 
         // And the new point is the one deciding: a write that writes-allowed admits
-        // unasked now reaches the adjudicator (who, here, grants — but the grant it
-        // takes is refused by always-ask's `Once` scope, so nothing standing is
-        // recorded).
+        // unasked now reaches the adjudicator. The answer takes a grant, and since
+        // the operator's revision of 2026-09-18 an explicit `allow_session` stands
+        // at a `Once` point too — the durable *Always allow* was always offered
+        // here, and the weaker option follows it. What the move still proves is
+        // that what stands is the NEW point's grant: the old one stayed dropped.
         let write = GateCall {
             name: "write",
             access: Access::Write,
@@ -3635,9 +3712,11 @@ mod tests {
             target_exists: Some(true),
         };
         let _ = g.admit(&write);
-        assert!(
-            g.grants().is_empty(),
-            "always-ask must not record a standing grant, whatever the person answered"
+        assert_eq!(
+            g.grants().len(),
+            1,
+            "the grant on the books is the one the new point took, not the one the \
+             old point did"
         );
     }
 
@@ -4565,59 +4644,82 @@ mod tests {
         assert_eq!(g.grants().len(), 1, "and the grant is listable");
     }
 
-    /// **A button that cannot work is not offered.**
+    /// **A `Once` point offers the session grant its *Always allow* implies, and
+    /// the gate honours it.**
     ///
-    /// The sibling test below asserts that an `allow_session` answer does not stand at
-    /// a `Once` point. That is correct and it is not enough: for as long as the option
-    /// was still *shown* there, an operator chose it, watched the next call ask again,
-    /// and reported it twice as "allow_session doesn't stick".
-    ///
-    /// The cause was two guards for one decision. The recording site required the tier
-    /// not be `AlwaysAsk` AND the mode grant for the session; the option list tested
-    /// only the tier. This asserts they agree.
+    /// This test once asserted the opposite: the option was withheld at a point
+    /// whose grants are `Once`, because the mode's contract and the gate had to
+    /// agree. What unbalanced it was *Always allow* — the one option that
+    /// reaches past the session was on the ladder at a point that was not
+    /// supposed to grant past the call. The operator, 2026-09-18: *"if I'm
+    /// offered to permanently enable — it is stronger than allow_session — so
+    /// allow_session should always be offered too."* It is offered, and the
+    /// answer records a grant that settles the next call: a button whose effect
+    /// the gate would decline is the defect this ladder once shipped, in the
+    /// other direction.
     #[test]
-    fn a_once_scoped_point_does_not_offer_a_session_grant() {
+    fn a_once_scoped_point_offers_the_session_grant_and_the_gate_honours_it() {
         use std::sync::{Arc, Mutex};
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
         let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
             s.lock()
                 .unwrap()
                 .extend(req.options.iter().map(|o| o.id.clone()));
+            a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Some(AdjudicationDecision::selected(
                 req,
-                "allow_once",
+                "allow_session",
                 "human:test",
                 "ok",
             ))
         });
         let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
-        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let args = json!({"path": "src/lib.rs"});
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
 
         let ids = seen.lock().unwrap().clone();
         assert!(
-            !ids.is_empty(),
-            "the adjudicator was never consulted, so this proves nothing"
+            ids.iter().any(|i| i == "allow_session"),
+            "a point whose grants are `Once` must still offer the session grant \
+             while it offers the durable rule: {ids:?}"
         );
         assert!(
-            !ids.iter().any(|i| i == "allow_session"),
-            "a point whose grants are `Once` offered `allow_session`, which the gate \
-             then declines to record: {ids:?}"
+            ids.iter().any(|i| i == "allow_always"),
+            "and the durable rule is still offered: {ids:?}"
         );
         assert!(
             ids.iter().any(|i| i == "allow_once"),
             "allowing this one call must still be offered: {ids:?}"
         );
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the second call was settled by the grant, not asked again"
+        );
+        assert_eq!(g.grants().len(), 1, "the answer stands for the session");
     }
 
-    /// **An answer at `always-ask` settles one call and nothing else.**
+    /// **An `allow_session` answer at `always-ask` stands for the session.**
     ///
-    /// The same adjudicator, the same two calls, and a different point: the scope is
-    /// `Once`, so the second call asks again. This is the half that makes the mode
-    /// mean something — a point that said *every action asks* and then quietly
-    /// honoured a standing grant would be the banner and the behaviour disagreeing.
+    /// This test once asserted the opposite, in two stages: first that the grant
+    /// was silently dropped, then — after the option was withdrawn from the
+    /// ladder — that naming it was a non-conforming answer and the gate failed
+    /// closed. Both stages served the mode's contract, *an answer settles that
+    /// call and nothing else*. The operator retired the contract on 2026-09-18:
+    /// *"if I'm offered to permanently enable — it is stronger than
+    /// allow_session — so allow_session should always be offered too."* The
+    /// durable rule was already on the ladder here; the weaker grant follows it,
+    /// and an explicit answer is the operator overriding the point's default.
+    ///
+    /// What the mode still means: the SECOND call is not asked about, because the
+    /// grant covers it — not because the mode stopped asking. A call outside the
+    /// grant's class asks again, as the sibling test pins.
     #[test]
-    fn at_always_ask_an_allow_session_answer_does_not_stand() {
+    fn at_always_ask_an_allow_session_answer_stands_for_the_session() {
         let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = asked.clone();
         let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
@@ -4631,31 +4733,14 @@ mod tests {
         });
         let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
         let args = json!({"path": "src/lib.rs"});
-
-        // **Stronger than it used to be, and the change is deliberate.** This asserted
-        // `Admit` twice: `allow_session` was offered here, so the answer conformed, each
-        // call was admitted, and only the *standing* part was refused.
-        //
-        // Now the option is not offered at a `Once` point, so naming it is a
-        // non-conforming answer and the gate fails closed instead of admitting. An
-        // adjudicator that answers with a button it was not given is not a decision this
-        // gate can act on, whatever the button meant.
-        let first = g.admit(&call("edit", &args));
-        assert!(
-            matches!(&first, GateDecision::Refuse { outcome, .. }
-                if format!("{outcome:?}").contains("did not offer")),
-            "an answer naming an unoffered option must fail closed, not admit: {first:?}"
-        );
-        let _ = g.admit(&call("edit", &args));
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+        assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "always-ask means always ask, whatever option was chosen"
+            1,
+            "the grant the answer took settles the second call"
         );
-        assert!(
-            g.grants().is_empty(),
-            "and nothing standing is ever recorded at a Once point"
-        );
+        assert_eq!(g.grants().len(), 1, "and the grant is recorded");
     }
 
     /// **At `writes allowed` a write is not asked at all**, and the row still exists.
@@ -5014,11 +5099,6 @@ mod tests {
                 ))
             },
         )))
-        // At a point whose grants last a session, so the second half of this test —
-        // that an ORDINARY may-approve exec call is asked about twice, grant or no — is
-        // actually exercising the ask path, the grant table being closed to exec. `bash` is
-        // `Access::Exec`, which still asks at this point, so the always-ask half is
-        // unchanged by naming it.
         .with_mode(crate::mode::Mode::WRITES_ALLOWED)
         .with_surroundings(pinned())
         .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
@@ -5030,37 +5110,57 @@ mod tests {
             2,
             "an always-ask is asked every time"
         );
-        // And it was never even OFFERED a standing grant.
+        // And it was never even OFFERED a standing grant: the tier is `AlwaysAsk`,
+        // whose ladder is `always_ask_options` — no session grant, no durable rule.
+        // This half is untouched by the 2026-09-18 revision, which completed the
+        // ladder at points that offer the durable rule; the always-ask TIER offers
+        // no durable rule and so offers no session grant either.
         assert!(g.log[0].request.option("allow_session").is_none());
         assert!(g.log[0].request.option("allow_always").is_none());
 
-        // While an ordinary may-approve exec call is asked about twice now, which is
-        // the operator's rule of 2026-09-11: exec asks every time, and nothing settles it.
+        // An ordinary may-approve exec call, though, now takes the session grant
+        // its ladder offers — the operator's revision of 2026-09-18, which retired
+        // the exec exception the same way the 2026-09-14 revision had already
+        // broken it with the durable rule. The second identical call is settled by
+        // the grant, not asked again.
         let ordinary = json!({"command": "/bin/rm -rf /w/target"});
         assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
         assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
-            4,
-            "an exec-class call is asked every time; no session grant settles it"
+            3,
+            "the first exec call asked; the grant took the second"
         );
-        assert!(
-            g.grants().is_empty(),
-            "no standing permission is recorded for an exec-class call"
+        assert_eq!(
+            g.grants().len(),
+            1,
+            "one standing permission, recorded from the exec answer"
+        );
+        // And the grant is scoped to what the call showed, not to exec at large: a
+        // different program is outside it and asks again.
+        let other = json!({"command": "/bin/cat /w/src/lib.rs"});
+        assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            4,
+            "a program the grant does not name asks again"
         );
     }
 
     #[test]
-    /// **The operator's rule: exec and bash ask every time, and nothing settles it.**
+    /// **Exec asks, and the ladder it asks with is complete.**
     ///
-    /// 2026-09-11, the operator: *"i want something very simple for now - exec and
-    /// bash always ask me for permission."* Three mechanisms hold it, the same three
-    /// the always-ask list uses: the gate skips the mode's admission and the grant
-    /// table for `Access::Exec`, the prompt never offers a standing option, and the
-    /// recording site refuses one. The command below is a read inside the workspace —
-    /// layer A's weakest verdict — because it is exactly the call clause 4 would wave
-    /// through if the access class let it.
-    fn exec_class_calls_ask_every_time_and_never_take_a_standing_grant() {
+    /// The operator's rule of 2026-09-11 — *"i want something very simple for
+    /// now - exec and bash always ask me for permission"* — still holds as the
+    /// DEFAULT: nothing settles an exec call before somebody answers. What
+    /// changed twice is what an answer can reach. The revision of 2026-09-14 put
+    /// the durable *Always allow* rule on the ladder; the revision of
+    /// 2026-09-18 — *"if I'm offered to permanently enable — it is stronger than
+    /// allow_session — so allow_session should always be offered too"* — put the
+    /// session grant beside it. The command below is a read inside the workspace,
+    /// layer A's weakest verdict, because it is exactly the call clause 4 would
+    /// wave through if the access class let it.
+    fn exec_class_calls_ask_and_the_ladder_offers_both_standing_options() {
         let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = asked.clone();
         let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -5088,18 +5188,19 @@ mod tests {
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "the second identical call asks again: no mode and no grant settles exec"
+            1,
+            "the second identical call is settled by the grant the first took"
         );
-        assert!(
-            g.grants().is_empty(),
-            "no standing permission is recorded for an exec-class call"
+        assert_eq!(
+            g.grants().len(),
+            1,
+            "one standing permission, recorded from the exec answer"
         );
         assert!(
             g.log
                 .iter()
-                .all(|r| r.request.option("allow_session").is_none()),
-            "exec is never offered a session grant"
+                .all(|r| r.request.option("allow_session").is_some()),
+            "exec is offered the session grant, scoped to the program and the class"
         );
         // The revision of 2026-09-14: a DURABLE rule is offered — it is the
         // operator's own preapproval, in a file they read — and it is not a grant.
@@ -5108,6 +5209,81 @@ mod tests {
                 .iter()
                 .all(|r| r.request.option("allow_always").is_some()),
             "exec is offered Always allow, as a rule"
+        );
+        // And the grant is scoped to the program it was taken over: a different
+        // program is outside it and asks again.
+        let other = json!({"command": "/bin/ls /w"});
+        assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a program the grant does not name asks again"
+        );
+    }
+
+    /// **The label names the rule the button writes.**
+    ///
+    /// The operator's report (2026-09-18): the offer said "add tool and verb to
+    /// the permissions file" without ever saying **which**, and did not let them
+    /// adjust it. The derived pattern is in the label now — the same helper the
+    /// recording site uses, so what is signed and what is written cannot drift —
+    /// and a glob typed after `allow_always` in the composer still overrides it.
+    #[test]
+    fn the_always_allow_label_shows_the_rule_it_writes() {
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            |req: &AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+        let _ = g.admit(&bash(&json!({"command": "cargo test -p letibot-tools"})));
+        let req = &g.log[0].request;
+        let always = req
+            .options
+            .iter()
+            .find(|o| o.id == "allow_always")
+            .expect("exec offers the durable rule");
+        assert!(
+            always.label.contains("cargo test*"),
+            "the label names the derived pattern, program and verb: {}",
+            always.label
+        );
+        assert!(
+            always.label.contains("permission.json"),
+            "the label says where the rule lands: {}",
+            always.label
+        );
+        let session = req
+            .options
+            .iter()
+            .find(|o| o.id == "allow_session")
+            .expect("exec offers the session grant");
+        assert!(
+            session.label.contains("cargo"),
+            "the session label names the program it would cover: {}",
+            session.label
+        );
+
+        // A file tool's rule is its path, and the session grant is the class.
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let req = &g.log[1].request;
+        let always = req
+            .options
+            .iter()
+            .find(|o| o.id == "allow_always")
+            .expect("a write offers the durable rule");
+        assert!(
+            always.label.contains("src/lib.rs"),
+            "the label names the path the rule covers: {}",
+            always.label
         );
     }
 
