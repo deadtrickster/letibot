@@ -318,6 +318,24 @@ pub fn external_harness_with_gate(
     )
 }
 
+/// A **writable** session with the network tools registered, over whatever is
+/// behind them.
+///
+/// The read-only [`external_harness`] cannot exercise the `web_fetch` scratchpad:
+/// the page is written to disk through the backend, and a backend that was opened
+/// read-only has no scratchpad to write to. This one opens the backend writable
+/// and allows the gate, so a `web_fetch` call reaches the tool and the tool can
+/// put the page where it says it did.
+pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
+    build_ext(
+        Spiller::unset(),
+        Arc::new(Unavailable),
+        true,
+        Some(allow_all()),
+        Some(backends),
+    )
+}
+
 fn build(
     spiller: Spiller,
     retrieval: Arc<dyn Retrieval>,
