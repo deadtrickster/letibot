@@ -60,17 +60,30 @@ pub enum Slash {
     /// **What this conversation can call**, and what it only looks like it can.
     Tools,
     Models,
+    /// **Switch what answers THIS conversation.** Nothing else: the standing
+    /// choice belongs to [`Slash::DefaultModel`], and it took three goes to get
+    /// here.
+    ///
+    /// `/models X` used to do both at once, which is why — reading its own
+    /// listing — the operator asked *"so how do i switch a model for the
+    /// conversation?"* about a verb that had been doing exactly that all along:
+    /// the sentence it ended on was about `providers.toml`. A `--once` flag was
+    /// added to opt out of the half nobody asked for; then a scripted run wrote a
+    /// broken model name into the operator's box, and the flag turned out to be
+    /// the wrong shape for the problem: *"so /models is sticking to session, if I
+    /// need to set default model i will do it how? give me /default-model"*.
+    ///
+    /// One verb, one effect. `--once` went with the conflation it was patching.
     ModelsSet {
         provider: String,
         model: Option<String>,
+        /// A key pasted while switching is still stored — a credential is not a
+        /// preference, and making somebody paste it twice is the wrong half to
+        /// forget.
         key: Option<String>,
-        /// **This conversation only.** `/models X` has always done two things —
-        /// switched the running session AND written the standing choice into
-        /// `providers.toml` — with no way to have the first without the second.
-        /// The operator: *"--once would be nice yes"*. One hard question on a
-        /// metered model should not be a default the next daemon inherits.
-        once: bool,
     },
+    /// **What a NEW session starts on**, in `providers.toml`. `None` reports it.
+    DefaultModel(Option<String>),
     /// **The supervised-labelling verb.** See [`gate`].
     Gate(GateVerb),
     /// Turn the guard model on or off on the running session. `None` reports.
@@ -154,6 +167,10 @@ impl Slash {
                 )),
             },
             Some("tools") => Slash::Tools,
+            // Three spellings, because all three are what somebody reaches for.
+            Some("default-model") | Some("default_model") | Some("default") => {
+                Slash::DefaultModel(words.get(1).map(|w| w.to_string()))
+            }
             Some("job") | Some("jobs") => {
                 let job = words.get(1).filter(|w| !w.starts_with("--")).map(|w| w.to_string());
                 // `--offset N` continues a read the ring had more of; the reply
@@ -178,8 +195,7 @@ impl Slash {
                         .position(|w| *w == "--key" || *w == "--api-key")
                         .and_then(|i| words.get(i + 1))
                         .map(|s| s.to_string());
-                    let once = words.iter().any(|w| *w == "--once" || *w == "--here");
-                    Slash::ModelsSet { provider, model, key, once }
+                    Slash::ModelsSet { provider, model, key }
                 }
             },
             Some("login") => Slash::Help(
@@ -427,32 +443,18 @@ pub fn models_listing(current: &str) -> Vec<String> {
     lines
 }
 
-/// Resolve a `/models PROVIDER[/MODEL] [--key K]` into a config, storing the
-/// key and the standing choice. `local` clears both.
+/// Resolve a `/models PROVIDER[/MODEL] [--key K]` into a config for THIS session.
+///
+/// It stores a pasted key and nothing else. The standing choice is
+/// [`default_model`]'s job — see [`Slash::ModelsSet`] for why the two were split.
 pub fn models_choice(
     provider: &str,
     model: Option<&str>,
     key: Option<&str>,
     file: Option<&std::path::Path>,
-    once: bool,
 ) -> Result<(Option<ProviderConfig>, Vec<String>), Vec<String>> {
     let mut notes = Vec::new();
-    // `--once` skips the standing choice and nothing else. The key, if one was
-    // pasted, is still stored: a key is a credential and not a preference, and
-    // making somebody paste it again next time would be the wrong half to forget.
     if provider == "local" {
-        if once {
-            notes.push(
-                "this conversation only — the standing choice in providers.toml is \
-                 untouched"
-                    .into(),
-            );
-        } else {
-            match letibot_provider::keys::set_default(file, "local", None) {
-                Ok(f) => notes.push(format!("standing choice: local, in {}", f.display())),
-                Err(e) => notes.push(format!("standing choice not recorded: {e}")),
-            }
-        }
         return Ok((None, notes));
     }
     let preset = letibot_provider::Preset::parse(provider).map_err(|e| vec![e])?;
@@ -476,24 +478,6 @@ pub fn models_choice(
             ),
         ]);
     }
-    if once {
-        notes.push(
-            "this conversation only — the standing choice in providers.toml is \
-             untouched, so the next daemon starts where it did before"
-                .into(),
-        );
-    } else {
-        match letibot_provider::keys::set_default(file, preset.name, model) {
-            Ok(f) => notes.push(format!(
-                "standing choice: {}/{}, in {} — the next daemon starts on it too",
-                preset.name,
-                model.map(str::to_string).unwrap_or_else(|| preset
-                    .default_model(&letibot_provider::catalogue::Catalogue::load())),
-                f.display()
-            )),
-            Err(e) => notes.push(format!("standing choice not recorded: {e}")),
-        }
-    }
     Ok((
         Some(ProviderConfig {
             name: preset.name.to_string(),
@@ -503,6 +487,100 @@ pub fn models_choice(
         }),
         notes,
     ))
+}
+
+/// **`/default-model` — what a NEW session starts on.**
+///
+/// The other half of what `/models` used to do in one breath. Separated because
+/// one verb doing two things is what made the operator ask how to do either:
+/// *"so how do i switch a model for the conversation?"* about the verb that
+/// switched it, and then *"if I need to set default model i will do it how?"*
+/// about the verb that set it.
+///
+/// `None` reports. `local` clears the standing choice, which is the honest way to
+/// say "new sessions use this daemon's own model" — there is no `[default]` that
+/// means local, so the row is removed rather than written with a name.
+pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> SlashReply {
+    let Some(want) = want else {
+        let now = letibot_provider::keys::default_choice(file);
+        let path = file
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| letibot_provider::keys::config_file().display().to_string());
+        return SlashReply {
+            lines: vec![
+                match now {
+                    Some(d) => format!(
+                        "new sessions start on {}{}, from [default] in {path}",
+                        d.provider,
+                        d.model.map(|m| format!("/{m}")).unwrap_or_default()
+                    ),
+                    None => format!(
+                        "no standing choice in {path}, so a new session starts on the \
+                         local server its daemon was launched against"
+                    ),
+                },
+                "`/default-model PROVIDER[/MODEL]` sets it; `/default-model local` \
+                 clears it. This conversation is unaffected either way — `/models` is \
+                 the verb for that."
+                    .into(),
+            ],
+            ok: true,
+        };
+    };
+    if want == "local" {
+        return match letibot_provider::keys::set_default(file, "local", None) {
+            Ok(f) => SlashReply {
+                lines: vec![format!(
+                    "new sessions start on their daemon's own local model; the standing \
+                     choice in {} is cleared. This conversation is unchanged.",
+                    f.display()
+                )],
+                ok: true,
+            },
+            Err(e) => SlashReply { lines: vec![e], ok: false },
+        };
+    }
+    let (provider, model) = match want.split_once('/') {
+        Some((p, m)) => (p, Some(m)),
+        None => (want, None),
+    };
+    let preset = match letibot_provider::Preset::parse(provider) {
+        Ok(p) => p,
+        Err(e) => return SlashReply { lines: vec![e], ok: false },
+    };
+    // The key is checked before the choice is written, so a default nothing can
+    // authenticate is never left for the next daemon to discover at its first turn.
+    if let Err(e) = letibot_provider::keys::resolve(preset, None, file) {
+        return SlashReply {
+            lines: vec![
+                format!("{e}"),
+                format!("  /models {} --key PASTE stores it", preset.name),
+                "Nothing was written: a standing choice nothing can authenticate would \
+                 refuse at the first turn of every session that inherited it."
+                    .into(),
+            ],
+            ok: false,
+        };
+    }
+    match letibot_provider::keys::set_default(file, preset.name, model) {
+        Ok(f) => SlashReply {
+            lines: vec![
+                format!(
+                    "new sessions start on {}/{}, written to [default] in {}",
+                    preset.name,
+                    model
+                        .map(str::to_string)
+                        .unwrap_or_else(|| preset
+                            .default_model(&letibot_provider::catalogue::Catalogue::load())),
+                    f.display()
+                ),
+                "This conversation is unchanged — `/models` switches the one you are in."
+                    .into(),
+            ],
+            ok: true,
+        },
+        Err(e) => SlashReply { lines: vec![e], ok: false },
+    }
 }
 
 #[cfg(test)]
@@ -583,9 +661,7 @@ mod tests {
                 provider,
                 model,
                 key,
-                once,
             } => {
-                assert!(!once, "no `--once` in this line");
                 assert_eq!(provider, "deepseek");
                 assert_eq!(model.as_deref(), Some("deepseek-reasoner"));
                 assert_eq!(key.as_deref(), Some("k1"));
@@ -628,62 +704,86 @@ mod tests {
         assert!(matches!(Slash::parse("tools"), Slash::Tools));
     }
 
-    /// `--once` switches the conversation without writing the standing choice.
+    /// **One verb, one effect.** `/models` switches this conversation;
+    /// `/default-model` says what a new one starts on. They were the same verb,
+    /// and that is why the operator had to ask how to do each of them.
     #[test]
-    fn once_is_parsed_and_is_off_by_default() {
-        match Slash::parse("models deepseek/deepseek-chat --once") {
-            Slash::ModelsSet { provider, model, once, .. } => {
+    fn models_switches_the_session_and_default_model_is_its_own_verb() {
+        match Slash::parse("models deepseek/deepseek-flash") {
+            Slash::ModelsSet { provider, model, key } => {
                 assert_eq!(provider, "deepseek");
-                assert_eq!(model.as_deref(), Some("deepseek-chat"));
-                assert!(once);
+                assert_eq!(model.as_deref(), Some("deepseek-flash"));
+                assert!(key.is_none());
             }
             other => panic!("{other:?}"),
         }
-        // `--here` says the same thing; both read naturally at a prompt.
+        // All three spellings reach the standing choice, because all three are
+        // what somebody reaches for.
+        for line in ["default-model", "default_model", "default"] {
+            assert!(
+                matches!(Slash::parse(line), Slash::DefaultModel(None)),
+                "{line}"
+            );
+        }
         assert!(matches!(
-            Slash::parse("models glm --here"),
-            Slash::ModelsSet { once: true, .. }
-        ));
-        // And the old spelling still sticks, because that is what it always did.
-        assert!(matches!(
-            Slash::parse("models glm"),
-            Slash::ModelsSet { once: false, .. }
+            Slash::parse("default-model deepseek/deepseek-flash"),
+            Slash::DefaultModel(Some(ref m)) if m == "deepseek/deepseek-flash"
         ));
     }
 
-    /// The standing choice is the ONLY thing `--once` skips. A pasted key is a
-    /// credential, not a preference, and forgetting it would make somebody paste
-    /// it again next time.
+    /// Switching a session writes no standing choice — the bug that put a model
+    /// name deepseek rejects into the operator's box, from a scripted test run.
     #[test]
-    fn once_skips_the_standing_choice_and_still_stores_a_key() {
-        let d = std::env::temp_dir().join(format!("letibot-once-{}", std::process::id()));
+    fn switching_a_session_leaves_providers_toml_alone() {
+        let d = std::env::temp_dir().join(format!(
+            "letibot-split-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&d).expect("scratch");
         let f = d.join("providers.toml");
         let (choice, notes) =
-            models_choice("grok", None, Some("xai-test"), Some(&f), true).expect("choosing");
-        assert!(choice.is_some(), "the session still switches");
-        let said = notes.join("\n");
-        assert!(said.contains("stored the grok key"), "{said}");
-        assert!(said.contains("this conversation only"), "{said}");
-        assert!(!said.contains("standing choice:"), "{said}");
+            models_choice("grok", None, Some("xai-test"), Some(&f)).expect("choosing");
+        assert!(choice.is_some(), "the session switches");
+        assert!(notes.join("\n").contains("stored the grok key"), "{notes:?}");
         let on_disk = std::fs::read_to_string(&f).unwrap_or_default();
-        assert!(on_disk.contains("xai-test"), "the key was written: {on_disk}");
+        assert!(on_disk.contains("xai-test"), "the key is written: {on_disk}");
         assert!(
             !on_disk.contains("[default]"),
-            "and the default was not: {on_disk}"
+            "and the standing choice is not: {on_disk}"
         );
+
+        // `/default-model` is what writes it, and it reports before it is set.
+        let before = default_model(None, Some(&f));
+        assert!(before.lines[0].contains("no standing choice"), "{:?}", before.lines);
+        let set = default_model(Some("grok"), Some(&f));
+        assert!(set.ok, "{:?}", set.lines);
+        assert!(set.lines[0].contains("new sessions start on grok/"), "{:?}", set.lines);
+        assert!(
+            set.lines[1].contains("This conversation is unchanged"),
+            "{:?}",
+            set.lines
+        );
+        assert!(std::fs::read_to_string(&f).unwrap().contains("[default]"));
+
+        // And a default nothing can authenticate is refused rather than left for
+        // the next daemon to discover at its first turn.
+        let bad = default_model(Some("glm"), Some(&f));
+        assert!(!bad.ok);
+        assert!(bad.lines.last().unwrap().contains("Nothing was written"), "{:?}", bad.lines);
         let _ = std::fs::remove_dir_all(&d);
     }
 
+
     #[test]
-    fn a_model_choice_stores_the_key_and_the_standing_choice_or_says_what_is_missing() {
+    fn a_model_choice_stores_the_key_or_says_what_is_missing() {
         let d = std::env::temp_dir().join(format!("letibot-slash-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("providers.toml");
         // No key anywhere for grok (the env is not set in this test): refused, with the command.
         // (If the developer's shell exports XAI_API_KEY this arm is skipped.)
         if std::env::var("XAI_API_KEY").is_err() && std::env::var("GROK_API_KEY").is_err() {
-            let err = models_choice("grok", Some("grok-4-fast"), None, Some(&f), false).unwrap_err();
+            let err = models_choice("grok", Some("grok-4-fast"), None, Some(&f)).unwrap_err();
             assert!(
                 err.iter()
                     .any(|l| l.contains("/models grok/grok-4-fast --key PASTE")),
@@ -691,26 +791,23 @@ mod tests {
             );
         }
         let (choice, notes) =
-            models_choice("grok", Some("grok-4-fast"), Some("xai-test"), Some(&f), false).unwrap();
+            models_choice("grok", Some("grok-4-fast"), Some("xai-test"), Some(&f)).unwrap();
         assert_eq!(choice.as_ref().map(|c| c.name.as_str()), Some("grok"));
         assert!(
             notes.iter().any(|n| n.contains("stored the grok key")),
             "{notes:?}"
         );
+        // **And no standing choice.** This used to write one, which is the
+        // conflation `/default-model` was split out of: switching a session is
+        // not a statement about every session this box opens afterwards.
         assert!(
-            notes
-                .iter()
-                .any(|n| n.contains("standing choice: grok/grok-4-fast")),
+            !notes.iter().any(|n| n.contains("standing choice")),
             "{notes:?}"
         );
-        assert_eq!(
-            letibot_provider::keys::default_choice(Some(&f)).map(|d| d.provider),
-            Some("grok".into())
-        );
-        let (none, _) = models_choice("local", None, None, Some(&f), false).unwrap();
-        assert!(none.is_none());
         assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
-        assert!(models_choice("openai", None, None, Some(&f), false).unwrap_err()[0].contains("three"));
+        let (none, _) = models_choice("local", None, None, Some(&f)).unwrap();
+        assert!(none.is_none());
+        assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("three"));
     }
 
     #[test]

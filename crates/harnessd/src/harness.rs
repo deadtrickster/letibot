@@ -2343,21 +2343,19 @@ impl<'a> Harness<'a> {
             }
         }
 
-        // **The cloud provider, resolved before the harness exists.** A key that
-        // is missing refuses here, naming the variable and the file, rather than
-        // three seconds into the first turn as a 401 that names neither.
-        // Explicit `--provider` first; else the operator's standing choice in
-        // providers.toml (`/models … ` writes it); else the local server.
-        if cfg.provider.is_none()
-            && let Some(d) = letibot_provider::keys::default_choice(None)
-        {
-            cfg.provider = Some(crate::config::ProviderConfig {
-                name: d.provider,
-                model: d.model,
-                api_key: None,
-                thinking: false,
-            });
-        }
+        // **The standing choice is resolved by the DAEMON, not here.**
+        //
+        // This used to read `providers.toml` itself, which made opening a harness
+        // depend on a file outside the config it was handed — and every test that
+        // opens one inherited the operator's live standing choice. Caught by two
+        // `compact` tests that assert a DEAD endpoint and got real answers from
+        // deepseek instead: four turns and ~22k prompt tokens, billed to the
+        // operator, by `cargo test`.
+        //
+        // `harnessd`'s own startup resolves it into `cfg.provider` before any
+        // session exists, and `Sessions` clones that config for every session it
+        // opens — so a real daemon behaves exactly as before and a `Config` built
+        // in a test carries only what the test put in it.
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
             Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
@@ -4291,7 +4289,19 @@ fn http_retry_after(e: &letibot_turn::HttpError, attempt: u32) -> Option<std::ti
     let worth_it = match e {
         letibot_turn::HttpError::Io(_) => true,
         letibot_turn::HttpError::Malformed(_) => true,
-        letibot_turn::HttpError::Status { code, .. } => !matches!(code, 401 | 403),
+        // **A 4xx is the request, not the weather.** The retry's whole premise is
+        // that *"the retry sends exactly the bytes this one did"* — which is why
+        // it is safe, and equally why it is pointless when the server's complaint
+        // is about those bytes. A provider 400 was retried six times on identical
+        // bytes with the waits doubling to 32 seconds, and the operator watched
+        // every one of them.
+        //
+        // The two exceptions are the 4xx that are about timing rather than
+        // content: 408 is the server saying it waited too long, 429 is it saying
+        // not yet.
+        letibot_turn::HttpError::Status { code, .. } => {
+            matches!(code, 408 | 429) || *code >= 500
+        }
     };
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
 }
@@ -5458,13 +5468,37 @@ mod endpoint_retry {
         );
     }
 
-    /// Stated rather than hidden: the rule retries two failures that are
-    /// deterministic in the bytes and will never succeed. That costs about a
-    /// minute and is the price of following "every code except unauthenticated"
-    /// instead of keeping a list of which 5xx somebody thinks is transient.
+    /// **A 4xx is about the request, not the weather.**
+    ///
+    /// The retry's premise is that *"the retry sends exactly the bytes this one
+    /// did"* — which is what makes it safe, and equally what makes it pointless
+    /// when the server's complaint is about those bytes. This used to retry a 400
+    /// on purpose, with the note that following "every code except
+    /// unauthenticated" was cheaper than keeping a list of which 5xx is
+    /// transient, and that it cost about a minute.
+    ///
+    /// It cost that minute for real on 2026-09-19: a session switched to deepseek
+    /// carried an assistant row whose `tool_calls` had no matching `tool`
+    /// messages, the provider refused with a 400 saying so, and the operator
+    /// watched six identical attempts with the waits doubling to 32 seconds.
+    ///
+    /// The list stayed small, which was the original worry: two codes.
     #[test]
-    fn the_rule_knowingly_waits_on_two_things_it_cannot_fix() {
-        assert!(http_retry_after(&status(400), 0).is_some(), "a prompt the server will not take");
+    fn a_four_hundred_is_not_retried_and_a_five_hundred_still_is() {
+        assert!(
+            http_retry_after(&status(400), 0).is_none(),
+            "the bytes are the problem, so sending them again cannot help"
+        );
+        for code in [404, 413, 422] {
+            assert!(http_retry_after(&status(code), 0).is_none(), "{code}");
+        }
+        // The two 4xx that are about timing rather than content: 408 is the server
+        // saying it waited too long, 429 is it saying not yet.
+        assert!(http_retry_after(&status(408), 0).is_some());
+        assert!(http_retry_after(&status(429), 0).is_some());
+        // And the one deterministic failure still waited on, stated rather than
+        // hidden: llama.cpp reports the context wall as a 500, and a 5xx is not
+        // something a client can tell apart from a server restarting.
         assert!(
             http_retry_after(
                 &HttpError::Status { code: 500, body: "Context size has been exceeded".into() },

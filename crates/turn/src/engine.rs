@@ -1063,6 +1063,16 @@ impl TurnEngine<'_> {
                     },
                 });
             }
+            // **A refusal keeps its status.** Flattening every `BackendError`
+            // into `Malformed` threw away the one bit the retry needs: whether
+            // taking the round again could possibly help. A provider 400 —
+            // *"an assistant message with 'tool_calls' must be followed by tool
+            // messages"* — arrived looking like a malformed response and was
+            // retried six times, each attempt sending byte-identical bytes to be
+            // refused identically, with the waits doubling.
+            Err(letibot_backend::BackendError::Refused { status, body }) => {
+                return Err(TurnFailure::Http(HttpError::Status { code: status, body }));
+            }
             Err(e) => {
                 return Err(TurnFailure::Http(HttpError::Malformed(e.to_string())));
             }
