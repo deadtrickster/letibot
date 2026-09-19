@@ -1383,6 +1383,11 @@ impl<'a> Harness<'a> {
                 lsp: parts.lsp.clone(),
                 slots: Default::default(),
             });
+        // Cloned before `with_session_tools` takes it: `digest` folds its findings
+        // through the same subagent runner `task` uses, so the two must be the
+        // same object — a digest running on a second runner would be a subagent
+        // tree the operator's `task_result` listing does not show.
+        let digest_runner = task_runner.clone();
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -1435,6 +1440,57 @@ impl<'a> Harness<'a> {
                     letibot_tools::builtins::harness_view::HarnessView::new(facts),
                 ))
                 .map_err(|e| HarnessError::Setup(format!("registering the harness view: {e}")))?;
+        }
+        // **The session can read its own conversation, including the parts
+        // compaction replaced.** `harness` declined to carry the transcript on
+        // the grounds that a model re-reading its own context is spending it
+        // twice; that holds right up until a compaction, after which the rows are
+        // not in the context at all and the store is the only copy. The operator,
+        // watching a session hand-build `sqlite3 … substr(item_json,1,120) …
+        // ORDER BY seq DESC` against a hardcoded path: *"a disaster"*.
+        //
+        // Registered with a real source when there is a store and with
+        // `NoTranscript` when there is not, rather than being left out: a tool
+        // that is absent reads to a model as a capability this build lacks, and a
+        // tool that refuses by name says which of the two it is.
+        if registry.get("transcript").is_none() {
+            let src: Arc<dyn letibot_tools::builtins::transcript::TranscriptSource> =
+                match cfg.store.as_deref() {
+                    Some(path) => {
+                        match crate::transcript_source::StoreTranscripts::open(
+                            path,
+                            cfg.session_id.clone(),
+                        ) {
+                            Ok(s) => Arc::new(s),
+                            // A store the daemon writes to but this reader cannot
+                            // open is worth saying out loud once; the tool then
+                            // refuses by name rather than reporting no history.
+                            Err(e) => {
+                                hub.publish(SessionEvent::Warning {
+                                    code: "transcript_store".into(),
+                                    detail: e,
+                                });
+                                Arc::new(letibot_tools::builtins::transcript::NoTranscript)
+                            }
+                        }
+                    }
+                    None => Arc::new(letibot_tools::builtins::transcript::NoTranscript),
+                };
+            let digest: Arc<dyn letibot_tools::builtins::digest::DigestRunner> = Arc::new(
+                letibot_tools::builtins::digest::SubagentDigest::new(digest_runner),
+            );
+            registry
+                .register(Box::new(
+                    letibot_tools::builtins::transcript::TranscriptTool::new(src.clone()),
+                ))
+                .and_then(|_| {
+                    registry.register(Box::new(
+                        letibot_tools::builtins::digest::DigestTool::new(src, digest),
+                    ))
+                })
+                .map_err(|e| {
+                    HarnessError::Setup(format!("registering the transcript tools: {e}"))
+                })?;
         }
         if cfg.parent_session_id.is_none()
             && cfg.seat != Seat::Runner

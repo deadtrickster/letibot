@@ -33,6 +33,7 @@
 //! is about to change.
 
 pub mod bash;
+pub mod digest;
 pub mod edit;
 pub mod external;
 pub mod glob;
@@ -52,6 +53,7 @@ pub mod retrieval;
 pub mod skill;
 pub mod task;
 pub mod todo;
+pub mod transcript;
 pub mod write;
 
 use crate::backend::{DirEntry, ExecBackend};
