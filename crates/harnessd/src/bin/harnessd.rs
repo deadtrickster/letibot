@@ -270,7 +270,31 @@ fn run() -> Result<i32, String> {
             "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
-            "--scope" => scope = Some(PathBuf::from(next()?)),
+            // **An empty scope is a missing argument, not "everywhere".**
+            // `Path::new("/anything").starts_with("")` is true in Rust, so an
+            // empty `--scope` matched every session in the store and `--continue`
+            // handed back the newest one on the box — the operator's report:
+            // *"--continue seems to be continuing the last global, not the last in
+            // project"*. The launcher computes the scope from `git rev-parse
+            // --show-toplevel` with `$PWD` as the fallback, and both can come back
+            // empty if the directory is gone (a pruned worktree does it).
+            //
+            // Refused by name rather than defaulted, because both defaults are
+            // wrong: "everywhere" continues somebody else's conversation, and
+            // "nowhere" reads as resume being broken.
+            "--scope" => {
+                let v = next()?;
+                if v.trim().is_empty() {
+                    return Err("--scope was given an empty path. It scopes a store query \
+                                to one workspace, and an empty one would match every \
+                                session on this box — which is how `--continue` would \
+                                reopen a conversation from another project. Pass a \
+                                directory, or leave --scope off to search the whole store \
+                                deliberately."
+                        .into());
+                }
+                scope = Some(PathBuf::from(v));
+            }
             "--workspace" => cfg.workspace = PathBuf::from(next()?),
             "--socket" => cfg.socket = PathBuf::from(next()?),
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
@@ -1180,6 +1204,16 @@ fn scoped(
 ) -> Result<Vec<letibot_tokencore::store::StoredSession>, String> {
     let all = store.list_sessions().map_err(|e| e.to_string())?;
     let Some(root) = scope else { return Ok(all) };
+    // The empty path is refused at the flag, and refused again here: `starts_with("")`
+    // is true for every path, so a scope that reached this function empty would
+    // widen the query to the whole box while looking like it had narrowed it. Two
+    // guards for one mistake, because the failure is silent and the blast radius
+    // is continuing somebody else's conversation.
+    if root.as_os_str().is_empty() {
+        return Err("a store query was scoped to the empty path, which matches every \
+                    session on this box rather than none. Nothing was searched."
+            .into());
+    }
     Ok(all
         .into_iter()
         .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(root))
@@ -1262,5 +1296,100 @@ fn term_cols() -> usize {
         ws.ws_col as usize
     } else {
         80
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letibot_tokencore::store::{SessionRecord, Store};
+
+    fn store_with(workspaces: &[(&str, &str)]) -> (Store, TempDir) {
+        let d = TempDir::new();
+        let store = Store::open(&d.0.join("sessions.db")).expect("opening");
+        for (id, root) in workspaces {
+            store
+                .put_session(&SessionRecord {
+                    id: (*id).into(),
+                    title: None,
+                    model_id: "m".into(),
+                    dialect_sha: "d".into(),
+                    workspace_root: (*root).into(),
+                    owner: "dead".into(),
+                    approvers: vec![],
+                    role: None,
+                    parent_session_id: None,
+                })
+                .expect("session");
+        }
+        (store, d)
+    }
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "harnessd-scope-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).expect("scratch");
+            TempDir(p)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// **The empty scope matched everything.** `Path::new("/a").starts_with("")` is
+    /// true, so a store query scoped to the empty path silently widened to the whole
+    /// box — and `--continue` then reopened the newest conversation anywhere, which
+    /// is what the operator saw: *"--continue seems to be continuing the last
+    /// global, not the last in project"*.
+    #[test]
+    fn an_empty_scope_is_refused_rather_than_matching_every_session() {
+        let (store, _d) = store_with(&[
+            ("s-a", "/home/dead/Projects/leticl"),
+            ("s-b", "/home/dead/Projects/rano"),
+        ]);
+        let e = scoped(&store, Some(std::path::Path::new("")))
+            .expect_err("an empty scope is not a scope");
+        assert!(e.contains("matches every session"), "{e}");
+
+        // A real scope still narrows, and no scope at all still means the whole
+        // store — the deliberate case, which this must not break.
+        assert_eq!(
+            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/rano")))
+                .expect("scoping")
+                .len(),
+            1
+        );
+        assert_eq!(scoped(&store, None).expect("unscoped").len(), 2);
+    }
+
+    /// The prefix match reaches DOWNWARDS only: a session opened in a subdirectory
+    /// belongs to the tree above it. This is the behaviour `scoped`'s own comment
+    /// describes, pinned so the empty-path guard above cannot quietly change it.
+    #[test]
+    fn a_scope_finds_sessions_opened_beneath_it() {
+        let (store, _d) = store_with(&[("s-a", "/home/dead/Projects/rano/crates/ui")]);
+        assert_eq!(
+            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/rano")))
+                .expect("scoping")
+                .len(),
+            1,
+            "a session in a subdirectory belongs to the tree"
+        );
+        // And not sideways into a sibling.
+        assert!(
+            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/leticl")))
+                .expect("scoping")
+                .is_empty()
+        );
     }
 }
