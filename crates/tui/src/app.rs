@@ -8164,7 +8164,23 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // with ctrl-t like every other long thing on this screen.
             let mut why_folded = false;
             if let Some(why) = &why {
-                let shown = if tools.is_open() {
+                // **The payload says it too, so this stays a gist.** Unfolding is
+                // what reveals the payload, and a refusal's payload is a complete
+                // explanation — it names the decider, the basis and what to do.
+                // Printing the whole `why` above it meant ctrl-t produced the same
+                // paragraph twice in one card, three times counting the envelope's
+                // own `outcome:` line. The operator, counting: *"how many times is
+                // 'nothing ran' needed?"*
+                //
+                // Once. When the reason is NOT below, unfolding still shows all of
+                // it, because then this is the only place it is said.
+                // Matched on the reason's FIRST LINE: `why` is a paragraph and
+                // `lines` is the payload already split, so a whole-paragraph
+                // containment can never hit. One line of forty-plus characters
+                // appearing verbatim below is not a coincidence.
+                let first = why.lines().next().unwrap_or("").trim();
+                let echoed = first.len() >= 40 && lines.iter().any(|l| l.contains(first));
+                let shown = if tools.is_open() && !echoed {
                     why.clone()
                 } else {
                     let gist = first_sentence(why);
