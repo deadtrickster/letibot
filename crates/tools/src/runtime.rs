@@ -547,6 +547,12 @@ pub mod roles {
                 "glob",
                 "bash",
                 "read_spill",
+                // A subagent seats this role, and a subagent is the one reader
+                // that arrives with none of the conversation it is working on.
+                // `transcript` is how it can be told "the operator decided this
+                // earlier" and go and check, rather than asking its parent to
+                // paste it. Read-only, so it costs the seat nothing else.
+                "transcript",
             ],
         )
     }
@@ -593,13 +599,21 @@ pub mod roles {
                 // it is how a model stops asking the operator to read their own
                 // terminal aloud.
                 "harness",
+                // `transcript` and `digest`: this session's own conversation,
+                // including what compaction replaced. Seated together on purpose
+                // — `transcript` reports the count of what it did not show and
+                // names `digest` as the way to ask about the rest, and that offer
+                // is a lie on a seat where only one of them is present.
+                "transcript",
+                "digest",
             ],
         );
         // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
         // when it holds a seat), `pkill` and `ps`. The ceiling is a guard against
         // a prompt nobody counted, and this is the count, counted. Twenty since
-        // `task_result` joined `task`.
-        r.max_tools = 20;
+        // `task_result` joined `task`; twenty-two since `transcript` and `digest`,
+        // which are one capability seated as two tools.
+        r.max_tools = 22;
         r
     }
 
