@@ -78,6 +78,9 @@ pub struct Harness {
     pub promote: Option<Arc<std::sync::Mutex<Option<String>>>>,
     /// Held so the tree outlives the backend.
     _dir: TempDir,
+    /// Held so the session's scratch directory outlives the backend, for the
+    /// unconfined external harness. `None` for every other shape.
+    _scratch: Option<TempDir>,
 }
 
 impl Harness {
@@ -96,6 +99,12 @@ impl Harness {
     /// test of the tool's opinion of itself.
     pub fn root(&self) -> &std::path::Path {
         self._dir.path()
+    }
+
+    /// The session's scratch directory, for the unconfined external harness.
+    /// `None` for every other shape, which has no scratch to look at.
+    pub fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self._scratch.as_ref().map(|d| d.path())
     }
 
     /// What is actually on disk, read without going through the backend.
@@ -247,6 +256,7 @@ pub fn runner_harness_with_gate(
         mount: Default::default(),
         promote: Some(promote),
         _dir: dir,
+        _scratch: None,
     })
 }
 
@@ -292,6 +302,7 @@ pub fn confined_harness_with(
         mount: Default::default(),
         promote: None,
         _dir: dir,
+        _scratch: None,
     })
 }
 
@@ -361,12 +372,15 @@ fn build_ext(
     fixture_tree(dir.path());
     // `unconfined` roots the backend at `/` with the fixture tree as cwd, the way
     // the leticode seat does: relative paths still start in the tree, but an
-    // absolute path — the `web_fetch` scratchpad under `/tmp` — is reachable.
+    // absolute path — the session's scratch directory — is reachable. The scratch
+    // is a per-session temp dir, set on the backend the way the daemon does.
+    let scratch = if unconfined { Some(TempDir::new()) } else { None };
     let (backend, registry): (HostBackend, Registry) = if writable && unconfined {
         (
             HostBackend::writable("/").expect("root")
                 .with_cwd(dir.path())
-                .expect("fixture cwd"),
+                .expect("fixture cwd")
+                .with_scratch_dir(scratch.as_ref().unwrap().path()),
             crate::coder_tools(retrieval).expect("built-ins register"),
         )
     } else if writable {
@@ -417,6 +431,7 @@ fn build_ext(
         mount,
         promote: None,
         _dir: dir,
+        _scratch: scratch,
     }
 }
 

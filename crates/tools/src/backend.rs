@@ -181,6 +181,17 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The session's scratch directory, where tools put working artifacts that are
+    /// too big for the transcript — a fetched page, a generated script. Per-session
+    /// and set by whoever opened the session, so every tool in it sees the same
+    /// place and no tool has to know how it was chosen.
+    ///
+    /// `None` by default: a backend with no scratch has nowhere to spill, and a
+    /// tool that wants one gets a refusal rather than a guess.
+    fn scratch_dir(&self) -> Option<String> {
+        None
+    }
+
     /// One directory, not recursive. Recursion belongs to the tools, which then
     /// works identically over a tar channel that has no `walkdir`.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError>;
@@ -257,6 +268,9 @@ pub struct HostBackend {
     /// `Some` only via [`HostBackend::executable`]. Shared, because the job table
     /// and the scope tree are session state and a `HostBackend` is cloned freely.
     processes: Option<std::sync::Arc<crate::exec::HostProcesses>>,
+    /// The session's scratch directory, set by the daemon. `None` when the session
+    /// has no scratch, and a tool that wants one gets a refusal rather than a guess.
+    scratch: Option<PathBuf>,
 }
 
 impl HostBackend {
@@ -274,6 +288,7 @@ impl HostBackend {
             home,
             promote: Arc::new(std::sync::Mutex::new(None)),
             processes: None,
+            scratch: None,
         })
     }
 
@@ -302,6 +317,14 @@ impl HostBackend {
     /// built without it simply never sees a request.
     pub fn with_promote_channel(mut self, channel: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.promote = channel;
+        self
+    }
+
+    /// Set the session's scratch directory. The daemon calls this after
+    /// construction; a backend a test built without it has no scratch, and a tool
+    /// that wants one gets a refusal rather than a guess.
+    pub fn with_scratch_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.scratch = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -775,6 +798,10 @@ impl ExecBackend for HostBackend {
 
     fn root_path(&self) -> Option<String> {
         Some(self.root.to_string_lossy().to_string())
+    }
+
+    fn scratch_dir(&self) -> Option<String> {
+        self.scratch.as_ref().map(|p| p.to_string_lossy().to_string())
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {

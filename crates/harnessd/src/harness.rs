@@ -1209,6 +1209,14 @@ impl<'a> Harness<'a> {
         // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());
+        // The session's scratch directory, where tools put working artifacts that
+        // are too big for the transcript. Per-session (one per daemon process) and
+        // in `/tmp`, so a fetched page never touches the operator's tree. A backend
+        // that cannot reach it — a confined session rooted at the workspace — simply
+        // has no scratch, and a tool that wants one gets a refusal rather than a guess.
+        let scratch = std::env::temp_dir().join(format!("letibot-scratch-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&scratch);
+        let backend = backend.with_scratch_dir(&scratch);
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the workspace.
         let (backend, backend_described, backend_writable, monitors): (
