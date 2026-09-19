@@ -930,7 +930,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("help", "the key and command reference"),
     ("status", "the bottom border's telemetry, full screen"),
     ("think", "fold or unfold the model's reasoning"),
-    ("tools", "fold or unfold tool output"),
+    ("tools", "what this conversation can call, and what it only looks like it can"),
     ("verbosity", "cycle the event-stream detail"),
     ("config", "every setting, the runtime-editable ones editable in place"),
     ("mode", "the mode picker — or /mode NAME to type it"),
@@ -3315,7 +3315,7 @@ impl App {
         //
         // Rendered from this head, at this head's size, escape codes intact — the
         // whole point is what is actually painted, not a description of it.
-        if let Some(rest) = cmd.strip_prefix("cells") {
+        if let Some(rest) = verb_arg(cmd, "cells") {
             let message = rest.trim().to_string();
             let (w, h) = (self.term_cols, self.screen_rows);
             if w == 0 || h == 0 {
@@ -3355,7 +3355,7 @@ impl App {
             self.pending_prompts.push(text.clone());
             return Some(Action::Prompt(text));
         }
-        if let Some(title) = cmd.strip_prefix("new") {
+        if let Some(title) = verb_arg(cmd, "new") {
             self.want_new_session = true;
             self.say("making a session…");
             return Some(Action::NewSession(title.trim().to_string()));
@@ -3372,7 +3372,7 @@ impl App {
         // is where another session is on screen, and a `/rename` that could reach a
         // row you were only looking at is one typo away from renaming the wrong
         // conversation.
-        if let Some(title) = cmd.strip_prefix("rename") {
+        if let Some(title) = verb_arg(cmd, "rename") {
             let title = title.trim().to_string();
             if self.session_id.is_empty() {
                 self.say("not attached to a session yet");
@@ -3386,7 +3386,7 @@ impl App {
                 title,
             });
         }
-        if let Some(name) = cmd.strip_prefix("mode") {
+        if let Some(name) = verb_arg(cmd, "mode") {
             let name = name.trim().to_string();
             if self.session_id.is_empty() {
                 self.say("not attached to a session yet");
@@ -3436,7 +3436,14 @@ impl App {
                 self.refold();
                 None
             }
-            "tools" | "t" => {
+            // **`/tools` asks what this conversation can call.** It used to be a
+            // second spelling of ctrl-t, which already folds tool output and is
+            // the key anybody actually uses for it. The operator: *"it toggles
+            // tools view but i think i want it to show me currently seated
+            // tools"*. The listing is the question worth a word; the fold keeps
+            // its key, and `/t` keeps the old behaviour for the fingers that
+            // learnt it.
+            "t" => {
                 self.tools = self.tools.flip();
                 self.refold();
                 None
@@ -3506,7 +3513,7 @@ impl App {
                 if matches!(
                     verb,
                     "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
-                        | "job" | "jobs"
+                        | "job" | "jobs" | "tools"
                 ) {
                     if self.session_id.is_empty() {
                         self.say("not attached to a session yet");
@@ -6427,6 +6434,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
         ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
         ("/job", "read a background job's output: /job lists them, /job ID prints it, --offset N resumes"),
+        ("/tools", "the tools seated here — and any the prompt has never been told about, which the model cannot call"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];
@@ -7138,6 +7146,27 @@ fn decision_lines(
         }
     }
     out
+}
+
+/// **A verb and its argument, where the verb has to be the whole word.**
+///
+/// `cmd.strip_prefix("mode")` matches every command that BEGINS with those four
+/// letters, so `/models` arrived as `/mode` with the argument `ls` and the head
+/// answered `mode ls requested` — the operator: *"/models doesnt work — printed
+/// mode ls requested lol"*. It never reached the daemon at all, because the
+/// `mode` arm returns before the fallthrough that forwards unknown verbs.
+///
+/// `Some("")` for the bare verb, `Some(arg)` when a space follows, and `None`
+/// when the word merely starts the same way. Four call sites had the bug and one
+/// of them was reported; the other three are `cells`, `new` and `rename`, which
+/// would have taken `/newton` as "make a session called ton".
+fn verb_arg<'a>(cmd: &'a str, verb: &str) -> Option<&'a str> {
+    let rest = cmd.strip_prefix(verb)?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    // A digit or letter here means a longer word, not an argument.
+    rest.starts_with(char::is_whitespace).then(|| rest.trim())
 }
 
 /// **The two reasons a settled decision carries, labelled as whose they are.**
@@ -12653,6 +12682,35 @@ mod tests {
         let said = a.notice.clone().unwrap_or_default();
         assert!(said.contains("still working"), "{said}");
         assert!(said.contains("no command running"), "{said}");
+    }
+
+    /// **A verb has to be the whole word.** The operator: *"/models doesnt work —
+    /// printed `mode ls` requested lol"*. `strip_prefix("mode")` took `/models` as
+    /// `/mode` with the argument `ls`, and returned before the fallthrough that
+    /// forwards a daemon verb — so `/models` never left the head.
+    #[test]
+    fn a_command_that_merely_starts_like_a_verb_is_not_that_verb() {
+        assert_eq!(verb_arg("mode", "mode"), Some(""));
+        assert_eq!(verb_arg("mode automode", "mode"), Some("automode"));
+        assert_eq!(verb_arg("models", "mode"), None, "the reported one");
+        assert_eq!(verb_arg("newton", "new"), None, "not a session called `ton`");
+        assert_eq!(verb_arg("renamed", "rename"), None);
+        assert_eq!(verb_arg("cellsomething", "cells"), None);
+    }
+
+    /// And the whole-word rule reaches the daemon: `/models` is forwarded now
+    /// rather than swallowed by the mode arm.
+    #[test]
+    fn slash_models_reaches_the_daemon() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        match a.command("models") {
+            Some(Action::Slash { line }) => assert_eq!(line, "models"),
+            other => panic!("/models must go to the daemon, got {other:?}"),
+        }
+        // While `/mode` still opens the picker, and `/mode NAME` still types it.
+        assert!(matches!(a.command("mode"), Some(Action::Settings) | None));
+        assert!(a.mode_picker || a.settings.is_empty());
     }
 
     #[test]
