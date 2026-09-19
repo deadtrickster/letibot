@@ -25,7 +25,7 @@
 use letibot_ui::highlight::StreamingCode;
 use letibot_ui::style::{Painter, Palette, Role};
 
-use crate::markdown::{Align, Block, IncrementalMarkdown};
+use crate::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
 
 /// Columns, wrapping and truncation come from `letibot-ui`.
 ///
@@ -47,6 +47,10 @@ pub mod sgr {
     pub const BOLD: &str = "\x1b[1m";
     pub const DIM: &str = "\x1b[2m";
     pub const ITALIC: &str = "\x1b[3m";
+    /// Bold and italic in one sequence. `1;3` rather than two escapes because a
+    /// second `SGR` for the same attribute pair is two transitions where one will do,
+    /// and a wrapped `***word***` pays that on every line.
+    pub const BOLD_ITALIC: &str = "\x1b[1;3m";
     pub const CYAN: &str = "\x1b[36m";
     pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
@@ -223,7 +227,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
         // unrecoverable — and `color: false` here is `--replay`, a pipe and CI,
         // not a theme. So the hashes stay, faint, and carry the level for the
         // monochrome reader; the colour carries it for everyone else.
-        Block::Heading { level, text } => {
+        Block::Heading { level, runs } => {
             let p = cfg.painter();
             let role = match level {
                 1 => Role::Heading,
@@ -235,14 +239,14 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 &format!(
                     "{} {}",
                     p.paint(Role::Faint, &hashes),
-                    p.paint(role, &inline(text, p))
+                    p.paint(role, &paint_runs(runs, p))
                 ),
                 w,
             )]
         }
         Block::Paragraph { lines } => {
-            let joined = lines.join(" ");
-            wrap(&inline(&joined, cfg.painter()), w)
+            let joined = joined_runs(lines);
+            wrap(&paint_runs(&joined, cfg.painter()), w)
         }
         Block::Code {
             lang,
@@ -310,7 +314,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 // indenting a wrapped bullet by its byte length put every
                 // continuation line a column too far right.
                 let pad = visible_width(&marker);
-                let body = wrap(&inline(it, p), w.saturating_sub(pad));
+                let body = wrap(&paint_runs(it, p), w.saturating_sub(pad));
                 for (j, line) in body.into_iter().enumerate() {
                     if j == 0 {
                         out.push(format!("{}{line}", p.paint(marker_role, &marker)));
@@ -322,8 +326,8 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             out
         }
         Block::Quote { lines } => {
-            let joined = lines.join(" ");
-            wrap(&inline(&joined, cfg.painter()), w.saturating_sub(2))
+            let joined = joined_runs(lines);
+            wrap(&paint_runs(&joined, cfg.painter()), w.saturating_sub(2))
                 .into_iter()
                 .map(|l| cfg.c(sgr::DIM, &format!("│ {l}")))
                 .collect()
@@ -350,9 +354,9 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
 ///   `│` between columns — the same weight as the quote rail and the code fence,
 ///   so a table sits in a turn rather than shouting from it.
 fn table_lines(
-    head: &[String],
+    head: &[Vec<Run>],
     align: &[Align],
-    rows: &[Vec<String>],
+    rows: &[Vec<Vec<Run>>],
     cfg: &RenderConfig,
     w: usize,
 ) -> Vec<String> {
@@ -361,18 +365,18 @@ fn table_lines(
     // is showing something the header does not name, so the table widens to it
     // rather than dropping it.
     let cols = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
-    fn cell(r: &[String], i: usize) -> &str {
-        r.get(i).map(String::as_str).unwrap_or("")
+    fn cell<'a>(r: &'a [Vec<Run>], i: usize) -> &'a [Run] {
+        r.get(i).map(Vec::as_slice).unwrap_or(&[])
     }
 
     // Painted once: the paint is what gets measured, wrapped and padded, so a
     // `**bold**` cell does not measure its escape bytes as columns.
     let head_p: Vec<String> = (0..cols)
-        .map(|i| p.paint(Role::Strong, &inline(cell(head, i), p)))
+        .map(|i| p.paint(Role::Strong, &paint_runs(cell(head, i), p)))
         .collect();
     let rows_p: Vec<Vec<String>> = rows
         .iter()
-        .map(|r| (0..cols).map(|i| inline(cell(r, i), p)).collect())
+        .map(|r| (0..cols).map(|i| paint_runs(cell(r, i), p)).collect())
         .collect();
 
     let natural: Vec<usize> = (0..cols)
@@ -392,7 +396,7 @@ fn table_lines(
 
     let sep = p.paint(Role::Faint, " │ ");
     let mut out = Vec::new();
-    let mut push_row = |cells: &[String], out: &mut Vec<String>| {
+    let push_row = |cells: &[String], out: &mut Vec<String>| {
         // Wrap every cell to its column, then emit one screen line per wrapped
         // line, padding the cells that ran out.
         let wrapped: Vec<Vec<String>> = cells
@@ -723,64 +727,63 @@ impl BlockCache {
     }
 }
 
-/// Very small inline renderer: `code`, **bold**, *italic*.
+/// Paint inline runs, one SGR transition per run.
 ///
-/// Deliberately not a parser. A model's inline markup is shallow, and the failure
-/// mode of getting it slightly wrong is a stray asterisk, not a wrong answer.
-pub fn inline(s: &str, p: Painter) -> String {
+/// There is nothing to scan for here any more. The markdown projection parsed the
+/// inline grammar, so `**bold**` arrived as a [`Run`] whose text is `bold` and whose
+/// style is [`InlineStyle::Bold`] — the asterisks are already gone, and a `*` that is
+/// not emphasis stays literal because the grammar said so. What is left is the
+/// mapping from style to escape, which belongs to the renderer because the palette
+/// does.
+///
+/// A palette with no colour yields the plain text: `--replay`, a pipe and CI all read
+/// that, and an escape nobody renders is noise in a log.
+pub fn paint_runs(runs: &[Run], p: Painter) -> String {
     if !p.palette().is_colour() {
-        return s.to_string();
+        return crate::markdown::runs_text(runs);
     }
-    // Not `sgr::RESET`. Every span here closes back to whatever block it is
-    // inside — see `RenderConfig::base`.
+    // Not `sgr::RESET`. Every run closes back to whatever block it is inside — see
+    // `RenderConfig::base`.
     let close = p.close();
-    let mut out = String::with_capacity(s.len() + 16);
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'`'
-            && let Some(end) = s[i + 1..].find('`')
-        {
-            out.push_str(sgr::CYAN);
-            out.push_str(&s[i + 1..i + 1 + end]);
+    let mut out = String::new();
+    for r in runs {
+        let code = match r.style {
+            InlineStyle::Plain => "",
+            InlineStyle::Bold => sgr::BOLD,
+            InlineStyle::Italic => sgr::ITALIC,
+            InlineStyle::BoldItalic => sgr::BOLD_ITALIC,
+            InlineStyle::Code => sgr::CYAN,
+            // No `9m`: an attribute half the terminals in use do not carry, and one
+            // that a reader who has turned colour off would not see at all. Dim reads
+            // as "this was struck" next to the same sentence undimmed, and it is the
+            // same weight the frame uses.
+            InlineStyle::Strikethrough => sgr::DIM,
+        };
+        out.push_str(code);
+        out.push_str(&r.text);
+        if !code.is_empty() {
             out.push_str(&close);
-            i = i + 1 + end + 1;
-            continue;
         }
-        if b[i] == b'*'
-            && i + 1 < b.len()
-            && b[i + 1] == b'*'
-            && let Some(end) = s[i + 2..].find("**")
-        {
-            out.push_str(sgr::BOLD);
-            out.push_str(&s[i + 2..i + 2 + end]);
-            out.push_str(&close);
-            i = i + 2 + end + 2;
-            continue;
-        }
-        if b[i] == b'*'
-            && let Some(end) = s[i + 1..].find('*')
-        {
-            out.push_str(sgr::ITALIC);
-            out.push_str(&s[i + 1..i + 1 + end]);
-            out.push_str(&close);
-            i = i + 1 + end + 1;
-            continue;
-        }
-        let ch_len = utf8_len(b[i]);
-        out.push_str(&s[i..(i + ch_len).min(s.len())]);
-        i += ch_len;
     }
     out
 }
 
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0x00..=0x7f => 1,
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => 4,
+/// One block's lines as one run list, joined with a plain space.
+///
+/// A paragraph's source lines are one paragraph; the renderer wraps the whole thing
+/// to the display width, so the source's newlines are a wrap the model did not mean.
+pub fn joined_runs(lines: &[Vec<Run>]) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push(Run {
+                text: " ".to_string(),
+                style: InlineStyle::Plain,
+            });
+        }
+        out.extend(line.iter().cloned());
     }
+    out
 }
 
 /// A byte count a person can read. `8192` is a number to decode; `8.0 KB` is not.
@@ -896,11 +899,40 @@ mod tests {
 
     #[test]
     fn wrapping_counts_visible_columns_not_escape_bytes() {
-        let coloured = inline("a `code` b", Painter::new(Palette::Colour));
+        let runs = vec![
+            Run { text: "a ".into(), style: InlineStyle::Plain },
+            Run { text: "code".into(), style: InlineStyle::Code },
+            Run { text: " b".into(), style: InlineStyle::Plain },
+        ];
+        let coloured = paint_runs(&runs, Painter::new(Palette::Colour));
         assert!(coloured.len() > 10);
         assert_eq!(visible_width(&coloured), "a code b".len());
         let lines = wrap(&coloured, 20);
         assert_eq!(lines.len(), 1, "escapes must not consume width: {lines:?}");
+    }
+
+    /// A marker in the *hand-written* inline syntax is literal text now.
+    ///
+    /// The point of the tree-sitter projection is that `**bold**` is `Run { text:
+    /// "bold", style: Bold }` and the asterisks are gone before the renderer sees
+    /// them. A `**` that is not emphasis is therefore also literal, and this pins the
+    /// two halves of that: the styles map to escapes, and nothing is scanned for.
+    #[test]
+    fn the_renderer_sees_styles_not_markers() {
+        let runs = vec![
+            Run { text: "plain ".into(), style: InlineStyle::Plain },
+            Run { text: "bold".into(), style: InlineStyle::Bold },
+            Run { text: " and ".into(), style: InlineStyle::Plain },
+            Run { text: "code".into(), style: InlineStyle::Code },
+        ];
+        let painted = paint_runs(&runs, Painter::new(Palette::Colour));
+        assert!(painted.contains(sgr::BOLD), "{painted:?}");
+        assert!(painted.contains(sgr::CYAN), "{painted:?}");
+        assert_eq!(visible_width(&painted), "plain bold and code".len());
+        // A palette with no colour is the plain text and no escapes at all.
+        let plain = paint_runs(&runs, Painter::new(Palette::None));
+        assert_eq!(plain, "plain bold and code");
+        assert!(!plain.contains('\x1b'), "{plain:?}");
     }
 
     #[test]
@@ -1080,6 +1112,12 @@ mod tables {
         lex(src).iter().flat_map(|b| render_block(b, &cfg(width))).collect()
     }
 
+    /// A cell's plain text. The model holds runs; a test asserting on a table's
+    /// contents means the text in it.
+    fn cells(v: &[Vec<Run>]) -> Vec<String> {
+        v.iter().map(|c| crate::markdown::runs_text(c)).collect()
+    }
+
     #[test]
     fn a_table_is_a_table_and_not_a_paragraph_of_pipes() {
         let blocks = lex(BOARD);
@@ -1087,10 +1125,13 @@ mod tables {
         let Block::Table { head, align, rows } = &blocks[0] else {
             panic!("not a table: {blocks:#?}");
         };
-        assert_eq!(head, &["branch", "commits", "status"]);
+        assert_eq!(cells(head), ["branch", "commits", "status"]);
         assert_eq!(align, &[Align::Left, Align::Left, Align::Left]);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[2], ["`main`", "moved to `7056c64` (your intent + plan commits)", "—"]);
+        assert_eq!(
+            cells(&rows[2]),
+            ["main", "moved to 7056c64 (your intent + plan commits)", "—"]
+        );
     }
 
     #[test]
@@ -1132,7 +1173,8 @@ mod tables {
         let blocks = lex(src);
         let Block::Table { align, rows, .. } = &blocks[0] else { panic!("{blocks:#?}") };
         assert_eq!(align, &[Align::Right, Align::Center, Align::Left]);
-        assert_eq!(rows[0][1], "a|b", "an escaped pipe is a pipe, not a cell break");
+        assert_eq!(rows[0][1], vec![Run { text: "a|b".into(), style: InlineStyle::Plain }],
+            "an escaped pipe is a pipe, not a cell break");
         let out = render(src, 40);
         // Right-aligned `n`: the digit sits at the column's right edge, under the
         // header's own right edge.
@@ -1167,5 +1209,126 @@ mod tables {
         let streamed: Vec<&Block> = md.blocks().collect();
         assert_eq!(streamed.len(), 1, "{streamed:#?}");
         assert!(matches!(streamed[0], Block::Table { .. }), "{streamed:#?}");
+    }
+}
+
+#[cfg(test)]
+mod inline_render {
+    use super::*;
+    use crate::markdown::lex;
+
+    fn cfg(width: usize) -> RenderConfig {
+        RenderConfig { width, color: true, ..RenderConfig::default() }
+    }
+
+    /// The whole point of the workstream, asserted on the rendered output: a model's
+    /// `**bold**` is bold on the screen and the asterisks are not.
+    #[test]
+    fn markers_are_styles_on_the_screen_and_not_characters() {
+        let blocks = lex("plain **bold** and `code` and ~~struck~~ end\n");
+        let out = render_block(&blocks[0], &cfg(60)).join("\n");
+        assert!(out.contains(sgr::BOLD), "{out:?}");
+        assert!(out.contains(sgr::CYAN), "{out:?}");
+        assert!(out.contains(sgr::DIM), "{out:?}");
+        assert!(!out.contains('*'), "a marker reached the screen: {out:?}");
+        assert!(!out.contains('`'), "a marker reached the screen: {out:?}");
+        assert!(!out.contains('~'), "a marker reached the screen: {out:?}");
+        let plain = strip(&out);
+        assert_eq!(plain, "plain bold and code and struck end");
+    }
+
+    /// A `*` that is not emphasis is text, on the screen as in the model.
+    #[test]
+    fn a_literal_asterisk_survives_the_renderer() {
+        let blocks = lex("2 * 3 = 6\n");
+        let out = render_block(&blocks[0], &cfg(40)).join("\n");
+        assert_eq!(strip(&out), "2 * 3 = 6");
+        assert!(!out.contains(sgr::ITALIC), "{out:?}");
+    }
+
+    /// Everything a real answer contains, rendered without losing a word.
+    ///
+    /// The failure this guards is the interesting one: a projection that drops a
+    /// block, or a run, produces a *plausible* screen. Only comparing against the
+    /// source's words catches it.
+    #[test]
+    fn a_whole_answer_renders_every_word_it_was_written_with() {
+        let src = "\
+## Why the cache missed
+
+The short answer is `reasoning_content`. Three things had to line up:
+
+1. The dialect replays prior reasoning.
+2. The ledger appends **ids**, never re-derived text.
+
+```rust
+let a = 1;
+```
+
+> Note that **committed** tokens are what matters.
+
+| n | name |
+|--:|:-----|
+| 1 | a\\|b |
+
+---
+
+done
+";
+        let blocks = lex(src);
+        let out: String = blocks
+            .iter()
+            .flat_map(|b| render_block(b, &cfg(72)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Against the *stripped* text: a fenced block is syntax-coloured, so the raw
+        // output has escapes inside `let a = 1;` and comparing un-stripped would be
+        // asserting on the highlighter's token split rather than on the word.
+        let text = strip(&out);
+        for word in [
+            "Why the cache missed",
+            "reasoning_content",
+            "line up",
+            "The dialect replays",
+            "never re-derived text",
+            "let a = 1;",
+            "committed",
+            "tokens are what matters",
+            "a|b",
+            "done",
+        ] {
+            assert!(text.contains(word), "{word:?} is missing from: {text}");
+        }
+        assert!(!text.contains("**"), "{text}");
+        assert!(!text.contains("|--:"), "the delimiter row reached the screen: {text}");
+        // The hashes *do* stay, and deliberately: `render_block`'s heading arm keeps
+        // them faint so the level survives a monochrome palette. What must not reach
+        // the screen is a marker *inside* prose.
+        assert!(
+            text.lines().next().is_some_and(|l| l.starts_with("## Why")),
+            "the level marker is drawn: {text}"
+        );
+        // The markers that did not reach the screen are styles that did.
+        assert!(out.contains(sgr::BOLD), "nothing came out bold: {out:?}");
+        assert!(out.contains(sgr::CYAN), "nothing came out as code: {out:?}");
+    }
+
+    /// Drop the SGR sequences, so an assertion can be about the text.
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut it = s.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '\x1b' {
+                while let Some(&n) = it.peek() {
+                    it.next();
+                    if n == 'm' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out
     }
 }

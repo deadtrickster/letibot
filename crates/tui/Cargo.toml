@@ -18,6 +18,13 @@ serde_json.workspace = true
 # Raw mode and the window size. The only C this crate needs, and `libc` is already
 # in the tree via the token core.
 libc = "0.2"
+# The incremental markdown engine (`rano::syntax::Stream`). Same deliberate absolute
+# path and the same reasoning as `crates/ui/Cargo.toml`: rano is the operator-local
+# tree-sitter hub, and a second tree-sitter integration in this process is the thing
+# that dependency exists to prevent. The markdown *projection* — the block model, the
+# inline styles, the window — stays here; rano hands back `Node`s and byte ranges and
+# knows nothing about what a heading is.
+rano = { path = "/home/dead/Projects/rano/rano" }
 
 [[bin]]
 name = "letibot-tui"

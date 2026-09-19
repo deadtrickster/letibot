@@ -1091,6 +1091,7 @@ dependencies = [
  "letibot-transcript",
  "letibot-ui",
  "libc",
+ "rano",
  "serde",
  "serde_json",
 ]
