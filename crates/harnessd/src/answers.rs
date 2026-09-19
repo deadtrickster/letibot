@@ -142,7 +142,20 @@ impl Answers {
     fn wait(&self, req_id: &str, budget: Duration) -> Waited {
         let deadline = Instant::now() + budget;
         let mut g = self.lock();
-        g.insert(req_id.to_string(), Slot::Waiting);
+        // **`or_insert`, never `insert`.** `ask` creates the slot BEFORE it
+        // publishes the question — that ordering is the whole rendezvous, and its
+        // comment says so — which leaves a window between the publish and this
+        // call. A head that answers inside that window sets `Slot::Answered`, and
+        // an unconditional insert here put `Waiting` back over it: the answer was
+        // dropped, this waited out the whole budget, and the call came back
+        // `Timeout` / *"nobody answered"* with the operator's own answer thrown
+        // away. The faster the answerer the likelier it was, so a guard model
+        // replying in 40ms lost more often than a person.
+        //
+        // Caught as a 2-in-8 flake in `a_head_answers_a_decision_the_daemons_stdin_could_not`,
+        // whose answering thread polls every 2ms and therefore lands in the window
+        // regularly. The test was right and the code was wrong.
+        g.entry(req_id.to_string()).or_insert(Slot::Waiting);
         loop {
             match g.get(req_id) {
                 Some(Slot::Answered { .. }) | Some(Slot::Cancelled { .. }) | None => break,
@@ -1055,5 +1068,48 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **An answer that arrives before the wait starts is not lost.**
+    ///
+    /// `ask` creates the slot, publishes the question, and only then calls
+    /// `wait`. A head answering inside that window sets `Slot::Answered`, and
+    /// `wait` used to `insert` `Waiting` straight back over it — so the answer
+    /// vanished and the call sat out its whole budget before reporting that
+    /// nobody had decided. This is that window, made deterministic.
+    #[test]
+    fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
+        let answers = Answers::new();
+        // What `ask` does before it publishes.
+        answers
+            .lock()
+            .insert("adj-race".to_string(), Slot::Waiting);
+        // The head, faster than the thread that is about to wait.
+        assert!(answers.answer(
+            "adj-race",
+            "deadtrickster",
+            &Reply::Permission {
+                option_id: "allow_once".into(),
+                pattern: None,
+            },
+        ));
+        // And now the wait begins. It must find the answer, not overwrite it —
+        // and must not spend the budget doing so.
+        let started = Instant::now();
+        match answers.wait("adj-race", Duration::from_secs(10)) {
+            Waited::Answered { reply, by } => {
+                assert_eq!(by, "deadtrickster");
+                assert!(matches!(
+                    reply,
+                    Reply::Permission { ref option_id, .. } if option_id == "allow_once"
+                ));
+            }
+            Waited::TimedOut => panic!("the answer was overwritten and the wait timed out"),
+            Waited::Cancelled { why } => panic!("cancelled instead of answered: {why}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "it returned immediately rather than waiting out the budget"
+        );
     }
 }
