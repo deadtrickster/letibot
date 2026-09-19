@@ -726,6 +726,9 @@ pub struct App {
     /// The background-jobs pane, a screen like the other two: the jobs this
     /// session started, running and settled. `ctrl-q`.
     jobs_pane: bool,
+    /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
+    /// that job's output — the pane counted the bytes and had no way to show them.
+    jobs_sel: usize,
     /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
     /// subagent's session — the same two acts the picker keeps separate.
     subagents_sel: usize,
@@ -983,6 +986,7 @@ impl App {
             todos_pane: false,
             subagents_pane: false,
             jobs_pane: false,
+            jobs_sel: 0,
             subagents_sel: 0,
             sub_out: None,
             sub_out_pending: None,
@@ -1295,6 +1299,12 @@ impl App {
             // have switched to itself.
             self.subagents.clear();
             self.subagents_sel = 0;
+            // Jobs are the session's, the same way. The rows survived a switch
+            // and kept drawing the old session's ids with the old session's byte
+            // counts — and now that Enter on a row asks THIS session for that id,
+            // a carried row is a question about a job that was never here.
+            self.jobs.clear();
+            self.jobs_sel = 0;
             // The queue is the old session's. Whatever was queued there stays
             // queued *there* — the hub drains it into that session's transcript —
             // but this head is no longer looking at that session, and an echo of
@@ -2678,6 +2688,43 @@ impl App {
             }
         }
 
+        // **An open jobs pane owns Up and Down, and Enter reads the job's output.**
+        //
+        // The pane already drew `N out` for every row; until now that count was
+        // the whole answer, and the bytes it counted were reachable only by
+        // asking the model to call `job_output`. Enter sends `/job ID` — the same
+        // read, from the row the operator is looking at.
+        if self.jobs_pane && !self.jobs.is_empty() {
+            let n = self.jobs.len();
+            match k {
+                Key::Up => {
+                    self.jobs_sel = if self.jobs_sel == 0 { n - 1 } else { self.jobs_sel - 1 };
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    self.jobs_sel = (self.jobs_sel + 1) % n;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter if self.editor.text().is_empty() => {
+                    if self.session_id.is_empty() {
+                        self.say("not attached to a session yet");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let job = self.jobs[self.jobs_sel.min(n - 1)].job.clone();
+                    // The reply lands on the session log, which the pane is
+                    // covering: close it so the operator reads what they asked for.
+                    self.jobs_pane = false;
+                    return Some(Action::Slash {
+                        line: format!("job {job}"),
+                    });
+                }
+                _ => {}
+            }
+        }
+
         // **Up with an empty composer recalls the queued line.**
         //
         // The echo above the composer is the operator's own words, held only
@@ -3328,6 +3375,7 @@ impl App {
                 if matches!(
                     verb,
                     "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
+                        | "job" | "jobs"
                 ) {
                     if self.session_id.is_empty() {
                         self.say("not attached to a session yet");
@@ -4050,7 +4098,7 @@ impl App {
         } else if self.subagents_pane {
             "subagents this session spawned · esc closes"
         } else if self.jobs_pane {
-            "background jobs this session started · esc closes"
+            "background jobs this session started · ↑↓ then enter reads one · esc closes"
         } else if !self.open.is_empty() {
             "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
@@ -4975,7 +5023,8 @@ impl App {
                  true`; ctrl-o moves the running one.",
             ));
         }
-        for j in &self.jobs {
+        let sel = self.jobs_sel.min(self.jobs.len().saturating_sub(1));
+        for (i, j) in self.jobs.iter().enumerate() {
             let (mark, state_colour) = if j.state.is_empty() {
                 ("[~]", sgr::YELLOW)
             } else if j.state.starts_with("exited 0") {
@@ -4995,8 +5044,10 @@ impl App {
                 .map(|c| c.target.clone())
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| "(command not in this head's window)".to_string());
+            let picked = i == sel;
             out.push(format!(
-                "{} {} {}",
+                "{} {} {} {}",
+                if picked { "\u{25b8}" } else { " " },
                 colour(&self.cfg, state_colour, mark),
                 j.job,
                 command
@@ -5017,7 +5068,7 @@ impl App {
             } else {
                 j.how.clone()
             };
-            out.push(dim(&self.cfg, &format!("       {} · {}", how, tail)));
+            out.push(dim(&self.cfg, &format!("         {} · {}", how, tail)));
         }
         out.push(String::new());
         out.push(dim(
@@ -6210,6 +6261,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/gate", "what the gate decided, and rule on it afterwards: recent, todo, corpus, ok|grant|revoke ID"),
         ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
         ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
+        ("/job", "read a background job's output: /job lists them, /job ID prints it, --offset N resumes"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];
@@ -11943,5 +11995,75 @@ mod tests {
         assert!(a.jobs_pane);
         a.key(Key::Esc);
         assert!(!a.jobs_pane, "esc closes the pane like the other screens");
+    }
+
+    /// The operator, looking at a row that says how many bytes it produced:
+    /// *"i go to jobs panel and no way to get job output"*. Enter on the row is
+    /// that way — it sends the daemon the same `/job ID` the composer would.
+    #[test]
+    fn enter_on_a_job_row_asks_the_daemon_for_that_jobs_output() {
+        let mut a = App::new(plain_cfg(80));
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            proposed_bash("c1", "\"cargo build\""),
+        )));
+        a.apply(ServerFrame::Event(env(3, backgrounded_finished("j1", "c1"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            proposed_bash("c2", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(5, backgrounded_finished("j2", "c2"))));
+        a.key(Key::CtrlQ);
+        assert!(a.jobs_pane);
+
+        // The cursor starts on the first row and the pane says which one it is on.
+        assert!(a.jobs_lines(100).join("\n").contains("\u{25b8}"), "a cursor is drawn");
+        a.key(Key::Down);
+        assert_eq!(a.jobs_sel, 1);
+
+        match a.key(Key::Enter) {
+            Some(Action::Slash { line }) => assert_eq!(line, "job j2"),
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !a.jobs_pane,
+            "the reply lands on the session log, so the pane gets out of its way"
+        );
+    }
+
+    /// Jobs belong to the session that started them. Carried across a switch the
+    /// pane drew the old session's ids and byte counts, and Enter on one of those
+    /// rows now asks the NEW session for a job that was never here. The tree next
+    /// door is dropped on a switch for the same reason; so is this.
+    #[test]
+    fn switching_drops_the_old_sessions_jobs_and_coming_back_rebuilds_them() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        let settled = SessionEvent::JobSettled {
+            job: "j1".into(),
+            state: "exited 0".into(),
+            produced: 512,
+            elapsed_ms: 1_400,
+        };
+        a.apply(ServerFrame::Event(env(1, settled.clone())));
+        assert_eq!(a.jobs.len(), 1);
+        a.jobs_sel = 0;
+
+        a.apply(hello("s2", vec![brief("s", "parent", true)], Hub::new("s2").snapshot()));
+        assert_eq!(a.session_id, "s2");
+        assert!(a.jobs.is_empty(), "the other session's jobs came along");
+        assert_eq!(a.jobs_sel, 0);
+        a.key(Key::CtrlQ);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("none."), "{screen}");
+        a.key(Key::Esc);
+
+        // Back, and the daemon replays the retained settlement that built the row.
+        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(1, settled)));
+        assert_eq!(a.jobs.len(), 1);
+        assert_eq!(a.jobs[0].job, "j1");
     }
 }

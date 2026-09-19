@@ -359,6 +359,23 @@ impl<'a> Sessions<'a> {
                 );
                 SlashReply { lines, ok: true }
             }
+            Slash::Job { job, offset } => {
+                let Some(h) = self.open.get(session_id) else {
+                    return SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    };
+                };
+                match job {
+                    None => SlashReply { lines: h.job_lines(), ok: true },
+                    // 16 KiB: enough that a build log's tail is one read, and the
+                    // reply names the next offset when it is not.
+                    Some(j) => match h.job_output(&j, offset, 16 * 1024) {
+                        Ok(lines) => SlashReply { lines, ok: true },
+                        Err(e) => SlashReply { lines: vec![e], ok: false },
+                    },
+                }
+            }
             Slash::Models => {
                 let current = self
                     .open

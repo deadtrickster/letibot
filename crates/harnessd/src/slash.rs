@@ -54,6 +54,9 @@ pub enum Slash {
         new_reader: bool,
     },
     FlowyLogout,
+    /// `/job` lists this session's background jobs; `/job ID` reads what one
+    /// wrote. The pane counted those bytes and could not show them.
+    Job { job: Option<String>, offset: u64 },
     Models,
     ModelsSet {
         provider: String,
@@ -142,6 +145,18 @@ impl Slash {
                      --token-file PATH] [--new-reader], logout"
                 )),
             },
+            Some("job") | Some("jobs") => {
+                let job = words.get(1).filter(|w| !w.starts_with("--")).map(|w| w.to_string());
+                // `--offset N` continues a read the ring had more of; the reply
+                // names the next offset, so this is a copy rather than a sum.
+                let offset = words
+                    .iter()
+                    .position(|w| *w == "--offset")
+                    .and_then(|i| words.get(i + 1))
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                Slash::Job { job, offset }
+            }
             Some("models") | Some("model") => match words.get(1).copied() {
                 None | Some("list") => Slash::Models,
                 Some(spec) => {
@@ -542,6 +557,32 @@ mod tests {
         }
         assert!(matches!(Slash::parse("models"), Slash::Models));
         assert!(matches!(Slash::parse("flowy dance"), Slash::Help(_)));
+    }
+
+    /// `/job` with no argument is the listing, not a refusal, and `--offset`
+    /// is not mistaken for a job id — the operator reaching a second page types
+    /// `/job ID --offset N`, but a flag alone must still list.
+    #[test]
+    fn job_parses_bare_with_an_id_and_with_an_offset() {
+        assert!(matches!(
+            Slash::parse("job"),
+            Slash::Job { job: None, offset: 0 }
+        ));
+        assert!(matches!(
+            Slash::parse("jobs"),
+            Slash::Job { job: None, offset: 0 }
+        ));
+        match Slash::parse("job j-3 --offset 4096") {
+            Slash::Job { job, offset } => {
+                assert_eq!(job.as_deref(), Some("j-3"));
+                assert_eq!(offset, 4096);
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(
+            Slash::parse("job --offset 10"),
+            Slash::Job { job: None, offset: 10 }
+        ));
     }
 
     #[test]
