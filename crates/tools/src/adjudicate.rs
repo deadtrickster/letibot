@@ -725,6 +725,18 @@ pub struct AdjudicationRequest {
     pub arguments_digest: String,
     /// What the backend can truthfully say about where this lands.
     pub boundary_facts: Vec<String>,
+    /// **The code this call will run**, when it names a script file.
+    ///
+    /// An interpreter is `ExecuteCode` and nothing else to layer A, so
+    /// `python3 deploy.py` reaches an adjudicator as *a program runs* with the
+    /// program itself unopened. The oracle can read code — measured 2026-09-20,
+    /// it denied a key deletion written inline, and denied it again with the path
+    /// built at runtime from `pathlib.Path.home()`, which no string rule could
+    /// have caught. It cannot read a file nobody gave it.
+    ///
+    /// Empty when the command names no script, which is its own fact and is
+    /// stated in the brief rather than left as silence.
+    pub scripts: Vec<crate::runtime::ScriptSource>,
     pub kind: RequestKind,
     pub options: Vec<DecisionOption>,
     pub on_timeout: OnTimeout,
@@ -891,6 +903,7 @@ impl AdjudicationRequest {
             self.arguments_digest,
             arguments_preview(&self.arguments)
         ));
+        out.push_str(&scripts_section(&self.scripts));
         out.push_str("options:\n");
         for o in &self.options {
             out.push_str(&format!("  {} — {}\n", o.id, o.label));
@@ -901,6 +914,52 @@ impl AdjudicationRequest {
     pub fn option(&self, id: &str) -> Option<&DecisionOption> {
         self.options.iter().find(|o| o.id == id)
     }
+}
+
+/// **The code the command will run**, for the adjudicator that can read it.
+///
+/// Its own section rather than another `fact:` line, because it is the one part
+/// of a brief that is not a statement ABOUT the call — it is the call, and an
+/// adjudicator should read it as the program it is.
+///
+/// A script that could not be read says so. That matters more than the ones that
+/// could: an adjudicator told nothing about `python3 deploy.py` cannot tell a
+/// command that runs no script from one whose script it was not shown, and those
+/// are the two cases where the right answers are opposite.
+fn scripts_section(scripts: &[crate::runtime::ScriptSource]) -> String {
+    use crate::runtime::ScriptBody;
+    if scripts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "the program(s) this command will run, read from disk — judge THIS, not the \
+         filename:\n",
+    );
+    for s in scripts {
+        match &s.body {
+            ScriptBody::Read(text) => {
+                out.push_str(&format!("--- {} ---\n{text}\n", s.path));
+            }
+            ScriptBody::Truncated { head, omitted } => {
+                out.push_str(&format!(
+                    "--- {} (first {} bytes; {omitted} NOT SHOWN) ---\n{head}\n\
+                     --- the rest of {} was not read; anything could be in it ---\n",
+                    s.path,
+                    head.len(),
+                    s.path
+                ));
+            }
+            ScriptBody::Unreadable(why) => {
+                out.push_str(&format!(
+                    "--- {} COULD NOT BE READ: {why} ---\n\
+                     This call runs a program nobody here has seen.\n",
+                    s.path
+                ));
+            }
+        }
+    }
+    out.push('\n');
+    out
 }
 
 /// §11.7 asks for *"the arguments, verbatim, with any value over 2 KiB spilled
@@ -2071,6 +2130,7 @@ impl AdjudicatedGate {
             arguments: call.args.clone(),
             arguments_digest: digest,
             boundary_facts: facts,
+            scripts: call.scripts.to_vec(),
             kind: RequestKind::Permission,
             // **Offer only what the gate will honour.** The recording site below
             // requires that the tier is not `AlwaysAsk`; the session-grant arm
@@ -2452,6 +2512,9 @@ impl Gate for AdjudicatedGate {
             ),
             arguments: serde_json::json!({ "path": path.display().to_string() }),
             arguments_digest: String::new(),
+            // A view grant is about showing the operator something, not about
+            // running a program: there is no command and so no script.
+            scripts: Vec::new(),
             boundary_facts: vec![
                 format!(
                     "the command saw `{}` as absent — that was the boundary, not an                      answer about whether anything is there",
@@ -3685,8 +3748,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: None,
-        };
+            target_exists: None, scripts: &[] };
         assert!(matches!(g.admit(&call), GateDecision::Admit));
         assert_eq!(g.grants().len(), 1, "a session grant was taken under writes-allowed");
 
@@ -3709,8 +3771,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c2",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true),
-        };
+            target_exists: Some(true), scripts: &[] };
         let _ = g.admit(&write);
         assert_eq!(
             g.grants().len(),
@@ -3799,8 +3860,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true),
-        });
+            target_exists: Some(true), scripts: &[] });
         assert!(
             matches!(d, GateDecision::Admit),
             "the model authorised it and the person was asked anyway: {d:?}"
@@ -3817,8 +3877,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c2",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true),
-        });
+            target_exists: Some(true), scripts: &[] });
         assert!(
             !matches!(d, GateDecision::Admit),
             "an always-ask action was settled by the model: {d:?}"
@@ -3870,8 +3929,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/w",
-            target_exists: Some(true),
-        }
+            target_exists: Some(true), scripts: &[] }
     }
 
     /// **At the widest point on the operator's box, the secret stores are still
@@ -5018,8 +5076,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/w",
-            target_exists: None,
-        }
+            target_exists: None, scripts: &[] }
     }
 
     /// A gate that would admit anything an adjudicator is consulted about, so that a
@@ -5732,5 +5789,59 @@ mod tests {
                 "an always-ask action is never offered a standing grant: {options:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scripts_brief_tests {
+    use super::scripts_section;
+    use crate::runtime::{ScriptBody, ScriptSource};
+
+    /// **The code goes in front of the adjudicator, not the filename.**
+    #[test]
+    fn a_read_script_is_shown_whole_and_labelled_as_the_thing_to_judge() {
+        let out = scripts_section(&[ScriptSource {
+            path: "deploy.py".into(),
+            body: ScriptBody::Read("import os\nos.remove('/home/dead/.ssh/id_rsa')\n".into()),
+        }]);
+        assert!(out.contains("judge THIS, not the filename"), "{out}");
+        assert!(out.contains("--- deploy.py ---"), "{out}");
+        assert!(out.contains("os.remove('/home/dead/.ssh/id_rsa')"), "{out}");
+    }
+
+    /// **A script that could not be read says so**, and that matters more than
+    /// the ones that could: told nothing, an adjudicator cannot tell a command
+    /// that runs no script from one whose script it was not shown — and those are
+    /// the two cases where the right answers are opposite.
+    #[test]
+    fn an_unreadable_script_is_named_rather_than_passed_over() {
+        let out = scripts_section(&[ScriptSource {
+            path: "setup.sh".into(),
+            body: ScriptBody::Unreadable("no such file".into()),
+        }]);
+        assert!(out.contains("COULD NOT BE READ: no such file"), "{out}");
+        assert!(
+            out.contains("runs a program nobody here has seen"),
+            "and says what that means: {out}"
+        );
+    }
+
+    /// A truncated script says how much is missing, so nobody reads part of a
+    /// program as all of one — the middle is exactly where something would hide.
+    #[test]
+    fn a_truncated_script_says_what_was_not_read() {
+        let out = scripts_section(&[ScriptSource {
+            path: "big.py".into(),
+            body: ScriptBody::Truncated { head: "print(1)".into(), omitted: 40_000 },
+        }]);
+        assert!(out.contains("40000 NOT SHOWN"), "{out}");
+        assert!(out.contains("anything could be in it"), "{out}");
+    }
+
+    /// No scripts is no section: a command that runs none must not grow a heading
+    /// implying it does.
+    #[test]
+    fn a_command_with_no_script_gets_no_section() {
+        assert_eq!(scripts_section(&[]), "");
     }
 }

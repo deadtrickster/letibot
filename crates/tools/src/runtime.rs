@@ -305,6 +305,47 @@ pub struct GateCall<'a> {
     /// `None` means the call has no path argument to stat, which is a different
     /// fact from "the path is not there".
     pub target_exists: Option<bool>,
+    /// **The scripts this command will run, read from disk.**
+    ///
+    /// An interpreter is `Intent::ExecuteCode` and nothing more: layer A reads
+    /// `python3 script.py` as *a program runs*, and the program text is a file it
+    /// never opens. Measured 2026-09-20 — `python3 -c "import os;
+    /// os.remove('/home/dead/.ssh/id_rsa')"` classifies as `MayApprove` while the
+    /// same effect written as `rm -rf ~/.ssh` is `Tier::Blocked`, because the
+    /// literal path inside the `-c` string is not a path to the classifier.
+    ///
+    /// The oracle CAN read code — asked with the command in the brief it denied
+    /// that call, and denied it again with the path built at runtime from
+    /// `pathlib.Path.home()`, which no matcher could have caught. What it cannot
+    /// do is read a file nobody handed it: `python3 script.py` shows it a
+    /// filename.
+    ///
+    /// So the file is read here, where the backend is, and travels in the brief.
+    /// Read UP FRONT rather than on request: an oracle that has to ask for the
+    /// script can forget to, and that failure is silent — it answers about a
+    /// filename and nothing says it judged blind.
+    pub scripts: &'a [ScriptSource],
+}
+
+/// One script an execution vehicle was handed, as the adjudicator will see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptSource {
+    /// The path as the command spelled it.
+    pub path: String,
+    /// The bytes, or why there are none. **Not `Option<String>`**: "this file is
+    /// 400 KB" and "this file is not there" and "these are the bytes" are three
+    /// facts, and an adjudicator that cannot tell them apart is one that reads a
+    /// missing file as an empty one.
+    pub body: ScriptBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptBody {
+    Read(String),
+    /// Read, but longer than the brief carries: the head, and how much went.
+    Truncated { head: String, omitted: usize },
+    /// Named but not readable, and why — missing, a directory, not UTF-8.
+    Unreadable(String),
 }
 
 impl GateCall<'_> {
@@ -1109,6 +1150,79 @@ impl ToolRuntime {
         self
     }
 
+    /// The scripts a `bash` call's command will run, read for the adjudicator.
+    ///
+    /// Empty for every other tool and for every command that names no script
+    /// file: `python3 -c` carries its program in the argv, which the brief
+    /// already renders verbatim.
+    ///
+    /// A file that cannot be read is reported as unreadable rather than skipped.
+    /// Silence would let the brief say nothing about a script that exists, which
+    /// reads to an adjudicator exactly like a command that runs no script at all
+    /// — and those are the two cases it most needs to tell apart.
+    fn scripts_of(&self, args: &Value) -> Vec<ScriptSource> {
+        let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
+            return Vec::new();
+        };
+        let n = letibot_code::shell::normalise(command);
+        let mut out: Vec<ScriptSource> = Vec::new();
+        for stage in &n.stages {
+            let letibot_code::shell::Word::Literal(program) = &stage.program else {
+                continue;
+            };
+            let argv: Vec<String> = stage
+                .argv
+                .iter()
+                .filter_map(|w| match w {
+                    letibot_code::shell::Word::Literal(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            let Some(path) = crate::intent::script_argument(program, &argv) else {
+                continue;
+            };
+            if out.iter().any(|s| s.path == path) {
+                continue;
+            }
+            out.push(ScriptSource {
+                body: self.read_script(&path),
+                path,
+            });
+        }
+        out
+    }
+
+    /// One script's bytes, bounded.
+    ///
+    /// The cap is its own number and larger than the 2 KiB an argument gets: an
+    /// argument preview exists so nobody is made to read a 40 KB file body to
+    /// approve a one-line edit, and this is the opposite case — the file body IS
+    /// the thing being judged. Past the cap the head is kept and the omission is
+    /// stated, so an adjudicator knows it is reading part of a program rather
+    /// than all of one.
+    fn read_script(&self, path: &str) -> ScriptBody {
+        const MAX: usize = 16_384;
+        match self.backend.read(path) {
+            Err(e) => ScriptBody::Unreadable(e.to_string()),
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Err(_) => ScriptBody::Unreadable(
+                    "not UTF-8 — a binary, or text in an encoding this cannot show".into(),
+                ),
+                Ok(text) if text.len() <= MAX => ScriptBody::Read(text),
+                Ok(text) => {
+                    let mut head = MAX;
+                    while head > 0 && !text.is_char_boundary(head) {
+                        head -= 1;
+                    }
+                    ScriptBody::Truncated {
+                        omitted: text.len() - head,
+                        head: text[..head].to_string(),
+                    }
+                }
+            },
+        }
+    }
+
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self
@@ -1180,6 +1294,10 @@ impl ToolRuntime {
                 .get("path")
                 .and_then(|v| v.as_str())
                 .map(|p| self.backend.stat(p).is_some());
+            // **The code an interpreter was handed.** Read here because this is
+            // where the backend is — and through the backend, so a confined
+            // session reads its own copy rather than the host's.
+            let scripts = self.scripts_of(&args);
             let gate_call = GateCall {
                 name: &schema.name,
                 access: schema.access,
@@ -1188,6 +1306,7 @@ impl ToolRuntime {
                 call_id: &call.id,
                 workspace: &workspace,
                 target_exists,
+                scripts: &scripts,
             };
             if let GateDecision::Refuse { outcome, tell } = self.gate.admit(&gate_call) {
                 let r =

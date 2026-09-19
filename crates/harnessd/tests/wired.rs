@@ -508,8 +508,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/home/dead/Projects/letibot",
-        target_exists: None,
-    });
+        target_exists: None, scripts: &[] });
     assert!(
         matches!(decision, GateDecision::Refuse { .. }),
         "a gate with nothing behind it must refuse"
@@ -580,8 +579,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         turn_id: "t1",
         call_id: "c2",
         workspace: "/home/dead/Projects/letibot",
-        target_exists: Some(false),
-    });
+        target_exists: Some(false), scripts: &[] });
     let adjudicable: Vec<(String, String)> = hub
         .retained()
         .into_iter()

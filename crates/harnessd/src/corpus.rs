@@ -299,7 +299,6 @@ mod shape_cache_tests {
             turn_id: "t#1",
             call_id: "c1",
             workspace,
-            target_exists: None,
-        }
+            target_exists: None, scripts: &[] }
     }
 }
