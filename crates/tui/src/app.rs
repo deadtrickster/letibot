@@ -97,6 +97,9 @@ pub enum Action {
         /// the daemon derives the pattern from the call, which is what every answer
         /// did before this existed.
         pattern: Option<String>,
+        /// **What to tell the model**, typed after `deny_and_tell`. The option's
+        /// label promised this and nothing carried it.
+        note: Option<String>,
     },
     Resync,
     /// Ask the daemon what sessions it holds.
@@ -3157,8 +3160,12 @@ impl App {
             option_id,
             // The ladder is the no-glob path by construction: there is nothing
             // typed to read one from. A glob is given by typing
-            // `allow_always <pattern>` on the line.
+            // `allow_always <pattern>` on the line, and a reason the same way
+            // with `deny_and_tell <why>` — a `deny_and_tell` taken from the
+            // ladder alone denies without a reason and says so, which is honest
+            // about what was actually given.
             pattern: None,
+            note: None,
         })
     }
 
@@ -3189,11 +3196,12 @@ impl App {
         // is how a permission arriving mid-typing turned Enter into "send the
         // half-thought" (the operator, 2026-09-17).
         if let Some(d) = self.open.first().cloned() {
-            if let Some((opt, pattern)) = match_option(&d, text.trim()) {
+            if let Some((opt, pattern, note)) = match_option(&d, text.trim()) {
                 return Some(Action::Answer {
                     req_id: d.req_id,
                     option_id: opt,
                     pattern,
+                    note,
                 });
             }
             self.set_composer(&text);
@@ -6033,6 +6041,21 @@ impl App {
             "  ↑↓ to choose · Enter to answer · or type the id"
         };
         out.push(colour(&self.cfg, sgr::YELLOW, hint));
+        // **The option that asks for words says where to type them.** Its label
+        // promised *"tell the model why"* and the card never said how — so the
+        // why was typed into the composer, refused by `match_option`, and left
+        // sitting there while nothing was answered.
+        if d
+            .options
+            .iter()
+            .any(|o| o.kind == letibot_sessionlog::event::OptionKind::RejectAlways)
+        {
+            out.push(colour(
+                &self.cfg,
+                sgr::YELLOW,
+                "  `deny_and_tell <why>` denies and sends those words to the model",
+            ));
+        }
         out
     }
 
@@ -6339,7 +6362,10 @@ impl App {
 /// somebody who wrote `allow_once src/**` meant the rule to cover `src/**`, and
 /// silently granting one call instead is the answer they did not give. Returning
 /// `None` leaves the line in the composer, where they can see it.
-fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>)> {
+fn match_option(
+    d: &OpenDecision,
+    typed: &str,
+) -> Option<(String, Option<String>, Option<String>)> {
     let line = typed.trim();
     let (word, rest) = match line.split_once(char::is_whitespace) {
         Some((w, r)) => (w, r.trim()),
@@ -6356,12 +6382,26 @@ fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>
                 .find(|o| o.option_id.to_ascii_lowercase().starts_with(&t) && !t.is_empty())
         })?;
     if rest.is_empty() {
-        return Some((id.option_id.clone(), None));
+        return Some((id.option_id.clone(), None, None));
     }
-    if id.kind != letibot_sessionlog::event::OptionKind::AllowAlways {
-        return None;
+    match id.kind {
+        // A glob, for the option that writes a rule.
+        letibot_sessionlog::event::OptionKind::AllowAlways => {
+            Some((id.option_id.clone(), Some(rest.to_string()), None))
+        }
+        // **The reason, for the option that promised one.** `deny_and_tell` is
+        // labelled *"Deny, and tell the model why"* and typing the why used to
+        // land here and be refused — the line stayed in the composer and nothing
+        // was answered at all. The operator: *"deny and tell doesnt work - there
+        // is no input for the 'tell' part"*.
+        letibot_sessionlog::event::OptionKind::RejectAlways => {
+            Some((id.option_id.clone(), None, Some(rest.to_string())))
+        }
+        // Everything else refuses trailing words rather than dropping them:
+        // somebody who typed them meant them, and answering as though they had
+        // not is the answer they did not give.
+        _ => None,
     }
-    Some((id.option_id.clone(), Some(rest.to_string())))
 }
 
 /// The row a `ToolStarted` / `ToolProgress` / `ToolFinished` is about: the
@@ -8430,16 +8470,16 @@ mod tests {
         // The bare id still answers, and asks for no pattern.
         assert_eq!(
             match_option(&d, "allow_once"),
-            Some(("allow_once".into(), None))
+            Some(("allow_once".into(), None, None))
         );
         // A prefix still answers, which is how people actually type.
-        assert_eq!(match_option(&d, "d"), Some(("deny".into(), None)));
+        assert_eq!(match_option(&d, "d"), Some(("deny".into(), None, None)));
 
         // And the glob rides after it, verbatim: a pattern is a path, so it is not
         // lowercased the way the option id is.
         assert_eq!(
             match_option(&d, "allow_always crates/**/Cargo.toml"),
-            Some(("allow_always".into(), Some("crates/**/Cargo.toml".into())))
+            Some(("allow_always".into(), Some("crates/**/Cargo.toml".into()), None))
         );
 
         // **A glob on anything but `allow_always` is refused, not dropped.**
@@ -8448,6 +8488,68 @@ mod tests {
         // the line in the composer where they can see it.
         assert_eq!(match_option(&d, "allow_once src/**"), None);
         assert_eq!(match_option(&d, "deny src/**"), None);
+    }
+
+    /// **`deny_and_tell` can be told something.** Its label is *"Deny, and tell
+    /// the model why"* and nothing carried the why: the head had no field, the
+    /// wire had no field, and typing it was REFUSED by `match_option` — the line
+    /// stayed in the composer and nothing was answered at all. The operator:
+    /// *"deny and tell doesnt work - there is no input for the 'tell' part"*.
+    #[test]
+    fn deny_and_tell_carries_the_operators_words() {
+        use letibot_sessionlog::event::OptionKind;
+        let d = decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::AllowAlways,
+            OptionKind::RejectAlways,
+        ]);
+
+        // Keyed on the KIND, not the id: the daemon calls this option
+        // `deny_and_tell` and this fixture calls it `deny_always`, and the rule
+        // is about the option that writes a standing refusal either way.
+        //
+        // The words ride after the id, verbatim — a sentence for a reader, so it
+        // is not lowercased the way the option id is.
+        assert_eq!(
+            match_option(&d, "deny_always Use the scratch dir, not /tmp."),
+            Some((
+                "deny_always".into(),
+                None,
+                Some("Use the scratch dir, not /tmp.".into())
+            ))
+        );
+        // Bare still answers, and carries nothing rather than claiming a reason.
+        assert_eq!(
+            match_option(&d, "deny_always"),
+            Some(("deny_always".into(), None, None))
+        );
+        // The two trailing-word options do not borrow each other's field: a glob
+        // is a rule and a reason is a sentence, and putting one where the other
+        // goes would be a rule nobody wrote or a sentence nobody reads.
+        assert_eq!(
+            match_option(&d, "allow_always src/**"),
+            Some(("allow_always".into(), Some("src/**".into()), None))
+        );
+        // And everything else still refuses trailing words rather than dropping
+        // them.
+        assert_eq!(match_option(&d, "allow_once because I said so"), None);
+
+        // The card says where to type it, which it never did.
+        let a = app();
+        assert!(
+            a.decision_lines(&d, 100)
+                .iter()
+                .any(|l| l.contains("`deny_and_tell <why>`")),
+            "{:?}",
+            a.decision_lines(&d, 100)
+        );
+        let plain = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        assert!(
+            !a.decision_lines(&plain, 100)
+                .iter()
+                .any(|l| l.contains("deny_and_tell")),
+            "and only when the option is on offer"
+        );
     }
 
     /// The hint only appears when the option it describes is on offer.
@@ -10167,8 +10269,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: opts[0].clone(),
-                pattern: None
-            })
+                pattern: None, note: None })
         );
 
         // Down moves one, and the answer follows the marker rather than the order the
@@ -10181,8 +10282,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r2".into(),
                 option_id: opts[1].clone(),
-                pattern: None
-            })
+                pattern: None, note: None })
         );
 
         // Up from the top wraps to the bottom rather than sticking, so the last option
@@ -10195,8 +10295,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r3".into(),
                 option_id: opts[opts.len() - 1].clone(),
-                pattern: None
-            })
+                pattern: None, note: None })
         );
     }
 
@@ -10223,8 +10322,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "allow".into(),
-                pattern: None
-            })
+                pattern: None, note: None })
         );
         assert_eq!(a.input(), "some prose", "the words are held, not sent");
         assert!(a.pending_prompts.is_empty(), "nothing was sent");
@@ -10243,8 +10341,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "deny".into(),
-                pattern: None
-            })
+                pattern: None, note: None })
         );
         assert_eq!(a.input(), "", "the typed id is consumed, not held");
     }
@@ -10294,8 +10391,7 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "deny".into(),
-                pattern: None
-            }),
+                pattern: None, note: None }),
             "row 2 of the ask is `deny`"
         );
 

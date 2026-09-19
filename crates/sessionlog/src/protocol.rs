@@ -480,6 +480,19 @@ pub enum ClientFrame {
         // to keep. `default` still lets an older head's frame parse.
         #[serde(default)]
         pattern: Option<String>,
+        /// **What the operator wants the model told**, for `deny_and_tell`.
+        ///
+        /// Meaningful only for that option, and ignored on the others for
+        /// `pattern`'s reason: a note attached to an `allow_once` would be a
+        /// sentence nobody reads, and attaching it silently is worse than
+        /// dropping it.
+        ///
+        /// No `PROTOCOL_VERSION` bump, by the same argument written above: an
+        /// added, defaulted field on an existing client frame. An older daemon
+        /// ignores it — the denial still lands, without the reason, which is
+        /// exactly what happened before this existed.
+        #[serde(default)]
+        note: Option<String>,
     },
     /// Answer an open **question**: a choice, a note on that choice, a typed reply,
     /// or a choice and a note together (§D10). Added at `PROTOCOL_VERSION` 5.
@@ -851,8 +864,7 @@ mod tests {
                 option_id: "allow_once".into(),
                 // The round trip must cover the glob too: an added field that is
                 // never exercised is an added field that silently stops encoding.
-                pattern: Some("crates/**/*.rs".into()),
-            },
+                pattern: Some("crates/**/*.rs".into()), note: None },
             ClientFrame::ListSessions,
             ClientFrame::ListTodos,
             ClientFrame::NewSession {

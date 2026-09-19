@@ -149,6 +149,18 @@ pub enum Reply {
         /// `None` means *use the pattern derived from the call*, which is what
         /// every head did before this existed — never *match nothing*.
         pattern: Option<String>,
+        /// **What the operator wants the model told**, for `deny_and_tell`.
+        ///
+        /// That option's label has always been *"Deny, and tell the model why"*
+        /// and nothing carried the why: the head had no field for it, the wire
+        /// had no field for it, and no code anywhere branched on the id. The
+        /// operator: *"deny and tell doesnt work - there is no input for the
+        /// 'tell' part"*. It was a label for a feature that was never built.
+        ///
+        /// `None` on every other option, and on a `deny_and_tell` answered from
+        /// the ladder with nothing typed — which then reads as a plain denial
+        /// and says so, rather than claiming a reason was given.
+        note: Option<String>,
     },
     /// A person's answer to a question: a choice, a note on it, or typed text
     /// (`PROTOCOL_VERSION` 5). Deliberately **not** expressed with
@@ -1248,8 +1260,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None,
-                },
+                    pattern: None, note: None },
             },
         );
         assert!(matches!(
@@ -1318,8 +1329,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None,
-                },
+                    pattern: None, note: None },
             },
         );
         assert!(
@@ -1392,8 +1402,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None,
-                },
+                    pattern: None, note: None },
             },
         );
         assert!(matches!(f, ServerFrame::Accepted { .. }), "{f:?}");
@@ -1440,8 +1449,7 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None,
-                },
+                    pattern: None, note: None },
             },
         );
         let cmd = hub.try_command().expect("queued as before");
@@ -1481,8 +1489,7 @@ mod tests {
                 req_id: "r2".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None,
-                },
+                    pattern: None, note: None },
             },
         );
         assert!(

@@ -325,13 +325,31 @@ fn settle(req: &AdjudicationRequest, reply: &Reply, by: &str, latency_ms: u64) -
         // The glob is not read here. `settle` builds the decision, and a pattern is
         // not part of one — it is what the answer said to do with the RULE, and only
         // `AllowAlways` writes one. `Answers::take_pattern` is where it is picked up.
-        Reply::Permission { option_id, .. } => AdjudicationDecision {
+        Reply::Permission { option_id, note, .. } => AdjudicationDecision {
             request_id: req.id.clone(),
             outcome: DecisionOutcome::Selected {
                 option_id: option_id.clone(),
             },
             by: format!("human:{by}"),
-            basis: format!("{by} chose `{option_id}` at the head"),
+            // **The operator's own words reach the model.** `deny_and_tell` is
+            // labelled *"Deny, and tell the model why"*, and the why went nowhere:
+            // the basis said only which button was pressed. It is the basis now,
+            // which is what the refusal notice puts in front of the model and what
+            // the corpus row keeps.
+            //
+            // Quoted rather than paraphrased, and attributed — a sentence the
+            // model reads as the harness's own reasoning is a sentence it will
+            // argue with; one it reads as the operator's is an instruction.
+            basis: match note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                Some(why) => format!("{by} chose `{option_id}` at the head: \"{why}\""),
+                // A `deny_and_tell` with nothing typed is a denial with no reason
+                // given, and says so rather than implying one was.
+                None if option_id == "deny_and_tell" => format!(
+                    "{by} chose `{option_id}` at the head, without saying why — the \
+                     reason is typed after the option id, as `deny_and_tell <why>`"
+                ),
+                None => format!("{by} chose `{option_id}` at the head"),
+            },
             latency_ms,
         },
         // Not the person's decision: nobody chose an option. `by` says who
@@ -631,7 +649,7 @@ mod tests {
     use letibot_sessionlog::protocol::Caps;
     use letibot_sessionlog::view::OpenDecision;
 
-    fn request() -> AdjudicationRequest {
+    pub(super) fn request() -> AdjudicationRequest {
         use letibot_tools::adjudicate::{ActionClass, Tier};
         use letibot_tools::schema::Access;
         AdjudicationRequest {
@@ -713,8 +731,7 @@ mod tests {
                             req_id: d.req_id.clone(),
                             reply: Reply::Permission {
                                 option_id: "allow_once".into(),
-                                pattern: None,
-                            },
+                                pattern: None, note: None },
                         },
                     );
                     return true;
@@ -1001,8 +1018,7 @@ mod tests {
             "alice",
             &Reply::Permission {
                 option_id: "allow_once".into(),
-                pattern: None
-            }
+                pattern: None, note: None }
         ));
     }
 
@@ -1090,8 +1106,7 @@ mod tests {
             "deadtrickster",
             &Reply::Permission {
                 option_id: "allow_once".into(),
-                pattern: None,
-            },
+                pattern: None, note: None },
         ));
         // And now the wait begins. It must find the answer, not overwrite it —
         // and must not spend the budget doing so.
@@ -1111,5 +1126,68 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "it returned immediately rather than waiting out the budget"
         );
+    }
+}
+
+#[cfg(test)]
+mod tell_tests {
+    use super::*;
+
+    /// **The operator's words reach the model.** `deny_and_tell` is labelled
+    /// *"Deny, and tell the model why"* and the why went nowhere: the basis said
+    /// only which button was pressed, so a refusal with a reason and one without
+    /// were the same sentence.
+    #[test]
+    fn a_told_denial_carries_the_reason_and_an_untold_one_says_it_has_none() {
+        let r = tests::request();
+        let told = settle(
+            &r,
+            &Reply::Permission {
+                option_id: "deny_and_tell".into(),
+                pattern: None,
+                note: Some("  use the scratch dir, not /tmp  ".into()),
+            },
+            "deadtrickster",
+            10,
+        );
+        // Quoted and attributed: a sentence the model reads as the harness's own
+        // reasoning is one it will argue with; one it reads as the operator's is
+        // an instruction. Trimmed, because the words were typed at a prompt.
+        assert!(
+            told.basis.contains("\"use the scratch dir, not /tmp\""),
+            "{}",
+            told.basis
+        );
+        assert!(told.basis.contains("deadtrickster"), "{}", told.basis);
+
+        // Nothing typed is a denial with no reason, and says so rather than
+        // implying one was given — and names how to give one.
+        for empty in [None, Some("   ".to_string())] {
+            let untold = settle(
+                &r,
+                &Reply::Permission {
+                    option_id: "deny_and_tell".into(),
+                    pattern: None,
+                    note: empty,
+                },
+                "deadtrickster",
+                10,
+            );
+            assert!(untold.basis.contains("without saying why"), "{}", untold.basis);
+            assert!(untold.basis.contains("deny_and_tell <why>"), "{}", untold.basis);
+        }
+
+        // Every other option is unchanged: this is about the one that asked.
+        let plain = settle(
+            &r,
+            &Reply::Permission {
+                option_id: "allow_once".into(),
+                pattern: None,
+                note: None,
+            },
+            "deadtrickster",
+            10,
+        );
+        assert_eq!(plain.basis, "deadtrickster chose `allow_once` at the head");
     }
 }

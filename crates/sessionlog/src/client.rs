@@ -281,7 +281,7 @@ impl HeadClient {
 
     /// Grant or deny an open **permission**, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
-        self.answer_with(req_id, option_id, None)
+        self.answer_with(req_id, option_id, None, None)
     }
 
     /// The same, with the operator's own glob for an *always allow*.
@@ -295,6 +295,7 @@ impl HeadClient {
         req_id: &str,
         option_id: &str,
         pattern: Option<&str>,
+        note: Option<&str>,
     ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Answer {
@@ -302,6 +303,7 @@ impl HeadClient {
             req_id: req_id.to_string(),
             option_id: option_id.to_string(),
             pattern: pattern.map(str::to_string),
+            note: note.map(str::to_string),
         })?;
         Ok(client_request_id)
     }
