@@ -164,7 +164,7 @@ impl MessagesBackend for OpenAiProvider {
             return Err(BackendError::Aborted);
         }
         let wall_ms = started.elapsed().as_millis() as u64;
-        Ok(acc.finish(&self.model, &self.creds, wall_ms))
+        Ok(acc.finish(&self.model, &self.creds, wall_ms, self.preset))
     }
 }
 
@@ -251,7 +251,13 @@ impl Accumulator {
         out
     }
 
-    fn finish(self, model: &str, creds: &Credentials, wall_ms: u64) -> Completion {
+    fn finish(
+        self,
+        model: &str,
+        creds: &Credentials,
+        wall_ms: u64,
+        preset: &'static crate::presets::Preset,
+    ) -> Completion {
         let u = self.usage.as_ref();
         let get = |k: &str| {
             u.and_then(|u| u.get(k))
@@ -270,9 +276,28 @@ impl Accumulator {
                     .and_then(|v| v.as_u64())
             })
             .unwrap_or(0);
+        // **The operator's file first, then the catalogue.**
+        //
+        // `providers.toml` prices `deepseek-chat`, which is a model DeepSeek has
+        // retired — so every turn on `deepseek-flash` reported `cost unpriced`,
+        // and the operator watching a metered conversation: *"also no money
+        // meter"*. A hand-maintained table goes stale exactly where a default
+        // model does, and for the same reason.
+        //
+        // The file still wins where it has an entry, because that is the
+        // operator's own number and they may be on a contract price. Absent one,
+        // models.dev has the published rate, which is a better answer than
+        // "unpriced" — and "unpriced" stays the answer when NEITHER has it, since
+        // unpriced and free are different.
         let micros_usd = creds
             .prices
             .get(model)
+            .copied()
+            .or_else(|| {
+                crate::catalogue::Catalogue::load()
+                    .model(preset.catalogue_id, model)
+                    .and_then(|m| m.prices)
+            })
             .map(|p| p.micros(prompt_tokens, cached_tokens, generated_tokens));
         let tool_calls = self
             .calls
@@ -342,7 +367,7 @@ mod tests {
                 output: 2.0,
             },
         );
-        let done = a.finish("m", &creds, 12);
+        let done = a.finish("m", &creds, 12, &crate::presets::DEEPSEEK);
         assert_eq!(done.text, "Hello");
         assert_eq!(done.reasoning, "hm");
         assert_eq!(done.tool_calls.len(), 1);
@@ -362,7 +387,7 @@ mod tests {
         };
         assert_eq!(
             Accumulator::default()
-                .finish("m", &creds2, 0)
+                .finish("m", &creds2, 0, &crate::presets::DEEPSEEK)
                 .cost
                 .micros_usd,
             None
