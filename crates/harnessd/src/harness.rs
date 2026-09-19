@@ -2603,6 +2603,84 @@ impl<'a> Harness<'a> {
         }
     }
 
+    /// The jobs this session has started, one line each, for `/job` with no
+    /// argument. The pane draws the same facts; this is for reading them without
+    /// leaving the composer, and for finding an id to pass to `/job ID`.
+    pub fn job_lines(&self) -> Vec<String> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return vec!["this session has no process host, so it has no jobs".into()];
+        };
+        let jobs = host.jobs();
+        if jobs.is_empty() {
+            return vec!["no jobs. The model backgrounds a command with bash's `background: true`; ctrl-o moves the running one.".into()];
+        }
+        let mut out = vec![format!("{} job(s) this session has started.", jobs.len())];
+        out.push(String::new());
+        for j in &jobs {
+            out.push(format!(
+                "  {}  {}  {} bytes  {}",
+                j.id.0,
+                j.state.word(),
+                j.produced,
+                j.command.chars().take(60).collect::<String>()
+            ));
+        }
+        out.push(String::new());
+        out.push("`/job ID` reads what one wrote.".into());
+        out
+    }
+
+    /// **A background job's retained output, for the operator not the model.**
+    ///
+    /// The jobs pane lists what is running and how many bytes it produced, and
+    /// until now that was all: the only way to read the bytes it was counting was
+    /// to ask the model to call `job_output`. The operator, looking straight at
+    /// the row: *"i go to jobs panel and no way to get job output"*.
+    ///
+    /// The same read `job_output` does — `ProcessHost::output` over the capture
+    /// ring — reached by a slash reply rather than a tool call, so it needs no new
+    /// protocol frame and no version bump.
+    pub fn job_output(&self, job: &str, offset: u64, limit: usize) -> Result<Vec<String>, String> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return Err("this session has no process host, so it has no jobs".into());
+        };
+        let jid = letibot_tools::exec::JobId(job.to_string());
+        let Some(view) = host.job(&jid) else {
+            return Err(format!("no job `{job}` here; `/job` with no argument lists them"));
+        };
+        let slice = host.output(&jid, offset, limit).map_err(|e| e.to_string())?;
+
+        // A job that has written nothing is not an empty answer about its output:
+        // whether it is still running decides what the silence means. The same
+        // distinction `job_output` draws, in the same words.
+        if slice.produced == 0 {
+            return Ok(vec![if view.state.is_running() {
+                format!("`{job}` is still running and has written nothing yet.")
+            } else {
+                format!("`{job}` {} and wrote nothing at all.", view.state.word())
+            }]);
+        }
+
+        let mut out: Vec<String> = slice.text().lines().map(str::to_string).collect();
+        out.push(String::new());
+        out.push(format!(
+            "[{} — bytes {}..{} of {} produced{}]",
+            view.state.word(),
+            slice.from,
+            slice.to,
+            slice.produced,
+            if slice.dropped > 0 {
+                format!(", {} dropped off the front", slice.dropped)
+            } else {
+                String::new()
+            }
+        ));
+        if slice.to < slice.produced {
+            out.push(format!("more: /job {job} --offset {}", slice.to));
+        }
+        Ok(out)
+    }
+
     /// What answers this session's turns right now, for `/models`.
     pub fn provider_line(&self) -> String {
         match &self.provider {
