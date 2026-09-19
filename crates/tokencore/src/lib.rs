@@ -52,6 +52,13 @@ pub use control::{
 pub use ledger::{LedgerRow, PromptSpan, TokenLedger, chain, hash_tokens};
 pub use region::TokenRegion;
 pub use store::{SessionRecord, StablePrefixRecord, Store};
+/// **The SQL driver, re-exported.** `Store::connection` already hands out a
+/// `&rusqlite::Connection`, so the type is public API here whether or not the
+/// name is. A caller that needs to write a query against it — the daemon's
+/// corpus reader does — would otherwise take its own `rusqlite` dependency, and
+/// two versions of it in one tree makes `&Connection` and `&Connection` two
+/// unrelated types with one spelling.
+pub use rusqlite;
 pub use vocab::{ResolveCause, TokenId, Vocab};
 
 #[cfg(test)]

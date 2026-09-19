@@ -33,6 +33,7 @@
 //! is about to change.
 
 pub mod bash;
+pub mod decisions;
 pub mod digest;
 pub mod edit;
 pub mod external;
