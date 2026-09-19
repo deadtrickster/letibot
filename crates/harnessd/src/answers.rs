@@ -391,28 +391,47 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
 
 /// The `DecisionAnswered` that takes it off the head's screen, however it ended.
 fn close(req: &AdjudicationRequest, d: &AdjudicationDecision) -> SessionEvent {
-    let (outcome, kind) = match &d.outcome {
-        DecisionOutcome::Selected { option_id } => (
-            WireOutcome::Selected {
-                option_id: option_id.clone(),
-            },
-            "human",
-        ),
-        DecisionOutcome::Timeout => (WireOutcome::TimedOut, "timeout"),
+    let outcome = match &d.outcome {
+        DecisionOutcome::Selected { option_id } => WireOutcome::Selected {
+            option_id: option_id.clone(),
+        },
+        DecisionOutcome::Timeout => WireOutcome::TimedOut,
         // `Escalate` and `Unavailable` are not outcomes the wire has, and the honest
         // mapping is `Cancelled`: the request is off the screen and nobody selected
         // anything. The `basis` carries which it was.
-        _ => (WireOutcome::Cancelled, "boundary"),
+        _ => WireOutcome::Cancelled,
     };
     SessionEvent::DecisionAnswered {
         req_id: req.id.clone(),
         outcome,
-        by: Decider {
-            kind: kind.into(),
-            identity: d.by.clone(),
-        },
+        // **The decider says who it is; this does not guess.** `d.by` is already
+        // `kind:identity` — `human:dead`, `model:qwen-3.8-27b`, `gate:timeout` —
+        // so it is split rather than re-derived.
+        //
+        // It used to be derived from the OUTCOME, which made every `Selected` a
+        // `human` whoever chose it, and put the whole `human:dead` into `identity`
+        // besides — so a head drew `by human human:dead`, and a decision an oracle
+        // selected drew `by human` over a model's id. Two wrong facts from one
+        // guess about a field that was carrying the answer all along.
+        by: split_decider(&d.by),
         basis: d.basis.clone(),
         late: false,
+    }
+}
+
+/// `kind:identity` into its two halves. A `by` with no colon is all kind and no
+/// identity — `gate:timeout` has one, a bare `subagent` does not — and an empty
+/// identity renders as nothing rather than as an empty quoted name.
+fn split_decider(by: &str) -> Decider {
+    match by.split_once(':') {
+        Some((kind, identity)) => Decider {
+            kind: kind.to_string(),
+            identity: identity.to_string(),
+        },
+        None => Decider {
+            kind: by.to_string(),
+            identity: String::new(),
+        },
     }
 }
 
@@ -989,5 +1008,52 @@ mod tests {
         let req = request();
         adj.decide(&req);
         assert_eq!(adj.last_brief().as_deref(), Some(req.brief().as_str()));
+    }
+
+    /// **The decider is read, not guessed.** `close` used to derive the kind from
+    /// the OUTCOME — every `Selected` was `human` whoever chose it — and put the
+    /// whole `human:dead` into `identity` besides, so a head drew `by human
+    /// human:dead` and an oracle's own admission drew `by human` over a model id.
+    #[test]
+    fn a_decider_is_split_into_its_kind_and_its_identity() {
+        for (by, kind, identity) in [
+            ("human:dead", "human", "dead"),
+            ("model:qwen-3.8-27b", "model", "qwen-3.8-27b"),
+            ("boundary:flow", "boundary", "flow"),
+            ("gate:timeout", "gate", "timeout"),
+        ] {
+            let d = split_decider(by);
+            assert_eq!(d.kind, kind, "{by}");
+            assert_eq!(d.identity, identity, "{by}");
+        }
+        // No colon: all kind, no identity — and the head renders the kind alone
+        // rather than a name that is not there.
+        let d = split_decider("subagent");
+        assert_eq!(d.kind, "subagent");
+        assert!(d.identity.is_empty());
+    }
+
+    /// An oracle that decided alone is reported as a model, not as a person. The
+    /// outcome is `Selected` either way, which is exactly why the outcome cannot
+    /// be what names the decider.
+    #[test]
+    fn an_oracle_that_selected_is_not_reported_as_a_human() {
+        let req = request();
+        let d = AdjudicationDecision {
+            request_id: req.id.clone(),
+            outcome: DecisionOutcome::Selected {
+                option_id: "allow_once".into(),
+            },
+            by: "model:glm-5.3-flash".into(),
+            basis: "the operator asked for this in the same turn".into(),
+            latency_ms: 40,
+        };
+        match close(&req, &d) {
+            SessionEvent::DecisionAnswered { by, .. } => {
+                assert_eq!(by.kind, "model");
+                assert_eq!(by.identity, "glm-5.3-flash");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

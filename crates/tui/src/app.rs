@@ -1846,15 +1846,17 @@ impl App {
                 basis,
                 late,
             } => {
-                // The `call_id` is read off the open decision **before** it is
-                // removed, because the answer event carries only the `req_id` and the
-                // head needs the call to put the outcome on the call's card rather
-                // than as a stray note.
-                let (summary, call_id) = self
+                // Three things are read off the open decision **before** it is
+                // removed, because the answer event carries only the `req_id`: the
+                // summary, the call to put the outcome on, and the oracle's advice.
+                // The last is the one the answer event can never carry — its `basis`
+                // is the DECIDER's, and under `/supervise` the decider is usually the
+                // operator.
+                let (summary, call_id, advice) = self
                     .open
                     .iter()
                     .find(|d| d.req_id == req_id)
-                    .map(|d| (d.summary.clone(), d.call_id.clone()))
+                    .map(|d| (d.summary.clone(), d.call_id.clone(), d.advice.clone()))
                     .unwrap_or_default();
                 self.open.retain(|d| d.req_id != req_id);
                 let d = SettledDecision {
@@ -1864,6 +1866,7 @@ impl App {
                     outcome,
                     by,
                     basis,
+                    advice,
                     late,
                 };
                 // A permission settles on the call it gated: the approval is a fact
@@ -6573,15 +6576,8 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             &format!("· {word}, by {who}"),
         ));
         if fold.is_open() {
-            if !d.summary.is_empty() {
-                for l in wrap(&format!("  asked: {}", d.summary), cfg.width.saturating_sub(2)) {
-                    body.push(cfg.palette().paint(Role::Faint, &l));
-                }
-            }
-            if !d.basis.is_empty() {
-                for l in wrap(&format!("  oracle: {}", d.basis), cfg.width.saturating_sub(2)) {
-                    body.push(cfg.palette().paint(Role::Faint, &l));
-                }
+            for l in decision_detail(d, cfg.width.saturating_sub(4)) {
+                body.push(cfg.palette().paint(Role::Faint, &format!("  {l}")));
             }
         }
     }
@@ -7056,16 +7052,58 @@ fn decision_lines(
     };
     out.push(p.paint(Role::Faint, &format!("  · {word}, by {who}")));
     if tools.is_open() {
-        if !d.summary.is_empty() {
-            for l in wrap(&format!("asked: {}", d.summary), w.saturating_sub(4)) {
-                out.push(p.paint(Role::Faint, &format!("    {l}")));
+        for l in decision_detail(d, w.saturating_sub(4)) {
+            out.push(p.paint(Role::Faint, &format!("    {l}")));
+        }
+    }
+    out
+}
+
+/// **The two reasons a settled decision carries, labelled as whose they are.**
+///
+/// `basis` is the DECIDER's — for an operator answer, `dead chose `allow_once` at
+/// the head`. `advice` is the guard model's, and only exists when one was
+/// consulted. They used to be one line, rendered as `oracle: {basis}`, which under
+/// `/supervise` printed the operator's own words under the oracle's name.
+///
+/// One function so the card and the settled row cannot label them differently.
+/// Returns wrapped, unpainted lines; each caller indents and paints its own way.
+fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if !d.summary.is_empty() {
+        out.extend(wrap(&format!("asked: {}", d.summary), w));
+    }
+    if !d.basis.is_empty() {
+        // Named by the decider's own kind, so "decided:" never stands in for a
+        // model when a person chose, or the reverse.
+        let who = if d.by.kind.is_empty() { "decided" } else { &d.by.kind };
+        out.extend(wrap(&format!("{who}: {}", d.basis), w));
+    }
+    match &d.advice {
+        Some(a) => {
+            out.extend(wrap(
+                &format!("oracle ({}, {}ms) would {}: {}", a.by, a.latency_ms, a.would, a.basis),
+                w,
+            ));
+            // **Empty cites is loud.** An authorisation the oracle could not ground
+            // in anything the operator said is a different fact from one it grounded
+            // in four utterances, and rendering nothing for the first makes them
+            // look the same.
+            if a.cites.is_empty() {
+                out.extend(wrap(
+                    "oracle cited: nothing — it could not ground this in anything you said",
+                    w,
+                ));
+            } else {
+                for c in &a.cites {
+                    out.extend(wrap(&format!("oracle cited: {c}"), w));
+                }
             }
         }
-        if !d.basis.is_empty() {
-            for l in wrap(&format!("oracle: {}", d.basis), w.saturating_sub(4)) {
-                out.push(p.paint(Role::Faint, &format!("    {l}")));
-            }
-        }
+        // Said out loud rather than left blank: "no oracle was asked" and "an
+        // oracle was asked and said nothing" are different, and a blank looks
+        // like the second.
+        None => out.extend(wrap("no oracle was consulted for this one", w)),
     }
     out
 }
@@ -8226,7 +8264,117 @@ mod tests {
         assert!(!folded.contains("oracle:"), "folded shows no reply: {folded}");
         let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
         assert!(open.contains("asked: run rm -rf"), "{open}");
-        assert!(open.contains("oracle: the operator asked for this"), "{open}");
+        // The basis is labelled by whoever DECIDED — here a model — and never as
+        // the oracle's, which it is not. No oracle advised this one, and the card
+        // says so rather than leaving a blank that reads like silence.
+        assert!(open.contains("model: the operator asked for this"), "{open}");
+        assert!(open.contains("no oracle was consulted"), "{open}");
+    }
+
+    /// **The bug this labelling was built for.** Under `/supervise` the oracle
+    /// advises and the OPERATOR answers, so the decision carries two reasons: the
+    /// operator's (`basis`) and the guard model's (`advice`). They were one line,
+    /// rendered as `oracle: {basis}` — which printed the operator's own words
+    /// under the oracle's name, a lie that reads exactly like the truth.
+    #[test]
+    fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        // The ask, carrying the oracle's verdict the way `/supervise` poses it.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::DecisionRequested {
+                req_id: "r1".into(),
+                kind: "permission".into(),
+                call_id: Some("c1".into()),
+                summary: "run rm -rf build/".into(),
+                target: String::new(),
+                detail: String::new(),
+                options: Vec::new(),
+                choices: Vec::new(),
+                because: String::new(),
+                advice: Some(letibot_sessionlog::event::ModelAdvice {
+                    would: "admit".into(),
+                    by: "glm-5.3-flash".into(),
+                    basis: "the operator asked for a clean rebuild in this turn".into(),
+                    cites: vec!["rebuild it from scratch".into()],
+                    latency_ms: 2_100,
+                }),
+                deadline: None,
+                on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
+            },
+        )));
+        // The operator answers it themselves.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::DecisionAnswered {
+                req_id: "r1".into(),
+                outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                    option_id: "allow_once".into(),
+                },
+                by: letibot_sessionlog::event::Decider {
+                    kind: "human".into(),
+                    identity: "dead".into(),
+                },
+                basis: "dead chose `allow_once` at the head".into(),
+                late: false,
+            },
+        )));
+
+        let t = a.turn.as_ref().expect("a turn");
+        let c = t.calls.iter().find(|c| c.call_id == "c1").expect("the call");
+        let d = c.decision.as_ref().expect("the decision");
+        // The advice survived the settle. It used to be dropped here.
+        assert!(d.advice.is_some(), "the oracle's reply was carried across");
+
+        let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
+        assert!(open.contains("allowed, by human dead"), "{open}");
+        // The operator's own words, under the operator's name.
+        assert!(
+            open.contains("human: dead chose `allow_once` at the head"),
+            "{open}"
+        );
+        // The oracle's, under the oracle's, with what it would have done and what
+        // it grounded that in.
+        assert!(open.contains("oracle (glm-5.3-flash, 2100ms) would admit"), "{open}");
+        assert!(open.contains("clean rebuild in this turn"), "{open}");
+        assert!(open.contains("oracle cited: rebuild it from scratch"), "{open}");
+        // And the thing that must never happen again.
+        assert!(
+            !open.contains("oracle (glm-5.3-flash, 2100ms) would admit: dead chose"),
+            "the operator's words are never the oracle's: {open}"
+        );
+    }
+
+    /// An oracle that grounded its verdict in nothing is a different fact from one
+    /// that cited four utterances, and a blank makes them look the same.
+    #[test]
+    fn an_oracle_that_cited_nothing_says_so_loudly() {
+        let d = SettledDecision {
+            req_id: "r1".into(),
+            call_id: Some("c1".into()),
+            summary: "run it".into(),
+            outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                option_id: "allow".into(),
+            },
+            by: letibot_sessionlog::event::Decider {
+                kind: "human".into(),
+                identity: "dead".into(),
+            },
+            basis: "dead chose `allow` at the head".into(),
+            advice: Some(letibot_sessionlog::event::ModelAdvice {
+                would: "admit".into(),
+                by: "glm".into(),
+                basis: "it looks routine".into(),
+                cites: Vec::new(),
+                latency_ms: 40,
+            }),
+            late: false,
+        };
+        let lines = decision_detail(&d, 200).join("\n");
+        assert!(lines.contains("oracle cited: nothing"), "{lines}");
+        assert!(lines.contains("could not ground this"), "{lines}");
     }
 
     /// The approval is a fact about the call, and the call outlives the live card:
@@ -8307,7 +8455,10 @@ mod tests {
         a.invalidate_history();
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("asked: run rm -rf"), "{screen}");
-        assert!(screen.contains("oracle: the operator asked for this"), "{screen}");
+        // Labelled by the decider — a model chose this one — and never as the
+        // oracle's, which nothing here was.
+        assert!(screen.contains("model: the operator asked for this"), "{screen}");
+        assert!(screen.contains("no oracle was consulted"), "{screen}");
     }
 
     #[test]
