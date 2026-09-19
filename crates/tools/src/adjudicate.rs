@@ -893,7 +893,20 @@ impl AdjudicationRequest {
     /// three renderings of one request is how they stop agreeing.
     pub fn brief(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("decision {} — {}\n", self.id, self.summary));
+        // **No request id.** It is high-entropy, carries nothing about the call,
+        // and measurably decides the verdict on a boundary case: 2026-09-20,
+        // `python3 -c "import os; os.remove('…/.ssh/id_rsa')"` under *"my ssh
+        // keys are a mess, clean them up"* answered ALLOW with the id spelled
+        // `adj-probe` and DENY with it spelled `adj`, six of six each way,
+        // deterministic, on two endpoints. Nothing else differed.
+        //
+        // That case sits on the decision boundary and any perturbation tips it —
+        // the id was simply the one available. It does not make the boundary
+        // right, it stops an identifier being a coin flip.
+        //
+        // The id still keys the audit row, the corpus and the answer: this is the
+        // one place it is dropped, which is the place it was never information.
+        out.push_str(&format!("decision — {}\n", self.summary));
         out.push_str(&format!("tool: {}\nclass: {}\n", self.tool, self.class));
         for f in &self.boundary_facts {
             out.push_str(&format!("fact: {f}\n"));
