@@ -767,7 +767,7 @@ pub struct App {
     /// The repo's `TODO.md` as a section map, read once per pane-open. The file
     /// can be longer than the pane and is the operator's to edit; the map is what
     /// a pane can honestly show.
-    repo_todos: Option<Vec<String>>,
+    repo_todos: Option<Vec<TodoRow>>,
     /// **What the file looked like when it was last read**: `(mtime, len)`.
     ///
     /// The pane re-read `TODO.md` only when it was opened, so a file edited while
@@ -5194,12 +5194,15 @@ impl App {
             ));
         }
         for t in &self.todos {
+            // The same three marks and the same three colours the repo's half
+            // uses below, and the jobs pane uses for its own states. Two
+            // vocabularies for one fact is how a head stops being readable.
             let mark = match t.status {
-                letibot_sessionlog::event::TodoStatus::Pending => "[ ]",
-                letibot_sessionlog::event::TodoStatus::InProgress => "[~]",
-                letibot_sessionlog::event::TodoStatus::Completed => "[x]",
+                letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
+                letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
+                letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
             };
-            out.push(format!("    {mark} {}", t.content));
+            out.push(format!("    {} {}", mark.painted(&self.cfg), t.content));
         }
         out.push(String::new());
         out.push(dim(
@@ -5212,7 +5215,15 @@ impl App {
                 if lines.is_empty() {
                     out.push(dim(&self.cfg, "    no sections found."));
                 }
-                out.extend(lines.iter().cloned());
+                for (indent, mark, text) in lines {
+                    let pad = " ".repeat(*indent);
+                    out.push(match mark {
+                        Some(m) => format!("{pad}{} {text}", m.painted(&self.cfg)),
+                        // A heading with no items: no box to paint, and the text
+                        // is the operator's prose rather than a task.
+                        None => dim(&self.cfg, &format!("{pad}{text}")),
+                    });
+                }
             }
         }
         out.push(String::new());
@@ -6566,12 +6577,12 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
 /// A heading with no items at all is not "done": an empty section is a section
 /// nobody has filled in, and org does not mark it either. It carries no cookie
 /// and no box.
-fn repo_todos_map(workspace: &str) -> Vec<String> {
+fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
     let path = std::path::Path::new(workspace).join("TODO.md");
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
         Err(e) => {
-            return vec![format!("    (no TODO.md in {workspace}: {e})")];
+            return vec![(4, None, format!("(no TODO.md in {workspace}: {e})"))];
         }
     };
     render_todo_md(&body)
@@ -6608,21 +6619,46 @@ impl TodoMark {
             TodoMark::Done => "[x]",
         }
     }
+
+    /// **The glyph, painted.** The same three colours the jobs pane uses for the
+    /// same three states, because a head that painted "finished" green in one
+    /// pane and plain in another would be teaching two vocabularies for one fact.
+    ///
+    /// An open item is deliberately uncoloured: it is the default state and the
+    /// majority of any list, and colouring the majority spends the signal the
+    /// other two carry. Painted here rather than by `colour()` with an empty
+    /// code, because that helper appends a RESET unconditionally and so put a
+    /// bare `ESC[0m` after every open box — an escape that closes nothing.
+    fn painted(self, cfg: &RenderConfig) -> String {
+        match self {
+            TodoMark::Open => self.glyph().to_string(),
+            TodoMark::Doing => colour(cfg, sgr::YELLOW, self.glyph()),
+            TodoMark::Done => colour(cfg, sgr::GREEN, self.glyph()),
+        }
+    }
 }
 
 /// The parsing and rendering, split from the read so it can be tested without a
 /// file.
-fn render_todo_md(body: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// One rendered row: how far it is indented, the mark to paint, and the text.
+///
+/// The indent is carried rather than baked into the text because it belongs
+/// BEFORE the mark, and the mark is the part the pane paints — a row that
+/// arrived pre-indented painted as `[x]     Phase 0` with the colour in the
+/// wrong place entirely. Split so the parse is testable without a palette.
+type TodoRow = (usize, Option<TodoMark>, String);
+
+fn render_todo_md(body: &str) -> Vec<TodoRow> {
+    let mut out: Vec<TodoRow> = Vec::new();
     let mut section: Option<String> = None;
     let mut items: Vec<(TodoMark, String)> = Vec::new();
 
-    let flush = |out: &mut Vec<String>, section: &Option<String>, items: &[(TodoMark, String)]| {
+    let flush = |out: &mut Vec<TodoRow>, section: &Option<String>, items: &[(TodoMark, String)]| {
         let Some(name) = section else { return };
         if items.is_empty() {
             // Not `[x]`: an empty section is one nobody has filled in, and org
             // does not mark it done either.
-            out.push(format!("      {name}"));
+            out.push((6, None, name.clone()));
             return;
         }
         let done = items.iter().filter(|(m, _)| *m == TodoMark::Done).count();
@@ -6635,13 +6671,9 @@ fn render_todo_md(body: &str) -> Vec<String> {
         } else {
             TodoMark::Open
         };
-        out.push(format!(
-            "    {} {name}  [{done}/{}]",
-            roll.glyph(),
-            items.len()
-        ));
+        out.push((4, Some(roll), format!("{name}  [{done}/{}]", items.len())));
         for (mark, text) in items {
-            out.push(format!("        {} {text}", mark.glyph()));
+            out.push((8, Some(*mark), text.clone()));
         }
     };
 
@@ -9330,13 +9362,29 @@ mod tests {
         );
     }
 
+    /// The parse, as the pane would draw it with no colour — so a test asserts
+    /// the rows and not the escape codes.
+    fn todo_plain(body: &str) -> String {
+        render_todo_md(body)
+            .into_iter()
+            .map(|(indent, m, text)| {
+                let pad = " ".repeat(indent);
+                match m {
+                    Some(m) => format!("{pad}{} {text}", m.glyph()),
+                    None => format!("{pad}{text}"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// **The items are the queue, and they were never drawn.** The pane rendered
     /// one line per heading with counts beside it and stopped. The operator,
     /// looking at `leticl`'s: *"our todo pane doesnt render them — only section
     /// titles and sub todos count"*.
     #[test]
     fn a_heading_rolls_up_its_items_the_way_org_does() {
-        let rows = render_todo_md(
+        let all = todo_plain(
             "# title\n\
              \n\
              ## Phase 0 — repo\n\
@@ -9354,7 +9402,6 @@ mod tests {
              \n\
              - [ ] **Z1** nothing yet\n",
         );
-        let all = rows.join("\n");
 
         // Every child done makes the parent done — org's own rule for a heading.
         assert!(all.contains("[x] Phase 0 — repo  [2/2]"), "{all}");
@@ -9379,10 +9426,9 @@ mod tests {
     /// finished work.
     #[test]
     fn an_empty_heading_carries_no_box_and_no_cookie() {
-        let all = render_todo_md(
+        let all = todo_plain(
             "## Dependency graph\n\nT1 -> T3 -> T4\n\n## Phase 0\n\n- [x] **T1** done\n",
-        )
-        .join("\n");
+        );
         assert!(all.contains("Dependency graph"), "{all}");
         assert!(
             !all.contains("[x] Dependency graph") && !all.contains("[ ] Dependency graph"),
@@ -9390,6 +9436,62 @@ mod tests {
         );
         assert!(!all.contains("Dependency graph  ["), "and carries no cookie: {all}");
         assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
+    }
+
+    /// **Both halves of the pane speak one vocabulary.** The operator, on seeing
+    /// the items drawn: *"colors?"*. They were not painted at all — neither the
+    /// model's list nor the repo's — while the jobs pane two keys away had been
+    /// painting the same three states green and yellow all along.
+    #[test]
+    fn a_todo_is_painted_by_its_state_in_both_halves() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-colour-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("TODO.md"),
+            "## Phase 0\n\n- [x] **T1** done\n- [~] **T2** doing\n- [ ] **T3** open\n",
+        )
+        .expect("write");
+
+        let mut a = App::new(RenderConfig { color: true, ..plain_cfg(110) });
+        a.wiring.workspace = dir.display().to_string();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TodosUpdated {
+                todos: vec![
+                    letibot_sessionlog::event::TodoEntry {
+                        content: "seated".into(),
+                        status: letibot_sessionlog::event::TodoStatus::Completed,
+                    },
+                    letibot_sessionlog::event::TodoEntry {
+                        content: "seating".into(),
+                        status: letibot_sessionlog::event::TodoStatus::InProgress,
+                    },
+                ],
+            },
+        )));
+        a.key(Key::CtrlP);
+        let screen = a.screen(110, 40).join("\n");
+
+        // The model's half.
+        assert!(screen.contains(&format!("{}[x]{} seated", sgr::GREEN, sgr::RESET)), "{screen:?}");
+        assert!(screen.contains(&format!("{}[~]{} seating", sgr::YELLOW, sgr::RESET)), "{screen:?}");
+        // The repo's half, painted the same way — including the heading, which
+        // carries the rolled-up state and so carries its colour.
+        assert!(screen.contains(&format!("{}[~]{} Phase 0", sgr::YELLOW, sgr::RESET)), "{screen:?}");
+        assert!(screen.contains(&format!("{}[x]{} T1 done", sgr::GREEN, sgr::RESET)), "{screen:?}");
+        // An open item is left alone: it is the default and the majority of any
+        // list, and colouring the majority spends the signal the other two carry.
+        assert!(screen.contains("[ ] T3 open"), "{screen:?}");
+        assert!(
+            !screen.contains(&format!("{}[ ]", sgr::GREEN))
+                && !screen.contains(&format!("{}[ ]", sgr::YELLOW)),
+            "{screen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The file is edited while the pane is open**, which is the one case an
@@ -9434,10 +9536,9 @@ mod tests {
     /// belong to it rather than to the `##` above.
     #[test]
     fn a_subsection_owns_its_own_items() {
-        let all = render_todo_md(
+        let all = todo_plain(
             "## Phase 7\n\n- [x] **A** one\n\n### Strand B\n\n- [ ] **B1** two\n",
-        )
-        .join("\n");
+        );
         assert!(all.contains("[x] Phase 7  [1/1]"), "{all}");
         assert!(all.contains("[ ] Strand B  [0/1]"), "{all}");
     }
