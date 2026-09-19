@@ -1854,6 +1854,19 @@ pub enum Region {
     Secret(String),
     /// Inside the session's workspace.
     Workspace,
+    /// **The session's own scratch directory.** Created by the harness for this
+    /// session, under `/tmp`, and read by nothing else on the box.
+    ///
+    /// Its own region rather than [`Region::Temp`] because the two mean different
+    /// things to a decision: `/tmp` is shared — another process's socket, another
+    /// user's file, a lock somebody is holding — while this directory exists
+    /// because this session was opened and stops mattering when it ends. Deleting
+    /// inside it is as consequential as deleting something the session made a
+    /// minute ago, which is to say not very.
+    ///
+    /// Placed next to `Workspace` in the ordering for the same reason: both are
+    /// places the session is entitled to work in.
+    Scratch,
     /// The operator's home, outside a secret store and outside the workspace.
     Home,
     /// `/etc`.
@@ -1879,6 +1892,7 @@ impl Region {
         match self {
             Region::Secret(_) => "secret",
             Region::Workspace => "workspace",
+            Region::Scratch => "scratch",
             Region::Home => "home",
             Region::SystemConfig => "system_config",
             Region::SystemBinaries => "system_binaries",
@@ -1946,6 +1960,11 @@ impl ShellTrust {
 pub struct Surroundings {
     pub home: Option<String>,
     pub workspace: Option<String>,
+    /// The session's scratch directory, when it has one. `None` leaves every path
+    /// classified exactly as it was before this existed — a gate that does not
+    /// know where the scratch is must not guess, because the guess would be a
+    /// directory somebody is allowed to delete inside.
+    pub scratch: Option<String>,
     /// See [`ShellTrust`]. Defaults to `Unknown`, which refuses bare command names.
     pub shell: ShellTrust,
     /// Hosts this session has already reached. A **first** contact is an always-ask;
@@ -1970,6 +1989,7 @@ impl Surroundings {
         Surroundings {
             home: std::env::var("HOME").ok(),
             workspace: Some(workspace.into()),
+            scratch: None,
             shell: ShellTrust::Unknown,
             seen_hosts: BTreeSet::new(),
         }
@@ -2042,6 +2062,16 @@ impl Surroundings {
             && under(&p, ws)
         {
             return Region::Workspace;
+        }
+        // **Before the `/tmp` row below**, because the scratch IS under `/tmp` and
+        // the table would otherwise call it shared temp space. `p` has been
+        // collapsed, so `…/scratch-1/../../etc` has already become `/etc` and
+        // does not match here — which is the whole reason the collapse happens
+        // before any of this.
+        if let Some(scratch) = self.scratch.as_deref().filter(|s| !s.is_empty())
+            && (p == scratch || p.starts_with(&format!("{scratch}/")))
+        {
+            return Region::Scratch;
         }
         for (prefix, r) in [
             ("/etc", Region::SystemConfig),
@@ -2726,7 +2756,15 @@ impl Baseline {
             .iter()
             .filter(|si| {
                 si.intent == Intent::Destroy
-                    && !matches!(si.region, Region::Workspace | Region::None)
+                    // The session's own scratch is somewhere it is entitled to
+                    // work, like the workspace. The operator's rule: *"i want rm
+                    // to always be allowed for that scratch directory"* — and the
+                    // line above already says destruction is judged by scope, so
+                    // this is that judgement applied to a scope that had no name.
+                    && !matches!(
+                        si.region,
+                        Region::Workspace | Region::Scratch | Region::None
+                    )
             })
             .collect();
         if !outside.is_empty() {
@@ -3634,6 +3672,7 @@ mod tests {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned {
                 how: "test fixture: assume a pinned shell so the OTHER properties are \
                       what is being measured"
@@ -4249,6 +4288,7 @@ mod tests {
         // The alias defeat, as a type rather than as a hope. With no declaration,
         // `ls` may be `alias ls='rm -rf ~'` and the parse says nothing about it.
         let unknown = Surroundings {
+            scratch: None,
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
             shell: ShellTrust::Unknown,
@@ -4504,6 +4544,7 @@ mod destructive_flags {
 
     fn sur() -> Surroundings {
         Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -4609,6 +4650,7 @@ mod flag_coverage_survey {
     #[test]
     fn what_the_table_sees_and_what_it_misses() {
         let sur = Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -4654,6 +4696,7 @@ mod flag_rules {
 
     fn sur() -> Surroundings {
         Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -4864,6 +4907,7 @@ mod flag_rules {
     fn no_rule_fires_on_the_keys_negative_twins() {
         let key = include_str!("../tests/data/answer-key.tsv");
         let sur = Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -4904,6 +4948,7 @@ mod secret_is_not_destruction {
     #[test]
     fn a_private_key_is_guarded_as_a_secret_and_not_as_destruction() {
         let sur = Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -4975,6 +5020,7 @@ mod recall {
             "../tests/data/answer-key.tsv"
         );
         let sur = Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -5027,6 +5073,7 @@ mod model_findings_gap {
     #[test]
     fn what_the_model_found_that_the_table_misses() {
         let sur = Surroundings {
+            scratch: None,
             home: Some("/home/op".into()),
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -5090,6 +5137,7 @@ mod heredoc_bodies {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
         }
@@ -5213,6 +5261,7 @@ mod loopback_and_literals {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
         }
@@ -5278,6 +5327,7 @@ mod inline_scripts {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
         }
@@ -5314,6 +5364,7 @@ mod hosts_by_other_names {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
         }
@@ -5386,6 +5437,7 @@ mod known_and_seen_hosts {
         std::fs::write(ws.join(".git"), format!("gitdir: {}\n", repo.join("worktrees/ws").display())).unwrap();
 
         let env = Surroundings {
+            scratch: None,
             home: Some(home.display().to_string()),
             workspace: Some(ws.display().to_string()),
             shell: ShellTrust::Pinned { how: "test".into() },
@@ -5411,6 +5463,7 @@ mod operands_that_are_not_places {
         Surroundings {
             home: Some("/home/dead".into()),
             workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
         }
@@ -5428,5 +5481,87 @@ mod operands_that_are_not_places {
         assert_ne!(x.tier, Tier::Auto);
         let x = Baseline::of_command("cat /home/dead/.ssh/id_rsa", &env());
         assert!(matches!(x.tier, Tier::Blocked { .. }));
+    }
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: Default::default(),
+        }
+    }
+
+    /// **The session's own scratch is its own region.** The operator: *"i want rm
+    /// to always be allowed for that scratch directory"*. `/tmp` is shared — a
+    /// socket, a lock, another user's file — and deleting there is a decision
+    /// somebody has to make; this directory exists because this session was
+    /// opened and stops mattering when it ends.
+    #[test]
+    fn the_scratch_is_placed_apart_from_shared_temp() {
+        let e = env();
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234"), Region::Scratch);
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234/page.html"), Region::Scratch);
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234/a/b/c"), Region::Scratch);
+        // Shared temp is still shared temp, including a sibling that merely
+        // starts the same way.
+        assert_eq!(e.region_of("/tmp"), Region::Temp);
+        assert_eq!(e.region_of("/tmp/something-else"), Region::Temp);
+        assert_eq!(e.region_of("/tmp/letibot-scratch-9999"), Region::Temp);
+        // The prefix is a PATH prefix, not a string one: this is a different
+        // directory whose name happens to extend the scratch's.
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234-other"), Region::Temp);
+    }
+
+    /// **Traversal out is traversal out.** `region_of` collapses `..` before it
+    /// places anything, which is the whole reason the collapse happens first.
+    #[test]
+    fn a_path_that_climbs_out_of_the_scratch_is_not_the_scratch() {
+        let e = env();
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234/../../etc"), Region::SystemConfig);
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234/../other"), Region::Temp);
+        assert_eq!(
+            e.region_of("/tmp/letibot-scratch-1234/a/../../../home/dead/.ssh/id_rsa"),
+            Region::Secret(".ssh".into())
+        );
+    }
+
+    /// A gate that does not know where the scratch is must not guess: every path
+    /// is classified exactly as it was before this existed.
+    #[test]
+    fn without_a_scratch_nothing_changes() {
+        let mut e = env();
+        e.scratch = None;
+        assert_eq!(e.region_of("/tmp/letibot-scratch-1234/page.html"), Region::Temp);
+    }
+
+    /// The end of it: `rm -rf` inside the scratch is ordinary work, the same
+    /// judgement `rm -rf target/debug` already got — *"destruction is judged by
+    /// SCOPE, never by the verb"* — and the same command one directory over is
+    /// not.
+    #[test]
+    fn rm_inside_the_scratch_is_not_an_ask_and_rm_beside_it_is() {
+        let e = env();
+        let inside = Baseline::of_command("rm -rf /tmp/letibot-scratch-1234/build", &e);
+        assert!(
+            !inside.findings.iter().any(|f| f.contains("outside the workspace")),
+            "{:?}",
+            inside.findings
+        );
+        let outside = Baseline::of_command("rm -rf /tmp/letibot-scratch-9999/build", &e);
+        assert!(
+            outside.findings.iter().any(|f| f.contains("outside the workspace")),
+            "another session's scratch is not this one's: {:?}",
+            outside.findings
+        );
+        // And the workspace is unchanged by any of this.
+        let ws = Baseline::of_command("rm -rf /home/dead/Projects/letibot/target", &e);
+        assert!(!ws.findings.iter().any(|f| f.contains("outside the workspace")));
     }
 }

@@ -1242,7 +1242,7 @@ impl<'a> Harness<'a> {
         // in `/tmp`, so a fetched page never touches the operator's tree. A backend
         // that cannot reach it — a confined session rooted at the workspace — simply
         // has no scratch, and a tool that wants one gets a refusal rather than a guess.
-        let scratch = std::env::temp_dir().join(format!("letibot-scratch-{}", std::process::id()));
+        let scratch = scratch_dir();
         let _ = std::fs::create_dir_all(&scratch);
         let backend = backend.with_scratch_dir(&scratch);
         // One boxed backend from here on, whichever substrate: the host one built
@@ -4958,9 +4958,28 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// workspace root and `$HOME`, both of which layer A needs to place a path.
 /// [`letibot_tools::Surroundings::from_env`] is the constructor that says
 /// reading the environment is a decision at a call site.
+/// **Where this daemon's sessions put working artifacts.**
+///
+/// One function so the backend that hands it to tools and the gate that decides
+/// about paths inside it cannot disagree about where it is — a gate pointed at a
+/// different directory than the one the tools use is a gate that permits deletion
+/// in a place nothing writes, and asks about the place everything does.
+///
+/// Per daemon process rather than per session: a pid is stable for the daemon's
+/// life, which is what "this box is running letibot right now" means, and a
+/// session id in the path would make the directory unfindable from the one place
+/// that has to clean it up.
+pub fn scratch_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("letibot-scratch-{}", std::process::id()))
+}
+
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
-    let env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
+    let mut env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
         .with_known_hosts();
+    // The gate places a path by region, and the scratch is its own region — see
+    // `Region::Scratch`. Without this it reads as shared `/tmp`, and destruction
+    // there is an ask.
+    env.scratch = Some(scratch_dir().display().to_string());
     // The shell is pinned whenever the backend can start a process. Both the
     // confined backend (coder/runner) and the unconfined leticode one (`--bash`)
     // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a

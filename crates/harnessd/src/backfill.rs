@@ -161,6 +161,10 @@ pub fn apply(path: &std::path::Path, report: &mut Report) -> Result<(), String> 
 /// Without the pin a bare command name is unresolved and every row would skip.
 fn surroundings(workspace: &str) -> Surroundings {
     Surroundings {
+        // A replay of recorded rows, not a live session: there is no scratch
+        // directory to place a path in, and inventing one would classify a path
+        // by a directory that did not exist when the row was written.
+        scratch: None,
         home: std::env::var("HOME").ok().map(Into::into),
         workspace: Some(workspace.into()),
         shell: ShellTrust::Pinned {

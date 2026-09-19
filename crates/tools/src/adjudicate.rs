@@ -5000,6 +5000,7 @@ mod tests {
 
     fn pinned() -> crate::intent::Surroundings {
         crate::intent::Surroundings {
+            scratch: None,
             home: Some("/home/dead".into()),
             workspace: Some("/w".into()),
             shell: crate::intent::ShellTrust::Pinned {

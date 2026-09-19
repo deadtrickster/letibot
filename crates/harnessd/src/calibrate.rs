@@ -517,6 +517,10 @@ fn req_intents(
     workspace: &str,
 ) -> Vec<Intent> {
     let sur = letibot_tools::intent::Surroundings {
+        // A replay of recorded rows, not a live session: there is no scratch
+        // directory to place a path in, and inventing one would classify a path
+        // by a directory that did not exist when the row was written.
+        scratch: None,
         workspace: Some(workspace.into()),
         home: std::env::var("HOME").ok().map(Into::into),
         shell: letibot_tools::intent::ShellTrust::Pinned {
