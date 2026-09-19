@@ -816,6 +816,64 @@ pub fn vehicle_for(program: &str) -> Option<&'static ExecutionVehicle> {
     EXECUTION_VEHICLES.iter().find(|v| v.program == program)
 }
 
+/// **The script file an interpreter was handed**, if it was handed one.
+///
+/// `python3 script.py` runs code the gate never opens; `python3 -c "…"` and
+/// `python3 -m pytest` do not name a file at all, and neither does `python3`
+/// alone. This says which of those a command is, so a caller with a filesystem
+/// can read the first case and the brief can say so for the rest.
+///
+/// **Only the first non-flag positional**, and deliberately no cleverness beyond
+/// that: an interpreter's own conventions for where the program comes from are
+/// exactly what `EXECUTION_VEHICLES` documents as too varied to guess at. A
+/// wrong guess here would put an unrelated file in front of the adjudicator and
+/// call it the program, which is worse than reading nothing.
+///
+/// Flags are skipped, and a flag that TAKES a value takes its value with it —
+/// `python3 -X importtime script.py` is the script, not `importtime`.
+pub fn script_argument(program: &str, argv: &[String]) -> Option<String> {
+    // The interpreters whose first positional is a path to run. `bash`/`sh` take
+    // one too; `env` and the other wrappers are unwrapped before this is reached.
+    const RUNS_A_FILE: &[&str] = &[
+        "python", "python2", "python3", "perl", "ruby", "node", "deno", "bun", "php",
+        "lua", "luajit", "Rscript", "julia", "bash", "sh", "zsh", "ksh", "dash", "tclsh",
+    ];
+    if !RUNS_A_FILE.contains(&program) {
+        return None;
+    }
+    // Flags that consume the next word. `-c` and `-e` carry the program inline,
+    // which the brief already shows verbatim, so a command with either names no
+    // file at all — returning the word after them would hand the adjudicator the
+    // SOURCE and call it a path.
+    const TAKES_A_VALUE: &[&str] = &[
+        "-c", "-e", "-m", "-X", "-W", "-Q", "--check-hash-based-pycs", "-I", "--eval",
+        "-r", "--require", "-d", "-f", "-o", "--file",
+    ];
+    let mut skip_next = false;
+    for a in argv {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--" {
+            continue;
+        }
+        if a.starts_with('-') {
+            // `-c`, `-m` and `-e` mean there is no script FILE: the program is
+            // inline or a module name. Stop rather than walk past them.
+            if matches!(a.as_str(), "-c" | "-m" | "-e" | "--eval") {
+                return None;
+            }
+            if TAKES_A_VALUE.contains(&a.as_str()) {
+                skip_next = true;
+            }
+            continue;
+        }
+        return Some(a.clone());
+    }
+    None
+}
+
 /// A vehicle that fired, and what fired it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VehicleFinding {
@@ -5563,5 +5621,53 @@ mod scratch_tests {
         // And the workspace is unchanged by any of this.
         let ws = Baseline::of_command("rm -rf /home/dead/Projects/letibot/target", &e);
         assert!(!ws.findings.iter().any(|f| f.contains("outside the workspace")));
+    }
+}
+
+#[cfg(test)]
+mod script_argument_tests {
+    use super::script_argument;
+
+    fn a(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **The file an interpreter was handed.** `python3 script.py` runs code the
+    /// gate never opens — measured 2026-09-20, the oracle denied a key deletion
+    /// written inline and would have seen only a filename had it been in a file.
+    #[test]
+    fn the_first_positional_is_the_program() {
+        assert_eq!(script_argument("python3", &a(&["deploy.py"])).as_deref(), Some("deploy.py"));
+        assert_eq!(script_argument("bash", &a(&["setup.sh"])).as_deref(), Some("setup.sh"));
+        assert_eq!(script_argument("node", &a(&["x.js", "--port", "80"])).as_deref(), Some("x.js"));
+        // Flags before it are skipped, and one that takes a value takes it along:
+        // `-X importtime` is not the script.
+        assert_eq!(
+            script_argument("python3", &a(&["-X", "importtime", "run.py"])).as_deref(),
+            Some("run.py")
+        );
+        assert_eq!(script_argument("python3", &a(&["-u", "run.py"])).as_deref(), Some("run.py"));
+    }
+
+    /// **`-c` and `-m` name no file.** The program is inline or a module, and the
+    /// inline case is already in the brief verbatim — returning the word after
+    /// `-c` would hand an adjudicator the SOURCE and call it a path.
+    #[test]
+    fn an_inline_program_is_not_a_file() {
+        assert_eq!(script_argument("python3", &a(&["-c", "import os; os.remove('/x')"])), None);
+        assert_eq!(script_argument("python3", &a(&["-m", "pytest", "crates/tools"])), None);
+        assert_eq!(script_argument("perl", &a(&["-e", "unlink '/x'"])), None);
+        assert_eq!(script_argument("node", &a(&["--eval", "process.exit()"])), None);
+        // And no arguments at all is a REPL, not a script.
+        assert_eq!(script_argument("python3", &a(&[])), None);
+    }
+
+    /// Only interpreters. `rm foo.py` names a file and does not run it, and
+    /// reading it for the adjudicator would be showing them the wrong thing.
+    #[test]
+    fn a_program_that_is_not_an_interpreter_names_no_script() {
+        assert_eq!(script_argument("rm", &a(&["deploy.py"])), None);
+        assert_eq!(script_argument("cat", &a(&["setup.sh"])), None);
+        assert_eq!(script_argument("git", &a(&["status"])), None);
     }
 }

@@ -653,6 +653,7 @@ mod tests {
         use letibot_tools::adjudicate::{ActionClass, Tier};
         use letibot_tools::schema::Access;
         AdjudicationRequest {
+            scripts: Vec::new(),
             id: "adj-1".into(),
             session_id: "s".into(),
             turn_id: "t1".into(),

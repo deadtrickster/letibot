@@ -695,8 +695,7 @@ fn a_network_call_is_classed_external_and_irreversible() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/tmp/ws",
-        target_exists: None,
-    });
+        target_exists: None, scripts: &[] });
     assert_eq!(req.class.scope, EffectScope::External);
     assert_eq!(req.class.reversibility, Reversibility::Irreversible);
     assert_eq!(req.class.to_string(), "network,external,irreversible,free");
@@ -723,8 +722,7 @@ fn a_dispatching_tool_puts_its_op_in_front_of_whoever_decides() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/tmp/ws",
-        target_exists: None,
-    });
+        target_exists: None, scripts: &[] });
     assert!(req.brief().contains("merge_pr"), "{}", req.brief());
 }
 

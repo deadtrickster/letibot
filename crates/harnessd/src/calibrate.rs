@@ -397,6 +397,10 @@ pub fn replay_rows(
                 move |_call: &GateCall<'_>| trail.clone()
             });
         let mut req = gate.request_for(&GateCall {
+            // A replay of recorded rows: the scripts those commands ran are not
+            // on this disk, and reading whatever is at the path today would show
+            // the oracle a file the original call never saw.
+            scripts: &[],
             name: &row.tool,
             access: acc,
             args: &args,

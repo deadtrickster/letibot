@@ -2477,6 +2477,7 @@ mod tests {
     fn request(command: &str, trail: AuthorisationTrail) -> AdjudicationRequest {
         let b = Baseline::of_command(command, &env());
         AdjudicationRequest {
+            scripts: Vec::new(),
             id: "adj-t-0001".into(),
             session_id: "s".into(),
             turn_id: "t1".into(),
@@ -2783,8 +2784,7 @@ mod tests {
             turn_id: "t",
             call_id: "c",
             workspace: "/w",
-            target_exists: Some(true),
-        }) {
+            target_exists: Some(true), scripts: &[] }) {
             crate::runtime::GateDecision::Refuse {
                 outcome: ToolOutcome::NotRun { why },
                 ..
@@ -2976,8 +2976,7 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/w",
-            target_exists: None,
-        }
+            target_exists: None, scripts: &[] }
     }
 
     #[test]
