@@ -942,6 +942,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("status", "the bottom border's telemetry, full screen"),
     ("think", "fold or unfold the model's reasoning"),
     ("tools", "what this conversation can call, and what it only looks like it can"),
+    ("default-model", "what a NEW session starts on; /models switches this one"),
     ("verbosity", "cycle the event-stream detail"),
     ("config", "every setting, the runtime-editable ones editable in place"),
     ("mode", "the mode picker — or /mode NAME to type it"),
@@ -3591,15 +3592,23 @@ impl App {
                         .position(|n| *n == self.pick_current())
                         .unwrap_or(0);
                     self.redraw = true;
-                    // Asked as well as opened: the rows come from the daemon's
-                    // last answer, and a session that switched models in another
-                    // head would otherwise draw a stale `← now`.
-                    return Some(Action::Slash { line: "models".into() });
+                    // **`Settings`, not the `models` verb.** Asking the daemon to
+                    // refresh is right — a session whose model moved in another
+                    // head would draw a stale `← now` — but `/models` with no
+                    // argument answers with the whole provider listing, which
+                    // landed on the session log underneath the card. The operator,
+                    // looking at the wall of text this picker exists to replace:
+                    // *"models is still not a selector"*.
+                    //
+                    // `Settings` is what `/mode` asks for and it prints nothing:
+                    // it refreshes the rows the picker reads.
+                    return Some(Action::Settings);
                 }
                 if matches!(
                     verb,
                     "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
-                        | "job" | "jobs" | "tools"
+                        | "job" | "jobs" | "tools" | "default-model" | "default_model"
+                        | "default"
                 ) {
                     if self.session_id.is_empty() {
                         self.say("not attached to a session yet");
@@ -5568,9 +5577,9 @@ impl App {
             if models {
                 // **One fact per line.** These are trimmed to the width, not
                 // wrapped, so a sentence carrying two facts loses the second one —
-                // measured at 110 columns, where this read "It also become…" and
-                // the `--once` half never reached the screen at all.
-                "  from the next turn; the transcript, the ledger and the tools are untouched"
+                // measured at 110 columns, where a two-fact version read "It also
+                // become…" and its useful half never reached the screen.
+                "  this conversation only, from the next turn; the transcript and the tools are untouched"
             } else {
                 "  a mode change moves THIS session from its next call, and every later \
                  session in this project."
@@ -5579,7 +5588,7 @@ impl App {
         if models {
             out.push(dim(
                 &self.cfg,
-                "  it also becomes the standing choice · `/models NAME --once` does not",
+                "  `/default-model NAME` is what new sessions start on · this is not that",
             ));
         }
         out
@@ -6549,6 +6558,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
         ("/job", "read a background job's output: /job lists them, /job ID prints it, --offset N resumes"),
         ("/tools", "the tools seated here — and any the prompt has never been told about, which the model cannot call"),
+        ("/default-model", "what a NEW session starts on: /default-model PROVIDER/MODEL, or `local` to clear it. Not this conversation — that is /models"),
         ("/resync", "throw this head's state away and take a fresh snapshot"),
         ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
     ];
@@ -11848,10 +11858,10 @@ mod tests {
         ));
         // Bare `/models` opens the list AND asks the daemon, so a session whose
         // model moved in another head does not draw a stale `← now`.
-        match a.command("models") {
-            Some(Action::Slash { line }) => assert_eq!(line, "models"),
-            other => panic!("{other:?}"),
-        }
+        // It refreshes the SETTINGS, not the `models` verb: that verb answers
+        // with the whole provider listing, which would land on the log under the
+        // card and is the wall of text this picker replaces.
+        assert_eq!(a.command("models"), Some(Action::Settings));
         assert!(a.models_picker);
         assert_eq!(a.mode_sel, 2, "seeded on the row that answers now");
 
@@ -11861,7 +11871,10 @@ mod tests {
         assert!(screen.contains("what answers this conversation"), "{screen}");
         assert!(screen.contains("grok/grok-4.3"), "{screen}");
         assert!(screen.contains("← now"), "{screen}");
-        assert!(screen.contains("--once"), "the way to not stick it: {screen}");
+        // The card says what it does and names the verb for the other thing,
+        // because one verb doing both is what sent the operator looking.
+        assert!(screen.contains("this conversation only"), "{screen}");
+        assert!(screen.contains("/default-model"), "{screen}");
 
         // Arrow and Enter send the switch as the daemon verb.
         a.key(Key::Down);
@@ -11880,7 +11893,6 @@ mod tests {
         a.session_id = "s1".into();
         for line in [
             "models deepseek/deepseek-flash",
-            "models glm --once",
             "models grok --key xai-test",
         ] {
             match a.command(line) {
@@ -12898,15 +12910,19 @@ mod tests {
         assert_eq!(verb_arg("cellsomething", "cells"), None);
     }
 
-    /// And the whole-word rule reaches the daemon: `/models` is forwarded now
-    /// rather than swallowed by the mode arm.
+    /// And the whole-word rule holds: `/models` is no longer swallowed by the
+    /// `mode` arm, which took it as `/mode` with the argument `ls`. Bare it opens
+    /// the picker; with a name it goes to the daemon.
     #[test]
     fn slash_models_reaches_the_daemon() {
         let mut a = app();
         a.session_id = "s1".into();
-        match a.command("models") {
-            Some(Action::Slash { line }) => assert_eq!(line, "models"),
-            other => panic!("/models must go to the daemon, got {other:?}"),
+        assert_eq!(a.command("models"), Some(Action::Settings));
+        assert!(a.models_picker, "bare /models is the menu");
+        a.key(Key::Esc);
+        match a.command("models deepseek") {
+            Some(Action::Slash { line }) => assert_eq!(line, "models deepseek"),
+            other => panic!("/models NAME must go to the daemon, got {other:?}"),
         }
         // While `/mode` still opens the picker, and `/mode NAME` still types it.
         assert!(matches!(a.command("mode"), Some(Action::Settings) | None));

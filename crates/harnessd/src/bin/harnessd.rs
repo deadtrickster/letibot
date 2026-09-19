@@ -7,6 +7,8 @@
 //!          [--spill-inline BYTES] [--spill-dir DIR]
 //!          [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
+//!          [--slash VERB ...]         a head's slash verb, in order with --prompt:
+//!                                     `--prompt hi --slash "models deepseek" --prompt again`
 //!
 //! store queries — no socket, no vocabulary, no model:
 //! harnessd --store PATH --list-sessions [--workspace DIR] [--tsv]
@@ -64,7 +66,7 @@ fn usage() -> String {
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
      \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...]\n\
+     \x20        [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...] [--slash VERB ...]\n\
      \n\
      what this session may do — every one of these is off unless you pass it:\n\
      \x20 --role NAME               orchestrator (default, read-only) | planner |\n\
@@ -152,6 +154,12 @@ fn usage() -> String {
         .into()
 }
 
+/// One scripted step, in the order the flags were given.
+enum Step {
+    Prompt(String),
+    Slash(String),
+}
+
 fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
@@ -210,7 +218,15 @@ fn run() -> Result<i32, String> {
             cfg.oracle_budget = std::time::Duration::from_millis(ms);
         }
     }
-    let mut prompts: Vec<String> = Vec::new();
+    // **Prompts and slash verbs in one ordered list.** `--prompt` could run turns
+    // headlessly and nothing could change the session between them, so the one
+    // thing worth testing about a mid-session model switch — that the turn AFTER
+    // it works — could only be done by hand in a terminal. The operator: *"check
+    // deepseek <-> qwen switch actually works midsession yourself. if there is not
+    // enough tools in the letibot-tui to drive it programmatically - add"*.
+    //
+    // Order is the whole point, so they share a list rather than being two.
+    let mut steps: Vec<Step> = Vec::new();
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
     let mut model_given: Option<String> = None;
@@ -425,7 +441,11 @@ fn run() -> Result<i32, String> {
             // crate wraps. No key and no account — the flag is the whole
             // opt-in, and the tool's refusal names it.
             "--web-fetch" => cfg.web_fetch = true,
-            "--prompt" => prompts.push(next()?),
+            "--prompt" => steps.push(Step::Prompt(next()?)),
+            // The slash verbs a head can send, from a script: `--slash "models
+            // deepseek"`, `--slash compact`, `--slash tools`. Written without the
+            // leading `/`, like the wire carries them.
+            "--slash" => steps.push(Step::Slash(next()?)),
             "--max-tool-rounds" => {
                 cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
@@ -515,6 +535,21 @@ fn run() -> Result<i32, String> {
     // What is on disk, so a head's picker can show sessions from daemons that are no
     // longer running and `ResumeSession` can find them. A daemon with no `--store`
     // sets no source and lists only what it holds, which is what it always did.
+    // **The operator's standing choice, resolved once, here.** Explicit
+    // `--provider` wins; else `[default]` in providers.toml, which
+    // `/default-model` writes; else the local server this daemon was launched
+    // against. Resolved in the binary because it reads the operator's own config
+    // file, and a `Harness` that reached for that file made every test inherit it.
+    if cfg.provider.is_none()
+        && let Some(d) = letibot_provider::keys::default_choice(None)
+    {
+        cfg.provider = Some(letibot_harnessd::config::ProviderConfig {
+            name: d.provider,
+            model: d.model,
+            api_key: None,
+            thinking: false,
+        });
+    }
     if let Some(src) = letibot_harnessd::sessions::StoreSessions::open(&cfg) {
         registry.set_source(src);
     }
@@ -690,8 +725,24 @@ fn run() -> Result<i32, String> {
     eprintln!();
 
     let mut failed = 0;
-    if !prompts.is_empty() {
-        for p in &prompts {
+    if !steps.is_empty() {
+        for step in &steps {
+            let p = match step {
+                Step::Slash(line) => {
+                    let reply = sessions.slash(&session_id, line);
+                    for l in &reply.lines {
+                        println!("{l}");
+                    }
+                    // A refused verb is a failure of the run, the same as a failed
+                    // prompt: a script that switched model and carried on against
+                    // the old one would report a pass for the wrong thing.
+                    if !reply.ok {
+                        failed += 1;
+                    }
+                    continue;
+                }
+                Step::Prompt(p) => p,
+            };
             match sessions.submit(&session_id, p) {
                 Ok(reply) => {
                     println!("{}", reply.text);

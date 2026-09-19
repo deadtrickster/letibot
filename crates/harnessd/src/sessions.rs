@@ -221,8 +221,16 @@ impl<'a> Sessions<'a> {
 
     /// One slash verb from a head, against this session.
     pub fn slash(&mut self, session_id: &str, line: &str) -> crate::slash::SlashReply {
+        self.slash_parsed(session_id, crate::slash::Slash::parse(line))
+    }
+
+    fn slash_parsed(
+        &mut self,
+        session_id: &str,
+        parsed: crate::slash::Slash,
+    ) -> crate::slash::SlashReply {
         use crate::slash::{Slash, SlashReply};
-        match Slash::parse(line) {
+        match parsed {
             Slash::Help(h) => SlashReply {
                 lines: vec![h],
                 ok: false,
@@ -359,6 +367,10 @@ impl<'a> Sessions<'a> {
                 );
                 SlashReply { lines, ok: true }
             }
+            // The standing choice, and only that: no session changes here. The
+            // operator asked for it as its own verb after `/models` doing both at
+            // once cost them two questions.
+            Slash::DefaultModel(want) => crate::slash::default_model(want.as_deref(), None),
             Slash::Tools => match self.open.get(session_id) {
                 Some(h) => SlashReply { lines: h.tools_lines(), ok: true },
                 None => SlashReply {
@@ -394,18 +406,19 @@ impl<'a> Sessions<'a> {
                     ok: true,
                 }
             }
+            // **Switches this session and nothing else.** The standing choice is
+            // `/default-model`'s; see `Slash::ModelsSet` for the three goes it
+            // took to separate them.
             Slash::ModelsSet {
                 provider,
                 model,
                 key,
-                once,
             } => {
                 let (choice, mut lines) = match crate::slash::models_choice(
                     &provider,
                     model.as_deref(),
                     key.as_deref(),
                     None,
-                    once,
                 ) {
                     Ok(x) => x,
                     Err(lines) => return SlashReply { lines, ok: false },
