@@ -852,6 +852,14 @@ pub struct ForkReport {
 pub struct CompactReport {
     pub fork: ForkReport,
     pub summary_turn: CompactionOutcome,
+    /// **Tools the fork's prompt announces that the old one did not.** A
+    /// compaction forks onto the prompt this daemon seats now, so a conversation
+    /// started before a tool existed picks it up by compacting — and the operator
+    /// is told, because a capability that appears silently is one nobody uses.
+    /// Empty on the ordinary compaction, where the two prompts are the same.
+    pub gained: Vec<String>,
+    /// Tools the old prompt announced and the new one does not.
+    pub lost: Vec<String>,
 }
 
 /// What a re-seat did: the fork it made, the summary that carried the conversation
@@ -2945,34 +2953,32 @@ impl<'a> Harness<'a> {
     /// summary, not from its own tokens, and the prefix is new so the server's
     /// cache for it is cold. Both are what changing the announced tools costs, and
     /// a version that hid either would be hiding the thing the operator is paying.
-    pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
+    /// **The prompt this daemon would seat a NEW conversation with**, and the
+    /// store row for it — or `None` when that is already the prompt being spoken.
+    ///
+    /// Both `/reseat` and every compaction fork want the same two values, computed
+    /// the same way, so they are computed once here. The probe render is what
+    /// makes the row honest: a `stable_prefix` written with an empty token list
+    /// verified as `hash chain broken at row 0` on the way back in, because the
+    /// tokens are what a resume rebuilds the chain from.
+    /// Public for the same reason [`Harness::fork_to_summary`] is: the summary
+    /// turn needs a model server and this does not, so the re-seat half of a
+    /// compaction is drivable — and therefore testable — offline.
+    pub fn reseat_target(&mut self) -> Result<Option<(StablePrefix, String)>, HarnessError> {
         let next = StablePrefix {
             system: self.cfg.system.clone(),
             tools_json: self.render.tools_json(&self.runtime.registry.schemas()),
         };
         if next == self.prefix {
-            return Err(HarnessError::Setup(
-                "this conversation's prompt already carries exactly the tools that are                  seated, so there is nothing to re-seat. Nothing was changed."
-                    .into(),
-            ));
+            return Ok(None);
         }
+        // No store is not a refusal here — a compaction without one refuses later
+        // and for its own reason. It is simply nowhere to record a new prefix, so
+        // the fork keeps the old one.
         let Some(store) = self.store.as_ref() else {
-            return Err(HarnessError::Setup(
-                "re-seating forks the conversation onto a new prompt, and a fork needs a                  store to write it to; this session has none."
-                    .into(),
-            ));
+            return Ok(None);
         };
-        // **The prefix record carries its TOKENS and their hash**, because that is
-        // what a resume rebuilds the chain from. Writing it with an empty token
-        // list and a zero `h_init` produced a fork that verified as broken on the
-        // way back in — `hash chain broken at row 0 (<stable_prefix>)` — which is
-        // exactly the state the chain check exists to catch, and it was this code
-        // that created it. Caught by `restore.rs`, which walks the real store.
-        //
-        // Rendered and tokenized the same way `open` does it, through the engine,
-        // so the bytes recorded here are the bytes the fork will speak. `h_init` is
-        // `hash_tokens(prefix)` and depends on nothing else, so it can be computed
-        // before the fork's id exists.
+        let _ = store;
         let measured = self
             .engine
             .open(&format!("{}#reseat-probe", self.cfg.session_id), &next)
@@ -2986,9 +2992,34 @@ impl<'a> Harness<'a> {
             vocab_source: self.cfg.vocab_gguf.display().to_string(),
         };
         drop(measured);
-        let next_id = store
+        let id = self
+            .store
+            .as_ref()
+            .expect("checked above")
             .put_stable_prefix(&rec)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
+        Ok(Some((next, id)))
+    }
+
+    pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
+        if self.store.is_none() {
+            return Err(HarnessError::Setup(
+                "re-seating forks the conversation onto a new prompt, and a fork needs a \
+                 store to write it to; this session has none."
+                    .into(),
+            ));
+        }
+        // The same two values a compaction computes, computed the same way. A
+        // `None` here is the conversation already speaking the seated prompt.
+        let Some((next, next_id)) = self.reseat_target()? else {
+            return Err(HarnessError::Setup(
+                "this conversation's prompt already carries exactly the tools that are \
+                 seated, so there is nothing to re-seat. Nothing was changed, and nothing \
+                 needed to be: every compaction now forks onto the seated prompt, so a \
+                 conversation that has compacted since the daemon started is already on it."
+                    .into(),
+            ));
+        };
 
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
@@ -3049,6 +3080,24 @@ impl<'a> Harness<'a> {
     fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
 
+        // **A compaction re-seats.** It is already forking onto a fresh transcript
+        // and already paying the cold prefill that a new prefix costs, so carrying
+        // the tool list this daemon seats NOW is free — and not carrying it is
+        // what made `/compact` then `/reseat` two summaries instead of one.
+        //
+        // Measured in the operator's own session (`…#t8`, five rows): row 0 is the
+        // `/compact` summary; row 1 is `/reseat` asking for a summary of a
+        // transcript that is already nothing but a summary; row 2 is the model,
+        // with nothing to summarise, running `git log` instead — which tripped the
+        // "a summary is a record, not an action" guard and refused the re-seat;
+        // rows 3 and 4 are the retry. Three summary turns and two cold prefills to
+        // pick up a tool list. Their reading: *"let compaction automatically
+        // reseat so new tools picked up"*.
+        //
+        // `None` when the seated prompt is the one already being spoken, which is
+        // the common case and costs a comparison.
+        let reseat = self.reseat_target()?;
+
         let per_item: Vec<u64> = (0..self.session.ledger.rows().len())
             .map(|i| self.session.ledger.item_tokens(i).map(|t| t.len() as u64).unwrap_or(0))
             .collect();
@@ -3069,8 +3118,14 @@ impl<'a> Harness<'a> {
                         outcome.tool_calls
                     )));
                 }
-                let fork = self.fork_to_summary(&outcome, None, None, &[])?;
-                Ok(CompactReport { fork, summary_turn: outcome })
+                let fork = self.fork_to_summary(
+                    &outcome,
+                    reseat.as_ref().map(|(p, _)| p),
+                    reseat.as_ref().map(|(_, id)| id.as_str()),
+                    &[],
+                )?;
+                let (gained, lost) = self.adopt_reseat(reseat);
+                Ok(CompactReport { fork, summary_turn: outcome, gained, lost })
             }
 
             OverrunPlan::Hopeless { prefix_tokens, window } => Err(HarnessError::Setup(format!(
@@ -3146,10 +3201,40 @@ impl<'a> Harness<'a> {
                     reusable: 0,
                     generated_tokens: 0,
                 };
-                let fork = self.fork_to_summary(&outcome, None, None, &tail)?;
-                Ok(CompactReport { fork, summary_turn: outcome })
+                let fork = self.fork_to_summary(
+                    &outcome,
+                    reseat.as_ref().map(|(p, _)| p),
+                    reseat.as_ref().map(|(_, id)| id.as_str()),
+                    &tail,
+                )?;
+                let (gained, lost) = self.adopt_reseat(reseat);
+                Ok(CompactReport { fork, summary_turn: outcome, gained, lost })
             }
         }
+    }
+
+    /// Take on the prompt the fork just opened under.
+    ///
+    /// **Only after the fork has landed.** Until then this harness is still
+    /// speaking the old prompt, and a `self.prefix` that ran ahead of the
+    /// transcript would make every later turn build the wrong bytes — the same
+    /// ordering `reseat` spells out at its own swap.
+    /// Returns what the announced tool list gained and lost, for the report.
+    pub fn adopt_reseat(
+        &mut self,
+        reseat: Option<(StablePrefix, String)>,
+    ) -> (Vec<String>, Vec<String>) {
+        let Some((prefix, id)) = reseat else {
+            return (Vec::new(), Vec::new());
+        };
+        let before = tool_names(&self.prefix.tools_json);
+        let after = tool_names(&prefix.tools_json);
+        self.prefix = prefix;
+        self.prefix_id = id;
+        (
+            after.difference(&before).cloned().collect(),
+            before.difference(&after).cloned().collect(),
+        )
     }
 
     /// **The fork.** Replace the resident history with one summary item, in a new

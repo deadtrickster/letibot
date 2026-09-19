@@ -495,3 +495,103 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         "a compaction refused before it was attempted appends nothing: {items:?}"
     );
 }
+
+/// **A compaction re-seats, so `/compact` then `/reseat` is no longer two
+/// summaries.**
+///
+/// Measured in the operator's own session before this landed. Their `…#t8` was
+/// five rows: row 0 the `/compact` summary, row 1 `/reseat` asking for a summary
+/// of a transcript that was already nothing but a summary, row 2 the model —
+/// with nothing to summarise — running `git log` instead, which tripped the "a
+/// summary is a record, not an action" guard and refused the re-seat, and rows 3
+/// and 4 the retry. Three summary turns and two cold prefills to pick up a tool
+/// list. Their reading: *"let compaction automatically reseat so new tools picked
+/// up"*.
+///
+/// This drives the half that needs no model server: the daemon comes back with a
+/// different prompt, the fork lands on THAT one, and a `/reseat` afterwards has
+/// nothing left to do.
+#[test]
+fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
+    let dir = TempDir::new("harnessd-compact-reseat");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-reseat-test";
+
+    // A conversation opened under one prompt, and compacted under it.
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+    // Nothing has changed since it opened, so there is nothing to re-seat and a
+    // compaction keeps the prompt it is speaking. This is the common case and it
+    // must stay free.
+    assert!(
+        h.reseat_target().expect("probing").is_none(),
+        "an unchanged daemon re-seats nothing"
+    );
+    let first = h
+        .fork_to_summary(&outcome("the first summary"), None, None, &[])
+        .expect("the first fork lands");
+    drop(h);
+
+    // The daemon comes back with a different system prompt — which is what a new
+    // tool does to the prefix, without needing a registry this test cannot build.
+    let mut cfg2 = config(&path, session_id);
+    cfg2.system = format!("{}\n\nAnd one more standing instruction.", cfg2.system);
+    let parts2 = load_parts(&cfg2);
+    let mut h2 = opened(&cfg2, &parts2);
+    // It resumed onto the STORED prompt, because that is what the tokens were
+    // produced under. The conversation is still speaking the old one.
+    assert_eq!(h2.transcript_id(), first.transcript_id);
+
+    let target = h2
+        .reseat_target()
+        .expect("probing")
+        .expect("the seated prompt differs, so there is something to re-seat onto");
+    let (next_prefix, next_id) = target.clone();
+    assert_ne!(
+        next_id, first.transcript_id,
+        "a new prefix row, not the old one"
+    );
+
+    // The compaction forks onto it — one summary, one fork, one cold prefill.
+    let second = h2
+        .fork_to_summary(
+            &outcome("the second summary"),
+            Some(&next_prefix),
+            Some(&next_id),
+            &[],
+        )
+        .expect("the re-seating fork lands");
+    h2.adopt_reseat(Some(target));
+
+    // The store agrees: the fork's own prefix row is the new one.
+    let store = Store::open(&path).expect("reopening");
+    let fork = store
+        .load_transcript(&second.transcript_id)
+        .expect("reading the fork");
+    assert_eq!(
+        fork.parent_transcript_id.as_deref(),
+        Some(first.transcript_id.as_str())
+    );
+    assert_eq!(fork.stable_prefix_id, next_id);
+
+    // **And this is the whole point**: a `/reseat` now has nothing to do, so it
+    // refuses before running a turn instead of asking for a summary of a summary.
+    let said = match h2.reseat() {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a re-seat after a re-seating compaction must find nothing to do"),
+    };
+    assert!(said.contains("nothing to re-seat"), "{said}");
+    assert!(
+        said.contains("every compaction now forks onto the seated prompt"),
+        "the refusal says why there is nothing to do: {said}"
+    );
+
+    // A resume lands on the re-seated fork and speaks the new prompt.
+    drop(h2);
+    let cfg3 = config(&path, session_id);
+    let parts3 = load_parts(&cfg3);
+    let h3 = opened(&cfg3, &parts3);
+    let r = h3.resumed().expect("a session with forks must resume");
+    assert_eq!(r.transcript_id, second.transcript_id);
+}

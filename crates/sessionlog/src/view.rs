@@ -127,7 +127,24 @@ pub struct SettledDecision {
     pub summary: String,
     pub outcome: DecisionOutcome,
     pub by: Decider,
+    /// **Why the DECIDER decided.** For an operator answer this is
+    /// `dead chose \`allow_once\` at the head`; for a boundary refusal it is the
+    /// rule and its evidence. It is not the oracle's reasoning, even when an
+    /// oracle advised — see [`SettledDecision::advice`], which is.
     pub basis: String,
+    /// **What the guard model said, when one was consulted.**
+    ///
+    /// Carried off the open decision at settle time, because the answer event
+    /// has only the `req_id` and this is the one fact about a supervised
+    /// decision that exists nowhere else afterwards: the corpus keeps it, but a
+    /// head is not reading the corpus.
+    ///
+    /// It was dropped here until 2026-09-19, and the card then labelled `basis`
+    /// as `oracle:` — so a permission the operator answered themselves rendered
+    /// THEIR OWN words under the oracle's name. `None` is honest: no oracle was
+    /// consulted, or the log was recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advice: Option<crate::event::ModelAdvice>,
     pub late: bool,
 }
 
@@ -458,15 +475,16 @@ impl SessionView {
                 late,
             } => {
                 // The removal is the scrub. There is no path that leaves a settled
-                // decision in `open`, so no snapshot can carry one. The `call_id` is
+                // decision in `open`, so no snapshot can carry one. Three things are
                 // read off the open decision **before** it is removed, because the
-                // answer event carries only the `req_id` and the head needs the call
-                // to put the outcome on the call's card rather than as a stray note.
-                let (summary, call_id) = self
+                // answer event carries only the `req_id`: the summary, the call to
+                // put the outcome on, and the ORACLE'S ADVICE — which the answer
+                // event does not carry and which nothing downstream can recover.
+                let (summary, call_id, advice) = self
                     .open
                     .iter()
                     .find(|d| &d.req_id == req_id)
-                    .map(|d| (d.summary.clone(), d.call_id.clone()))
+                    .map(|d| (d.summary.clone(), d.call_id.clone(), d.advice.clone()))
                     .unwrap_or_default();
                 self.open.retain(|d| &d.req_id != req_id);
                 self.settled.push(SettledDecision {
@@ -476,6 +494,7 @@ impl SessionView {
                     outcome: outcome.clone(),
                     by: by.clone(),
                     basis: basis.clone(),
+                    advice,
                     late: *late,
                 });
                 let over = self
