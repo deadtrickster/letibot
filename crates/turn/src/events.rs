@@ -57,6 +57,21 @@ pub enum TurnEvent {
         turn_id: String,
         progress: PromptProgress,
     },
+    /// The server's own generation counter, one event per frame that advanced it.
+    ///
+    /// The generation half of liveness, paired with [`TurnEvent::PromptProgress`]:
+    /// a head watching a turn tells a hang from a model that is still emitting by
+    /// whether this number moves. That is exactly the case a long tool-call write
+    /// is — the markup arrives on [`DeltaTarget::ToolCall`], which no default view
+    /// renders as prose, so the screen is static while the counter climbs.
+    ///
+    /// The value is the server's `tokens_predicted`, not a count of what we
+    /// accumulated: the accumulator's length equals it only while every frame has
+    /// been accountable, and the moment that stops, the turn is being refused.
+    TokensGenerated {
+        turn_id: String,
+        tokens: u64,
+    },
     Delta {
         turn_id: String,
         target: DeltaTarget,
@@ -160,6 +175,7 @@ fn kind_of(e: &TurnEvent) -> &'static str {
     match e {
         TurnEvent::TurnStarted { .. } => "TurnStarted",
         TurnEvent::PromptProgress { .. } => "PromptProgress",
+        TurnEvent::TokensGenerated { .. } => "TokensGenerated",
         TurnEvent::Delta { .. } => "Delta",
         TurnEvent::ToolCallProposed { .. } => "ToolCallProposed",
         TurnEvent::TranscriptAppended { .. } => "TranscriptAppended",
@@ -241,7 +257,9 @@ mod tests {
 /// restaged row as `TranscriptAppended`, and a head shows a placeholder for an
 /// item id and waits for a body that never comes:
 ///
-///     [tool_result — waiting for the body of …#compact-batch-0.66]
+/// ```text
+/// [tool_result — waiting for the body of …#compact-batch-0.66]
+/// ```
 ///
 /// Passing [`NullSink`] instead fixed that and broke the other half: a scratchpad
 /// is a large prompt and prefilling it takes minutes, during which the head had

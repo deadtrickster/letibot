@@ -1750,7 +1750,11 @@ mod tests {
             TranscriptItem::User {
                 parts: vec![letibot_transcript::UserPart::Text { text: "hello".into() }],
             },
-            TranscriptItem::Reasoning { text: "think".into(), field: ReasoningField::Inline },
+            TranscriptItem::Reasoning {
+                text: "think".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
             TranscriptItem::SegmentMark {
                 segment_id: "s0".into(),
                 label: "l".into(),

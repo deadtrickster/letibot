@@ -57,6 +57,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
     match event {
         // Ephemeral: a progress frame from four minutes ago is a lie about now.
         SessionEvent::PromptProgress { .. } => true,
+        // Ephemeral, the same way: the counter's durable residue is
+        // `TurnFinished`'s `usage.predicted_tokens`, and a count from a turn that
+        // has ended is a state that is no longer true.
+        SessionEvent::TokensGenerated { .. } => true,
         // Ephemeral, and worse: partial tool output replayed reads as new output.
         SessionEvent::ToolProgress { .. } => true,
         // An open question. Settled ones are dropped, open ones are rescued.
@@ -125,6 +129,8 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
 pub struct ScrubReport {
     /// Prefill progress frames dropped as stale.
     pub prompt_progress: u64,
+    /// Generation counters dropped as stale.
+    pub tokens_generated: u64,
     /// Partial tool output dropped so it is not acted on twice.
     pub tool_progress: u64,
     /// Decision prompts dropped because the decision had already settled. This is
@@ -135,7 +141,10 @@ pub struct ScrubReport {
 
 impl ScrubReport {
     pub fn total(&self) -> u64 {
-        self.prompt_progress + self.tool_progress + self.settled_decisions
+        self.prompt_progress
+            + self.tokens_generated
+            + self.tool_progress
+            + self.settled_decisions
     }
 
     pub fn is_empty(&self) -> bool {
@@ -191,6 +200,10 @@ impl StoredProjection {
                 self.report.prompt_progress += 1;
                 None
             }
+            SessionEvent::TokensGenerated { .. } => {
+                self.report.tokens_generated += 1;
+                None
+            }
             SessionEvent::ToolProgress { .. } => {
                 self.report.tool_progress += 1;
                 None
@@ -233,13 +246,14 @@ mod tests {
     use super::*;
     use crate::event::{Decider, OnTimeout};
     use crate::log::{LogBounds, SessionLog};
-    use crate::testing::{answered, progress, requested, tool_progress, warn};
+    use crate::testing::{answered, progress, requested, tokens_generated, tool_progress, warn};
 
     fn log_with_a_settled_decision() -> SessionLog {
         let mut log = SessionLog::new("s", LogBounds::default());
         log.append(warn("before"));
         log.append(requested("r1", "run `rm -rf /`"));
         log.append(progress("t1"));
+        log.append(tokens_generated("t1", 7));
         log.append(answered("r1", "deny"));
         log.append(tool_progress("c1", "12 of 400 lines"));
         log.append(warn("after"));
@@ -265,8 +279,9 @@ mod tests {
         );
         assert_eq!(report.settled_decisions, 1);
         assert_eq!(report.prompt_progress, 1);
+        assert_eq!(report.tokens_generated, 1);
         assert_eq!(report.tool_progress, 1);
-        assert_eq!(report.total(), 3);
+        assert_eq!(report.total(), 4);
     }
 
     #[test]
@@ -328,6 +343,7 @@ mod tests {
             let expected = matches!(
                 e,
                 SessionEvent::PromptProgress { .. }
+                    | SessionEvent::TokensGenerated { .. }
                     | SessionEvent::ToolProgress { .. }
                     | SessionEvent::DecisionRequested { .. }
             );

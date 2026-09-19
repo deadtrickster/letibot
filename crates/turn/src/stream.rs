@@ -260,6 +260,15 @@ impl IdAccumulator {
         &self.ids
     }
 
+    /// The server's own generation counter, as the last accepted frame reported it.
+    ///
+    /// Equal to [`Self::ids`] while every frame has been accountable — the
+    /// accumulator only accepts a frame whose ids match its advance — and the
+    /// number a head is shown while the turn runs.
+    pub fn n_decoded(&self) -> u64 {
+        self.n_decoded
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }

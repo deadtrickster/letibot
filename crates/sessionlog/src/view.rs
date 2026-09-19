@@ -237,6 +237,14 @@ pub struct TurnView {
     /// Live prefill state. `None` once the turn has ended — a progress frame is
     /// true only while it is happening.
     pub progress: Option<PromptProgress>,
+    /// The server's generation counter, as the last `TokensGenerated` reported it.
+    ///
+    /// Kept when the turn ends, unlike `progress`: a cumulative count stays true
+    /// afterwards, and its final value is the fact `TurnFinished`'s
+    /// `usage.predicted_tokens` states. `#[serde(default)]` for snapshots taken
+    /// before the field existed.
+    #[serde(default)]
+    pub tokens: u64,
     pub state: TurnState,
 }
 
@@ -347,6 +355,7 @@ impl SessionView {
                     calls: Vec::new(),
                     appended: Vec::new(),
                     progress: None,
+                    tokens: 0,
                     state: TurnState::Running,
                 });
             }
@@ -356,6 +365,16 @@ impl SessionView {
                     && &t.turn_id == turn_id
                 {
                     t.progress = Some(*progress);
+                }
+            }
+            SessionEvent::TokensGenerated { turn_id, tokens } => {
+                // State, not history: the latest count wins. The counter is
+                // monotonic in the stream, and `max` keeps a reordered or
+                // duplicated frame from moving it backwards.
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                {
+                    t.tokens = (*tokens).max(t.tokens);
                 }
             }
             SessionEvent::Delta {
@@ -741,6 +760,28 @@ mod tests {
             fold(&log).snapshot(3, 0).turn.unwrap().progress.is_none(),
             "a finished turn has no prefill in flight, so there is nothing true to show"
         );
+    }
+
+    #[test]
+    fn the_generation_counter_is_state_and_the_snapshot_carries_it() {
+        // A head that joins mid-turn has missed every frame so far; the snapshot
+        // is where the counter it missed comes from.
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        log.append(tokens_generated("t1", 10));
+        log.append(tokens_generated("t1", 25));
+        assert_eq!(
+            fold(&log).snapshot(2, 0).turn.unwrap().tokens,
+            25,
+            "the latest count wins"
+        );
+        // A count for another turn does not move it.
+        log.append(tokens_generated("t2", 3));
+        assert_eq!(fold(&log).snapshot(3, 0).turn.unwrap().tokens, 25);
+        // Unlike `progress`, the count stays true when the turn ends: its final
+        // value is the fact `TurnFinished`'s usage states.
+        log.append(turn_finished("t1"));
+        assert_eq!(fold(&log).snapshot(4, 0).turn.unwrap().tokens, 25);
     }
 
     #[test]

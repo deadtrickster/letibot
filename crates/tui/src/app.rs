@@ -473,10 +473,18 @@ struct TurnPane {
     /// recorded session must show the same elapsed time as the one that watched it.
     started_ms: u64,
     last_ms: u64,
-    /// Characters of visible answer so far. Not tokens: this head never sees a
-    /// token count until `TurnFinished`, and printing a character count as though
-    /// it were tokens is the kind of number that gets quoted back later.
+    /// Characters of visible answer so far. The fallback count: a head shows it
+    /// only while the server's own token counter has not spoken, which is the
+    /// `messages` backend's turns — that seam carries no token count — and logs
+    /// recorded before `TokensGenerated` existed.
     out_chars: usize,
+    /// The server's own generation counter, as the last `TokensGenerated`
+    /// reported it. Zero until the first frame that advanced it arrives.
+    ///
+    /// This is the number that tells a hang from a model that is still emitting:
+    /// it moves on every frame, on every channel — including the tool-call markup
+    /// no default view renders — while a dead connection moves nothing.
+    tokens: u64,
     /// The `ts` of the first and last `Delta { target: Reasoning }`.
     ///
     /// `card::reasoning` renders `Thought for 4.2s`, and this is where the 4.2
@@ -1414,6 +1422,9 @@ impl App {
                 // finished turn, where the whole reply appeared above itself.
                 appended: t.appended,
                 out_chars: t.text.chars().count(),
+                // The counter a head that joined mid-turn has missed: the snapshot
+                // carries the latest one, and the live frames carry the rest.
+                tokens: t.tokens,
                 ..TurnPane::default()
             };
             // The snapshot carries the accumulated text **once**. Everything after
@@ -1570,6 +1581,19 @@ impl App {
                 // Shown on the status line, not in the transcript — which is what a
                 // progress frame is for. It counts as rendered because it does
                 // change the screen.
+                Disposition::Rendered
+            }
+            SessionEvent::TokensGenerated { turn_id, tokens } => {
+                let Some(t) = self.turn.as_mut() else {
+                    return Disposition::Filtered;
+                };
+                if t.turn_id != turn_id {
+                    return Disposition::Filtered;
+                }
+                t.tokens = tokens.max(t.tokens);
+                // Shown on the status line, not in the transcript. It counts as
+                // rendered because the counter it moves is on the screen, and it
+                // counts as liveness for the stuck line the same way a delta does.
                 Disposition::Rendered
             }
             SessionEvent::Delta {
@@ -5461,6 +5485,19 @@ impl App {
         };
         let p = self.cfg.palette();
         let spin = p.paint(Role::Pending, &progress::spinner(self.now_ms).to_string());
+        // The count, in the dim register: the server's own token counter when it
+        // has spoken, and the character count where it has not — a `messages`
+        // backend turn, whose seam carries no token count, or a log recorded
+        // before `TokensGenerated` existed. Nothing yet is no field at all: a
+        // zero is a zero field wearing a measurement's clothes.
+        let count = if t.tokens > 0 {
+            Some(format!(" · {} tok", progress::thousands(t.tokens)))
+        } else if t.out_chars > 0 {
+            Some(format!(" · {} chars", progress::thousands(t.out_chars as u64)))
+        } else {
+            None
+        };
+        let count = count.map(|c| p.paint(Role::Faint, &c));
         match &t.progress {
             Some(pp) if pp.total > 0 && pp.processed < pp.total => {
                 let pf = progress::Prefill {
@@ -5474,26 +5511,22 @@ impl App {
                     progress::prefill_line(&pf, w.saturating_sub(6), p),
                 )
             }
-            // Prefill finished, generation running. The prompt's size and cache
-            // are on the header — live prefill numbers win there, and they win
-            // for the whole turn, not only while prefill runs — so this carries
-            // only what it alone knows: how much has arrived. Nothing yet is no
-            // field at all: `0 chars` is a zero field wearing a measurement's
-            // clothes. One **compact** string, for the border to pin right —
-            // this used to `split_row` into a justified full-width line, which
-            // as a legend put `Responding` at the left edge and clipped the
-            // count it was carrying.
-            Some(pp) if pp.total > 0 => {
+            // Generation running — prefill finished, or never reported at all,
+            // which is the `messages` backend's turns. The prompt's size and
+            // cache are on the header — live prefill numbers win there, and they
+            // win for the whole turn, not only while prefill runs — so this
+            // carries only what it alone knows: how much has arrived. One
+            // **compact** string, for the border to pin right — this used to
+            // `split_row` into a justified full-width line, which as a legend
+            // put `Responding` at the left edge and clipped the count it was
+            // carrying.
+            _ => {
                 let mut s = p.paint(Role::Pending, &format!("{spin} Responding{since}"));
-                if t.out_chars > 0 {
-                    s.push_str(&p.paint(
-                        Role::Faint,
-                        &format!(" · {} chars", progress::thousands(t.out_chars as u64)),
-                    ));
+                if let Some(c) = count {
+                    s.push_str(&c);
                 }
                 s
             }
-            _ => p.paint(Role::Pending, &format!("{spin} Responding{since}")),
         }
     }
 
@@ -10806,6 +10839,60 @@ mod tests {
         // full-width line, which as a legend put `Responding` at the left edge
         // and clipped the count it was carrying.
         assert!(!line.contains("  "), "no justification padding: {line}");
+    }
+
+    #[test]
+    fn the_token_counter_rides_the_status_line_and_wins_over_the_char_count() {
+        // The server's own counter is the liveness fact: it moves on every
+        // frame, on every channel — including the tool-call markup no default
+        // view renders — while a dead connection moves nothing. That is the
+        // difference between a hang and a model that is still emitting.
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::PromptProgress {
+                turn_id: "t1".into(),
+                progress: letibot_sessionlog::event::PromptProgress {
+                    total: 100,
+                    cache: 0,
+                    processed: 100,
+                    time_ms: 10,
+                },
+            },
+        )));
+        // Nothing yet: no count at all, the same rule the char count obeys.
+        let line = a.turn_status(120);
+        assert!(!line.contains("tok"), "{line}");
+        assert!(!line.contains("chars"), "{line}");
+        // The counter arrives and is the number shown.
+        a.apply(ServerFrame::Event(env(3, testing::tokens_generated("t1", 1234))));
+        let line = a.turn_status(120);
+        assert!(line.contains("1234 tok"), "{line}");
+        // Text arrives too: the token count still wins, because it is the
+        // measurement and the characters are the fallback.
+        a.apply(ServerFrame::Event(env(4, testing::delta("t1", "hello"))));
+        let line = a.turn_status(120);
+        assert!(line.contains("1234 tok"), "{line}");
+        assert!(!line.contains("chars"), "{line}");
+        // A count for another turn does not move it.
+        a.apply(ServerFrame::Event(env(5, testing::tokens_generated("t2", 9))));
+        let line = a.turn_status(120);
+        assert!(line.contains("1234 tok"), "{line}");
+    }
+
+    #[test]
+    fn a_head_that_joins_mid_turn_gets_the_counter_it_missed() {
+        // The live frames carry the increments; the snapshot carries the count
+        // a late head never saw, so its status line starts where the turn is,
+        // not at zero.
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(testing::tokens_generated("t1", 42));
+        let mut a = app();
+        a.apply(hello("s", vec![], hub.snapshot()));
+        let line = a.turn_status(120);
+        assert!(line.contains("42 tok"), "{line}");
     }
 
     #[test]

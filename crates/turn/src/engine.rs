@@ -1300,6 +1300,7 @@ impl TurnEngine<'_> {
                 });
             }
 
+            let before = acc.n_decoded();
             let fresh = match acc.push(&chunk) {
                 Ok(ids) => ids.to_vec(),
                 // T23. The guard is unchanged: this frame's ids are still refused,
@@ -1335,6 +1336,17 @@ impl TurnEngine<'_> {
                     return Ok(Flow::Stop);
                 }
             };
+
+            // The server's own counter, one event per frame that advanced it. The
+            // generation half of liveness: a head tells a hang from a model that is
+            // still emitting by whether this moves, which is exactly the case a
+            // long tool-call write is, where no visible text moves at all.
+            if acc.n_decoded() > before {
+                sink.emit(TurnEvent::TokensGenerated {
+                    turn_id: turn_id.to_string(),
+                    tokens: acc.n_decoded(),
+                });
+            }
 
             // The text this chunk carries, consumed left to right as its ids are
             // walked. Never re-derived from the ids: the server buffers an

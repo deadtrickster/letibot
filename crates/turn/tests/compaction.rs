@@ -307,8 +307,12 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         .iter()
         .filter(|i| match i {
             TranscriptItem::User { parts } => match &parts[..] {
-                [UserPart::Text { text }] => text
-                    .starts_with("Your previous turn hit the output token limit"),
+                [UserPart::Text { text }] => {
+                    // The length notice, not the unfinished-reasoning one: both
+                    // open the same sentence, and this is the phrase that is
+                    // only in the former.
+                    text.contains("spent its whole output on reasoning")
+                }
                 _ => false,
             },
             _ => false,
@@ -428,7 +432,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         panic!("the notice is text, got {:?}", parts[0]);
     };
     assert_eq!(text, letibot_turn::UNFINISHED_REASONING_NOTICE);
-    assert!(text.contains("put the summary before the reasoning"), "{text}");
+    assert!(text.contains("before any reasoning"), "{text}");
 
     // And the retry's answer is the last item, one turn's worth of rows after
     // the notice — the region grew by the instruction, the notice and the

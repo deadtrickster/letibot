@@ -391,6 +391,17 @@ pub enum SessionEvent {
         #[serde(flatten)]
         progress: PromptProgress,
     },
+    /// The server's own generation counter, one per frame that advanced it.
+    ///
+    /// The generation half of liveness, paired with [`Self::PromptProgress`]: a
+    /// head tells a hang from a model that is still emitting by whether this
+    /// moves, which is exactly the case a long tool-call write is, where no
+    /// visible text moves at all. Its durable residue is `TurnFinished`'s
+    /// `usage.predicted_tokens`, so it is interactive — see [`crate::scrub`].
+    TokensGenerated {
+        turn_id: String,
+        tokens: u64,
+    },
     Delta {
         turn_id: String,
         target: DeltaTarget,
@@ -874,6 +885,7 @@ impl SessionEvent {
         match self {
             SessionEvent::TurnStarted { .. } => "TurnStarted",
             SessionEvent::PromptProgress { .. } => "PromptProgress",
+            SessionEvent::TokensGenerated { .. } => "TokensGenerated",
             SessionEvent::Delta { .. } => "Delta",
             SessionEvent::ToolCallProposed { .. } => "ToolCallProposed",
             SessionEvent::DecisionRequested { .. } => "DecisionRequested",

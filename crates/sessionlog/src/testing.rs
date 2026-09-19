@@ -40,6 +40,13 @@ pub fn progress(turn_id: &str) -> SessionEvent {
     }
 }
 
+pub fn tokens_generated(turn_id: &str, tokens: u64) -> SessionEvent {
+    SessionEvent::TokensGenerated {
+        turn_id: turn_id.into(),
+        tokens,
+    }
+}
+
 pub fn delta(turn_id: &str, text: &str) -> SessionEvent {
     SessionEvent::Delta {
         turn_id: turn_id.into(),
@@ -184,6 +191,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
     vec![
         turn_started("t1"),
         progress("t1"),
+        tokens_generated("t1", 42),
         delta("t1", "x"),
         proposed("t1", "c1", "read"),
         requested("r1", "do it"),

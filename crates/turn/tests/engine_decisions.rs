@@ -1295,3 +1295,38 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
          the ledger grew by {grew} tokens"
     );
 }
+
+/// The server's own counter rides the stream: one event per frame that
+/// advanced it, in order, and the value is the server's `tokens_predicted` —
+/// the number a head shows to tell a hang from a model that is still
+/// emitting.
+#[test]
+fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let thought = ids_of("The user wants the days of the week.");
+    let answer = ids_of("Monday");
+    let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "counter");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("the days, please")], &mut sink)
+        .unwrap();
+    engine.run_turn(&mut session, &mut sink).unwrap();
+
+    let counts: Vec<u64> = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            TurnEvent::TokensGenerated { tokens, .. } => Some(*tokens),
+            _ => None,
+        })
+        .collect();
+    // One per generated token, in order, from the first to the turn's total.
+    // The progress frame advanced nothing and emitted nothing, and the final
+    // frame carries no ids, so the last event is the total, not past it.
+    let total = (thought.len() + answer.len() + 2) as u64;
+    assert_eq!(counts, (1..=total).collect::<Vec<_>>());
+}

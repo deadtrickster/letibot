@@ -78,10 +78,12 @@
 //! operator's own `providers.toml` carries the two rates. So a cold prompt costs
 //! something on both sides. What differs is the CURRENCY.
 //!
-//!     local llama.cpp   a miss costs TIME    200-375 tok/s -> ~10 minutes
-//!                                            on a 240k prompt
-//!     DeepSeek          a miss costs MONEY   0.28 vs 0.028 per Mtok ->
-//!                                            $0.067 against $0.0067
+//! ```text
+//! local llama.cpp   a miss costs TIME    200-375 tok/s -> ~10 minutes
+//!                                    on a 240k prompt
+//! DeepSeek          a miss costs MONEY   0.28 vs 0.028 per Mtok ->
+//!                                    $0.067 against $0.0067
+//! ```
 //!
 //! Ten minutes before a word is generated disqualifies a strategy. Six cents
 //! does not. And a cloud provider takes MESSAGES rather than tokens

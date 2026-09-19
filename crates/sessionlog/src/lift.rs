@@ -49,6 +49,10 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 time_ms: progress.time_ms,
             },
         },
+        TurnEvent::TokensGenerated { turn_id, tokens } => SessionEvent::TokensGenerated {
+            turn_id,
+            tokens,
+        },
         TurnEvent::Delta {
             turn_id,
             target,
@@ -218,5 +222,18 @@ mod tests {
             hub.publish(from_turn_event(e));
         }
         assert_eq!(hub.head_seq(), 2);
+    }
+
+    #[test]
+    fn the_generation_counter_lifts_to_section_4_5() {
+        let s = from_turn_event(TurnEvent::TokensGenerated {
+            turn_id: "t1".into(),
+            tokens: 42,
+        });
+        assert_eq!(s.kind(), "TokensGenerated");
+        assert!(
+            matches!(s, SessionEvent::TokensGenerated { tokens: 42, .. }),
+            "the counter is the server's number, lifted verbatim: {s:?}"
+        );
     }
 }
