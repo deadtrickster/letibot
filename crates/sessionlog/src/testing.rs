@@ -159,6 +159,7 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             prompt_tokens: 1000,
             cached_tokens: 900,
             predicted_tokens: 42,
+                    cost_micros_usd: None,
         },
         timings: Timings {
             prompt_ms: 40.0,

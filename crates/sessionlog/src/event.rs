@@ -129,6 +129,20 @@ pub struct Usage {
     pub prompt_tokens: u64,
     pub cached_tokens: u64,
     pub predicted_tokens: u64,
+    /// **What this turn cost, in micro-USD.** `None` on the local server, which
+    /// is free, and on a metered model nothing prices — unpriced and free are
+    /// different and only one of them is a number.
+    ///
+    /// The daemon computed this all along and kept it: `micros_usd` was read in
+    /// exactly one place, the one-shot `--prompt` printer in `harnessd.rs`, so a
+    /// session driven from a head never saw it. The operator, on a conversation
+    /// answered by deepseek: *"still no money"* — correctly, because the meter
+    /// existed only for a surface they were not using.
+    ///
+    /// `#[serde(default)]` so an older daemon's frame still reads: absent is
+    /// `None`, which renders as nothing rather than as zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micros_usd: Option<u64>,
 }
 
 impl Usage {
@@ -1106,6 +1120,7 @@ mod tests {
             prompt_tokens: 100,
             cached_tokens: 90,
             predicted_tokens: 5,
+                    cost_micros_usd: None,
         };
         assert_eq!(u.f_sim(), Some(0.9));
     }
