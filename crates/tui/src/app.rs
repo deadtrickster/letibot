@@ -783,6 +783,12 @@ pub struct App {
     /// alone because a second-granularity mtime can miss two writes in one
     /// second, and a length change catches most of those.
     repo_todos_at: Option<(std::time::SystemTime, u64)>,
+    /// Which row of the repo's queue the cursor is on, and whether its body is
+    /// unfolded. The same two acts the jobs and subagent panes keep separate —
+    /// arrows move, enter acts — because both of those got them today and a
+    /// third spelling would be a third thing to learn.
+    repo_sel: usize,
+    repo_open: bool,
     /// The head's own instrumentation, as a screen: `/status`.
     ///
     /// Every counter it shows was added because something was measured going
@@ -1050,6 +1056,8 @@ impl App {
             todos: Vec::new(),
             repo_todos: None,
             repo_todos_at: None,
+            repo_sel: 0,
+            repo_open: false,
             stats: false,
             quit: false,
             redraw: false,
@@ -2855,6 +2863,49 @@ impl App {
             }
         }
 
+        // **An open todos pane owns Up and Down, and Enter unfolds the item.**
+        //
+        // The items carry the detail a TODO.md puts under them — the commit a
+        // vendoring pins, the `Deps:` that says what blocks it — and the pane
+        // showed the first line only, so an item trailed off mid-sentence. Arrows
+        // move, Enter acts: the same two the jobs and subagent panes use.
+        if self.todos_pane
+            && let Some(rows) = &self.repo_todos
+        {
+            // Headings roll up the rows beneath them and have nothing to unfold,
+            // so the cursor only stops on items.
+            let stops: Vec<usize> = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.item)
+                .map(|(i, _)| i)
+                .collect();
+            if !stops.is_empty() {
+                let at = stops.iter().position(|i| *i >= self.repo_sel).unwrap_or(0);
+                match k {
+                    Key::Up => {
+                        self.repo_sel = stops[at.checked_sub(1).unwrap_or(stops.len() - 1)];
+                        self.repo_open = false;
+                        self.redraw = true;
+                        return None;
+                    }
+                    Key::Down => {
+                        self.repo_sel = stops[(at + 1) % stops.len()];
+                        self.repo_open = false;
+                        self.redraw = true;
+                        return None;
+                    }
+                    Key::Enter if self.editor.text().is_empty() => {
+                        self.repo_sel = stops[at];
+                        self.repo_open = !self.repo_open;
+                        self.redraw = true;
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // **An open jobs pane owns Up and Down, and Enter reads the job's output.**
         //
         // The pane already drew `N out` for every row; until now that count was
@@ -4363,7 +4414,7 @@ impl App {
         } else if self.mode_picker {
             "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.todos_pane {
-            "the model's plan above, the repo's queue below · esc closes"
+            "the model's plan above · ↑↓ then enter unfolds an item below · esc closes"
         } else if self.config_pane {
             "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
@@ -5215,14 +5266,32 @@ impl App {
                 if lines.is_empty() {
                     out.push(dim(&self.cfg, "    no sections found."));
                 }
-                for (indent, mark, text) in lines {
-                    let pad = " ".repeat(*indent);
-                    out.push(match mark {
-                        Some(m) => format!("{pad}{} {text}", m.painted(&self.cfg)),
+                // Only the items take a cursor: a heading is a roll-up of the
+                // rows under it and there is nothing to unfold on one.
+                for (i, r) in lines.iter().enumerate() {
+                    let here = r.item && i == self.repo_sel;
+                    let pad = " ".repeat(r.indent.saturating_sub(2));
+                    let cursor = if here { "▸ " } else { "  " };
+                    let open = here && self.repo_open;
+                    // `···` says an item has more without saying how much — the
+                    // count would be lines, which is not a unit anybody cares
+                    // about, and the only useful answer is to look.
+                    let more = if !r.body.is_empty() && !open { " ···" } else { "" };
+                    out.push(match r.mark {
+                        Some(m) => format!(
+                            "{pad}{cursor}{} {}{more}",
+                            m.painted(&self.cfg),
+                            r.text
+                        ),
                         // A heading with no items: no box to paint, and the text
                         // is the operator's prose rather than a task.
-                        None => dim(&self.cfg, &format!("{pad}{text}")),
+                        None => dim(&self.cfg, &format!("{pad}{cursor}{}", r.text)),
                     });
+                    if open {
+                        for l in &r.body {
+                            out.push(dim(&self.cfg, &format!("{pad}        {l}")));
+                        }
+                    }
                 }
             }
         }
@@ -6582,7 +6651,13 @@ fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
         Err(e) => {
-            return vec![(4, None, format!("(no TODO.md in {workspace}: {e})"))];
+            return vec![TodoRow {
+                indent: 4,
+                mark: None,
+                text: format!("(no TODO.md in {workspace}: {e})"),
+                body: Vec::new(),
+                item: false,
+            }];
         }
     };
     render_todo_md(&body)
@@ -6646,36 +6721,96 @@ impl TodoMark {
 /// BEFORE the mark, and the mark is the part the pane paints — a row that
 /// arrived pre-indented painted as `[x]     Phase 0` with the colour in the
 /// wrong place entirely. Split so the parse is testable without a palette.
-type TodoRow = (usize, Option<TodoMark>, String);
+/// One rendered row: how far it is indented, the mark to paint, the text, and
+/// the item's own continuation lines when it has any.
+///
+/// The indent is carried rather than baked into the text because it belongs
+/// BEFORE the mark, and the mark is the part the pane paints — a row that
+/// arrived pre-indented painted as `[x]     Phase 0` with the colour in the
+/// wrong place entirely. Split so the parse is testable without a palette.
+struct TodoRow {
+    /// Columns before the mark. Carried rather than baked into the text because
+    /// it belongs BEFORE the mark, and the mark is the part the pane paints — a
+    /// pre-indented row painted as `[x]     Phase 0`, the colour in front of the
+    /// whitespace rather than on the box.
+    indent: usize,
+    /// `None` only for a heading with no checkboxes under it, which org does not
+    /// mark either.
+    mark: Option<TodoMark>,
+    text: String,
+    body: Vec<String>,
+    /// **A heading carries a mark too** — the roll-up of the rows beneath it —
+    /// so the mark cannot be what tells the two apart, and the cursor landed on
+    /// headings when it was. There is nothing to unfold on one.
+    item: bool,
+}
+
+/// One item as the file has it: its mark, its first line, and the continuation
+/// lines under it.
+///
+/// **The body was dropped**, so `T2 vendor yason + alexandria +
+/// trivial-gray-streams, pinned in` was the whole of what the pane showed — an
+/// item trailing off mid-sentence, with the commits it pins and the `Deps:` line
+/// that says what blocks it both gone. The operator, after the items were finally
+/// drawn at all: *"if a todo has some associated text? should i be able to expand
+/// it somehow?"*
+struct TodoItem {
+    mark: TodoMark,
+    head: String,
+    body: Vec<String>,
+}
 
 fn render_todo_md(body: &str) -> Vec<TodoRow> {
     let mut out: Vec<TodoRow> = Vec::new();
     let mut section: Option<String> = None;
-    let mut items: Vec<(TodoMark, String)> = Vec::new();
+    let mut items: Vec<TodoItem> = Vec::new();
 
-    let flush = |out: &mut Vec<TodoRow>, section: &Option<String>, items: &[(TodoMark, String)]| {
+    let flush = |out: &mut Vec<TodoRow>, section: &Option<String>, items: &[TodoItem]| {
         let Some(name) = section else { return };
         if items.is_empty() {
             // Not `[x]`: an empty section is one nobody has filled in, and org
             // does not mark it done either.
-            out.push((6, None, name.clone()));
+            out.push(TodoRow {
+                indent: 6,
+                mark: None,
+                text: name.clone(),
+                body: Vec::new(),
+                item: false,
+            });
             return;
         }
-        let done = items.iter().filter(|(m, _)| *m == TodoMark::Done).count();
+        let done = items.iter().filter(|i| i.mark == TodoMark::Done).count();
         // **Org's rule for a parent.** Every child done makes the parent done;
         // any child started makes it started; otherwise it is open.
         let roll = if done == items.len() {
             TodoMark::Done
-        } else if items.iter().any(|(m, _)| *m != TodoMark::Open) {
+        } else if items.iter().any(|i| i.mark != TodoMark::Open) {
             TodoMark::Doing
         } else {
             TodoMark::Open
         };
-        out.push((4, Some(roll), format!("{name}  [{done}/{}]", items.len())));
-        for (mark, text) in items {
-            out.push((8, Some(*mark), text.clone()));
+        out.push(TodoRow {
+            indent: 4,
+            mark: Some(roll),
+            text: format!("{name}  [{done}/{}]", items.len()),
+            body: Vec::new(),
+            item: false,
+        });
+        for i in items {
+            out.push(TodoRow {
+                indent: 8,
+                mark: Some(i.mark),
+                text: i.head.clone(),
+                body: i.body.clone(),
+                item: true,
+            });
         }
     };
+
+    // Whether the last item is still collecting continuation lines. A blank line
+    // closes it: two items separated by one would otherwise merge, and the prose
+    // between a heading and its list would land on whatever came before.
+    let mut collecting = false;
 
     for line in body.lines() {
         // `##` and deeper: `###` is a subsection and its items belong to it, not
@@ -6684,8 +6819,27 @@ fn render_todo_md(body: &str) -> Vec<TodoRow> {
             flush(&mut out, &section, &items);
             section = Some(name.trim().to_string());
             items.clear();
+            collecting = false;
         } else if let Some((mark, text)) = TodoMark::of(line) {
-            items.push((mark, strip_markup(text)));
+            items.push(TodoItem {
+                mark,
+                head: strip_markup(text),
+                body: Vec::new(),
+            });
+            collecting = true;
+        } else if line.trim().is_empty() {
+            collecting = false;
+        } else if collecting
+            && (line.starts_with(' ') || line.starts_with('\t'))
+            && let Some(last) = items.last_mut()
+        {
+            // An indented line under an item is that item's detail — which is
+            // where a TODO.md puts the commit it pins and the `Deps:` that says
+            // what blocks it.
+            last.body.push(strip_markup(line.trim()));
+        } else {
+            // Anything at column zero that is not a checkbox ends the item.
+            collecting = false;
         }
     }
     flush(&mut out, &section, &items);
@@ -9367,12 +9521,15 @@ mod tests {
     fn todo_plain(body: &str) -> String {
         render_todo_md(body)
             .into_iter()
-            .map(|(indent, m, text)| {
-                let pad = " ".repeat(indent);
-                match m {
-                    Some(m) => format!("{pad}{} {text}", m.glyph()),
-                    None => format!("{pad}{text}"),
-                }
+            .flat_map(|r| {
+                let pad = " ".repeat(r.indent);
+                let head = match r.mark {
+                    Some(m) => format!("{pad}{} {}", m.glyph(), r.text),
+                    None => format!("{pad}{}", r.text),
+                };
+                // The body too, so a test can assert what an unfolded item shows.
+                std::iter::once(head)
+                    .chain(r.body.into_iter().map(move |l| format!("{pad}    {l}")))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -9436,6 +9593,82 @@ mod tests {
         );
         assert!(!all.contains("Dependency graph  ["), "and carries no cookie: {all}");
         assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
+    }
+
+    /// **An item's detail is under it in the file and was thrown away.**
+    ///
+    /// `- [x] **T2** vendor yason …, pinned in` continues on the next line with
+    /// the commits it pins; the pane showed the first line and stopped, so the
+    /// item trailed off mid-sentence. The operator: *"if a todo has some
+    /// associated text? should i be able to expand it somehow?"*
+    #[test]
+    fn an_items_continuation_lines_are_kept_and_unfold_on_enter() {
+        // Written with explicit newlines rather than `\`-continuations: that
+        // escape eats the leading whitespace of the next line, which is exactly
+        // the indentation this test is about.
+        let body = concat!(
+            "## Phase 0\n",
+            "\n",
+            "- [x] **T1** vendor the deps, pinned in\n",
+            "  `scripts/bootstrap.sh` (yason `0c84b29`).\n",
+            "  Deps: none.\n",
+            "- [ ] **T2** no body at all\n",
+            "\n",
+            "Prose after a blank line belongs to nobody.\n",
+        );
+        // The parse keeps it.
+        let all = todo_plain(body);
+        assert!(all.contains("scripts/bootstrap.sh (yason 0c84b29)."), "{all}");
+        assert!(all.contains("Deps: none."), "{all}");
+        assert!(
+            !all.contains("Prose after a blank"),
+            "a blank line closes the item: {all}"
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-body-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(dir.join("TODO.md"), body).expect("write");
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+
+        // Folded: the first line, and a mark that there is more. T2 has no body
+        // and so carries no mark — `···` means "there is more", not "this is an
+        // item".
+        let screen = a.screen(110, 40).join("\n");
+        assert!(screen.contains("T1 vendor the deps, pinned in ···"), "{screen}");
+        assert!(screen.contains("T2 no body at all"), "{screen}");
+        assert!(!screen.contains("T2 no body at all ···"), "{screen}");
+        assert!(!screen.contains("bootstrap.sh"), "folded hides it: {screen}");
+
+        // The cursor starts on the first item, and Enter unfolds it.
+        assert_eq!(a.key(Key::Enter), None);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(screen.contains("▸"), "the cursor is drawn: {screen}");
+        assert!(screen.contains("scripts/bootstrap.sh (yason 0c84b29)."), "{screen}");
+        assert!(screen.contains("Deps: none."), "{screen}");
+        assert!(!screen.contains("pinned in ···"), "unfolded drops the mark: {screen}");
+
+        // Enter again folds it; an arrow moves on and folds what it leaves.
+        a.key(Key::Enter);
+        assert!(!a.screen(110, 40).join("\n").contains("bootstrap.sh"));
+        a.key(Key::Enter);
+        a.key(Key::Down);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(
+            !screen.contains("bootstrap.sh"),
+            "moving off an item folds it: {screen}"
+        );
+
+        // Down wraps past the last item rather than stopping, and never lands on
+        // a heading — there is nothing to unfold on one.
+        a.key(Key::Down);
+        assert_eq!(a.repo_sel, 1, "wrapped to the first ITEM, not to the heading");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **Both halves of the pane speak one vocabulary.** The operator, on seeing
