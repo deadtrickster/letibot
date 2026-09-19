@@ -111,7 +111,7 @@ use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
-use crate::events::{EventSink, ProgressOnly};
+use crate::events::{EventSink, NullSink};
 use crate::length::EmptyReason;
 
 /// What is appended as the compaction turn's instruction.
@@ -465,9 +465,29 @@ pub enum OverrunPlan {
     Hopeless { prefix_tokens: u64, window: u64 },
 }
 
-/// Room a summary turn is given to write in. Generous on purpose: the failure
-/// being avoided is a summary that runs out, and the measured summaries are a
-/// couple of thousand tokens.
+/// **What decides overrun: the least room the in-place summary needs.**
+///
+/// This is NOT the same number as the trigger's headroom, and using one number
+/// for both was the bug that sent every ordinary compaction down the slow path.
+/// The trigger fires at `resident + headroom >= window` with headroom 16384; the
+/// overrun test was `resident + 16384 > window`; so at the trigger point -- the
+/// normal case, 247301 of 262144 with 14.8k of room -- overrun was true by
+/// construction and the in-session path never ran. Measured 2026-09-19 on the
+/// operator's leticl session: a compaction that used to take seconds became two
+/// cold scratchpad prefills, minutes each, with the head shown the scratchpad's
+/// token count as its own context. "compaction still extremely broken."
+///
+/// What the in-place summary actually needs is the instruction plus the record.
+/// Every compaction summary in the store is between 2107 and 5895 tokens, and the
+/// summary turn is handed a closed reasoning block so nothing is spent thinking.
+/// 8192 covers the largest seen with room to spare; below it, the 1754-token
+/// case that produced a truncated record is what overrun is for.
+pub const MIN_SUMMARY_ROOM: u64 = 8_192;
+
+/// Room a scratchpad summary turn is given to write in, when planning the halves.
+/// Generous on purpose, and separate from the decision above: the failure being
+/// avoided here is a half that runs out, and erring wide only costs a smaller
+/// tail.
 pub const WRITE_ROOM: u64 = 16_384;
 
 /// Slack on top, so a cut that only just works is not chosen. "with some margin".
@@ -475,7 +495,7 @@ const CUT_MARGIN: u64 = 8_192;
 
 pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> OverrunPlan {
     let resident = prefix_tokens + item_tokens.iter().sum::<u64>();
-    if resident + WRITE_ROOM <= window {
+    if resident + MIN_SUMMARY_ROOM <= window {
         return OverrunPlan::NotOverrun;
     }
     if prefix_tokens + WRITE_ROOM + CUT_MARGIN >= window {
@@ -542,6 +562,31 @@ mod overrun_planning {
     fn a_conversation_with_room_uses_the_ordinary_path() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(100).collect();
         assert_eq!(plan_overrun(&items, P, W), OverrunPlan::NotOverrun);
+    }
+
+    /// **Past the trigger line with room to spare is the ordinary case.** The trigger
+    /// fires at `resident + headroom >= window`, so every compaction arrives past
+    /// that line; the wall lands wherever the last round stopped. The operator's
+    /// leticl session on 2026-09-19: 247301 of 262144, 14.8k of room, every
+    /// summary in the store under 6k -- and it was sent to the scratchpads.
+    #[test]
+    fn arriving_past_the_trigger_with_room_for_a_summary_is_not_an_overrun() {
+        let resident = 247_301u64;
+        let items: Vec<u64> = std::iter::repeat(1_000).take(((resident - P) / 1_000) as usize).collect();
+        assert_eq!(
+            plan_overrun(&items, P, W),
+            OverrunPlan::NotOverrun,
+            "14.8k of room is a normal compaction; the in-session summary runs there"
+        );
+    }
+
+    /// And the case overrun exists for stays an overrun: 1754 tokens of room, the
+    /// one that produced a record cut off mid-expression.
+    #[test]
+    fn the_case_that_truncated_a_summary_is_still_an_overrun() {
+        let resident = 260_390u64;
+        let items: Vec<u64> = std::iter::repeat(1_000).take(((resident - P) / 1_000) as usize).collect();
+        assert!(matches!(plan_overrun(&items, P, W), OverrunPlan::Cut { .. }));
     }
 
     /// The measured case: arrives at ~260k of a 262k window, so the in-place
@@ -683,7 +728,13 @@ fn summarise_one(
     // their screen for a transcript that is never persisted. The PREFILL is worth
     // showing -- it is minutes long and is the only honest answer to "what is it
     // doing".
-    let mut quiet = ProgressOnly(sink);
+    // Nothing to the head. Forwarding `PromptProgress` from here looked like a fix
+    // for "tui doesnt show any prefill" and was worse: the head drew the scratch
+    // prompt's token count as the SESSION's context, and the operator watched it
+    // sit at "69k" over a 240k conversation that had not changed. Progress is the
+    // caller's to report, in words, per half.
+    let _ = sink;
+    let mut quiet = NullSink;
     let mut scratch = engine.open(scratch_id, prefix).map_err(TurnFailure::from)?;
     scratch.append_items(engine, slice, &mut quiet).map_err(TurnFailure::from)?;
     let instruction = TranscriptItem::System {
@@ -746,7 +797,7 @@ fn summarise_one(
 /// room to work in.
 pub fn plan_fold(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Option<usize> {
     let total: u64 = item_tokens.iter().sum();
-    if prefix_tokens + total + WRITE_ROOM <= window {
+    if prefix_tokens + total + MIN_SUMMARY_ROOM <= window {
         return None;
     }
     let half = total / 2;
