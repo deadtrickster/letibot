@@ -595,3 +595,36 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
     let r = h3.resumed().expect("a session with forks must resume");
     assert_eq!(r.transcript_id, second.transcript_id);
 }
+
+/// **`/tools` names the gap between seated and announced.**
+///
+/// The registry is what this daemon seated; the prompt is what message zero
+/// announces, and it is fixed when a transcript starts. A tool seated after the
+/// conversation began is one the model has never been told about and cannot call
+/// — and the banner is no help, because the banner is computed from the registry.
+/// That gap is the operator's lost hour: *"i did letibot --stop and leticode
+/// --continue but still no exec"*.
+#[test]
+fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
+    let dir = TempDir::new("harnessd-tools-listing");
+    let path = dir.path().join("sessions.db");
+    let session_id = "tools-listing-test";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let h = opened(&cfg, &parts);
+
+    // A fresh session: the prompt was built from this registry a moment ago, so
+    // everything seated is announced and the listing says so plainly.
+    let said = h.tools_lines().join("\n");
+    assert!(said.contains("tool(s) seated in this session"), "{said}");
+    assert!(
+        said.contains("everything seated is callable"),
+        "a fresh session has no gap: {said}"
+    );
+    assert!(
+        !said.contains("NOT ANNOUNCED"),
+        "and nothing is flagged: {said}"
+    );
+    // Every seated tool is on its own line with its access class.
+    assert!(said.contains("(read)"), "{said}");
+}

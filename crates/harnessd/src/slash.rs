@@ -57,6 +57,8 @@ pub enum Slash {
     /// `/job` lists this session's background jobs; `/job ID` reads what one
     /// wrote. The pane counted those bytes and could not show them.
     Job { job: Option<String>, offset: u64 },
+    /// **What this conversation can call**, and what it only looks like it can.
+    Tools,
     Models,
     ModelsSet {
         provider: String,
@@ -145,6 +147,7 @@ impl Slash {
                      --token-file PATH] [--new-reader], logout"
                 )),
             },
+            Some("tools") => Slash::Tools,
             Some("job") | Some("jobs") => {
                 let job = words.get(1).filter(|w| !w.starts_with("--")).map(|w| w.to_string());
                 // `--offset N` continues a read the ring had more of; the reply
@@ -583,6 +586,12 @@ mod tests {
             Slash::parse("job --offset 10"),
             Slash::Job { job: None, offset: 10 }
         ));
+    }
+
+    /// `/tools` is the listing, not the fold. The fold kept ctrl-t and `/t`.
+    #[test]
+    fn tools_is_a_daemon_verb_now() {
+        assert!(matches!(Slash::parse("tools"), Slash::Tools));
     }
 
     #[test]

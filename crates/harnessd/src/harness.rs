@@ -896,6 +896,17 @@ pub fn engine_for<'a>(parts: &'a Parts, cfg: &Config) -> Result<TurnEngine<'a>, 
 /// `{name}` — and a schema whose name cannot be read is left out rather than
 /// guessed at: this feeds a sentence that tells the operator what changed, and a
 /// guess there is worse than a shorter list.
+/// A description's first sentence, for a one-line-per-tool listing. The full text
+/// is the model's to read; this is the operator's reminder of which tool is which.
+fn first_sentence(d: &str) -> String {
+    let one = d.split_once(". ").map(|(a, _)| a).unwrap_or(d);
+    if one.chars().count() > 76 {
+        format!("{}…", one.chars().take(75).collect::<String>())
+    } else {
+        one.to_string()
+    }
+}
+
 fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
     tools_json
         .iter()
@@ -2770,6 +2781,85 @@ impl<'a> Harness<'a> {
             out.push(format!("more: /job {job} --offset {}", slice.to));
         }
         Ok(out)
+    }
+
+    /// **What this conversation can actually call**, for `/tools`.
+    ///
+    /// Two lists, and the gap between them is the point. The REGISTRY is what this
+    /// daemon seated when it opened the session; the PROMPT is what message zero
+    /// announces, and it is fixed the moment a transcript starts — a resume
+    /// replays the stored prefix because the stored tokens were produced under it.
+    ///
+    /// So a daemon restarted with a new tool has it seated and unannounced, and the
+    /// model cannot call a tool it has never been told about however the banner
+    /// reads. That gap cost the operator an hour once — *"i did letibot --stop and
+    /// leticode --continue but still no exec"* — and the banner was no help,
+    /// because the banner is computed from the registry.
+    ///
+    /// This names it in the one place somebody would look.
+    pub fn tools_lines(&self) -> Vec<String> {
+        let schemas = self.runtime.registry.schemas();
+        let announced = tool_names(&self.prefix.tools_json);
+        let seated: std::collections::BTreeSet<String> =
+            schemas.iter().map(|s| s.name.clone()).collect();
+
+        let mut out = vec![format!(
+            "{} tool(s) seated in this session.",
+            schemas.len()
+        )];
+        out.push(String::new());
+        let mut by_name = schemas;
+        by_name.sort_by(|a, b| a.name.cmp(&b.name));
+        for s in &by_name {
+            // A tool the prompt has never heard of is marked where the eye already
+            // is, rather than only in a footnote below the list.
+            let mark = if announced.contains(&s.name) { "  " } else { "! " };
+            out.push(format!(
+                "{mark}{:<14} {:<8} {}",
+                s.name,
+                format!("({})", s.access.as_str()),
+                first_sentence(&s.description),
+            ));
+        }
+        out.push(String::new());
+
+        let missing: Vec<String> = seated.difference(&announced).cloned().collect();
+        let stale: Vec<String> = announced.difference(&seated).cloned().collect();
+        if missing.is_empty() && stale.is_empty() {
+            out.push(
+                "The prompt this conversation speaks announces exactly these, so \
+                 everything seated is callable."
+                    .into(),
+            );
+            return out;
+        }
+        if !missing.is_empty() {
+            out.push(format!(
+                "! {} seated but NOT ANNOUNCED: {}.",
+                missing.len(),
+                missing.join(", ")
+            ));
+            out.push(
+                "  Message zero is fixed when a transcript starts, so a tool seated \
+                 after this conversation began is one the model has never been told \
+                 about — it cannot call it, whatever the banner says."
+                    .into(),
+            );
+            out.push(
+                "  `/compact` now forks onto the seated prompt and picks them up; \
+                 `/reseat` does the same without waiting for the context to fill."
+                    .into(),
+            );
+        }
+        if !stale.is_empty() {
+            out.push(format!(
+                "! {} announced but NO LONGER SEATED: {}. The model may call these and \
+                 will be told the tool is unknown.",
+                stale.len(),
+                stale.join(", ")
+            ));
+        }
+        out
     }
 
     /// What answers this session's turns right now, for `/models`.
