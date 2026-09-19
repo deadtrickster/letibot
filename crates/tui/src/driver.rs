@@ -124,8 +124,18 @@ pub fn tick(
             Action::Promote => {
                 client.promote(app.seq)?;
             }
-            Action::Answer { req_id, option_id, pattern } => {
-                client.answer_with(&req_id, &option_id, pattern.as_deref())?;
+            Action::Answer {
+                req_id,
+                option_id,
+                pattern,
+                note,
+            } => {
+                client.answer_with(
+                    &req_id,
+                    &option_id,
+                    pattern.as_deref(),
+                    note.as_deref(),
+                )?;
             }
             Action::Resync => client.request_resync()?,
             Action::ListSessions => client.list_sessions()?,

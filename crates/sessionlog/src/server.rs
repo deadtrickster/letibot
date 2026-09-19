@@ -673,6 +673,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 req_id,
                 option_id,
                 pattern,
+                note,
             }) => {
                 let f = seat.hub.submit(
                     &seat.head_id,
@@ -680,7 +681,11 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     0,
                     CommandKind::Answer {
                         req_id,
-                        reply: Reply::Permission { option_id, pattern },
+                        reply: Reply::Permission {
+                            option_id,
+                            pattern,
+                            note,
+                        },
                     },
                 );
                 writer.lock().unwrap().write(&f)?;
