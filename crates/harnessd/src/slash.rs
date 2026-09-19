@@ -398,6 +398,8 @@ pub fn flowy_login_credentials(
 
 /// Every provider this build knows, with its auth state, and the local server.
 pub fn models_listing(current: &str) -> Vec<String> {
+    // Read once for the whole listing rather than per provider: it is a 4MB file.
+    let cat = letibot_provider::catalogue::Catalogue::load();
     let mut lines = vec![format!("models — now answering: {current}")];
     lines.push(
         "  local the llama.cpp server this daemon was started against   /models local"
@@ -413,7 +415,9 @@ pub fn models_listing(current: &str) -> Vec<String> {
         };
         lines.push(format!(
             "  {:<16} default model {:<18} {auth}   /models {}/MODEL",
-            p.name, p.default_model, p.name
+            p.name,
+            p.default_model(&cat),
+            p.name
         ));
     }
     lines.push(format!(
@@ -483,7 +487,8 @@ pub fn models_choice(
             Ok(f) => notes.push(format!(
                 "standing choice: {}/{}, in {} — the next daemon starts on it too",
                 preset.name,
-                model.unwrap_or(preset.default_model),
+                model.map(str::to_string).unwrap_or_else(|| preset
+                    .default_model(&letibot_provider::catalogue::Catalogue::load())),
                 f.display()
             )),
             Err(e) => notes.push(format!("standing choice not recorded: {e}")),

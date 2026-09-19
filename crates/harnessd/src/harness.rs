@@ -2781,7 +2781,9 @@ impl<'a> Harness<'a> {
                 ". The catalogue has no window for {}/{}, so compaction still plans \
                  against {} — check that is the right size before a long turn",
                 pc.name,
-                pc.model.as_deref().unwrap_or(preset.default_model),
+                pc.model
+                    .clone()
+                    .unwrap_or_else(|| preset.default_model(&cat)),
                 match was {
                     Some(w) => w.to_string(),
                     None => "no window at all".into(),

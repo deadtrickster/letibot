@@ -167,6 +167,53 @@ impl Catalogue {
         self.providers.get(provider)?.models.get(model).copied()
     }
 
+    /// **The model to use when the operator names none**, chosen by rule rather
+    /// than written down.
+    ///
+    /// A hardcoded default is a string that goes stale silently, and both of ours
+    /// had: `deepseek-chat` and `grok-4-fast` are models models.dev has retired,
+    /// so `/models deepseek` named something that no longer exists. Replacing them
+    /// with today's names would buy three months and then be wrong in the same
+    /// way, so the constant is the bug and not its value.
+    ///
+    /// The rule, in order: the largest context window, then the cheapest input
+    /// rate, then the SHORTEST name, then the name itself. That is *"each
+    /// provider's general coding model"* as
+    /// the presets already describe it — the flagship reasoning model is pricier
+    /// and stays a `--model` away, and an image or video model loses on context
+    /// long before price is reached.
+    ///
+    /// A model with no price is skipped: unpriced and free are different, and a
+    /// default that silently picked an unpriced model would report every metered
+    /// turn as costing nothing.
+    pub fn default_model(&self, provider: &str) -> Option<String> {
+        self.providers
+            .get(provider)?
+            .models
+            .iter()
+            .filter(|(_, m)| m.prices.is_some())
+            .min_by(|a, b| {
+                b.1.context
+                    .cmp(&a.1.context)
+                    .then_with(|| {
+                        let (x, y) = (
+                            a.1.prices.map(|p| p.input).unwrap_or(f64::MAX),
+                            b.1.prices.map(|p| p.input).unwrap_or(f64::MAX),
+                        );
+                        x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    // **Shortest name wins a tie.** A provider publishes the same
+                    // model under a rolling alias and under dated snapshots —
+                    // `grok-4.3` beside `grok-4.20-0309-non-reasoning`, identical
+                    // window and price — and ordering by name alone picked the
+                    // snapshot, which is the one that gets retired. The alias is
+                    // always the shorter string.
+                    .then_with(|| a.0.len().cmp(&b.0.len()))
+                    .then_with(|| a.0.cmp(b.0))
+            })
+            .map(|(name, _)| name.clone())
+    }
+
     /// Every model a provider lists that carries a context limit, largest first —
     /// for a picker, and for a miss report that names what it could have been.
     pub fn models(&self, provider: &str) -> Vec<(String, ModelFacts)> {
@@ -253,6 +300,44 @@ mod tests {
             c.model("deepseek", "an-image-model").is_none(),
             "a zero limit is not a limit"
         );
+    }
+
+    /// The default is derived, so it cannot go stale the way two hardcoded ones
+    /// already had. Largest window, then cheapest, then the name.
+    #[test]
+    fn the_default_model_is_the_biggest_window_at_the_lowest_price() {
+        let c = sample();
+        assert_eq!(c.default_model("deepseek").as_deref(), Some("deepseek-chat"));
+        // `deepseek-legacy` has no price, so it is skipped rather than chosen —
+        // unpriced and free are different, and a default that picked an unpriced
+        // model would report every metered turn as costing nothing.
+        assert_eq!(c.default_model("zhipuai").as_deref(), Some("glm-5"));
+        assert!(c.default_model("nobody").is_none());
+    }
+
+    /// **A rolling alias beats a dated snapshot of the same model.** Providers
+    /// publish both at identical window and price, and ordering by name alone
+    /// picked the snapshot — which is the one that gets retired, which is how the
+    /// hardcoded defaults went stale in the first place.
+    #[test]
+    fn a_tie_goes_to_the_shorter_name() {
+        let d = std::env::temp_dir().join(format!(
+            "letibot-cat-tie-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(
+            &d,
+            r#"{"xai":{"id":"xai","models":{
+                 "grok-4.20-0309-non-reasoning": {"limit":{"context":1000000,"output":30000},
+                                                  "cost":{"input":1.25,"output":2.5}},
+                 "grok-4.3": {"limit":{"context":1000000,"output":30000},
+                              "cost":{"input":1.25,"output":2.5}}}}}"#,
+        )
+        .expect("writing");
+        let c = Catalogue::read(&d).expect("parsing");
+        let _ = std::fs::remove_file(&d);
+        assert_eq!(c.default_model("xai").as_deref(), Some("grok-4.3"));
     }
 
     #[test]
