@@ -9,9 +9,17 @@ pub struct Preset {
     pub key_env: &'static str,
     /// Other names the same key goes by (a vendor's SDK and its rebrand).
     pub alt_envs: &'static [&'static str],
-    /// The model used when the operator names none. Chosen as each provider's
-    /// general coding model; a reasoning model is a `--model` away.
-    pub default_model: &'static str,
+    /// **The fallback default**, for a box with no catalogue.
+    ///
+    /// Not the default itself: [`Preset::default_model`] asks the catalogue first,
+    /// because this constant is exactly the thing that went stale. `deepseek-chat`
+    /// and `grok-4-fast` both sat here naming models models.dev had retired, and
+    /// `/models deepseek` therefore named something that no longer exists.
+    ///
+    /// Kept so a box without opencode still has a name to try rather than
+    /// refusing, and updated to a model that exists today — but it will go stale
+    /// again, and the catalogue is what stops that mattering.
+    pub fallback_model: &'static str,
     /// Whether the provider wants `reasoning_content` echoed back on assistant
     /// messages of earlier turns. DeepSeek documents that it must NOT be sent
     /// (400 on `deepseek-reasoner` when interleaved with tool calls is the
@@ -19,6 +27,11 @@ pub struct Preset {
     pub echo_reasoning: bool,
     /// Extra body fields the provider needs to think out loud, if any.
     pub thinking_field: Option<&'static str>,
+    /// **This provider's id in the models.dev catalogue**, which is not always the
+    /// name we call it by: we say `glm` and `grok`, the catalogue says `zhipuai`
+    /// and `xai`. See [`crate::catalogue`] for why the facts are read from there
+    /// rather than written down here.
+    pub catalogue_id: &'static str,
 }
 
 pub const DEEPSEEK: Preset = Preset {
@@ -26,9 +39,10 @@ pub const DEEPSEEK: Preset = Preset {
     url: "https://api.deepseek.com/chat/completions",
     key_env: "DEEPSEEK_API_KEY",
     alt_envs: &[],
-    default_model: "deepseek-chat",
+    fallback_model: "deepseek-v4-flash",
     echo_reasoning: false,
     thinking_field: None,
+    catalogue_id: "deepseek",
 };
 
 pub const GLM: Preset = Preset {
@@ -36,11 +50,12 @@ pub const GLM: Preset = Preset {
     url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
-    default_model: "glm-4.6",
+    fallback_model: "glm-5.3-flash",
     echo_reasoning: false,
     // Zhipu's `thinking: {"type": "enabled"}` switches GLM's reasoning on; the
     // provider sends it when the operator asks for a reasoning turn.
     thinking_field: Some("thinking"),
+    catalogue_id: "zhipuai",
 };
 
 pub const GROK: Preset = Preset {
@@ -48,9 +63,10 @@ pub const GROK: Preset = Preset {
     url: "https://api.x.ai/v1/chat/completions",
     key_env: "XAI_API_KEY",
     alt_envs: &["GROK_API_KEY"],
-    default_model: "grok-4-fast",
+    fallback_model: "grok-4.3",
     echo_reasoning: false,
     thinking_field: None,
+    catalogue_id: "xai",
 };
 
 pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GROK];
@@ -58,6 +74,29 @@ pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GROK];
 impl Preset {
     /// `deepseek` | `glm` (`zhipu`, `bigmodel`) | `grok` (`xai`). Anything else
     /// names the three rather than guessing.
+    /// **The context window to plan compaction against**, from the catalogue.
+    ///
+    /// `None` when the catalogue has no figure for this model — which happens for
+    /// a model it has retired, for a private deployment, and on a box with no
+    /// catalogue at all. `None` means the caller leaves the window alone and says
+    /// so: the rest of this system is built on *"a window that is not known must
+    /// not be invented"*, and inventing one here would decide when a conversation
+    /// gets summarised.
+    pub fn window(&self, model: Option<&str>, cat: &crate::catalogue::Catalogue) -> Option<u64> {
+        let model = match model {
+            Some(m) => m.to_string(),
+            None => self.default_model(cat),
+        };
+        cat.model(self.catalogue_id, &model).map(|m| m.context)
+    }
+
+    /// The model to use when the operator names none: the catalogue's pick by
+    /// rule, else this build's frozen fallback. See [`Preset::fallback_model`].
+    pub fn default_model(&self, cat: &crate::catalogue::Catalogue) -> String {
+        cat.default_model(self.catalogue_id)
+            .unwrap_or_else(|| self.fallback_model.to_string())
+    }
+
     pub fn parse(s: &str) -> Result<&'static Preset, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "deepseek" => Ok(&DEEPSEEK),

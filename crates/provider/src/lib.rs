@@ -43,6 +43,7 @@
 //! otherwise it is `None` — unpriced, not free — exactly D10's reason for the
 //! `Option`.
 
+pub mod catalogue;
 pub mod keys;
 pub mod messages;
 pub mod openai;
