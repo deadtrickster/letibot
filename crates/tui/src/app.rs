@@ -701,6 +701,17 @@ pub struct App {
     /// drift. Each opener closes the other, so the screen holds one list and
     /// the arrows mean one thing.
     mode_picker: bool,
+    /// **The same picker, over the models this daemon can reach.** The operator:
+    /// *"for starters i want it to be usual menu, like /mode"*. `/models` printed
+    /// a wall of provider rows and the switch — the thing anybody types it for —
+    /// was the least visible part of it.
+    ///
+    /// A second flag rather than a second picker: the choices, the cursor, the
+    /// click arithmetic and the drawing are shared below, because the one thing
+    /// this file has already been burned by is a second copy of a list that then
+    /// drifts (see the `mode` settings row, which the head used to keep its own
+    /// copy of and got wrong).
+    models_picker: bool,
     /// **The quit card**, opened by the second Ctrl+C instead of leaving at
     /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
     /// operator often wants the other: leave the head and let the daemon keep
@@ -1007,6 +1018,7 @@ impl App {
             help: false,
             picker: false,
             mode_picker: false,
+            models_picker: false,
             quit_card: false,
             quit_sel: 0,
             mode_sel: 0,
@@ -2372,6 +2384,7 @@ impl App {
                 // one thing.
                 if self.picker {
                     self.mode_picker = false;
+            self.models_picker = false;
                 }
                 // Opening it asks for a fresh list rather than drawing the one from
                 // the attach: sessions are a shared thing, and a picker showing what
@@ -2476,7 +2489,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                if self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
+                if self.help || self.picker || self.mode_picker || self.models_picker || self.stats || self.todos_pane
                     || self.subagents_pane || self.jobs_pane || self.config_pane
                 {
                     return None;
@@ -2549,13 +2562,14 @@ impl App {
                 _ => {}
             }
         }
-        if (self.help || self.picker || self.mode_picker || self.stats || self.todos_pane
+        if (self.help || self.picker || self.mode_picker || self.models_picker || self.stats || self.todos_pane
             || self.subagents_pane || self.jobs_pane || self.config_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
             self.picker = false;
             self.mode_picker = false;
+            self.models_picker = false;
             self.quit_card = false;
             self.stats = false;
             self.todos_pane = false;
@@ -2713,8 +2727,8 @@ impl App {
                 _ => {}
             }
         }
-        if self.mode_picker {
-            let choices = self.mode_choices();
+        if self.mode_picker || self.models_picker {
+            let choices = self.pick_choices();
             let n = choices.len();
             match k {
                 Key::Up if n > 0 => {
@@ -2736,16 +2750,20 @@ impl App {
                         // A daemon older than protocol 18 sends no choices; the
                         // pane says so rather than cycling a list it made up —
                         // the same words the config pane's mode row says.
-                        self.say("this daemon does not send the mode list; use `/mode NAME`");
+                        self.say(if self.models_picker {
+                            "this daemon does not send the model list; use `/models PROVIDER/MODEL`"
+                        } else {
+                            "this daemon does not send the mode list; use `/mode NAME`"
+                        });
                         return None;
                     }
                     let name = choices[self.mode_sel.min(n - 1)].clone();
-                    return self.take_mode(name);
+                    return self.take_pick(name);
                 }
                 _ if self.editor.text().is_empty() && digit_row(&k, n).is_some() => {
                     let at = digit_row(&k, n).unwrap();
                     self.mode_sel = at;
-                    return self.take_mode(choices[at].clone());
+                    return self.take_pick(choices[at].clone());
                 }
                 Key::Click { y, .. } => {
                     // The arithmetic the last frame did: the card's first
@@ -3121,6 +3139,7 @@ impl App {
     fn pick_mode(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.mode_picker = false;
+            self.models_picker = false;
             self.redraw = true;
             return None;
         }
@@ -3189,6 +3208,46 @@ impl App {
     /// copy of a list is a copy that drifts.
     fn mode_choices(&self) -> Vec<String> {
         self.mode_row().map(|r| r.choices.clone()).unwrap_or_default()
+    }
+
+    /// The settings row whichever picker is open is picking from. Only one is ever
+    /// open — Esc and every opener close the others — so this is a choice between
+    /// two, not a stack.
+    fn pick_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
+        let key = if self.models_picker { "model" } else { "mode" };
+        self.settings.iter().find(|r| r.key == key)
+    }
+
+    /// What the open picker offers, and what it is already on. Both come from the
+    /// daemon's own settings row: the head keeping its own copy of a list is the
+    /// mistake the `mode` row's comment records.
+    fn pick_choices(&self) -> Vec<String> {
+        self.pick_row().map(|r| r.choices.clone()).unwrap_or_default()
+    }
+
+    fn pick_current(&self) -> String {
+        self.pick_row()
+            .and_then(|r| r.value.split_whitespace().next())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// Commit the highlighted row. The two subjects differ only here: a mode is a
+    /// protocol command this head already has, a model is a daemon verb.
+    fn take_pick(&mut self, name: String) -> Option<Action> {
+        if !self.models_picker {
+            return self.take_mode(name);
+        }
+        self.models_picker = false;
+        self.redraw = true;
+        if self.session_id.is_empty() {
+            self.say("not attached to a session yet");
+            return None;
+        }
+        self.say(&format!("switching to {name}…"));
+        Some(Action::Slash {
+            line: format!("models {name}"),
+        })
     }
 
     /// The mode this session runs under, as the row's first word spells it —
@@ -3464,6 +3523,7 @@ impl App {
                 // keep between themselves.
                 if self.config_pane {
                     self.mode_picker = false;
+            self.models_picker = false;
                 }
                 self.redraw = true;
                 // Opening asks the daemon for its settings; the head's own are
@@ -3510,6 +3570,32 @@ impl App {
                 // need to: the line goes over as typed and the answer comes back
                 // on the session log.
                 let verb = other.split_whitespace().next().unwrap_or("");
+                // **Bare `/models` is the menu.** With a name after it the line
+                // goes to the daemon as typed, which is what `/models X --once`
+                // and `/models X --key K` need. The operator: *"for starters i
+                // want it to be usual menu, like /mode"*.
+                if matches!(verb, "models" | "model") && other.trim() == verb {
+                    if self.session_id.is_empty() {
+                        self.say("not attached to a session yet");
+                        return None;
+                    }
+                    self.models_picker = true;
+                    self.mode_picker = false;
+                    self.picker = false;
+                    self.config_pane = false;
+                    // Seeded to what answers now, so Enter on an untouched list
+                    // is a no-op — the same courtesy the mode picker pays.
+                    self.mode_sel = self
+                        .pick_choices()
+                        .iter()
+                        .position(|n| *n == self.pick_current())
+                        .unwrap_or(0);
+                    self.redraw = true;
+                    // Asked as well as opened: the rows come from the daemon's
+                    // last answer, and a session that switched models in another
+                    // head would otherwise draw a stale `← now`.
+                    return Some(Action::Slash { line: "models".into() });
+                }
                 if matches!(
                     verb,
                     "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
@@ -3885,7 +3971,9 @@ impl App {
             // last question it will be asked, and a list under it is a list
             // nobody is going to use.
             (None, None) if self.quit_card => self.quit_card_lines(w),
-            (None, None) if self.mode_picker => self.mode_picker_lines(w),
+            (None, None) if self.mode_picker || self.models_picker => {
+                self.mode_picker_lines(w)
+            }
             (None, None) => Vec::new(),
         };
         let dec_full = dec.len();
@@ -4019,7 +4107,7 @@ impl App {
         }
         let card_at = h.saturating_sub(chrome.len());
         self.mode_first_row = card_at + 1;
-        self.mode_rows_drawn = if self.mode_picker
+        self.mode_rows_drawn = if (self.mode_picker || self.models_picker)
             && self.open.is_empty()
             && self.secret.is_none()
             && dec_rows == dec_full
@@ -4241,6 +4329,8 @@ impl App {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
+        } else if self.models_picker {
+            "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.mode_picker {
             "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.todos_pane {
@@ -5421,20 +5511,30 @@ impl App {
 
     fn mode_picker_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
+        let models = self.models_picker;
         let mut out = vec![colour(
             &self.cfg,
             sgr::BOLD,
-            "the mode this session runs under",
+            if models {
+                "what answers this conversation"
+            } else {
+                "the mode this session runs under"
+            },
         )];
-        let choices = self.mode_choices();
+        let choices = self.pick_choices();
         if choices.is_empty() {
             out.push(dim(
                 &self.cfg,
-                "  this daemon has not named its modes — `/mode NAME` still works, \
-                 if you know the name.",
+                if models {
+                    "  this daemon has not named its models — `/models PROVIDER/MODEL` \
+                     still works, if you know the name."
+                } else {
+                    "  this daemon has not named its modes — `/mode NAME` still works, \
+                     if you know the name."
+                },
             ));
         }
-        let current = self.mode_current();
+        let current = self.pick_current();
         for (i, name) in choices.iter().enumerate() {
             let here = *name == current;
             let picked = i == self.mode_sel.min(choices.len().saturating_sub(1));
@@ -5465,9 +5565,23 @@ impl App {
         ));
         out.push(dim(
             &self.cfg,
-            "  a mode change moves THIS session from its next call, and every later \
-             session in this project.",
+            if models {
+                // **One fact per line.** These are trimmed to the width, not
+                // wrapped, so a sentence carrying two facts loses the second one —
+                // measured at 110 columns, where this read "It also become…" and
+                // the `--once` half never reached the screen at all.
+                "  from the next turn; the transcript, the ledger and the tools are untouched"
+            } else {
+                "  a mode change moves THIS session from its next call, and every later \
+                 session in this project."
+            },
         ));
+        if models {
+            out.push(dim(
+                &self.cfg,
+                "  it also becomes the standing choice · `/models NAME --once` does not",
+            ));
+        }
         out
     }
 
@@ -11707,6 +11821,92 @@ mod tests {
                 choices: choices.iter().map(|s| (*s).to_string()).collect(),
             }],
         }
+    }
+
+    fn model_settings(value: &str, choices: &[&str]) -> ServerFrame {
+        ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: "model".into(),
+                value: value.into(),
+                source: String::new(),
+                editable: "/models PROVIDER/MODEL".into(),
+                choices: choices.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        }
+    }
+
+    /// **`/models` is a menu now.** It printed a wall of provider rows in which
+    /// the switch — the thing anybody types it for — was the least visible part.
+    /// The operator: *"for starters i want it to be usual menu, like /mode"*.
+    #[test]
+    fn slash_models_opens_a_picker_seeded_on_what_answers_now() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(model_settings(
+            "glm/glm-5.3-flash",
+            &["local", "deepseek/deepseek-flash", "glm/glm-5.3-flash", "grok/grok-4.3"],
+        ));
+        // Bare `/models` opens the list AND asks the daemon, so a session whose
+        // model moved in another head does not draw a stale `← now`.
+        match a.command("models") {
+            Some(Action::Slash { line }) => assert_eq!(line, "models"),
+            other => panic!("{other:?}"),
+        }
+        assert!(a.models_picker);
+        assert_eq!(a.mode_sel, 2, "seeded on the row that answers now");
+
+        // Tall enough that the card's trailing hints survive the fit loop, which
+        // drops them last-first when the screen is short.
+        let screen = a.screen(110, 40).join("\n");
+        assert!(screen.contains("what answers this conversation"), "{screen}");
+        assert!(screen.contains("grok/grok-4.3"), "{screen}");
+        assert!(screen.contains("← now"), "{screen}");
+        assert!(screen.contains("--once"), "the way to not stick it: {screen}");
+
+        // Arrow and Enter send the switch as the daemon verb.
+        a.key(Key::Down);
+        match a.key(Key::Enter) {
+            Some(Action::Slash { line }) => assert_eq!(line, "models grok/grok-4.3"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!a.models_picker, "taking a model closes the list");
+    }
+
+    /// With a name after it the line goes over as typed — `--once` and `--key`
+    /// have to survive, and they are the reason bare-vs-argument is the split.
+    #[test]
+    fn models_with_an_argument_still_goes_straight_to_the_daemon() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        for line in [
+            "models deepseek/deepseek-flash",
+            "models glm --once",
+            "models grok --key xai-test",
+        ] {
+            match a.command(line) {
+                Some(Action::Slash { line: sent }) => assert_eq!(sent, line),
+                other => panic!("{line}: {other:?}"),
+            }
+            assert!(!a.models_picker, "{line} is not a menu");
+        }
+    }
+
+    /// The mode picker is unchanged by sharing its machinery — Esc still closes,
+    /// and the two never open at once.
+    #[test]
+    fn the_two_pickers_do_not_open_together() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(mode_settings("read-only", MODES));
+        a.apply(model_settings("local", &["local", "glm/glm-5.3-flash"]));
+
+        assert_eq!(a.command("mode"), Some(Action::Settings));
+        assert!(a.mode_picker && !a.models_picker);
+        a.command("models");
+        assert!(a.models_picker && !a.mode_picker, "the second closes the first");
+        a.key(Key::Esc);
+        assert!(!a.models_picker && !a.mode_picker, "esc closes it");
     }
 
     const MODES: &[&str] = &[

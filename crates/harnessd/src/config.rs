@@ -772,6 +772,44 @@ impl Config {
                 .map(|m| m.name)
                 .collect::<Vec<_>>(),
         ));
+        // **What answers the turns**, with the models this box can actually reach.
+        // The choices travel with the row for the `mode` row's reason: a head that
+        // kept its own copy of a list got it wrong, and this list is not even
+        // fixed at build time — it comes from the catalogue.
+        {
+            let cat = letibot_provider::catalogue::Catalogue::load();
+            let mut names = vec!["local".to_string()];
+            for p in letibot_provider::presets::ALL {
+                names.push(format!("{}/{}", p.name, p.default_model(&cat)));
+            }
+            let now = match &self.provider {
+                // The local alias is kept in the value, because this row replaced
+                // the read-only one that carried it and a pane that stopped
+                // naming the model the server is running would be a worse row.
+                // The first word is what a picker matches on, so it stays `local`.
+                None => format!("local ({})", self.model),
+                Some(pc) => match letibot_provider::Preset::parse(&pc.name) {
+                    Ok(preset) => format!(
+                        "{}/{}",
+                        preset.name,
+                        pc.model
+                            .clone()
+                            .unwrap_or_else(|| preset.default_model(&cat))
+                    ),
+                    Err(_) => pc.name.clone(),
+                },
+            };
+            // A model the operator named that is not one of the defaults is still
+            // where this conversation is, so it joins the list rather than being
+            // silently absent from a menu that claims to show what answers now.
+            if !names.contains(&now) {
+                names.insert(1, now.clone());
+            }
+            let source = if self.provider.is_none() { "--model" } else { "" };
+            let mut r = row("model", now, source, "/models PROVIDER/MODEL");
+            r.choices = names;
+            out.push(r);
+        }
         out.push(choices(
             row(
                 "supervise",
@@ -789,8 +827,9 @@ impl Config {
         if let Some(p) = &self.parent_session_id {
             out.push(row("parent", p.clone(), "", ""));
         }
-        // The model.
-        out.push(row("model", self.model.clone(), "--model", ""));
+        // The `model` row is up with the changeable ones now: it used to sit here,
+        // read-only, saying only the local alias — which is not what answers the
+        // turns once a provider is set, and not something a head could act on.
         out.push(row("dialect", self.dialect.name().to_string(), "--dialect", ""));
         out.push(row("endpoint", self.endpoint.authority(), "--endpoint", ""));
         out.push(row("vocab", self.vocab_gguf.display().to_string(), "--vocab", ""));
@@ -1568,8 +1607,29 @@ mod tests {
         assert_eq!(rows[0].key, "mode");
         assert_eq!(rows[0].editable, "/mode NAME");
         assert_eq!(rows[0].source, "project store (modes.tsv)");
-        assert_eq!(rows[1].key, "supervise");
-        assert!(rows[1].value.starts_with("off"));
+        // **The changeable rows lead**, and the assertion is that rather than a
+        // position: `model` joined them and shifted `supervise` down, which is the
+        // list doing its job and not a regression. Indexing by number made adding
+        // a row look like breaking one.
+        let leading: Vec<&str> = rows.iter().take(3).map(|r| r.key.as_str()).collect();
+        assert!(leading.contains(&"supervise"), "{leading:?}");
+        assert!(leading.contains(&"model"), "{leading:?}");
+        let sup = rows.iter().find(|r| r.key == "supervise").expect("supervise");
+        assert!(sup.value.starts_with("off"));
+        // The model row carries its own choices, so a head can draw the picker
+        // without keeping a list of its own.
+        let model = rows.iter().find(|r| r.key == "model").expect("model");
+        assert!(
+            model.value.starts_with("local ("),
+            "no provider is the local server, and the row still names its alias: {}",
+            model.value
+        );
+        assert!(model.choices.contains(&"local".to_string()), "{:?}", model.choices);
+        assert!(
+            model.choices.iter().any(|c| c.starts_with("glm/")),
+            "{:?}",
+            model.choices
+        );
         let mut seen = std::collections::HashSet::new();
         for r in &rows {
             assert!(seen.insert(r.key.clone()), "duplicate key {}", r.key);
@@ -1577,7 +1637,9 @@ mod tests {
         assert!(rows.iter().any(|r| r.key == "oracle.budget" && r.editable.is_empty()));
         assert!(rows.iter().any(|r| r.key == "workspace" && r.value == "/tmp/x"));
         // Supervision on reads as on.
-        assert!(cfg.settings("x", true)[1].value.starts_with("on"));
+        let on = cfg.settings("x", true);
+        let sup = on.iter().find(|r| r.key == "supervise").expect("supervise");
+        assert!(sup.value.starts_with("on"));
     }
 
 
