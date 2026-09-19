@@ -837,6 +837,19 @@ pub struct App {
     /// Absent for rows older than that — the view keeps one turn's calls — and
     /// the row then shows the tool's own text, which is the `Replayed` rule.
     call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
+    /// The settled decision a `tool_result` row's call was gated by, by **item id**
+    /// — carried across the takeover exactly as `call_ms` and `call_edits` are, and
+    /// for the same reason: the transcript row has the tool's prose and not the
+    /// approval, and the call id it carries is round-positional, so it cannot be the
+    /// key.
+    ///
+    /// This is what puts the oracle's brief and reply on a card that has settled
+    /// into the transcript. The live card shows it while the turn is the pane's;
+    /// the moment the result row lands the transcript takes the call over, and
+    /// without this the approval — and what the oracle was shown and said back —
+    /// leaves the screen with the card. Seeded from the snapshot too, for the
+    /// decisions it carries.
+    call_decisions: std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
     /// Where the terminal's caret belongs, from the last frame.
@@ -978,6 +991,7 @@ impl App {
             call_targets: std::collections::HashMap::new(),
             call_ms: std::collections::HashMap::new(),
             call_edits: std::collections::HashMap::new(),
+            call_decisions: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             raw_calls: false,
@@ -1402,6 +1416,30 @@ impl App {
             .chain(notes_bound.into_iter().map(|d| (0, Note::Decided(d))))
             .collect();
         self.note_upto = 0;
+        // The settled rows this snapshot carries are history, and a decision that
+        // gated one of them has to ride that row rather than vanish with the live
+        // card. The snapshot's decisions are keyed by call id, which is
+        // round-positional, so the match is best-effort: walking the rows newest
+        // first, each decision goes to the most recent tool_result row that carries
+        // its id, and a decision is spent on the first row it matches. Rows older
+        // than the snapshot's decision window render without the approval — the same
+        // `Replayed` rule the duration and the edit pair follow.
+        {
+            let mut by_call: std::collections::HashMap<String, SettledDecision> =
+                std::collections::HashMap::new();
+            for d in &call_bound {
+                if let Some(cid) = &d.call_id {
+                    by_call.insert(cid.clone(), d.clone());
+                }
+            }
+            for it in self.items.iter().rev() {
+                if let Some(TranscriptItem::ToolResult { call_id, .. }) = &it.item {
+                    if let Some(d) = by_call.remove(call_id) {
+                        self.call_decisions.insert(it.item_id.clone(), d);
+                    }
+                }
+            }
+        }
         self.heads = s.heads.len();
         self.turn = s.turn.map(|t| {
             self.model = t.model.clone();
@@ -1936,11 +1974,12 @@ impl App {
                 // A tool-result row hands one live card over to the transcript.
                 // Positional, not by id: the engine invokes a round's calls in
                 // order and appends their rows in the same order, and the ids
-                // repeat every round so there is nothing to match on. The duration
-                // is carried across here because it is the only fact the live card
-                // had that the row does not.
+                // repeat every round so there is nothing to match on. The duration,
+                // the edit pair and the decision are carried across here because
+                // they are facts the live card had that the row does not.
                 let mut carried: Option<u64> = None;
                 let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
+                let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
                     if kind == "tool_result" {
@@ -1954,6 +1993,10 @@ impl App {
                             CallState::Finished { edit: Some(e), .. } => Some(e.clone()),
                             _ => None,
                         });
+                        // The approval rides across too: the decision is a fact
+                        // about this call, and the row that outlives the card is
+                        // where it has to keep being shown.
+                        carried_decision = c.and_then(|c| c.decision.clone());
                         t.settled_calls += 1;
                     }
                 }
@@ -1962,6 +2005,9 @@ impl App {
                 }
                 if let Some(e) = carried_edit {
                     self.call_edits.insert(item_id.clone(), e);
+                }
+                if let Some(d) = carried_decision {
+                    self.call_decisions.insert(item_id.clone(), d);
                 }
                 self.items.push(SnapshotItem {
                     item_id,
@@ -4214,6 +4260,7 @@ impl App {
                 call_targets,
                 call_ms,
                 call_edits,
+                call_decisions,
                 hist_class,
                 hist_renders,
                 diff_split,
@@ -4283,6 +4330,7 @@ impl App {
                             drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
                             elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
                             edit: call_edits.get(&items[*hist_upto].item_id),
+                            decision: call_decisions.get(&items[*hist_upto].item_id),
                             diff_split,
                         },
                     );
@@ -6975,8 +7023,51 @@ struct ItemCtx<'a> {
     /// Both sides of the file this row's call changed, when this head watched
     /// it run. See `App::call_edits`.
     edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
+    /// The settled decision this row's call was gated by, when there was one.
+    /// See `App::call_decisions`.
+    decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
+}
+
+/// The decision a settled call was gated by, in the dim register: the approval is
+/// a fact about the call, not a stray note. Folded it is one line — who decided
+/// and how; open it adds what the oracle was shown and what it said back. Shared
+/// by the one-line (inline) and the folded arms, because a gated call whose result
+/// fit on the header is no less gated for it.
+fn decision_lines(
+    d: &letibot_sessionlog::view::SettledDecision,
+    tools: Fold,
+    w: usize,
+    p: letibot_ui::style::Palette,
+) -> Vec<String> {
+    use letibot_sessionlog::event::DecisionOutcome as O;
+    let mut out = Vec::new();
+    let word = match &d.outcome {
+        O::Selected { option_id } if option_id.starts_with("allow") => "allowed",
+        O::Selected { .. } => "refused",
+        O::Cancelled => "cancelled",
+        O::TimedOut => "not answered",
+    };
+    let who = if d.by.identity.is_empty() {
+        d.by.kind.clone()
+    } else {
+        format!("{} {}", d.by.kind, d.by.identity)
+    };
+    out.push(p.paint(Role::Faint, &format!("  · {word}, by {who}")));
+    if tools.is_open() {
+        if !d.summary.is_empty() {
+            for l in wrap(&format!("asked: {}", d.summary), w.saturating_sub(4)) {
+                out.push(p.paint(Role::Faint, &format!("    {l}")));
+            }
+        }
+        if !d.basis.is_empty() {
+            for l in wrap(&format!("oracle: {}", d.basis), w.saturating_sub(4)) {
+                out.push(p.paint(Role::Faint, &format!("    {l}")));
+            }
+        }
+    }
+    out
 }
 
 fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
@@ -6987,6 +7078,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         raw,
         targets,
         edit,
+        decision,
         diff_split,
         answered,
         drawn_live,
@@ -7260,7 +7352,13 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             if let Some(l) = inline {
                 head.push_str(&p.paint(Role::Faint, " · "));
                 head.push_str(&p.paint(Role::Plain, &l));
-                return (RowClass::Activity, step_in(vec![trim_to(&head, w)], ind));
+                let mut out = vec![trim_to(&head, w)];
+                // The approval rides the one-line form too: a gated call whose
+                // result fit on the header is no less gated for it.
+                if let Some(d) = decision {
+                    out.extend(decision_lines(d, tools, w, p));
+                }
+                return (RowClass::Activity, step_in(out, ind));
             }
 
             head.push_str(&p.paint(
@@ -7309,6 +7407,13 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                         .into_iter()
                         .map(|l| p.paint(outcome_role, &format!("  {l}"))),
                 );
+            }
+            // The decision this call was gated by, in the dim register — the same
+            // block the live card draws, carried across with the card. Without this
+            // the approval leaves the screen the moment the result row takes the
+            // call over.
+            if let Some(d) = decision {
+                out.extend(decision_lines(d, tools, w, p));
             }
             // Folded shows the first line, which is where a tool puts what it did.
             //
@@ -8122,6 +8227,87 @@ mod tests {
         let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
         assert!(open.contains("asked: run rm -rf"), "{open}");
         assert!(open.contains("oracle: the operator asked for this"), "{open}");
+    }
+
+    /// The approval is a fact about the call, and the call outlives the live card:
+    /// the moment the result row lands the transcript takes it over, and the
+    /// decision has to ride the row — folded to one line, open to the brief and the
+    /// reply — or it leaves the screen with the card.
+    #[test]
+    fn a_settled_card_keeps_the_decision_that_gated_it() {
+        let mut a = app();
+        // A turn with one call, gated by a permission the oracle allowed.
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        a.apply(ServerFrame::Event(env(2, testing::requested("r1", "run rm -rf"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::DecisionAnswered {
+                req_id: "r1".into(),
+                outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                    option_id: "allow".into(),
+                },
+                by: letibot_sessionlog::event::Decider {
+                    kind: "model".into(),
+                    identity: "oracle".into(),
+                },
+                basis: "the operator asked for this".into(),
+                late: false,
+            },
+        )));
+        // The call runs and its result row lands in the transcript.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: "exec".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(),
+                inline_bytes: 12,
+                full_bytes: 12,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(6, testing::appended("i1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::TranscriptContent {
+                item_id: "i1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "done".into(),
+                    edit: None,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(8, testing::turn_finished("t1"))));
+        // The decision rode the live card; the result row took the call over, and
+        // the approval carried across with it, keyed by the row's item id.
+        assert!(a.call_decisions.contains_key("i1"), "the decision carried across");
+        // Folded: one dim line, who decided and how.
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("allowed, by model oracle"), "{screen}");
+        assert!(!screen.contains("oracle:"), "folded shows no reply: {screen}");
+        // Open: what was asked and what the oracle said back. The fold is a render
+        // input, so the history cache has to be told the rows can render differently.
+        a.tools = Fold::Open;
+        a.invalidate_history();
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("asked: run rm -rf"), "{screen}");
+        assert!(screen.contains("oracle: the operator asked for this"), "{screen}");
     }
 
     #[test]

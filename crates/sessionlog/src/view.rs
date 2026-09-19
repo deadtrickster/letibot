@@ -298,7 +298,15 @@ impl Default for ViewBounds {
     fn default() -> Self {
         ViewBounds {
             items: 2_000,
-            settled_decisions: 64,
+            // A decision is a fact about the tool call it gated, and a head renders
+            // it on that call's card — including a card that has settled into the
+            // transcript, which is where most of the session's history lives. A
+            // head that reattaches two compactions in must still find the decision
+            // that gated a call three turns back, so the window has to span a long
+            // session's worth of gates, not just the last handful. Each entry is a
+            // few hundred bytes, so a thousand of them is a small fraction of the
+            // snapshot the `items` bound already carries.
+            settled_decisions: 1_024,
             warnings: 128,
         }
     }
