@@ -789,6 +789,42 @@ pub struct App {
     /// third spelling would be a third thing to learn.
     repo_sel: usize,
     repo_open: bool,
+    /// **How far the open pane is scrolled**, in rows hidden above it.
+    ///
+    /// Every pane drew `rows.truncate(room)` and the scroll keys were swallowed
+    /// while one was open — so anything past the terminal's height was
+    /// unreachable, not merely off-screen. `leticl`'s TODO.md renders 98 rows;
+    /// on a 40-row terminal more than half of it could not be looked at, and the
+    /// cursor ↑↓ moves could walk into rows that are never drawn.
+    ///
+    /// One field for all of them: only one pane is open at a time, and the
+    /// alternative is six of these that each go stale separately.
+    pane_scroll: usize,
+    /// What the last draw of a pane measured: how many rows it had, and how many
+    /// fitted. Kept so a cursor moved by a keypress can scroll itself into view —
+    /// the key handler has no width or height of its own.
+    pane_len: usize,
+    pane_room: usize,
+    /// Which pane row the repo's first queue row is drawn at.
+    ///
+    /// `repo_sel` counts the repo's own rows; `pane_scroll` counts the pane's,
+    /// which start with a title, the model's live list and two labels. Passing
+    /// one where the other was meant scrolled to the wrong place and left the
+    /// cursor off screen — recorded at draw time rather than derived, because
+    /// the header's height depends on how many todos the model has written.
+    repo_first_row: usize,
+    /// **What this conversation has cost, in micro-USD**, summed over the turns
+    /// this head has seen finish.
+    ///
+    /// A per-turn figure is gone by the next turn; what somebody running a
+    /// metered model wants is the running total. Only turns this head watched
+    /// are in it — a head that attached late says so rather than inventing the
+    /// earlier ones, because the alternative is a total that is wrong in the
+    /// direction that costs money.
+    spent_micros: u64,
+    /// Whether any turn this head saw carried a cost at all. Distinguishes "free,
+    /// so nothing to show" from "metered and nothing has finished yet".
+    spent_seen: bool,
     /// The head's own instrumentation, as a screen: `/status`.
     ///
     /// Every counter it shows was added because something was measured going
@@ -1058,6 +1094,12 @@ impl App {
             repo_todos_at: None,
             repo_sel: 0,
             repo_open: false,
+            pane_scroll: 0,
+            pane_len: 0,
+            pane_room: 0,
+            repo_first_row: 0,
+            spent_micros: 0,
+            spent_seen: false,
             stats: false,
             quit: false,
             redraw: false,
@@ -1176,6 +1218,14 @@ impl App {
                 ..
             } => {
                 let moved = !self.session_id.is_empty() && self.session_id != session_id;
+                // **Ask for the settings on attach.** The daemon answers
+                // `ClientFrame::Settings` and never sends the rows unprompted, so
+                // a head that had not opened `/mode` or `/config` had none — and
+                // the header, which now reads the live `model` row, fell back to
+                // the model named in `Hello`. The operator, on a session answered
+                // by deepseek: *"restarted the letibot - still qwen"*. It was:
+                // the daemon knew, and nothing had asked it.
+                self.queued.push(Action::Settings);
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
@@ -1222,6 +1272,10 @@ impl App {
                         prompt_tokens: tokens,
                         cached_tokens: b.context_cached.unwrap_or(0),
                         predicted_tokens: 0,
+                        // A backfilled row carries the prompt size, never the
+                        // cost: nothing recorded it per turn before now, and a
+                        // zero here would report a metered session as free.
+                        cost_micros_usd: None,
                     });
                 }
                 if moved {
@@ -1381,6 +1435,10 @@ impl App {
             self.usage = None;
             self.usage_cache_measured = true;
             self.last_timings = None;
+            // The total belongs to the conversation, not to the head: switching
+            // sessions must not carry one session's bill onto another's header.
+            self.spent_micros = 0;
+            self.spent_seen = false;
             self.model.clear();
             self.turn = None;
             self.heads = 0;
@@ -1969,6 +2027,14 @@ impl App {
                 // no longer does. The turn measured its own cache, so the
                 // percentage is real.
                 self.usage = Some(usage);
+                // Summed as the turns land. A turn with no cost — the local
+                // server, or a metered model nothing prices — adds nothing and
+                // does not light the meter: free and unpriced are both "no
+                // number", and `$0.0000` on every local header would be noise.
+                if let Some(c) = usage.cost_micros_usd {
+                    self.spent_micros += c;
+                    self.spent_seen = true;
+                }
                 self.usage_cache_measured = true;
                 self.last_timings = Some(timings);
                 if let Some(t) = self.turn.as_mut() {
@@ -2428,6 +2494,10 @@ impl App {
             }
             Key::CtrlP => {
                 self.todos_pane = !self.todos_pane;
+                // A pane opens at its top. Kept per-pane would be four fields
+                // that each go stale; one field reset on every open is the same
+                // behaviour with nothing to forget.
+                self.pane_scroll = 0;
                 self.redraw = true;
                 if self.todos_pane {
                     // Read at open, and re-read on every draw the file has moved
@@ -2447,6 +2517,7 @@ impl App {
             // not a thing the composer needs a letter for.
             Key::CtrlG => {
                 self.subagents_pane = !self.subagents_pane;
+                self.pane_scroll = 0;
                 self.redraw = true;
                 return None;
             }
@@ -2456,6 +2527,7 @@ impl App {
             // listening for flow control and the byte arrives like any other.
             Key::CtrlQ => {
                 self.jobs_pane = !self.jobs_pane;
+                self.pane_scroll = 0;
                 self.redraw = true;
                 return None;
             }
@@ -2515,9 +2587,34 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                if self.help || self.picker || self.mode_picker || self.models_picker || self.stats || self.todos_pane
-                    || self.subagents_pane || self.jobs_pane || self.config_pane
+                // **An open pane takes them.** They used to be swallowed here,
+                // on the reasoning that a view underneath a pane should not
+                // move — which is right, and left the pane itself unable to
+                // scroll at all. A pane longer than the terminal was a pane
+                // whose tail could not be read: `leticl`'s TODO.md is 98 rows.
+                //
+                // The two pickers are excluded: they are short, and their click
+                // arithmetic is keyed on rows counted from the top of the card.
+                if self.picker || self.mode_picker || self.models_picker {
+                    return None;
+                }
+                if self.help || self.stats || self.todos_pane || self.subagents_pane
+                    || self.jobs_pane || self.config_pane
                 {
+                    // **The polarity is the opposite of the transcript's**, and
+                    // getting it wrong here made PageDown a no-op that looked
+                    // exactly like the swallowing this replaced. `self.scroll`
+                    // counts rows back from the BOTTOM — scrolling up increases
+                    // it — because the transcript is read from its tail.
+                    // `pane_scroll` counts rows hidden above the TOP, because a
+                    // pane is read from its head. So down is the one that grows.
+                    let max = self.pane_len.saturating_sub(self.pane_room);
+                    self.pane_scroll = if up {
+                        self.pane_scroll.saturating_sub(by)
+                    } else {
+                        (self.pane_scroll + by).min(max)
+                    };
+                    self.redraw = true;
                     return None;
                 }
                 self.scroll = if up {
@@ -2886,18 +2983,36 @@ impl App {
                     Key::Up => {
                         self.repo_sel = stops[at.checked_sub(1).unwrap_or(stops.len() - 1)];
                         self.repo_open = false;
+                        // An arrow that walks the cursor past the bottom of the
+                        // window otherwise reads as a key that does nothing.
+                        self.scroll_into_view(self.repo_first_row + self.repo_sel);
                         self.redraw = true;
                         return None;
                     }
                     Key::Down => {
                         self.repo_sel = stops[(at + 1) % stops.len()];
                         self.repo_open = false;
+                        self.scroll_into_view(self.repo_first_row + self.repo_sel);
                         self.redraw = true;
                         return None;
                     }
-                    Key::Enter if self.editor.text().is_empty() => {
+                    // **Tab as well as Enter**, because the hand is already
+                    // there: the operator, after using it, *"i also feel like I
+                    // want Tab to expand the todo row"*. Tab completes a
+                    // `/command` while one is being typed, and the composer is
+                    // empty here — the same condition Enter already carries, so
+                    // the two never disagree about whose key it is.
+                    Key::Enter | Key::Tab if self.editor.text().is_empty() => {
                         self.repo_sel = stops[at];
                         self.repo_open = !self.repo_open;
+                        // An item unfolding below the fold should show what it
+                        // unfolded, so the body is scrolled to rather than
+                        // appearing off-screen.
+                        if self.repo_open {
+                            self.scroll_into_view(
+                                self.repo_first_row + self.repo_sel + rows[self.repo_sel].body.len(),
+                            );
+                        }
                         self.redraw = true;
                         return None;
                     }
@@ -3314,6 +3429,10 @@ impl App {
             return None;
         }
         self.say(&format!("switching to {name}…"));
+        // The switch, then a re-read of the rows it changed — in that order, which
+        // the daemon honours, so the header names what answers now rather than
+        // what answered a moment ago.
+        self.queued.push(Action::Settings);
         Some(Action::Slash {
             line: format!("models {name}"),
         })
@@ -3550,12 +3669,14 @@ impl App {
             "resync" => Some(Action::Resync),
             "help" | "h" | "?" => {
                 self.help = !self.help;
+                self.pane_scroll = 0;
                 self.redraw = true;
                 None
             }
             // Where the bottom border's telemetry went. See `App::stats`.
             "status" | "stats" => {
                 self.stats = !self.stats;
+                self.pane_scroll = 0;
                 self.redraw = true;
                 None
             }
@@ -3588,6 +3709,7 @@ impl App {
             "config" | "settings" => {
                 self.config_pane = !self.config_pane;
                 self.config_sel = 0;
+                self.pane_scroll = 0;
                 // One list on the screen at a time, the same rule the pickers
                 // keep between themselves.
                 if self.config_pane {
@@ -3605,6 +3727,7 @@ impl App {
             }
             "jobs" => {
                 self.jobs_pane = !self.jobs_pane;
+                self.pane_scroll = 0;
                 self.redraw = true;
                 None
             }
@@ -4209,13 +4332,11 @@ impl App {
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
         let mut out = if self.help {
-            let mut help = help_lines(&self.cfg, w);
-            help.truncate(room);
-            help
+            let help = help_lines(&self.cfg, w);
+            self.pane_window(help, room)
         } else if self.stats {
-            let mut rows = self.status_lines(w);
-            rows.truncate(room);
-            rows
+            let rows = self.status_lines(w);
+            self.pane_window(rows, room)
         } else if self.picker {
             let mut rows = self.picker_lines(w);
             rows.truncate(room);
@@ -4225,25 +4346,21 @@ impl App {
             // One `stat` before the draw: the file is edited while this pane is
             // open, which is the case the open-time read could not see.
             self.refresh_repo_todos();
-            let mut rows = self.todos_lines(w);
-            rows.truncate(room);
-            rows
+            let rows = self.todos_lines(w);
+            self.pane_window(rows, room)
         } else if self.config_pane {
-            let mut rows = self.config_lines(w);
-            rows.truncate(room);
-            rows
+            let rows = self.config_lines(w);
+            self.pane_window(rows, room)
         } else if self.sub_out.is_some() {
             let mut rows = self.sub_out_lines(room);
             rows.truncate(room);
             rows
         } else if self.subagents_pane {
-            let mut rows = self.subagents_lines(w);
-            rows.truncate(room);
-            rows
+            let rows = self.subagents_lines(w);
+            self.pane_window(rows, room)
         } else if self.jobs_pane {
-            let mut rows = self.jobs_lines(w);
-            rows.truncate(room);
-            rows
+            let rows = self.jobs_lines(w);
+            self.pane_window(rows, room)
         } else {
             self.body_window(room)
         };
@@ -4414,7 +4531,7 @@ impl App {
         } else if self.mode_picker {
             "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.todos_pane {
-            "the model's plan above · ↑↓ then enter unfolds an item below · esc closes"
+            "↑↓ moves · enter or tab unfolds · pgup/pgdn and the wheel scroll · esc closes"
         } else if self.config_pane {
             "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
@@ -4890,6 +5007,11 @@ impl App {
                     .filter(|u| u.prompt_tokens > 0)
                     .map(|u| (u.prompt_tokens, u.cached_tokens, self.usage_cache_measured)),
             };
+        // **The meter.** Beside the token count, because that is where the
+        // question "what is this costing me" is already being asked.
+        if self.spent_seen {
+            right.push(format!("${:.4}", self.spent_micros as f64 / 1_000_000.0));
+        }
         if let Some((total, cached, cache_measured)) = usage {
             right.push(format!("{} ctx", progress::thousands(total)));
             // A percentage nobody measured is refused, the rule the rate beside it
@@ -5212,6 +5334,38 @@ impl App {
         out
     }
 
+    /// **The visible slice of a pane**, and the two numbers the scroll keys need.
+    ///
+    /// Clamped here rather than at the keypress: the key handler does not know
+    /// how tall the terminal is or how many rows the pane has, and a scroll
+    /// clamped against a stale height scrolls past the end and shows a blank
+    /// screen the operator has to page back from.
+    fn pane_window(&mut self, rows: Vec<String>, room: usize) -> Vec<String> {
+        self.pane_len = rows.len();
+        self.pane_room = room;
+        // The last screenful is the furthest anything scrolls: past that is
+        // blank rows, which is not a place to be.
+        let max = rows.len().saturating_sub(room);
+        self.pane_scroll = self.pane_scroll.min(max);
+        rows.into_iter().skip(self.pane_scroll).take(room).collect()
+    }
+
+    /// Keep the cursor on screen after an arrow moved it.
+    ///
+    /// `row` is the cursor's index among the pane's rows. Called by the panes
+    /// that have a cursor, after they move it: an arrow that walks the selection
+    /// out of the window otherwise looks like a key that does nothing.
+    fn scroll_into_view(&mut self, row: usize) {
+        if self.pane_room == 0 {
+            return;
+        }
+        if row < self.pane_scroll {
+            self.pane_scroll = row;
+        } else if row >= self.pane_scroll + self.pane_room {
+            self.pane_scroll = row + 1 - self.pane_room;
+        }
+    }
+
     /// Re-read `TODO.md` when it has changed since the last read, and not
     /// otherwise. Called on open and before every draw of the pane.
     ///
@@ -5231,7 +5385,7 @@ impl App {
         self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
     }
 
-    fn todos_lines(&self, w: usize) -> Vec<String> {
+    fn todos_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
         out.push(dim(
@@ -5260,6 +5414,7 @@ impl App {
             &self.cfg,
             "  the repo's TODO.md — the operator's queue, read-only here:",
         ));
+        self.repo_first_row = out.len();
         match &self.repo_todos {
             None => out.push(dim(&self.cfg, "    not read yet — close and reopen the pane.")),
             Some(lines) => {
@@ -6868,7 +7023,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ("ctrl-s", "the session list: type a number or part of a name to switch"),
         ("tab", "complete the /command being typed; more tabs walk the matches"),
         ("click", "in the session list, picks the row under the pointer; enter still switches"),
-        ("ctrl-p", "the todos pane: the model's plan, and the repo's TODO.md read-only"),
+        ("ctrl-p", "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves, enter or tab unfolds an item, pgup/pgdn scrolls"),
         ("/new [title]", "start a session in this daemon and go there"),
         ("/switch WHAT", "go to a session by number, id or part of its name"),
         ("ctrl-r", "fold or unfold the model's thinking"),
@@ -9595,6 +9750,203 @@ mod tests {
         assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
     }
 
+    /// **The head asks for the settings on attach.** The daemon answers
+    /// `ClientFrame::Settings` and never pushes the rows, so a head that had not
+    /// opened `/mode` or `/config` had none — and the header, which reads the
+    /// live `model` row, fell back to the model `Hello` named. The operator, on a
+    /// session answered by deepseek: *"restarted the letibot - still qwen"*.
+    #[test]
+    fn attaching_asks_for_the_settings_so_the_header_is_not_stale() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        assert!(
+            a.take_actions().contains(&Action::Settings),
+            "attach asks for them"
+        );
+        // Before the answer, the header falls back to Hello's model — which is
+        // what it always did, and is right until something better arrives.
+        assert!(a.header_line(200).contains("qwen-3.8-flash-next"));
+        a.apply(model_settings("deepseek/deepseek-flash", &["local"]));
+        assert!(a.header_line(200).contains("deepseek/deepseek-flash"));
+    }
+
+    /// **The money meter.** `micros_usd` was computed by the daemon and read in
+    /// exactly one place — the one-shot `--prompt` printer — so a session driven
+    /// from a head never saw it. The operator, on a metered conversation: *"still
+    /// no money"*. Correct: the meter existed for a surface they were not using.
+    #[test]
+    fn a_metered_turn_puts_its_cost_on_the_header_and_the_total_accumulates() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        // A free turn lights nothing: free and unpriced are both "no number",
+        // and a `$0.0000` on a local session would be noise on every header.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, finished_costing("t1", None))));
+        assert!(!a.header_line(200).contains('$'), "{}", a.header_line(200));
+
+        // Two metered turns, summed.
+        a.apply(ServerFrame::Event(env(3, testing::turn_started("t2"))));
+        a.apply(ServerFrame::Event(env(4, finished_costing("t2", Some(33)))));
+        a.apply(ServerFrame::Event(env(5, testing::turn_started("t3"))));
+        a.apply(ServerFrame::Event(env(6, finished_costing("t3", Some(12_345)))));
+        let h = a.header_line(200);
+        assert!(h.contains("$0.0124"), "33 + 12345 micro-USD: {h}");
+
+        // The total is the conversation's, not the head's: switching sessions
+        // must not carry one session's bill onto another's header.
+        a.apply(hello("s2", vec![brief("s", "one", false)], Hub::new("s2").snapshot()));
+        assert!(!a.header_line(200).contains('$'), "{}", a.header_line(200));
+    }
+
+    fn finished_costing(turn: &str, micros: Option<u64>) -> SessionEvent {
+        SessionEvent::TurnFinished {
+            turn_id: turn.into(),
+            finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+            usage: Usage {
+                prompt_tokens: 100,
+                cached_tokens: 0,
+                predicted_tokens: 10,
+                cost_micros_usd: micros,
+            },
+            timings: letibot_sessionlog::event::Timings {
+                prompt_ms: 1.0,
+                predicted_ms: 1.0,
+                wall_ms: 2,
+            },
+        }
+    }
+
+    /// **A pane longer than the terminal was a pane whose tail could not be
+    /// read.** Every pane drew `rows.truncate(room)` and the scroll keys were
+    /// swallowed while one was open — right about not moving the view
+    /// underneath, and it left the pane itself unable to move at all.
+    /// `leticl`'s TODO.md renders 98 rows; on a 40-row terminal more than half
+    /// of it was unreachable.
+    #[test]
+    fn a_pane_taller_than_the_screen_scrolls_to_its_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-scroll-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let mut body = String::from("## Phase 0\n\n");
+        for i in 0..60 {
+            body.push_str(&format!("- [ ] **T{i}** item number {i}\n"));
+        }
+        std::fs::write(dir.join("TODO.md"), &body).expect("write");
+
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+        let top = a.screen(110, 20).join("\n");
+        assert!(top.contains("T0 item number 0"), "{top}");
+        assert!(!top.contains("T59 item number 59"), "the tail is off-screen: {top}");
+
+        // PageDown reaches it. Enough presses to pass the end — the clamp is
+        // what stops it, and scrolling past into blank rows would be its own bug.
+        for _ in 0..20 {
+            a.key(Key::PageDown);
+            a.screen(110, 20);
+        }
+        let end = a.screen(110, 20).join("\n");
+        assert!(end.contains("T59 item number 59"), "{end}");
+        assert!(!end.contains("T0 item number 0"), "{end}");
+        // The last screenful, not past it: the final row is still drawn.
+        assert!(
+            a.pane_scroll == a.pane_len.saturating_sub(a.pane_room),
+            "clamped to the last screenful: {} of {}/{}",
+            a.pane_scroll,
+            a.pane_len,
+            a.pane_room
+        );
+
+        // And back up.
+        for _ in 0..20 {
+            a.key(Key::PageUp);
+            a.screen(110, 20);
+        }
+        assert_eq!(a.pane_scroll, 0);
+        assert!(a.screen(110, 20).join("\n").contains("T0 item number 0"));
+
+        // A reopened pane starts at the top rather than where it was left.
+        a.key(Key::PageDown);
+        a.screen(110, 20);
+        a.key(Key::Esc);
+        a.key(Key::CtrlP);
+        assert_eq!(a.pane_scroll, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cursor keeps itself on screen: an arrow that walks the selection out
+    /// of the window reads as a key that does nothing.
+    #[test]
+    fn the_cursor_scrolls_itself_into_view() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-cursor-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let mut body = String::from("## Phase 0\n\n");
+        for i in 0..40 {
+            body.push_str(&format!("- [ ] **T{i}** item {i}\n"));
+        }
+        std::fs::write(dir.join("TODO.md"), &body).expect("write");
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+        a.screen(110, 20);
+
+        for _ in 0..30 {
+            a.key(Key::Down);
+        }
+        let screen = a.screen(110, 20).join("\n");
+        assert!(screen.contains("▸"), "the cursor is on screen: {screen}");
+        assert!(a.pane_scroll > 0, "which took scrolling: {}", a.pane_scroll);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Tab unfolds, like enter.** The operator, after using the pane: *"i also
+    /// feel like I want Tab to expand the todo row"*. It completes a `/command`
+    /// while one is being typed, and the composer is empty here — the same
+    /// condition enter already carried.
+    #[test]
+    fn tab_unfolds_an_item_and_still_completes_a_command() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-tab-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("TODO.md"),
+            concat!("## Phase 0\n", "\n", "- [ ] **T1** head\n", "  the body line\n"),
+        )
+        .expect("write");
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+        assert!(!a.screen(110, 30).join("\n").contains("the body line"));
+        a.key(Key::Tab);
+        assert!(a.screen(110, 30).join("\n").contains("the body line"), "tab unfolds");
+        a.key(Key::Tab);
+        assert!(!a.screen(110, 30).join("\n").contains("the body line"), "and folds");
+
+        // With something typed, Tab is still the completion key: the pane does
+        // not get to eat it just because it is open.
+        for c in "/mod".chars() {
+            a.key(Key::Char(c));
+        }
+        a.key(Key::Tab);
+        assert!(
+            a.editor.text().starts_with("/mode"),
+            "completion still works: {:?}",
+            a.editor.text()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **An item's detail is under it in the file and was thrown away.**
     ///
     /// `- [x] **T2** vendor yason …, pinned in` continues on the next line with
@@ -11967,8 +12319,7 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 41_233,
                 cached_tokens: 38_100,
-                predicted_tokens: 200,
-            },
+                predicted_tokens: 200, cost_micros_usd: None },
             timings: Default::default(),
         });
         a.apply(hello(
@@ -12006,8 +12357,7 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 44_700,
                 cached_tokens: 40_000,
-                predicted_tokens: 0,
-            })
+                predicted_tokens: 0, cost_micros_usd: None })
         );
         let header = a.header_line(200);
         assert!(header.contains("44.7k ctx"), "{header}");
@@ -12023,8 +12373,7 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 51_000,
                 cached_tokens: 44_700,
-                predicted_tokens: 300,
-            },
+                predicted_tokens: 300, cost_micros_usd: None },
             timings: Default::default(),
         });
         let mut a = app();
@@ -12037,8 +12386,7 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 51_000,
                 cached_tokens: 44_700,
-                predicted_tokens: 300,
-            }),
+                predicted_tokens: 300, cost_micros_usd: None }),
             "the snapshot's turn state is newer than the row"
         );
         // A backfilled row carries the size but not the fraction: the migration
@@ -12056,8 +12404,7 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 44_700,
                 cached_tokens: 0,
-                predicted_tokens: 0,
-            })
+                predicted_tokens: 0, cost_micros_usd: None })
         );
         let header = a.header_line(200);
         assert!(header.contains("44.7k ctx"), "{header}");
@@ -12090,8 +12437,7 @@ mod tests {
                 usage: Usage {
                     prompt_tokens: 41_233,
                     cached_tokens: 38_100,
-                    predicted_tokens: 1_200,
-                },
+                    predicted_tokens: 1_200, cost_micros_usd: None },
                 timings: letibot_sessionlog::event::Timings {
                     prompt_ms: 900.0,
                     predicted_ms: 2_000.0,
@@ -12889,8 +13235,7 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 4_470,
                 cached_tokens: 1_500,
-                predicted_tokens: 10,
-            },
+                predicted_tokens: 10, cost_micros_usd: None },
             timings: Default::default(),
         });
         a.apply(hello("s1", vec![brief("s1", "one", false)], one.snapshot()));

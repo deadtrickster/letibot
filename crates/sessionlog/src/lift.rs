@@ -106,6 +106,9 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 prompt_tokens: metrics.prompt_tokens,
                 cached_tokens: metrics.cached_tokens,
                 predicted_tokens: metrics.predicted_tokens,
+                // The one line that was missing: the daemon had the number and
+                // dropped it here, so only the one-shot printer ever showed it.
+                cost_micros_usd: metrics.cost.micros_usd,
             },
             timings: Timings {
                 prompt_ms: metrics.prompt_ms,
