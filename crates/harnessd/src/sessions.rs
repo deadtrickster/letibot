@@ -1279,7 +1279,38 @@ impl<'a> Sessions<'a> {
             // [`Sessions::submit`] — which also opens its harness, so nothing here
             // holds one.
             CommandKind::Compact => match self.compact(session_id) {
-                Ok(r) => Outcome::Compacted(Box::new(r)),
+                Ok(r) => {
+                    // **A compaction that re-seated says so.** It forks onto the
+                    // prompt this daemon seats now, so a conversation older than a
+                    // tool picks that tool up by compacting — and a capability
+                    // that appears silently is one nobody uses.
+                    if let Some(hub) = &hub
+                        && !(r.gained.is_empty() && r.lost.is_empty())
+                    {
+                        let mut said =
+                            "this compaction also re-seated: the new prompt announces the \
+                             tools this daemon seats now"
+                                .to_string();
+                        if !r.gained.is_empty() {
+                            said.push_str(&format!(
+                                ". The model can now call: {}",
+                                r.gained.join(", ")
+                            ));
+                        }
+                        if !r.lost.is_empty() {
+                            said.push_str(&format!(". It has lost: {}", r.lost.join(", ")));
+                        }
+                        said.push_str(
+                            ". `/reseat` would have cost a second summary turn and a second \
+                             cold prefill; this one is already paid for.",
+                        );
+                        hub.publish(SessionEvent::Warning {
+                            code: "reseated".into(),
+                            detail: said,
+                        });
+                    }
+                    Outcome::Compacted(Box::new(r))
+                }
                 Err(e) => Outcome::Failed(e.to_string()),
             },
             // A re-seat is a compaction that lands on a different prompt, so it
@@ -1300,16 +1331,18 @@ impl<'a> Sessions<'a> {
                                  summary, and the tool list rebuilt",
                                 r.fork.was_tokens, r.fork.base_tokens
                             );
-                            if !r.gained.is_empty() {
+                            let gained = r.gained.clone();
+                            let lost = r.lost.clone();
+                            if !gained.is_empty() {
                                 said.push_str(&format!(
                                     ". The model can now call: {}",
-                                    r.gained.join(", ")
+                                    gained.join(", ")
                                 ));
                             }
-                            if !r.lost.is_empty() {
+                            if !lost.is_empty() {
                                 said.push_str(&format!(
                                     ". It has lost: {}",
-                                    r.lost.join(", ")
+                                    lost.join(", ")
                                 ));
                             }
                             said.push_str(
@@ -1325,6 +1358,8 @@ impl<'a> Sessions<'a> {
                         Outcome::Compacted(Box::new(crate::harness::CompactReport {
                             fork: r.fork,
                             summary_turn: r.summary_turn,
+                            gained: r.gained,
+                            lost: r.lost,
                         }))
                     }
                     Err(e) => {
