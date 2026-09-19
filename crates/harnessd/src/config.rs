@@ -521,12 +521,35 @@ impl AdjudicatorChoice {
 ///
 /// Nothing volatile: no timestamp, no cwd listing, no git branch. Adding one line
 /// to an `<env>` block once cost a full cold re-prefill of a 179k conversation.
+///
+/// # The `transcript` sentence, and why it earned its re-prefill
+///
+/// It is one of the few additions worth that cost, because the behaviour it
+/// changes is one nothing else can reach. A tool's own description is read when
+/// the model is choosing among tools — but the moment this is about is the moment
+/// BEFORE that, when the model has decided it does not know something and is
+/// composing a question back to the operator. Nothing in a schema is consulted
+/// there.
+///
+/// The trigger is narrow on purpose. "Something you do not know" is most things,
+/// and a model that reaches for a tool about all of them is worse than one that
+/// says so. The tell is specific: the operator refers to something **as already
+/// settled**, in the tone of a thing you both know, and there is no record of it.
+/// That is what a compaction leaves behind, and it is also the one case where
+/// asking them to repeat themselves is asking for something they already said.
+///
+/// The sentence rides the read-only-tools paragraph rather than opening its own,
+/// because it is the same rule about a different subject — *a file you have not
+/// read is a file you do not know* — and two paragraphs would read as two rules.
 pub const DEFAULT_SYSTEM: &str = "You are a careful software engineering assistant working in a \
 checked-out source tree.\n\n\
 Answer in English unless the user writes in another language, in which case answer in theirs.\n\n\
 You have read-only tools. Use them for questions about **this tree** — its files, their contents, \
 where something is defined — rather than guessing: a file you have not read is a file you do not \
-know. Do not call a tool for a question about the world, about a definition, or about arithmetic; \
+know. The same holds for **this conversation**: if the user refers to something as already settled \
+and you have no record of it, read it with `transcript` before asking them to repeat it — a \
+compaction replaces earlier turns with a summary, and the turns themselves are still in the store. \
+Do not call a tool for a question about the world, about a definition, or about arithmetic; \
 answer those directly. When a tool reports that it found nothing, say so — do not fill the gap \
 from memory.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
