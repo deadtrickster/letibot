@@ -19,6 +19,11 @@ pub struct Preset {
     pub echo_reasoning: bool,
     /// Extra body fields the provider needs to think out loud, if any.
     pub thinking_field: Option<&'static str>,
+    /// **This provider's id in the models.dev catalogue**, which is not always the
+    /// name we call it by: we say `glm` and `grok`, the catalogue says `zhipuai`
+    /// and `xai`. See [`crate::catalogue`] for why the facts are read from there
+    /// rather than written down here.
+    pub catalogue_id: &'static str,
 }
 
 pub const DEEPSEEK: Preset = Preset {
@@ -29,6 +34,7 @@ pub const DEEPSEEK: Preset = Preset {
     default_model: "deepseek-chat",
     echo_reasoning: false,
     thinking_field: None,
+    catalogue_id: "deepseek",
 };
 
 pub const GLM: Preset = Preset {
@@ -41,6 +47,7 @@ pub const GLM: Preset = Preset {
     // Zhipu's `thinking: {"type": "enabled"}` switches GLM's reasoning on; the
     // provider sends it when the operator asks for a reasoning turn.
     thinking_field: Some("thinking"),
+    catalogue_id: "zhipuai",
 };
 
 pub const GROK: Preset = Preset {
@@ -51,6 +58,7 @@ pub const GROK: Preset = Preset {
     default_model: "grok-4-fast",
     echo_reasoning: false,
     thinking_field: None,
+    catalogue_id: "xai",
 };
 
 pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GROK];
@@ -58,6 +66,19 @@ pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GROK];
 impl Preset {
     /// `deepseek` | `glm` (`zhipu`, `bigmodel`) | `grok` (`xai`). Anything else
     /// names the three rather than guessing.
+    /// **The context window to plan compaction against**, from the catalogue.
+    ///
+    /// `None` when the catalogue has no figure for this model — which happens for
+    /// a model it has retired, for a private deployment, and on a box with no
+    /// catalogue at all. `None` means the caller leaves the window alone and says
+    /// so: the rest of this system is built on *"a window that is not known must
+    /// not be invented"*, and inventing one here would decide when a conversation
+    /// gets summarised.
+    pub fn window(&self, model: Option<&str>, cat: &crate::catalogue::Catalogue) -> Option<u64> {
+        cat.model(self.catalogue_id, model.unwrap_or(self.default_model))
+            .map(|m| m.context)
+    }
+
     pub fn parse(s: &str) -> Result<&'static Preset, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "deepseek" => Ok(&DEEPSEEK),

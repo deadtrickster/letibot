@@ -792,6 +792,15 @@ pub struct Harness<'a> {
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
+    /// **The local server's own context window**, kept from before the first
+    /// switch to a provider so `/models local` can put it back.
+    ///
+    /// `Option<Option<u64>>`: the outer says whether this session has ever left
+    /// the local server, the inner is the window itself — which is legitimately
+    /// `None` when `/props` reported nothing. Collapsing the two would make
+    /// "never switched" and "switched away from a server with no window" the same
+    /// state, and only one of them should restore anything.
+    local_window: Option<Option<u64>>,
 }
 
 /// What a resume actually rebuilt.
@@ -2394,6 +2403,10 @@ impl<'a> Harness<'a> {
             tool_sink,
             job_watch,
             provider,
+            // Filled on the first switch away from local, never at open: a session
+            // that started on a provider has no local window to go back to, and
+            // `None` here says exactly that.
+            local_window: None,
         };
         h.publish_settings();
         if h.resumed.is_some() {
@@ -2684,24 +2697,96 @@ impl<'a> Harness<'a> {
             None => {
                 self.provider = None;
                 self.cfg.provider = None;
-                Ok(format!(
+                // Back to the server's own window, which is the one its `/props`
+                // reported at startup. Restored rather than recomputed: the local
+                // endpoint is not asked again here, and keeping a cloud model's
+                // window over a local conversation is the same bug pointing the
+                // other way.
+                let mut line = format!(
                     "turns go to the local server at {} ({}) from the next one on",
                     self.cfg.endpoint.authority(),
                     self.cfg.model
-                ))
+                );
+                if let Some(w) = self.local_window.take() {
+                    if w != self.cfg.context_window {
+                        line.push_str(&match w {
+                            Some(w) => format!(". Context window back to {w}"),
+                            None => ". The local server never reported a window".into(),
+                        });
+                    }
+                    self.cfg.context_window = w;
+                }
+                Ok(line)
             }
             Some(pc) => {
                 let p = build_provider(&pc, &self.cfg.sampling).map_err(HarnessError::Setup)?;
-                let line = format!(
+                let mut line = format!(
                     "turns go to {}/{} from the next one on — METERED; the prefix check is \
                      skipped, the ledger stays the record",
                     p.name(),
                     p.model()
                 );
+                // **The window follows the model.** Compaction is planned against
+                // `context_window` — `plan_overrun`, `should_compact` and
+                // `headroom` all read it — and it came from the LOCAL server's
+                // `/props`. Leaving it there meant a conversation answered by a
+                // cloud model was measured against the llama-server's window, and
+                // compacted at the wrong time or not at all.
+                line.push_str(&self.retune_window(&pc));
                 self.provider = Some(p);
                 self.cfg.provider = Some(pc);
                 Ok(line)
             }
+        }
+    }
+
+    /// Point `context_window` at the model that will answer, and say what moved.
+    ///
+    /// Returns the sentence to append to the switch's report, empty when nothing
+    /// changed. An unknown model leaves the window alone **and says so** — the
+    /// silent half of this bug was that nobody could tell which window was in
+    /// force.
+    fn retune_window(&mut self, pc: &crate::config::ProviderConfig) -> String {
+        // Remembered on the way out to the first provider, so `/models local`
+        // restores the server's own number rather than keeping a cloud model's.
+        if self.local_window.is_none() {
+            self.local_window = Some(self.cfg.context_window);
+        }
+        let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+            return String::new();
+        };
+        let cat = letibot_provider::catalogue::Catalogue::load();
+        let was = self.cfg.context_window;
+        match preset.window(pc.model.as_deref(), &cat) {
+            Some(w) if Some(w) == was => String::new(),
+            Some(w) => {
+                self.cfg.context_window = Some(w);
+                let resident = self.session.ledger.len() as u64;
+                let mut said = match was {
+                    Some(old) => format!(". Context window {old} → {w}"),
+                    None => format!(". Context window now {w}"),
+                };
+                // The consequence, not just the number: a switch that puts the
+                // conversation over the new model's wall compacts on the next
+                // turn, and being told afterwards is being told too late.
+                if resident + self.cfg.headroom() >= w {
+                    said.push_str(&format!(
+                        "; this conversation is {resident} token(s), so the next turn \
+                         compacts first"
+                    ));
+                }
+                said
+            }
+            None => format!(
+                ". The catalogue has no window for {}/{}, so compaction still plans \
+                 against {} — check that is the right size before a long turn",
+                pc.name,
+                pc.model.as_deref().unwrap_or(preset.default_model),
+                match was {
+                    Some(w) => w.to_string(),
+                    None => "no window at all".into(),
+                }
+            ),
         }
     }
 

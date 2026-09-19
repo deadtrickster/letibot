@@ -64,6 +64,12 @@ pub enum Slash {
         provider: String,
         model: Option<String>,
         key: Option<String>,
+        /// **This conversation only.** `/models X` has always done two things —
+        /// switched the running session AND written the standing choice into
+        /// `providers.toml` — with no way to have the first without the second.
+        /// The operator: *"--once would be nice yes"*. One hard question on a
+        /// metered model should not be a default the next daemon inherits.
+        once: bool,
     },
     /// **The supervised-labelling verb.** See [`gate`].
     Gate(GateVerb),
@@ -172,7 +178,8 @@ impl Slash {
                         .position(|w| *w == "--key" || *w == "--api-key")
                         .and_then(|i| words.get(i + 1))
                         .map(|s| s.to_string());
-                    Slash::ModelsSet { provider, model, key }
+                    let once = words.iter().any(|w| *w == "--once" || *w == "--here");
+                    Slash::ModelsSet { provider, model, key, once }
                 }
             },
             Some("login") => Slash::Help(
@@ -423,12 +430,24 @@ pub fn models_choice(
     model: Option<&str>,
     key: Option<&str>,
     file: Option<&std::path::Path>,
+    once: bool,
 ) -> Result<(Option<ProviderConfig>, Vec<String>), Vec<String>> {
     let mut notes = Vec::new();
+    // `--once` skips the standing choice and nothing else. The key, if one was
+    // pasted, is still stored: a key is a credential and not a preference, and
+    // making somebody paste it again next time would be the wrong half to forget.
     if provider == "local" {
-        match letibot_provider::keys::set_default(file, "local", None) {
-            Ok(f) => notes.push(format!("standing choice: local, in {}", f.display())),
-            Err(e) => notes.push(format!("standing choice not recorded: {e}")),
+        if once {
+            notes.push(
+                "this conversation only — the standing choice in providers.toml is \
+                 untouched"
+                    .into(),
+            );
+        } else {
+            match letibot_provider::keys::set_default(file, "local", None) {
+                Ok(f) => notes.push(format!("standing choice: local, in {}", f.display())),
+                Err(e) => notes.push(format!("standing choice not recorded: {e}")),
+            }
         }
         return Ok((None, notes));
     }
@@ -453,14 +472,22 @@ pub fn models_choice(
             ),
         ]);
     }
-    match letibot_provider::keys::set_default(file, preset.name, model) {
-        Ok(f) => notes.push(format!(
-            "standing choice: {}/{}, in {} — the next daemon starts on it too",
-            preset.name,
-            model.unwrap_or(preset.default_model),
-            f.display()
-        )),
-        Err(e) => notes.push(format!("standing choice not recorded: {e}")),
+    if once {
+        notes.push(
+            "this conversation only — the standing choice in providers.toml is \
+             untouched, so the next daemon starts where it did before"
+                .into(),
+        );
+    } else {
+        match letibot_provider::keys::set_default(file, preset.name, model) {
+            Ok(f) => notes.push(format!(
+                "standing choice: {}/{}, in {} — the next daemon starts on it too",
+                preset.name,
+                model.unwrap_or(preset.default_model),
+                f.display()
+            )),
+            Err(e) => notes.push(format!("standing choice not recorded: {e}")),
+        }
     }
     Ok((
         Some(ProviderConfig {
@@ -551,7 +578,9 @@ mod tests {
                 provider,
                 model,
                 key,
+                once,
             } => {
+                assert!(!once, "no `--once` in this line");
                 assert_eq!(provider, "deepseek");
                 assert_eq!(model.as_deref(), Some("deepseek-reasoner"));
                 assert_eq!(key.as_deref(), Some("k1"));
@@ -594,6 +623,53 @@ mod tests {
         assert!(matches!(Slash::parse("tools"), Slash::Tools));
     }
 
+    /// `--once` switches the conversation without writing the standing choice.
+    #[test]
+    fn once_is_parsed_and_is_off_by_default() {
+        match Slash::parse("models deepseek/deepseek-chat --once") {
+            Slash::ModelsSet { provider, model, once, .. } => {
+                assert_eq!(provider, "deepseek");
+                assert_eq!(model.as_deref(), Some("deepseek-chat"));
+                assert!(once);
+            }
+            other => panic!("{other:?}"),
+        }
+        // `--here` says the same thing; both read naturally at a prompt.
+        assert!(matches!(
+            Slash::parse("models glm --here"),
+            Slash::ModelsSet { once: true, .. }
+        ));
+        // And the old spelling still sticks, because that is what it always did.
+        assert!(matches!(
+            Slash::parse("models glm"),
+            Slash::ModelsSet { once: false, .. }
+        ));
+    }
+
+    /// The standing choice is the ONLY thing `--once` skips. A pasted key is a
+    /// credential, not a preference, and forgetting it would make somebody paste
+    /// it again next time.
+    #[test]
+    fn once_skips_the_standing_choice_and_still_stores_a_key() {
+        let d = std::env::temp_dir().join(format!("letibot-once-{}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("scratch");
+        let f = d.join("providers.toml");
+        let (choice, notes) =
+            models_choice("grok", None, Some("xai-test"), Some(&f), true).expect("choosing");
+        assert!(choice.is_some(), "the session still switches");
+        let said = notes.join("\n");
+        assert!(said.contains("stored the grok key"), "{said}");
+        assert!(said.contains("this conversation only"), "{said}");
+        assert!(!said.contains("standing choice:"), "{said}");
+        let on_disk = std::fs::read_to_string(&f).unwrap_or_default();
+        assert!(on_disk.contains("xai-test"), "the key was written: {on_disk}");
+        assert!(
+            !on_disk.contains("[default]"),
+            "and the default was not: {on_disk}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn a_model_choice_stores_the_key_and_the_standing_choice_or_says_what_is_missing() {
         let d = std::env::temp_dir().join(format!("letibot-slash-{}", std::process::id()));
@@ -602,7 +678,7 @@ mod tests {
         // No key anywhere for grok (the env is not set in this test): refused, with the command.
         // (If the developer's shell exports XAI_API_KEY this arm is skipped.)
         if std::env::var("XAI_API_KEY").is_err() && std::env::var("GROK_API_KEY").is_err() {
-            let err = models_choice("grok", Some("grok-4-fast"), None, Some(&f)).unwrap_err();
+            let err = models_choice("grok", Some("grok-4-fast"), None, Some(&f), false).unwrap_err();
             assert!(
                 err.iter()
                     .any(|l| l.contains("/models grok/grok-4-fast --key PASTE")),
@@ -610,7 +686,7 @@ mod tests {
             );
         }
         let (choice, notes) =
-            models_choice("grok", Some("grok-4-fast"), Some("xai-test"), Some(&f)).unwrap();
+            models_choice("grok", Some("grok-4-fast"), Some("xai-test"), Some(&f), false).unwrap();
         assert_eq!(choice.as_ref().map(|c| c.name.as_str()), Some("grok"));
         assert!(
             notes.iter().any(|n| n.contains("stored the grok key")),
@@ -626,10 +702,10 @@ mod tests {
             letibot_provider::keys::default_choice(Some(&f)).map(|d| d.provider),
             Some("grok".into())
         );
-        let (none, _) = models_choice("local", None, None, Some(&f)).unwrap();
+        let (none, _) = models_choice("local", None, None, Some(&f), false).unwrap();
         assert!(none.is_none());
         assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
-        assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("three"));
+        assert!(models_choice("openai", None, None, Some(&f), false).unwrap_err()[0].contains("three"));
     }
 
     #[test]

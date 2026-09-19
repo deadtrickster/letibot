@@ -398,12 +398,14 @@ impl<'a> Sessions<'a> {
                 provider,
                 model,
                 key,
+                once,
             } => {
                 let (choice, mut lines) = match crate::slash::models_choice(
                     &provider,
                     model.as_deref(),
                     key.as_deref(),
                     None,
+                    once,
                 ) {
                     Ok(x) => x,
                     Err(lines) => return SlashReply { lines, ok: false },
