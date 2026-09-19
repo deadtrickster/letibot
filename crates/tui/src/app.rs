@@ -768,6 +768,21 @@ pub struct App {
     /// can be longer than the pane and is the operator's to edit; the map is what
     /// a pane can honestly show.
     repo_todos: Option<Vec<String>>,
+    /// **What the file looked like when it was last read**: `(mtime, len)`.
+    ///
+    /// The pane re-read `TODO.md` only when it was opened, so a file edited while
+    /// the pane was up went on showing the old read — and this file is edited
+    /// exactly while somebody is looking at it. The operator: *"since the file
+    /// can be updated, dont cache it i guess or do a watcher with a nice
+    /// syscall"*.
+    ///
+    /// One `stat` per draw rather than an inotify thread. A watcher would mean a
+    /// descriptor, a thread and an event to route into a head whose whole design
+    /// is one loop over one channel; `stat` is a syscall in the microseconds, and
+    /// the pane is drawn only while it is open. `(mtime, len)` rather than mtime
+    /// alone because a second-granularity mtime can miss two writes in one
+    /// second, and a length change catches most of those.
+    repo_todos_at: Option<(std::time::SystemTime, u64)>,
     /// The head's own instrumentation, as a screen: `/status`.
     ///
     /// Every counter it shows was added because something was measured going
@@ -1034,6 +1049,7 @@ impl App {
             sub_out_pending: None,
             todos: Vec::new(),
             repo_todos: None,
+            repo_todos_at: None,
             stats: false,
             quit: false,
             redraw: false,
@@ -2406,10 +2422,11 @@ impl App {
                 self.todos_pane = !self.todos_pane;
                 self.redraw = true;
                 if self.todos_pane {
-                    // The repo's queue, read at open: the file is the operator's
-                    // to edit between opens, and a pane showing yesterday's read
-                    // of it is a pane that lies quietly.
-                    self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
+                    // Read at open, and re-read on every draw the file has moved
+                    // under — see `refresh_repo_todos`. The file is the
+                    // operator's to edit, and a pane showing an old read of it is
+                    // a pane that lies quietly.
+                    self.refresh_repo_todos();
                 }
                 // Opening asks for the session's list rather than drawing the one
                 // from the last event: the bootstrap read, for a head that
@@ -4154,6 +4171,9 @@ impl App {
             self.picker_rows_drawn = rows.len();
             rows
         } else if self.todos_pane {
+            // One `stat` before the draw: the file is edited while this pane is
+            // open, which is the case the open-time read could not see.
+            self.refresh_repo_todos();
             let mut rows = self.todos_lines(w);
             rows.truncate(room);
             rows
@@ -5139,6 +5159,25 @@ impl App {
              the rest shows its source and takes a restart",
         ));
         out
+    }
+
+    /// Re-read `TODO.md` when it has changed since the last read, and not
+    /// otherwise. Called on open and before every draw of the pane.
+    ///
+    /// A failed `stat` — the file was deleted, or was never there — reads again,
+    /// so the pane's own "no TODO.md" line is the answer and stays current if one
+    /// appears. That costs a failed `open` per draw in the case where there is
+    /// nothing to show, which is the case nobody is watching.
+    fn refresh_repo_todos(&mut self) {
+        let path = std::path::Path::new(&self.wiring.workspace).join("TODO.md");
+        let now = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| Some((m.modified().ok()?, m.len())));
+        if self.repo_todos.is_some() && now.is_some() && now == self.repo_todos_at {
+            return;
+        }
+        self.repo_todos_at = now;
+        self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
     }
 
     fn todos_lines(&self, w: usize) -> Vec<String> {
@@ -6500,44 +6539,132 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
 /// the operator's to edit, and a cached map is a cache of somebody else's
 /// intention. Errors name themselves; a missing file is a fact about the
 /// workspace, not a panic in a pane.
+/// **The repo's `TODO.md`, as org-mode reads a list of checkboxes.**
+///
+/// It used to render one line per `## ` heading with the counts beside it —
+/// *"Phase 0 — repo — 0 open, 2 done"* — and nothing else. The items themselves,
+/// which are the queue, were never drawn. The operator, looking at `leticl`'s:
+/// *"our todo pane doesnt render them - only section titles and sub todos
+/// count"*.
+///
+/// So the items are drawn under their heading, and the heading carries the state
+/// org would give it: a parent is DONE when every child is, and org's own cookie
+/// — `[2/7]` — says how far along the rest are. Three marks, matching the ones
+/// this file's own legend defines and the ones `todo_write` uses, so the two
+/// halves of this pane read alike:
+///
+/// ```text
+///   [x] Phase 0 — repo                        [2/2]
+///       [x] T1 git init, .gitignore, commit PLAN.md + TODO.md.
+///       [x] T2 vendor yason + alexandria + trivial-gray-streams, pinned in
+///   [~] Phase 7 — parity                      [3/9]
+///       [x] S1 the side-by-side diff
+///       [~] S2 the session picker
+///       [ ] S3 the mode card
+/// ```
+///
+/// A heading with no items at all is not "done": an empty section is a section
+/// nobody has filled in, and org does not mark it either. It carries no cookie
+/// and no box.
 fn repo_todos_map(workspace: &str) -> Vec<String> {
     let path = std::path::Path::new(workspace).join("TODO.md");
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
         Err(e) => {
-            return vec![format!(
-                "    (no TODO.md in {workspace}: {e})"
-            )];
+            return vec![format!("    (no TODO.md in {workspace}: {e})")];
         }
     };
-    let mut out: Vec<String> = Vec::new();
-    let mut open = 0usize;
-    let mut done = 0usize;
-    let mut section: Option<String> = None;
-    let flush = |out: &mut Vec<String>, section: &Option<String>, open: usize, done: usize| {
-        if let Some(name) = section {
-            out.push(format!(
-                "    {name} — {open} open, {done} done"
-            ));
-        }
-    };
-    for line in body.lines() {
-        if let Some(name) = line.strip_prefix("## ") {
-            flush(&mut out, &section, open, done);
-            section = Some(name.trim().to_string());
-            open = 0;
-            done = 0;
-        } else {
-            let t = line.trim_start();
-            if t.starts_with("- [ ]") {
-                open += 1;
-            } else if t.starts_with("- [x]") || t.starts_with("- [X]") {
-                done += 1;
-            }
+    render_todo_md(&body)
+}
+
+/// One item's state, in the three marks org and `todo_write` share.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TodoMark {
+    Open,
+    Doing,
+    Done,
+}
+
+impl TodoMark {
+    /// `- [ ]`, `- [~]`, `- [x]` — and `*` for the other bullet org and markdown
+    /// both accept. Anything else in the box is not a checkbox this reads.
+    fn of(line: &str) -> Option<(TodoMark, &str)> {
+        let t = line.trim_start();
+        let rest = t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))?;
+        let (boxed, text) = rest.split_at_checked(3)?;
+        let mark = match boxed {
+            "[ ]" => TodoMark::Open,
+            "[x]" | "[X]" => TodoMark::Done,
+            "[~]" | "[-]" => TodoMark::Doing,
+            _ => return None,
+        };
+        Some((mark, text.trim()))
+    }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            TodoMark::Open => "[ ]",
+            TodoMark::Doing => "[~]",
+            TodoMark::Done => "[x]",
         }
     }
-    flush(&mut out, &section, open, done);
+}
+
+/// The parsing and rendering, split from the read so it can be tested without a
+/// file.
+fn render_todo_md(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut section: Option<String> = None;
+    let mut items: Vec<(TodoMark, String)> = Vec::new();
+
+    let flush = |out: &mut Vec<String>, section: &Option<String>, items: &[(TodoMark, String)]| {
+        let Some(name) = section else { return };
+        if items.is_empty() {
+            // Not `[x]`: an empty section is one nobody has filled in, and org
+            // does not mark it done either.
+            out.push(format!("      {name}"));
+            return;
+        }
+        let done = items.iter().filter(|(m, _)| *m == TodoMark::Done).count();
+        // **Org's rule for a parent.** Every child done makes the parent done;
+        // any child started makes it started; otherwise it is open.
+        let roll = if done == items.len() {
+            TodoMark::Done
+        } else if items.iter().any(|(m, _)| *m != TodoMark::Open) {
+            TodoMark::Doing
+        } else {
+            TodoMark::Open
+        };
+        out.push(format!(
+            "    {} {name}  [{done}/{}]",
+            roll.glyph(),
+            items.len()
+        ));
+        for (mark, text) in items {
+            out.push(format!("        {} {text}", mark.glyph()));
+        }
+    };
+
+    for line in body.lines() {
+        // `##` and deeper: `###` is a subsection and its items belong to it, not
+        // to the `##` above, which is what org's outline says too.
+        if let Some(name) = line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
+            flush(&mut out, &section, &items);
+            section = Some(name.trim().to_string());
+            items.clear();
+        } else if let Some((mark, text)) = TodoMark::of(line) {
+            items.push((mark, strip_markup(text)));
+        }
+    }
+    flush(&mut out, &section, &items);
     out
+}
+
+/// `**T1** git init` → `T1 git init`. The pane has one style for this text and
+/// markdown's emphasis markers are noise in it; the backticks go for the same
+/// reason. Nothing else is interpreted — this is a reader, not a renderer.
+fn strip_markup(text: &str) -> String {
+    text.replace("**", "").replace('`', "")
 }
 
 fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
@@ -9195,10 +9322,124 @@ mod tests {
             screen.contains("TODO.md"),
             "the second source is named: {screen}"
         );
+        // A heading carries org's cookie rather than a sentence of counts, and —
+        // the point — the items under it are actually drawn.
         assert!(
-            screen.contains("open,") && screen.contains("done"),
-            "sections carry their checkbox counts: {screen}"
+            screen.contains("/") && screen.contains("["),
+            "headings carry a [done/total] cookie: {screen}"
         );
+    }
+
+    /// **The items are the queue, and they were never drawn.** The pane rendered
+    /// one line per heading with counts beside it and stopped. The operator,
+    /// looking at `leticl`'s: *"our todo pane doesnt render them — only section
+    /// titles and sub todos count"*.
+    #[test]
+    fn a_heading_rolls_up_its_items_the_way_org_does() {
+        let rows = render_todo_md(
+            "# title\n\
+             \n\
+             ## Phase 0 — repo\n\
+             \n\
+             - [x] **T1** git init, `.gitignore`.\n\
+             - [x] **T2** vendor the deps.\n\
+             \n\
+             ## Phase 7 — parity\n\
+             \n\
+             - [x] **S1** the side-by-side diff\n\
+             - [~] **S2** the session picker\n\
+             - [ ] **S3** the mode card\n\
+             \n\
+             ## Phase 9 — not started\n\
+             \n\
+             - [ ] **Z1** nothing yet\n",
+        );
+        let all = rows.join("\n");
+
+        // Every child done makes the parent done — org's own rule for a heading.
+        assert!(all.contains("[x] Phase 0 — repo  [2/2]"), "{all}");
+        // One started makes it started, and the cookie counts only the finished.
+        assert!(all.contains("[~] Phase 7 — parity  [1/3]"), "{all}");
+        // None started leaves it open.
+        assert!(all.contains("[ ] Phase 9 — not started  [0/1]"), "{all}");
+
+        // And the items themselves, under their heading, in order, with their own
+        // marks and without markdown's emphasis noise.
+        assert!(all.contains("[x] T1 git init, .gitignore."), "{all}");
+        assert!(all.contains("[~] S2 the session picker"), "{all}");
+        assert!(all.contains("[ ] S3 the mode card"), "{all}");
+        assert!(!all.contains("**"), "the markers are stripped: {all}");
+        let (s1, s2) = (all.find("S1").unwrap(), all.find("S2").unwrap());
+        assert!(s1 < s2, "file order is kept");
+    }
+
+    /// A heading with no checkboxes under it is not done — it is a section
+    /// nobody has filled in, and org does not mark those either. This is also
+    /// every prose heading in a real TODO.md, which must not be claimed as
+    /// finished work.
+    #[test]
+    fn an_empty_heading_carries_no_box_and_no_cookie() {
+        let all = render_todo_md(
+            "## Dependency graph\n\nT1 -> T3 -> T4\n\n## Phase 0\n\n- [x] **T1** done\n",
+        )
+        .join("\n");
+        assert!(all.contains("Dependency graph"), "{all}");
+        assert!(
+            !all.contains("[x] Dependency graph") && !all.contains("[ ] Dependency graph"),
+            "an empty section is neither done nor open: {all}"
+        );
+        assert!(!all.contains("Dependency graph  ["), "and carries no cookie: {all}");
+        assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
+    }
+
+    /// **The file is edited while the pane is open**, which is the one case an
+    /// open-time read cannot see. The operator: *"since the file can be updated,
+    /// dont cache it i guess or do a watcher with a nice syscall"*. One `stat`
+    /// per draw, not a watcher thread.
+    #[test]
+    fn the_pane_notices_the_file_changing_under_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join("TODO.md");
+        std::fs::write(&path, "## Phase 0\n\n- [ ] **T1** open\n").expect("write");
+
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+        assert!(a.screen(110, 40).join("\n").contains("[ ] Phase 0  [0/1]"));
+
+        // The operator ticks it off in their editor, with the pane still up.
+        // The length changes, so a second-granularity mtime cannot hide it.
+        std::fs::write(&path, "## Phase 0\n\n- [x] **T1** open, now done\n").expect("write");
+        let screen = a.screen(110, 40).join("\n");
+        assert!(
+            screen.contains("[x] Phase 0  [1/1]"),
+            "the next draw sees it: {screen}"
+        );
+
+        // And an unchanged file is not re-read: the stat is the point of the
+        // cache, not a decoration on it.
+        let before = a.repo_todos_at;
+        a.screen(110, 40);
+        assert_eq!(a.repo_todos_at, before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `###` is a subsection in org's outline and in markdown's, so its items
+    /// belong to it rather than to the `##` above.
+    #[test]
+    fn a_subsection_owns_its_own_items() {
+        let all = render_todo_md(
+            "## Phase 7\n\n- [x] **A** one\n\n### Strand B\n\n- [ ] **B1** two\n",
+        )
+        .join("\n");
+        assert!(all.contains("[x] Phase 7  [1/1]"), "{all}");
+        assert!(all.contains("[ ] Strand B  [0/1]"), "{all}");
     }
 
     /// **The prompt is a control, not a spelling test.**
