@@ -359,6 +359,13 @@ impl<'a> Sessions<'a> {
                 );
                 SlashReply { lines, ok: true }
             }
+            Slash::Tools => match self.open.get(session_id) {
+                Some(h) => SlashReply { lines: h.tools_lines(), ok: true },
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::Job { job, offset } => {
                 let Some(h) = self.open.get(session_id) else {
                     return SlashReply {
