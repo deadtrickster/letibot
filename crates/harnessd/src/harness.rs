@@ -2945,12 +2945,21 @@ impl<'a> Harness<'a> {
                         }
                     }
                 } else {
+                    let (cut, tail_from) = match plan {
+                        OverrunPlan::Cut { cut, tail_from, .. } => (cut, tail_from),
+                        _ => (0, 0),
+                    };
                     self.hub.publish(SessionEvent::Warning {
                         code: "auto_compact".into(),
-                        detail: "over budget: summarising the conversation in two \
-                                 overlapping halves, off to one side, so the prompt the \
-                                 server already holds is reused for the larger one"
-                            .into(),
+                        detail: format!(
+                            "over budget with no room for a summary in place: summarising \
+                             off to one side, in two halves that overlap. First the recent \
+                             {} item(s), which the server has not seen and must read cold; \
+                             then the older {cut} item(s), whose prompt the server already \
+                             holds. This takes minutes and the context count above does not \
+                             move until it lands.",
+                            items.len() - tail_from
+                        ),
                     });
                     let h = summarise_overrun(
                         &mut self.engine, &prefix, &scratch, &items, &plan, &mut sink,
