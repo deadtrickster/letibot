@@ -247,10 +247,16 @@ markdown, and the instrument says not-quadratic.
 5. **Delete the hand-written lexer at the switch, no fallback.** The streaming==full-parse
    property test plus the corpus test are the confidence; a dead fallback path is the kind
    of thing that rots and then gets trusted.
-6. **rano is not version-controlled.** The rano-side steps are file edits in
-   `~/Projects/rano/rano` with no commit to point at. If the operator wants a trail,
-   `git init` in `~/Projects/rano` is a one-liner before Phase 0 — asked here rather than
-   done unasked.
+6. **rano IS version-controlled, and the brief lives in it.** This decision read "rano is
+   not version-controlled … `git init` in `~/Projects/rano` is a one-liner" — wrong, and
+   wrong twice over, because §0's table said the same thing and correcting one did not
+   find the other. `~/Projects/rano/rano` is a repo on `master` with history; the PARENT
+   `~/Projects/rano/` is not, and that is where both readings came from.
+   So there is a commit to point at, and `Stream` is a branch like any other work. The
+   brief was the one thing outside the repo — every other brief for the crate is in
+   `plans/` and tracked — and it is `plans/S8-streaming-engine.md` now. That also makes
+   the brief's own exit criterion ("verify by diff — you did not touch it") something an
+   agent can actually satisfy.
 
 ## 6. Risks
 
