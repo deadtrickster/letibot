@@ -522,6 +522,14 @@ impl AdjudicatorChoice {
 /// Nothing volatile: no timestamp, no cwd listing, no git branch. Adding one line
 /// to an `<env>` block once cost a full cold re-prefill of a 179k conversation.
 ///
+/// # The scratch sentence names the concept, never the path
+///
+/// The path carries this daemon's pid, so putting it here would give every
+/// process its own stable prefix and a cold prefill with it — the exact cost the
+/// paragraph above this one is about. The prompt says the directory exists and is
+/// the model's to use; `harness status`'s `scratch` row says where. Same split as
+/// the mode: the rule is in the prompt, the value is a row.
+///
 /// # The `transcript` sentence, and why it earned its re-prefill
 ///
 /// It is one of the few additions worth that cost, because the behaviour it
@@ -552,6 +560,14 @@ compaction replaces earlier turns with a summary, and the turns themselves are s
 Do not call a tool for a question about the world, about a definition, or about arithmetic; \
 answer those directly. When a tool reports that it found nothing, say so — do not fill the gap \
 from memory.\n\n\
+You have a scratch directory of your own — the `scratch` row of `harness status` names the \
+exact path. Put working files there: a generated script, a downloaded page, intermediate \
+output, anything you need on disk that the operator did not ask for. It is outside their tree, \
+so nothing you leave in it touches their work, and creating, writing and deleting inside it \
+need no permission.\n\n\
+Use that path and no other. A directory you invent under /tmp is shared temp space: deleting \
+there is a decision somebody has to make, and the name may already be another process's. Do \
+not scatter temporary files through the workspace either.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
 impl Config {
@@ -823,6 +839,17 @@ impl Config {
         out.push(row("session", self.session_id.clone(), "", ""));
         out.push(row("seat", self.seat.as_str().to_string(), "--role", ""));
         out.push(row("workspace", self.workspace.display().to_string(), "", ""));
+        // **Where the model may work without asking.** The path cannot go in the
+        // system prompt — it carries this daemon's pid, and a prompt that differs
+        // per process gives every process its own stable prefix and a cold
+        // prefill with it. So the prompt names the concept and this row names the
+        // place, which is the same split `/mode` uses for the mode.
+        out.push(row(
+            "scratch",
+            crate::harness::scratch_dir().display().to_string(),
+            "",
+            "",
+        ));
         out.push(row("owner", self.owner.clone(), "", ""));
         if let Some(p) = &self.parent_session_id {
             out.push(row("parent", p.clone(), "", ""));
@@ -1124,6 +1151,28 @@ impl Config {
                 active: true,
             });
         }
+        // **The scratch directory, to the MODEL.** The settings row beside the
+        // workspace one is for the head's config pane; this is the disclosure the
+        // `harness` tool reads, and the model is the reader that needs the path —
+        // the prompt tells it the directory is its own and this says where.
+        //
+        // One place, spelled out, so there is nothing to guess: a model that
+        // invented `/tmp/scratch` would be writing to shared temp space, where
+        // deleting is an ask and another process may already own the name.
+        out.push(Disclosure {
+            subject: "scratch".into(),
+            state: String::new(),
+            detail: format!(
+                "{} — this session's own working directory. Put generated scripts, \
+                 fetched pages and intermediate output here rather than in the \
+                 workspace. It is outside the operator's tree, and creating, writing \
+                 and DELETING inside it need no permission. This exact path: a \
+                 different directory under /tmp is shared temp space, where a delete \
+                 is an ask and the name may already be somebody else's.",
+                crate::harness::scratch_dir().display()
+            ),
+            active: true,
+        });
         // **The seat, read from the resolved registry rather than from `--role`.**
         // A role that resolved to fewer tools than its name suggests is exactly the
         // thing an operator should be able to see, so the names travel with it.

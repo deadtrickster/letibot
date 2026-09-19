@@ -407,6 +407,8 @@ mod tests {
         )
         .unwrap();
         let env = Surroundings {
+            // A corpus replay, not a live session: no scratch to place a path in.
+            scratch: None,
             home: Some("/home/dead".into()),
             workspace: Some("/w".into()),
             shell: letibot_tools::intent::ShellTrust::Pinned { how: "test".into() },

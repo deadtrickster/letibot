@@ -278,6 +278,10 @@ mod shape_cache_tests {
 
     fn surroundings(workspace: &str) -> letibot_tools::intent::Surroundings {
         letibot_tools::intent::Surroundings {
+            // Replaying recorded rows: the scratch of the session that wrote them
+            // is long gone, and inventing this daemon's would classify an old path
+            // by a directory that did not exist when the row was made.
+            scratch: None,
             home: Some("/home/dead".into()),
             workspace: Some(workspace.into()),
             shell: letibot_tools::intent::ShellTrust::Pinned {
