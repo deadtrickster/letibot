@@ -1479,6 +1479,28 @@ impl<'a> Harness<'a> {
             let digest: Arc<dyn letibot_tools::builtins::digest::DigestRunner> = Arc::new(
                 letibot_tools::builtins::digest::SubagentDigest::new(digest_runner),
             );
+            // The gate's own record, by the same argument and from the same file.
+            // The operator watched a session reach for `sqlite3 … SELECT
+            // request_id, verdict, verdict_by, verdict_basis … FROM adjudication`
+            // against a hardcoded path: *"the model shouldn't derive the storage,
+            // its format, or what path it"* is at.
+            let decisions: Arc<dyn letibot_tools::builtins::decisions::DecisionSource> =
+                match cfg.store.as_deref() {
+                    Some(path) => match crate::decision_source::StoreDecisions::open(
+                        path,
+                        cfg.session_id.clone(),
+                    ) {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            hub.publish(SessionEvent::Warning {
+                                code: "decision_corpus".into(),
+                                detail: e,
+                            });
+                            Arc::new(letibot_tools::builtins::decisions::NoDecisions)
+                        }
+                    },
+                    None => Arc::new(letibot_tools::builtins::decisions::NoDecisions),
+                };
             registry
                 .register(Box::new(
                     letibot_tools::builtins::transcript::TranscriptTool::new(src.clone()),
@@ -1486,6 +1508,11 @@ impl<'a> Harness<'a> {
                 .and_then(|_| {
                     registry.register(Box::new(
                         letibot_tools::builtins::digest::DigestTool::new(src, digest),
+                    ))
+                })
+                .and_then(|_| {
+                    registry.register(Box::new(
+                        letibot_tools::builtins::decisions::DecisionsTool::new(decisions),
                     ))
                 })
                 .map_err(|e| {

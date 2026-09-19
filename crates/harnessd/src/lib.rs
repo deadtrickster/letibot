@@ -97,6 +97,7 @@ pub mod slash;
 pub mod sudo;
 pub mod config;
 pub mod facts;
+pub mod decision_source;
 pub mod transcript_source;
 pub mod daemon;
 pub mod dialect;

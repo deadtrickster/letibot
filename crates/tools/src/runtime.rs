@@ -606,14 +606,20 @@ pub mod roles {
                 // is a lie on a seat where only one of them is present.
                 "transcript",
                 "digest",
+                // `decisions`: what the gate decided and why. Read-only, and the
+                // question it answers — "why was that refused" — is otherwise put
+                // to the operator, who has to go and read the corpus themselves.
+                "decisions",
             ],
         );
         // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
         // when it holds a seat), `pkill` and `ps`. The ceiling is a guard against
         // a prompt nobody counted, and this is the count, counted. Twenty since
         // `task_result` joined `task`; twenty-two since `transcript` and `digest`,
-        // which are one capability seated as two tools.
-        r.max_tools = 22;
+        // which are one capability seated as two tools; twenty-three since
+        // `decisions`, which is the gate's half of the same "read what was
+        // already recorded instead of asking" move.
+        r.max_tools = 23;
         r
     }
 
