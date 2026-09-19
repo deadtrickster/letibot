@@ -350,6 +350,34 @@ mod tests {
         assert_eq!(names, vec!["deepseek-chat", "deepseek-legacy"]);
     }
 
+    /// **The meter reads the catalogue when the operator's file is silent.**
+    /// `providers.toml` priced `deepseek-chat`, a model DeepSeek has retired, so
+    /// every turn on `deepseek-flash` reported `cost unpriced` — the operator,
+    /// watching a metered conversation: *"also no money meter"*. The file still
+    /// wins where it has an entry: that is their own number and may be a contract
+    /// price.
+    #[test]
+    fn a_model_the_operators_file_does_not_price_is_priced_by_the_catalogue() {
+        let c = sample();
+        let p = c
+            .model("deepseek", "deepseek-chat")
+            .expect("the model")
+            .prices
+            .expect("the catalogue prices it");
+        // 1000 prompt of which 600 cached, 100 out, at 0.15 / 0.003 / 0.6 USD
+        // per million: 400*0.15 + 600*0.003 + 100*0.6 = 60 + 1.8 + 60 = 121.8,
+        // and the unit is micro-USD.
+        assert_eq!(p.micros(1000, 600, 100), 122);
+        // And a model nothing prices stays unpriced, because unpriced and free
+        // are different.
+        assert!(
+            c.model("deepseek", "deepseek-legacy")
+                .expect("the model")
+                .prices
+                .is_none()
+        );
+    }
+
     /// A box with no opencode is a box with no catalogue, and that must not be an
     /// error — every caller already handles the unknown case.
     #[test]

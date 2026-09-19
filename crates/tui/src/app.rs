@@ -4783,11 +4783,26 @@ impl App {
         // The dialect and the endpoint do not ride along: the dialect's name is
         // the model's name whenever the two differ at all, and the endpoint is a
         // socket path, which is the daemon's business and not the sentence's.
-        let model = if !self.wiring.model.is_empty() {
-            self.wiring.model.clone()
-        } else {
-            self.model.clone()
-        };
+        // **The live row first.** `wiring.model` is the daemon's word from
+        // `Hello`, sent once when this head attached — so a session switched to a
+        // provider mid-conversation went on being labelled with the model it
+        // started under: the operator switched leticl to deepseek and the top row
+        // still said qwen. The `model` settings row is republished whenever the
+        // provider changes, which makes it the fact and the other two the
+        // fallbacks for a head that has not been told yet.
+        let model = self
+            .settings
+            .iter()
+            .find(|r| r.key == "model")
+            .map(|r| header_model(&r.value))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| {
+                if !self.wiring.model.is_empty() {
+                    self.wiring.model.clone()
+                } else {
+                    self.model.clone()
+                }
+            });
         if !model.is_empty() {
             right.push(model);
         }
@@ -7270,6 +7285,20 @@ fn decision_lines(
         }
     }
     out
+}
+
+/// The `model` settings row, as the header shows it.
+///
+/// That row reads `local (glm-5.3-flash)` or `deepseek/deepseek-flash` — the
+/// first form so the config pane still names the model the local server runs,
+/// which is what it said before this row replaced the read-only one. The header
+/// has one slot and wants the name: `glm-5.3-flash`, or the provider pair, which
+/// is worth its width because it is also how you can tell you are being billed.
+fn header_model(value: &str) -> String {
+    match value.strip_prefix("local (").and_then(|v| v.strip_suffix(')')) {
+        Some(alias) => alias.to_string(),
+        None => value.to_string(),
+    }
 }
 
 /// **A verb and its argument, where the verb has to be the whole word.**
@@ -11831,6 +11860,34 @@ mod tests {
                 choices: choices.iter().map(|s| (*s).to_string()).collect(),
             }],
         }
+    }
+
+    /// **The top row names what answers NOW.** `wiring.model` is the daemon's
+    /// word from `Hello`, sent once at attach, so a session switched to a provider
+    /// mid-conversation kept its old label: the operator switched leticl to
+    /// deepseek and *"top row still says qwen"*.
+    #[test]
+    fn the_header_follows_a_mid_session_model_switch() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        // What `Hello` said, which is all the header used to read.
+        assert!(
+            a.header_line(200).contains("qwen-3.8-flash-next"),
+            "{}",
+            a.header_line(200)
+        );
+        // The daemon republishes the row on a switch; the header takes it.
+        a.apply(model_settings("deepseek/deepseek-flash", &["local", "deepseek/deepseek-flash"]));
+        let h = a.header_line(200);
+        assert!(h.contains("deepseek/deepseek-flash"), "{h}");
+        assert!(!h.contains("qwen-3.8-flash-next"), "and not both: {h}");
+
+        // Back to local, where the row carries the alias for the config pane and
+        // the header wants only the name.
+        a.apply(model_settings("local (glm-5.3-flash)", &["local"]));
+        let h = a.header_line(200);
+        assert!(h.contains("glm-5.3-flash"), "{h}");
+        assert!(!h.contains("local ("), "the header takes the name alone: {h}");
     }
 
     fn model_settings(value: &str, choices: &[&str]) -> ServerFrame {

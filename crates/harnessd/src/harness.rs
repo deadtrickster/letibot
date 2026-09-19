@@ -2714,6 +2714,7 @@ impl<'a> Harness<'a> {
                     }
                     self.cfg.context_window = w;
                 }
+                self.publish_settings();
                 Ok(line)
             }
             Some(pc) => {
@@ -2733,6 +2734,13 @@ impl<'a> Harness<'a> {
                 line.push_str(&self.retune_window(&pc));
                 self.provider = Some(p);
                 self.cfg.provider = Some(pc);
+                // **Say it, or the head goes on drawing the old name.** The
+                // header reads the model from the daemon's word, and the daemon's
+                // word was sent once at attach: the operator switched leticl to
+                // deepseek and the top row still said qwen, indefinitely. The
+                // `model` settings row carries what answers now, and this is what
+                // makes it carry it.
+                self.publish_settings();
                 Ok(line)
             }
         }
