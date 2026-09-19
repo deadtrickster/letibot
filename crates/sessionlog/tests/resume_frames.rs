@@ -98,6 +98,8 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             last_activity_ms: 1_788_990_321_957,
             wiring: wiring("/home/dead"),
             parent_session_id: None,
+            context_tokens: Some(44_700),
+            context_cached: Some(40_000),
         },
         StoredBrief {
             session_id: "s-old".into(),
@@ -106,6 +108,8 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             last_activity_ms: 1_788_987_703_152,
             wiring: wiring("/home/dead/Projects/rano"),
             parent_session_id: None,
+            context_tokens: Some(12_000),
+            context_cached: None,
         },
     ]))));
     let h = serve_registry(r.clone(), socket_path(tag)).expect("bind");
@@ -157,6 +161,26 @@ fn a_stored_session_is_listed_and_is_marked_as_not_live() {
     // two, and a list that interleaved them would put the two next to each other
     // with nothing to say which is which.
     assert!(rows[0].live && !rows[1].live, "{rows:?}");
+}
+
+#[test]
+fn the_brief_carries_the_last_turns_context_from_the_store_row() {
+    let (registry, _server) = start("context");
+    let rows = registry.list();
+
+    // The stored-only arm: the row is the whole of what is known, and the context
+    // is on it. A head that attaches after a restart reads the number from here —
+    // the snapshot it is sent has no turn state to read it from.
+    let old = rows.iter().find(|b| b.session_id == "s-old").unwrap();
+    assert_eq!(old.context_tokens, Some(12_000));
+    assert_eq!(old.context_cached, None);
+
+    // The live arm: the store's row is the source, so a live session's brief
+    // carries the same fact a head would get from the snapshot's turn state while
+    // the daemon holds it — and the one that survives the restart.
+    let live = rows.iter().find(|b| b.session_id == "live").unwrap();
+    assert_eq!(live.context_tokens, Some(44_700));
+    assert_eq!(live.context_cached, Some(40_000));
 }
 
 #[test]

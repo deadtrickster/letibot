@@ -3610,6 +3610,12 @@ impl<'a> Harness<'a> {
             appended.extend(ok.steering_applied.iter().cloned());
             self.reconcile(&mut sink, &appended);
             self.persist()?;
+            // The last round's prompt size is the session's context size, and the
+            // session row is the only place it survives a restart: a head that
+            // attaches to a rebuilt view has no turn state to read it from.
+            // Per round, the same way the heads' own `TurnFinished` updates theirs,
+            // so the row and the screen agree at every point a round has landed.
+            self.persist_context(&ok.metrics)?;
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
             // transcript, and its own `TranscriptAppended` came through the same
@@ -3956,6 +3962,21 @@ impl<'a> Harness<'a> {
             self.persisted += 1;
         }
         Ok(())
+    }
+
+    /// The round's prompt size onto the session row. See the call in `run_rounds`
+    /// for why this is the number a head shows as the session's context.
+    fn persist_context(&self, metrics: &TurnMetrics) -> Result<(), HarnessError> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        store
+            .set_context(
+                &self.cfg.session_id,
+                Some(metrics.prompt_tokens),
+                Some(metrics.cached_tokens),
+            )
+            .map_err(|e| HarnessError::Store(format!("context: {e}")))
     }
 }
 

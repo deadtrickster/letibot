@@ -1583,6 +1583,8 @@ impl SessionSource for StoreSessions {
                 items: s.items,
                 last_activity_ms: s.last_activity_ms.max(0) as u64,
                 parent_session_id: s.parent_session_id,
+                context_tokens: s.context_tokens,
+                context_cached: s.context_cached,
                 wiring: SessionWiring {
                     // The session's own model and workspace, from its row. The
                     // dialect and endpoint are this daemon's — they are not stored

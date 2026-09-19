@@ -235,6 +235,13 @@ pub struct SessionBrief {
     /// The session that spawned this one as a subagent, or `None` for a top-level
     /// session. A head draws a subagent tree from this without reaching the store.
     pub parent_session_id: Option<String>,
+    /// The last turn's prompt tokens, from the session's own row, or `None` before
+    /// a turn has finished (or on a row that predates the column). A head that
+    /// attaches after a daemon restart shows the context from this: the snapshot's
+    /// turn state is ephemeral and a rebuilt view has none.
+    pub context_tokens: Option<u64>,
+    /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
+    pub context_cached: Option<u64>,
 }
 
 /// What a session is attached to. The daemon's own command line, which is the only
@@ -288,6 +295,11 @@ pub struct StoredBrief {
     /// The session that spawned this one as a subagent, or `None` for a top-level
     /// session.
     pub parent_session_id: Option<String>,
+    /// The last turn's prompt tokens, from the session's row. `None` before a turn
+    /// has finished (or on a row that predates the column).
+    pub context_tokens: Option<u64>,
+    /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
+    pub context_cached: Option<u64>,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -739,6 +751,13 @@ impl Registry {
                     // session; the store's is what remains after a restart.
                     parent_session_id: parent
                         .or_else(|| on_disk.and_then(|d| d.parent_session_id.clone())),
+                    // The store's row is the only place the number survives a
+                    // restart, so it is the source for a live session too: the
+                    // hub's view has the same number in its turn state while the
+                    // daemon holds it, and a head that reads the brief gets the
+                    // same fact either way.
+                    context_tokens: on_disk.and_then(|d| d.context_tokens),
+                    context_cached: on_disk.and_then(|d| d.context_cached),
                 }
             })
             .collect();
@@ -760,6 +779,8 @@ impl Registry {
                 live: false,
                 stored_items: d.items,
                 parent_session_id: d.parent_session_id,
+                context_tokens: d.context_tokens,
+                context_cached: d.context_cached,
             });
         }
         out

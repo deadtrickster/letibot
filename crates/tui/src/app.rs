@@ -579,6 +579,12 @@ pub struct App {
     /// The last turn's `usage`, kept past the end of the turn so the header can
     /// say how much context this session is carrying while nothing is running.
     usage: Option<Usage>,
+    /// Whether `usage.cached_tokens` is a measurement or a placeholder. A usage
+    /// seeded from the session's row after a restart knows the prompt size (the
+    /// row carries it) but not the cache fraction (a prompt that was never sent
+    /// has none), and the header shows the percentage only when it was measured —
+    /// a `0%` nobody took is the same defect as a rate nobody measured.
+    usage_cache_measured: bool,
     /// The last turn's `timings`, kept for the same reason and shown beside it:
     /// the decode rate and the wall time the turn footer used to carry. They
     /// moved because the footer repeated the header's context and cache numbers
@@ -961,6 +967,7 @@ impl App {
             pending_prompts: Vec::new(),
             want_new_session: false,
             usage: None,
+            usage_cache_measured: true,
             last_timings: None,
             items: Vec::new(),
             hist_lines: Vec::new(),
@@ -1156,6 +1163,30 @@ impl App {
                     // state that is already here is this session's.
                     None => self.session_id = session_id,
                 }
+                // A daemon that restarted has no turn state in the snapshot —
+                // `TurnFinished` is ephemeral, and a view rebuilt from the
+                // transcript has no turn — so the context the last turn left
+                // behind comes from the session's own row: the daemon writes it
+                // on every round finish, and the brief carries it here. A live
+                // session's snapshot already set the usage, and that wins.
+                if self.usage.is_none()
+                    && let Some(b) = self
+                        .sessions
+                        .iter()
+                        .find(|s| s.session_id == self.session_id)
+                    && let Some(tokens) = b.context_tokens
+                {
+                    // The row knows the prompt size; it knows the cache fraction
+                    // only if a turn finished after the column existed. A
+                    // backfilled row has the size and not the fraction, and the
+                    // header shows the percentage only when it was measured.
+                    self.usage_cache_measured = b.context_cached.is_some();
+                    self.usage = Some(Usage {
+                        prompt_tokens: tokens,
+                        cached_tokens: b.context_cached.unwrap_or(0),
+                        predicted_tokens: 0,
+                    });
+                }
                 if moved {
                     // The picker is closed by arriving, not by the key that opened
                     // it: the switch is the answer to the question the picker
@@ -1311,6 +1342,7 @@ impl App {
             self.call_ms.clear();
             self.call_edits.clear();
             self.usage = None;
+            self.usage_cache_measured = true;
             self.last_timings = None;
             self.model.clear();
             self.turn = None;
@@ -1357,7 +1389,10 @@ impl App {
         // target on the row that is about to draw it; putting them in an id-keyed
         // table as well is how a live `call_0` came to relabel a settled one.
         if let Some(TurnState::Finished { usage, timings, .. }) = s.turn.as_ref().map(|t| &t.state) {
+            // A turn that finished measured its own cache, so the percentage is
+            // real even though the row's copy may not have been.
             self.usage = Some(*usage);
+            self.usage_cache_measured = true;
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
@@ -1891,8 +1926,10 @@ impl App {
                 // is asked between turns, when the pane may have been superseded by
                 // the transcript. The timings are kept with it — the header now
                 // carries the turn's rate and duration too, which is why the footer
-                // no longer does.
+                // no longer does. The turn measured its own cache, so the
+                // percentage is real.
                 self.usage = Some(usage);
+                self.usage_cache_measured = true;
                 self.last_timings = Some(timings);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
@@ -4611,17 +4648,26 @@ impl App {
             right.push(model);
         }
         // Live prefill numbers win over the last turn's: while a turn is running,
-        // "how big is this prompt" is a question about the prompt being sent.
-        let usage = match self.turn.as_ref().and_then(|t| t.progress.as_ref()) {
-            Some(pp) if pp.total > 0 => Some((pp.total, pp.cache)),
-            _ => self
-                .usage
-                .filter(|u| u.prompt_tokens > 0)
-                .map(|u| (u.prompt_tokens, u.cached_tokens)),
-        };
-        if let Some((total, cached)) = usage {
+        // "how big is this prompt" is a question about the prompt being sent. The
+        // third element says whether the cache fraction is a measurement: a live
+        // prefill always is, and a kept usage is one only if the turn that made it
+        // measured its own cache rather than the row supplying a size without one.
+        let usage: Option<(u64, u64, bool)> =
+            match self.turn.as_ref().and_then(|t| t.progress.as_ref()) {
+                Some(pp) if pp.total > 0 => Some((pp.total, pp.cache, true)),
+                _ => self
+                    .usage
+                    .filter(|u| u.prompt_tokens > 0)
+                    .map(|u| (u.prompt_tokens, u.cached_tokens, self.usage_cache_measured)),
+            };
+        if let Some((total, cached, cache_measured)) = usage {
             right.push(format!("{} ctx", progress::thousands(total)));
-            right.push(format!("{:.0}% cached", cached as f64 * 100.0 / total as f64));
+            // A percentage nobody measured is refused, the rule the rate beside it
+            // is held to: a row that carries the size but not the fraction shows
+            // the size and says nothing about the cache.
+            if cache_measured {
+                right.push(format!("{:.0}% cached", cached as f64 * 100.0 / total as f64));
+            }
         }
         // The last turn's speed and duration, measured when it ended. A rate nobody
         // measured is refused, the rule the footer's rate was held to when it lived
@@ -9837,6 +9883,8 @@ mod tests {
             },
             wiring: wiring(),
             parent_session_id: None,
+            context_tokens: None,
+            context_cached: None,
         }
     }
 
@@ -10995,6 +11043,91 @@ mod tests {
                 assert!(l.contains("41.2k ctx"), "w={w}: {l}");
             }
         }
+    }
+
+    #[test]
+    fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row() {
+        // The daemon restarted: the view was rebuilt from the transcript and
+        // `TurnFinished` is ephemeral, so the snapshot has no turn state to read
+        // the context from. The number the last turn left behind is on the
+        // session's own row, and the brief carries it — the header must show it
+        // on the first frame, not wait for the next turn.
+        let hub = Hub::new("s");
+        let mut a = app();
+        let mut b = brief("s", "the cache question", false);
+        b.context_tokens = Some(44_700);
+        b.context_cached = Some(40_000);
+        a.apply(hello("s", vec![b], hub.snapshot()));
+        assert_eq!(
+            a.usage,
+            Some(Usage {
+                prompt_tokens: 44_700,
+                cached_tokens: 40_000,
+                predicted_tokens: 0,
+            })
+        );
+        let header = a.header_line(200);
+        assert!(header.contains("44.7k ctx"), "{header}");
+        assert!(header.contains("89% cached"), "{header}");
+        // A snapshot that DOES carry the turn state wins over the row: the live
+        // number is the one the head just saw, and the row is the fallback for
+        // the daemon that lost it.
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(SessionEvent::TurnFinished {
+            turn_id: "t1".into(),
+            finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+            usage: Usage {
+                prompt_tokens: 51_000,
+                cached_tokens: 44_700,
+                predicted_tokens: 300,
+            },
+            timings: Default::default(),
+        });
+        let mut a = app();
+        let mut b = brief("s", "the cache question", false);
+        b.context_tokens = Some(44_700);
+        b.context_cached = Some(40_000);
+        a.apply(hello("s", vec![b], hub.snapshot()));
+        assert_eq!(
+            a.usage,
+            Some(Usage {
+                prompt_tokens: 51_000,
+                cached_tokens: 44_700,
+                predicted_tokens: 300,
+            }),
+            "the snapshot's turn state is newer than the row"
+        );
+        // A backfilled row carries the size but not the fraction: the migration
+        // sums the prefix and the items for a store being upgraded, and the cache
+        // of a prompt that was never sent is not a measurement. The header shows
+        // the size and says nothing about the cache, rather than a `0%` nobody took.
+        let hub = Hub::new("s");
+        let mut a = app();
+        let mut b = brief("s", "the cache question", false);
+        b.context_tokens = Some(44_700);
+        b.context_cached = None;
+        a.apply(hello("s", vec![b], hub.snapshot()));
+        assert_eq!(
+            a.usage,
+            Some(Usage {
+                prompt_tokens: 44_700,
+                cached_tokens: 0,
+                predicted_tokens: 0,
+            })
+        );
+        let header = a.header_line(200);
+        assert!(header.contains("44.7k ctx"), "{header}");
+        assert!(
+            !header.contains("% cached"),
+            "no fraction was measured, so none is shown: {header}"
+        );
+        // And a row with no number seeds nothing: a session that has run no
+        // turn shows no context rather than a zero.
+        let hub = Hub::new("s");
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "", false)], hub.snapshot()));
+        assert!(a.usage.is_none());
     }
 
     #[test]

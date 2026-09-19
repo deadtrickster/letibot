@@ -217,7 +217,7 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -259,8 +259,13 @@ CREATE TABLE IF NOT EXISTS session (
     approvers_json TEXT NOT NULL,    -- JSON array of identities
     created_at     INTEGER NOT NULL,
     role           TEXT,             -- v2; see ROLE_COLUMN below. NULL = unrecorded
-    parent_session_id TEXT           -- v4; the session that spawned this one as a
+    parent_session_id TEXT,          -- v4; the session that spawned this one as a
                                      -- subagent. NULL = a top-level session
+    context_tokens INTEGER,          -- v8; the last turn's prompt_tokens. NULL = no
+                                     -- turn has finished. Survives a restart so an
+                                     -- attaching head can show the context at once.
+    context_cached INTEGER           -- v8; the last turn's cached_tokens, for the
+                                     -- cache %. NULL with context_tokens.
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -600,6 +605,12 @@ pub struct StoredSession {
     /// nothing ran in. Never `Option`: "never used" is a time, not an absence, and
     /// an `Option` here would make every caller invent the same fallback.
     pub last_activity_ms: i64,
+    /// The last turn's prompt tokens, or `None` before a turn has finished (or on
+    /// a row that predates the column). A head that attaches after a restart shows
+    /// the context from this rather than waiting for a turn.
+    pub context_tokens: Option<u64>,
+    /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
+    pub context_cached: Option<u64>,
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -840,6 +851,69 @@ impl Store {
             if !has {
                 self.conn
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape_class TEXT")?;
+            }
+        }
+        if from < 8 {
+            // v8: the last turn's context, on the session row. A head that attaches
+            // after a restart must be able to say how big the prompt is without
+            // waiting for a turn; the in-memory view loses it, so the row keeps it.
+            // NULL in every existing row: "no turn has finished since the column
+            // existed", which a head renders as no number rather than zero.
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_tokens'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn.execute_batch(
+                    "ALTER TABLE session ADD COLUMN context_tokens INTEGER;
+                     ALTER TABLE session ADD COLUMN context_cached INTEGER;",
+                )?;
+                // **Backfill the column for the sessions that already exist.** A
+                // store being upgraded has conversations whose last turn finished
+                // before the column existed, so their row reads `NULL` — "no turn
+                // has finished" — which is false and would leave an attaching head
+                // with no context to show until the next turn. The prompt the next
+                // round would send is the stable prefix plus the current
+                // transcript's items, and both are on disk: the prefix's own
+                // `n_tokens` and each item's `tok_len`. That sum is the context,
+                // measured from the same rows the encoder reads, and the next
+                // turn's real `prompt_tokens` replaces it.
+                //
+                // Only the current transcript, by the same `created_at DESC, rowid
+                // DESC` rule `list_sessions` uses: a compaction fork is written in
+                // the same millisecond as its parent, and counting both would put
+                // the history a compaction stopped carrying back into the number.
+                // `context_cached` is left `NULL`: the cache fraction of a prompt
+                // that was never sent is not a measurement, and a head renders
+                // `NULL` as no percentage rather than a zero.
+                // The `EXISTS` is load-bearing, not belt-and-braces: an aggregate
+                // without a GROUP BY returns one row even over an empty input, so
+                // the subquery alone would answer `0` for a session with no
+                // transcript and a head would show `0 ctx` for a conversation that
+                // never had one. The gate keeps such a row `NULL` — "no turn has
+                // finished" — which is the true state.
+                self.conn.execute(
+                    "UPDATE session
+                     SET context_tokens = (
+                         SELECT COALESCE(SUM(ti.tok_len), 0) + sp.n_tokens
+                         FROM transcript t
+                         JOIN stable_prefix sp ON sp.id = t.stable_prefix_id
+                         LEFT JOIN transcript_item ti ON ti.transcript_id = t.id
+                         WHERE t.id = (
+                             SELECT t2.id FROM transcript t2
+                             WHERE t2.session_id = session.id
+                             ORDER BY t2.created_at DESC, t2.rowid DESC
+                             LIMIT 1
+                         )
+                     )
+                     WHERE context_tokens IS NULL
+                       AND EXISTS (
+                           SELECT 1 FROM transcript t3
+                           WHERE t3.session_id = session.id
+                       )",
+                    [],
+                )?;
             }
         }
         Ok(())
@@ -1162,7 +1236,9 @@ impl Store {
                        JOIN transcript t ON t.id = i.transcript_id
                       WHERE t.session_id = s.id),
                     s.role,
-                    s.parent_session_id
+                    s.parent_session_id,
+                    s.context_tokens,
+                    s.context_cached
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -1182,6 +1258,8 @@ impl Store {
                     last_activity_ms: last.unwrap_or(created_ms),
                     role: r.get(10)?,
                     parent_session_id: r.get(11)?,
+                    context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
+                    context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -1221,6 +1299,22 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE session SET title = ?2 WHERE id = ?1",
             params![id, (!title.is_empty()).then(|| title.to_string())],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// Record the last turn's context on the session row, so a head that attaches
+    /// after a restart can show how big the prompt is without waiting for a turn.
+    /// `None` clears it (a session that has run no turn since the column existed).
+    pub fn set_context(&self, id: &str, tokens: Option<u64>, cached: Option<u64>) -> Result<()> {
+        // `i64` on the wire: rusqlite's `ToSql` has no `u64`, and a token count
+        // that does not fit an `i64` is not a prompt this box will ever send.
+        let n = self.conn.execute(
+            "UPDATE session SET context_tokens = ?2, context_cached = ?3 WHERE id = ?1",
+            params![id, tokens.map(|t| t as i64), cached.map(|c| c as i64)],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -2035,6 +2129,188 @@ mod tests {
         // An empty write clears; the row remains and answers empty.
         s.put_todos("sess-1", &[]).unwrap();
         assert!(s.todos("sess-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_last_turns_context_lives_on_the_session_row() {
+        let s = store();
+        let _seeded = seeded(&s);
+
+        // Before a turn has finished the row says so: `None`, not zero. A head
+        // renders `None` as no number; a stored zero would be a number nobody took.
+        let got = s.session("sess-1").unwrap().unwrap();
+        assert_eq!(got.context_tokens, None);
+        assert_eq!(got.context_cached, None);
+
+        s.set_context("sess-1", Some(44_700), Some(40_000)).unwrap();
+        let got = s.session("sess-1").unwrap().unwrap();
+        assert_eq!(got.context_tokens, Some(44_700));
+        assert_eq!(got.context_cached, Some(40_000));
+
+        // A later turn replaces the number: it is the LAST turn's prompt, not a
+        // sum and not a maximum.
+        s.set_context("sess-1", Some(51_000), Some(44_700)).unwrap();
+        let got = s.session("sess-1").unwrap().unwrap();
+        assert_eq!(got.context_tokens, Some(51_000));
+        assert_eq!(got.context_cached, Some(44_700));
+
+        // A session nobody has written is not a row to update.
+        assert!(matches!(
+            s.set_context("nope", Some(1), None),
+            Err(StoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_v7_store_is_migrated_and_gains_the_context_columns() {
+        // Same fixture rule as the v1/v2 tests: a real store, one step reversed,
+        // and the migration has to put back exactly what `SCHEMA_SQL` would have.
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v7-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-ctx".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        {
+            // Reverse the v8 step: the columns go away and the version says 7.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN context_tokens", [])
+                .unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN context_cached", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 7", []).unwrap();
+            assert!(
+                c.query_row(
+                    "SELECT context_tokens FROM session",
+                    [],
+                    |r| r.get::<_, Option<i64>>(0)
+                )
+                .is_err(),
+                "the fixture still has a context_tokens column, so it is not a v7 store"
+            );
+        }
+
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        // The migrated row reads as "no turn has finished since the column
+        // existed", and a write after the migration comes back.
+        let got = s.session("s-ctx").unwrap().expect("the v7 row survived");
+        assert_eq!(got.context_tokens, None);
+        s.set_context("s-ctx", Some(12_000), Some(11_000)).unwrap();
+        let got = s.session("s-ctx").unwrap().unwrap();
+        assert_eq!(got.context_tokens, Some(12_000));
+        assert_eq!(got.context_cached, Some(11_000));
+    }
+
+    #[test]
+    fn the_v8_migration_backfills_the_context_of_a_conversation_already_on_disk() {
+        // The case that matters: a store being upgraded holds a conversation whose
+        // last turn finished before the column existed. Without the backfill its
+        // row reads `NULL` — "no turn has finished" — and an attaching head shows
+        // no context until the next turn. The backfill sums the prefix and the
+        // current transcript's items, the same rows the encoder reads.
+        let path = std::env::temp_dir().join(format!(
+            "letibot-backfill-v8-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            let (tr, _) = seeded(&s);
+            // Two items: 2 tokens and 3 tokens. The prefix carries 4.
+            let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+            let item = TranscriptItem::User {
+                parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+            };
+            let row = ledger.append("it-0", &[10, 11]).unwrap().clone();
+            s.append_item(&tr, 0, &item, &row, &[10, 11]).unwrap();
+            let row = ledger.append("it-1", &[12, 13, 14]).unwrap().clone();
+            s.append_item(&tr, 1, &item, &row, &[12, 13, 14]).unwrap();
+        }
+        {
+            // Reverse the v8 step: the columns go away and the version says 7. The
+            // conversation's rows stay, which is what the migration has to read.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN context_tokens", [])
+                .unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN context_cached", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 7", []).unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let got = s.session("sess-1").unwrap().expect("the row survived");
+        // 4 (prefix) + 2 + 3 (items) = 9: the prompt the next round would send.
+        assert_eq!(
+            got.context_tokens,
+            Some(9),
+            "the backfill is the prefix plus the current transcript's items"
+        );
+        // The fraction of a prompt that was never sent is not a measurement.
+        assert_eq!(got.context_cached, None);
+
+        // A session with no transcript is not invented a number: the subquery
+        // finds nothing and the row stays `NULL`.
+        s.put_session(&SessionRecord {
+            id: "s-empty".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+        // Reopening must not backfill it: the column already exists, so the
+        // `NULL` means "no turn has finished", not "needs a number".
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        let got = s.session("s-empty").unwrap().unwrap();
+        assert_eq!(got.context_tokens, None, "no transcript, no number");
     }
 }
 
