@@ -140,7 +140,17 @@ impl ToolResult {
             other => Envelope::error(&self.call_id).wrap(&format!(
                 "tool: {}\noutcome: {}\n{head}{}",
                 self.name,
-                outcome_word(other),
+                // **The reason once.** A refusal's payload is already a complete
+                // explanation — it names the tool, the decider, the basis and
+                // what to do — and `outcome_word` prepended the same sentence
+                // again above it. With the card's own header reason that made
+                // three copies of one paragraph in one card, which is what the
+                // operator was counting: *"how many times is 'nothing ran'
+                // needed?"*
+                //
+                // Once. So when the payload already says it, the outcome line is
+                // the word alone.
+                outcome_word_beside(other, &self.payload),
                 self.payload
             )),
         }
@@ -156,6 +166,30 @@ fn human_ms(ms: u64) -> String {
         return format!("{:.1}s", ms as f64 / 1000.0);
     }
     format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+}
+
+/// [`outcome_word`], minus the reason the payload below it already carries.
+///
+/// The check is containment rather than equality because the payload wraps the
+/// reason in its own prose: a refusal notice puts it after `basis: `, a failure
+/// puts it in a sentence. A reason that does NOT appear below is kept, because
+/// then this line is the only place it is said.
+fn outcome_word_beside(o: &ToolOutcome, payload: &str) -> String {
+    let reason = match o {
+        ToolOutcome::Failed { reason } => reason,
+        ToolOutcome::NotRun { why } => why,
+        _ => return outcome_word(o),
+    };
+    // A one-word reason is not worth this: it is cheap to repeat and expensive
+    // to go looking for, and a short string is likely to appear below by
+    // coincidence rather than because it is the same statement.
+    if reason.len() < 40 || !payload.contains(reason.trim()) {
+        return outcome_word(o);
+    }
+    match o {
+        ToolOutcome::Failed { .. } => "failed — see below".into(),
+        _ => "not run — see below".into(),
+    }
 }
 
 fn outcome_word(o: &ToolOutcome) -> String {
@@ -567,5 +601,59 @@ mod tests {
             propagate(&children),
             Propagation::Must(ToolOutcome::Failed { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod once_tests {
+    use super::*;
+
+    const WHY: &str = "this command's meaning does not exist yet, so nothing can decide \
+                       about it. The grammar read 149 bytes and could not resolve `$n`.";
+
+    /// **The reason once.** A refusal's payload already names the tool, the
+    /// decider, the basis and what to do; `outcome_word` put the same paragraph
+    /// above it, and the card's own header reason made a third. The operator,
+    /// counting them in one card: *"how many times is 'nothing ran' needed?"*
+    #[test]
+    fn an_outcome_does_not_restate_a_reason_the_payload_carries() {
+        let refusal = format!("REFUSED — not failed.\n\nwho decided: boundary:normaliser\nbasis: {WHY}\n");
+        let o = ToolOutcome::NotRun { why: WHY.into() };
+        assert_eq!(outcome_word_beside(&o, &refusal), "not run — see below");
+        // The same rule for a failure whose payload explains itself.
+        let f = ToolOutcome::Failed { reason: WHY.into() };
+        assert_eq!(outcome_word_beside(&f, &refusal), "failed — see below");
+    }
+
+    /// And when the payload does NOT carry it, the reason stays: this line is
+    /// then the only place it is said, and dropping it would lose it entirely.
+    #[test]
+    fn a_reason_the_payload_does_not_carry_is_kept() {
+        let o = ToolOutcome::NotRun { why: WHY.into() };
+        let said = outcome_word_beside(&o, "some unrelated output\n");
+        assert!(said.contains("meaning does not exist yet"), "{said}");
+        assert_eq!(said, outcome_word(&o));
+    }
+
+    /// A short reason is repeated rather than hunted for: cheap to say twice,
+    /// and a short string can appear below by coincidence rather than because it
+    /// is the same statement.
+    #[test]
+    fn a_short_reason_is_left_alone() {
+        let o = ToolOutcome::Failed { reason: "no such file".into() };
+        assert_eq!(outcome_word_beside(&o, "no such file\n"), "failed — no such file");
+    }
+
+    /// Every other outcome is untouched — this is about reasons, and `ok`,
+    /// `timeout` and the rest do not carry one.
+    #[test]
+    fn the_other_outcomes_are_unchanged() {
+        for o in [
+            ToolOutcome::Ok,
+            ToolOutcome::Timeout,
+            ToolOutcome::Denied { req_id: "r1".into() },
+        ] {
+            assert_eq!(outcome_word_beside(&o, "anything"), outcome_word(&o));
+        }
     }
 }
