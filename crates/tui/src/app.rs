@@ -2383,14 +2383,35 @@ impl App {
                 self.redraw = true;
                 return None;
             }
-            // Ctrl+O: move the running command to the background. Meaningless when
-            // nothing is running, so a bare press says so rather than asking.
+            // **Ctrl+O: move the running COMMAND to the background.**
+            //
+            // The fact to guard is a command running, and the check used to ask
+            // whether the TURN was running instead. They come apart: a terminal
+            // turn state can leave a call unsettled — the comment on the
+            // `TurnFinished` arm says so in as many words, and the engine emits
+            // `TurnFinished` on the interrupt paths while a tool is still
+            // executing. The operator, looking at a `◐ Running "cargo test …"`
+            // card while the head said otherwise: *"nothing is running to move to
+            // the background"* / *"how come"*.
+            //
+            // So it asks the calls. The daemon honours a promote inside `bash`'s
+            // own wait loop, which exists only while a command is executing, so a
+            // running call is not a proxy for the thing being promoted — it IS it.
             Key::CtrlO => {
-                if self.turn_running() {
+                if self.running_call().is_some() {
                     self.say("moving the running command to the background");
                     return Some(Action::Promote);
                 }
-                self.say("nothing is running to move to the background");
+                // Two different silences, and a head that said the same thing for
+                // both sent the operator looking for a command that had not been
+                // started yet.
+                if self.turn_running() {
+                    self.say(
+                        "the model is still working — there is no command running to move yet",
+                    );
+                } else {
+                    self.say("nothing is running to move to the background");
+                }
                 return None;
             }
             // **The wheel and the page keys move what is on the screen.** They
@@ -3506,6 +3527,20 @@ impl App {
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running)
         )
+    }
+
+    /// **The command running right now**, whatever the turn's own state says.
+    ///
+    /// Ctrl+O's precondition, and deliberately not [`App::turn_running`]: a turn
+    /// that has reached a terminal state can still hold a call the daemon is
+    /// executing, and that call is exactly what a promote moves. Only one command
+    /// runs at a time on this path, so the first is the one.
+    fn running_call(&self) -> Option<&CallRow> {
+        self.turn
+            .as_ref()?
+            .calls
+            .iter()
+            .find(|c| matches!(c.state, CallState::Running))
     }
 
     /// Attach content to a transcript row, from whatever route the daemon offers.
@@ -12424,6 +12459,69 @@ mod tests {
     /// The operator, looking at a row that says how many bytes it produced:
     /// *"i go to jobs panel and no way to get job output"*. Enter on the row is
     /// that way — it sends the daemon the same `/job ID` the composer would.
+    /// **Ctrl+O guards the command, not the turn.** The operator, looking at a
+    /// `◐ Running "cargo test …"` card while the head refused: *"nothing is
+    /// running to move to the background"* / *"how come"*. The gate asked whether
+    /// the TURN was running, and a terminal turn state can still hold a call the
+    /// daemon is executing.
+    #[test]
+    fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        // Mid-call, with the turn still running: promote, as it always did.
+        assert_eq!(a.key(Key::CtrlO), Some(Action::Promote));
+
+        // Now the turn goes terminal with the call still executing — the state the
+        // `TurnFinished` arm's own comment describes, and which the engine reaches
+        // on every interrupt path.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TurnInterrupted {
+                turn_id: "t1".into(),
+                reason: "steering_urgent".into(),
+                partial_kept: false,
+            },
+        )));
+        assert!(!a.turn_running(), "the turn is terminal");
+        assert!(a.running_call().is_some(), "and the command is still running");
+        assert_eq!(
+            a.key(Key::CtrlO),
+            Some(Action::Promote),
+            "the command is what gets promoted, so the command is what is asked about"
+        );
+    }
+
+    /// The two silences are different facts, and a head that said one sentence for
+    /// both sent the operator looking for a command that had not started.
+    #[test]
+    fn ctrl_o_tells_a_generating_model_apart_from_an_idle_session() {
+        let mut a = app();
+        // Nothing at all.
+        assert_eq!(a.key(Key::CtrlO), None);
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("nothing is running"),
+            "{:?}",
+            a.notice
+        );
+
+        // A turn running, but no call yet: the model is still generating.
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        assert_eq!(a.key(Key::CtrlO), None);
+        let said = a.notice.clone().unwrap_or_default();
+        assert!(said.contains("still working"), "{said}");
+        assert!(said.contains("no command running"), "{said}");
+    }
+
     #[test]
     fn enter_on_a_job_row_asks_the_daemon_for_that_jobs_output() {
         let mut a = App::new(plain_cfg(80));
