@@ -118,6 +118,12 @@ pub struct OpenDecision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettledDecision {
     pub req_id: String,
+    /// The tool call this decision was about, when it was a permission. `None` for
+    /// a question, and for a log recorded before the field existed — in which case
+    /// a head renders the outcome as a standalone note rather than on the call's
+    /// card.
+    #[serde(default)]
+    pub call_id: Option<String>,
     pub summary: String,
     pub outcome: DecisionOutcome,
     pub by: Decider,
@@ -425,16 +431,20 @@ impl SessionView {
                 late,
             } => {
                 // The removal is the scrub. There is no path that leaves a settled
-                // decision in `open`, so no snapshot can carry one.
-                let summary = self
+                // decision in `open`, so no snapshot can carry one. The `call_id` is
+                // read off the open decision **before** it is removed, because the
+                // answer event carries only the `req_id` and the head needs the call
+                // to put the outcome on the call's card rather than as a stray note.
+                let (summary, call_id) = self
                     .open
                     .iter()
                     .find(|d| &d.req_id == req_id)
-                    .map(|d| d.summary.clone())
+                    .map(|d| (d.summary.clone(), d.call_id.clone()))
                     .unwrap_or_default();
                 self.open.retain(|d| &d.req_id != req_id);
                 self.settled.push(SettledDecision {
                     req_id: req_id.clone(),
+                    call_id,
                     summary,
                     outcome: outcome.clone(),
                     by: by.clone(),

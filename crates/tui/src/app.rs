@@ -416,6 +416,10 @@ struct CallRow {
     ended_ms: u64,
     /// The most recent `ToolProgress { note }`.
     note: Option<String>,
+    /// The settled decision this call was gated by, when there was one. Rendered on
+    /// the card in the dim register — the approval is a fact about the call, not a
+    /// stray note — and expanded to the brief the oracle saw and its reply.
+    decision: Option<SettledDecision>,
 }
 
 #[derive(Debug, Default)]
@@ -1357,6 +1361,14 @@ impl App {
         self.open = s.open_decisions;
         // A snapshot can replace the open set wholesale; keep the highlight in range.
         self.sel = 0;
+        // A permission settles on the call it gated, so it rides the call's card
+        // rather than the note list; a question — or a log recorded before the field
+        // existed — has no call to ride and stays a note. The live arm makes the same
+        // split, and the two have to agree.
+        let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) =
+            s.settled_decisions
+                .into_iter()
+                .partition(|d| d.call_id.is_some());
         // Everything in a snapshot is history and none of it is anchored, so it
         // goes at the top rather than being invented a position among the rows.
         self.notes = s
@@ -1369,7 +1381,7 @@ impl App {
             // live path and the snapshot path have to agree about every filter.
             .filter(|w| w.code != "turn_failed")
             .map(|w| (0, Note::Warned(w)))
-            .chain(s.settled_decisions.into_iter().map(|d| (0, Note::Decided(d))))
+            .chain(notes_bound.into_iter().map(|d| (0, Note::Decided(d))))
             .collect();
         self.note_upto = 0;
         self.heads = s.heads.len();
@@ -1391,6 +1403,7 @@ impl App {
                         started_ms: 0,
                         ended_ms: 0,
                         note: None,
+                        decision: None,
                     })
                     .collect(),
                 progress: t.progress,
@@ -1413,6 +1426,17 @@ impl App {
             // is still open, and inventing a spinner that never stops is worse
             // than not showing one.
             pane.raw_call = t.raw_calls;
+            // A permission settles on the call it gated, so the snapshot attaches
+            // it to the call's card the way the live arm does. A decision whose call
+            // is not in this turn — a log recorded before the field existed, or a
+            // call the snapshot did not carry — has nowhere to ride and is dropped
+            // here rather than rendered twice.
+            for d in call_bound {
+                let cid = d.call_id.clone().unwrap_or_default();
+                if let Some(c) = pane.calls.iter_mut().find(|c| c.call_id == cid) {
+                    c.decision = Some(d);
+                }
+            }
             pane
         });
         self.scroll = 0;
@@ -1612,6 +1636,7 @@ impl App {
                         started_ms: ts,
                         ended_ms: 0,
                         note: None,
+                        decision: None,
                     });
                 }
                 Disposition::Rendered
@@ -1635,6 +1660,7 @@ impl App {
                             started_ms: ts,
                             ended_ms: 0,
                             note: None,
+                            decision: None,
                         }),
                     }
                 }
@@ -1748,21 +1774,38 @@ impl App {
                 basis,
                 late,
             } => {
-                let summary = self
+                // The `call_id` is read off the open decision **before** it is
+                // removed, because the answer event carries only the `req_id` and the
+                // head needs the call to put the outcome on the call's card rather
+                // than as a stray note.
+                let (summary, call_id) = self
                     .open
                     .iter()
                     .find(|d| d.req_id == req_id)
-                    .map(|d| d.summary.clone())
+                    .map(|d| (d.summary.clone(), d.call_id.clone()))
                     .unwrap_or_default();
                 self.open.retain(|d| d.req_id != req_id);
-                self.note(Note::Decided(SettledDecision {
+                let d = SettledDecision {
                     req_id,
+                    call_id: call_id.clone(),
                     summary,
                     outcome,
                     by,
                     basis,
                     late,
-                }));
+                };
+                // A permission settles on the call it gated: the approval is a fact
+                // about the call, so it rides the call's card in the dim register
+                // rather than as a standalone note. A question — or a log recorded
+                // before the field existed — has no call to ride, and stays a note.
+                if let Some(call_id) = &call_id
+                    && let Some(t) = self.turn.as_mut()
+                    && let Some(c) = t.calls.iter_mut().find(|c| &c.call_id == call_id)
+                {
+                    c.decision = Some(d);
+                } else {
+                    self.note(Note::Decided(d));
+                }
                 Disposition::Rendered
             }
             SessionEvent::TurnFinished {
@@ -6376,6 +6419,39 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             ));
         }
     }
+    // The decision this call was gated by, in the dim register: the approval is a
+    // fact about the call, not a stray note. Folded it is one line — who decided
+    // and how; open it adds what the oracle was shown and what it said back.
+    if let Some(d) = &c.decision {
+        use letibot_sessionlog::event::DecisionOutcome as O;
+        let word = match &d.outcome {
+            O::Selected { option_id } if option_id.starts_with("allow") => "allowed",
+            O::Selected { .. } => "refused",
+            O::Cancelled => "cancelled",
+            O::TimedOut => "not answered",
+        };
+        let who = if d.by.identity.is_empty() {
+            d.by.kind.clone()
+        } else {
+            format!("{} {}", d.by.kind, d.by.identity)
+        };
+        body.push(cfg.palette().paint(
+            Role::Faint,
+            &format!("· {word}, by {who}"),
+        ));
+        if fold.is_open() {
+            if !d.summary.is_empty() {
+                for l in wrap(&format!("  asked: {}", d.summary), cfg.width.saturating_sub(2)) {
+                    body.push(cfg.palette().paint(Role::Faint, &l));
+                }
+            }
+            if !d.basis.is_empty() {
+                for l in wrap(&format!("  oracle: {}", d.basis), cfg.width.saturating_sub(2)) {
+                    body.push(cfg.palette().paint(Role::Faint, &l));
+                }
+            }
+        }
+    }
     card.body = body;
     let verb = card.verb.clone();
     card.render(&card::CardConfig {
@@ -7926,6 +8002,41 @@ mod tests {
         // And typing an option id no longer answers it: it becomes a prompt.
         typed(&mut a, "allow");
         assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+    }
+
+    #[test]
+    fn a_permission_settles_on_the_call_it_gated() {
+        let mut a = app();
+        // A turn with one call, gated by a permission the oracle allowed.
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        a.apply(ServerFrame::Event(env(2, testing::requested("r1", "run rm -rf"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::DecisionAnswered {
+                req_id: "r1".into(),
+                outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                    option_id: "allow".into(),
+                },
+                by: letibot_sessionlog::event::Decider {
+                    kind: "model".into(),
+                    identity: "oracle".into(),
+                },
+                basis: "the operator asked for this".into(),
+                late: false,
+            },
+        )));
+        // The decision rides the call's card, not the note list.
+        let t = a.turn.as_ref().expect("a turn");
+        let c = t.calls.iter().find(|c| c.call_id == "c1").expect("the call");
+        assert_eq!(c.decision.as_ref().expect("the decision").by.kind, "model");
+        // Folded: one dim line, who decided and how. Open: what was asked and the reply.
+        let folded = call_card(c, &plain_cfg(120), 0, Fold::Folded, true).join("\n");
+        assert!(folded.contains("allowed, by model oracle"), "{folded}");
+        assert!(!folded.contains("oracle:"), "folded shows no reply: {folded}");
+        let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
+        assert!(open.contains("asked: run rm -rf"), "{open}");
+        assert!(open.contains("oracle: the operator asked for this"), "{open}");
     }
 
     #[test]
@@ -11367,6 +11478,7 @@ mod tests {
             started_ms: 1_000,
             ended_ms: 2_000,
             note: None,
+            decision: None,
         }
     }
 
