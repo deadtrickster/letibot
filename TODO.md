@@ -396,11 +396,28 @@ What is known, read rather than guessed:
 - `/models` does republish after building the provider, with a comment about this exact
   bug. So the runtime-switch path is handled.
 
-**The decisive cheap check, and it splits the bug in two**: open `/config` and read the
-model row. If it says `local (qwen-3.8-27b)`, the daemon's stored rows are stale and the
-bug is `publish_settings` ordering at startup. If it says `deepseek/deepseek-flash` while
-the header says `qwen`, the head is not reading the row it has. Take that reading before
-changing anything.
+**Half of it is now measured, and it is not the half I guessed.**
+
+- **The daemon's row is correct.** `the_model_row_names_the_provider_when_one_is_configured`
+  builds a `Config` with a provider and asserts the model row reads `deepseek/…`, with the
+  local alias gone and the source empty. It passes, so `Config::settings` is not the bug.
+- **The head's header is correct given the row.** `attaching_asks_for_the_settings_so_the_header_is_not_stale`
+  already applies a `model_settings("deepseek/deepseek-flash", …)` frame and asserts the
+  header follows it. It passes.
+
+So both ends do the right thing and the gap is **between** them — the rows are not
+reaching the head, or are reaching it under a different session id than the one it asks
+about. That is now the whole question, and it is one reading away:
+
+**Open `/config` in the affected session.** If the model row there says
+`deepseek/deepseek-flash`, the rows *are* in the registry and the head is asking about the
+wrong session (`Registry::settings(session_id)` looks an entry up by exact id, and an
+empty or stale id returns an empty vec — which the head renders as the `Hello` fallback,
+`qwen-3.8-27b`). If it says `local (qwen-3.8-27b)`, `publish_settings` wrote under an id
+that is not the session's.
+
+Not changed blind, because both plausible fixes pass every test that exists and I could
+not reproduce it interactively from here.
 
 **Where.** `crates/harnessd/src/harness.rs:2487` (the startup publish) against
 `:2439` where the provider is built; `crates/harnessd/src/config.rs:905-920` (the row);

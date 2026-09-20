@@ -1965,6 +1965,59 @@ mod tests {
     }
     use super::*;
 
+    /// **The model row names the provider when there is one.**
+    ///
+    /// This is the daemon's half of R20.1: the operator's turns went to deepseek while
+    /// the head's header said `qwen-3.8-27b`. The header prefers this row and falls back
+    /// to `Hello`'s `wiring.model`, which is the daemon's `--model` — so if this row says
+    /// `local (qwen-3.8-27b)` when a provider is configured, the daemon is what is wrong
+    /// and the head is faithfully drawing it.
+    #[test]
+    fn the_model_row_names_the_provider_when_one_is_configured() {
+        let mut cfg = Config::for_this_box("/tmp/x");
+        assert!(
+            cfg.provider.is_none(),
+            "a fresh config is the local server, or this test says nothing"
+        );
+        let local = cfg
+            .settings("--model", false)
+            .into_iter()
+            .find(|r| r.key == "model")
+            .expect("model");
+        assert!(
+            local.value.starts_with("local ("),
+            "no provider must name the local alias: {}",
+            local.value
+        );
+
+        // Now a provider, which is what `--provider deepseek` resolves to before any
+        // session exists.
+        cfg.provider = Some(ProviderConfig {
+            name: "deepseek".into(),
+            model: None,
+            ..Default::default()
+        });
+        let row = cfg
+            .settings("", false)
+            .into_iter()
+            .find(|r| r.key == "model")
+            .expect("model");
+        assert!(
+            row.value.starts_with("deepseek/"),
+            "a configured provider must be named by the model row, or every head goes on \
+             showing the local alias: {}",
+            row.value
+        );
+        assert!(
+            !row.value.contains("qwen"),
+            "the local alias must not survive a provider: {}",
+            row.value
+        );
+        // And the source is empty rather than `--model`: the model is the provider's,
+        // not the flag's.
+        assert_eq!(row.source, "", "{}", row.source);
+    }
+
     /// The pane's contract: the two rows that change now come first and name
     /// their verb; every key is unique (a duplicate would be two rows that
     /// disagree); nothing that takes a restart claims a verb.

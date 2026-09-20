@@ -7793,6 +7793,11 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         ("/interrupt", "interrupt, when a key is awkward"),
         (
+            "/config",
+            "every setting and where it came from; the first row toggles the diff \
+             view between split and unified",
+        ),
+        (
             "/compact",
             "summarize this session down to one record; the old transcript is forked, not lost",
         ),
