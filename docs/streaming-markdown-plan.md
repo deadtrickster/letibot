@@ -256,6 +256,35 @@ code", and showing the ``` markers instead would be worse. Six tests in `markdow
 `nesting` module assert the *words survive* rather than the shape, because the failure mode
 is silent.
 
+**Then the operator's next message was "code blocks still broken", and it was two more
+bugs — both in the guards, both found by adding a fence to the streaming corpus.**
+
+1. **A fence whose content contains a fence.** The guards count fences by lines that
+   *start* with ```, and a quoted line *is* such a line, so the count inverted from there
+   on. The `\n\n` after the (really open) fence was taken for a boundary, the prefix
+   settled, and a prefix that ends really does end at an end of input — so the open fence
+   became a *closed* one, empty, with everything after the cut re-parsed as prose. On the
+   operator's screen that was an empty code box and my own text spilled out below it.
+   Fixed by `fence_spans`: the tree says where every fence begins and ends, and a cut
+   inside one is refused. An unclosed fence's range reaches the end of the window, because
+   that is what an unclosed fence covers.
+2. **The relax fallback cut inside a fence body.** Added for the endless-paragraph case,
+   and it turned the half of a long code block without delimiters into a paragraph — the
+   model's code shown as prose. Also fixed by `fence_spans`: a window that is one code
+   block has no legal cut at all, so it stays whole. That is the *old* lexer's behaviour
+   too (its fence guard was never relaxed), and it is the honest bound: the window is
+   capped at 4 KB for prose and equals the largest code block otherwise, at markdown's
+   ~106 ns/byte per push — about a millisecond for a 10 KB block, only while it streams.
+3. **Guard 4 compared the written numbers, not the list kind.** `1. first\n\n2. second` is
+   one loose list; comparing the numbers said `1.` and `2.` were different items of
+   different lists and cut between them. `MARKDOWN`'s list is tight (no blank lines), which
+   is why the fixture never caught it. Fixed by `list_kind`.
+
+All three are pinned in a new `streaming_matches_one_parse` module: a corpus of nine
+documents at six chunk sizes, plus the byte-at-a-time case. The property is the whole
+safety argument for the window, and the corpus has to keep the shapes that break it —
+fences in fences, loose lists, quotes holding fences, tables, rules.
+
 Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
 fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +
 `captures()` for any fence language), and it would want the same window discipline. It is

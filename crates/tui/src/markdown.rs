@@ -319,26 +319,28 @@ impl IncrementalMarkdown {
 
     /// Bring the streams up to date with `raw`, then settle what has completed.
     ///
-    /// Two signals, and both are needed. The **tree** says where the block boundaries
-    /// are; the **text guards** ([`cut_point`]) say which of them can be cut at. The
-    /// tree alone is not enough, and the way it fails is worth recording: `1. a\n\n2`
-    /// parses as a list and a paragraph, so a cut after the list looks settled — and
-    /// then `. b` arrives and the whole thing is one loose list. Whether a blank line
-    /// ends a list depends on text that has not been written yet, which no tree can
-    /// answer. That is guard 4, and it was already here.
+    /// Three signals, and all three are needed.
     ///
-    /// Settling **re-parses the prefix on its own** rather than taking the leading
-    /// blocks out of the window's tree. It is one extra parse of a window that is
-    /// bounded by the cap, and it buys the property outright: the guard says
-    /// `parse(win[..cut]) ++ parse(win[cut..]) == parse(win)`, so the prefix's blocks
-    /// are the right blocks by construction, whatever the window's tree did with a
-    /// block that straddles the cut.
+    /// The **tree** says where the blocks are. The **text guards** ([`cut_point`]) say
+    /// which `\n\n` boundaries are safe, because the tree alone is not enough: `1. a\n\n2`
+    /// parses as a list and a paragraph and then becomes one loose list. And the tree's
+    /// own block list says where a cut is **not** allowed at all, because the guards are
+    /// not enough either: they count fences by lines that *start* with ```, and a fence
+    /// may contain such a line. See [`open_fence_start`] — that is how the operator's
+    /// code block came apart.
+    ///
+    /// Settling **re-parses the prefix on its own** rather than taking the leading blocks
+    /// out of the window's tree. It is one extra parse of a window bounded by the cap,
+    /// and it buys the property outright: the guard says
+    /// `parse(win[..cut]) ++ parse(win[cut..]) == parse(win)`, so the prefix's blocks are
+    /// the right blocks by construction.
     fn refresh(&mut self) {
         for _ in 0..MAX_SETTLE_ROUNDS {
             self.feed_window();
             let win = self.raw[self.window_start..].to_string();
-            let Some(cut) = cut_point(&win, self.max_unfrozen) else {
-                self.tail = self.project();
+            let (blocks, fences) = self.project();
+            let Some(cut) = cut_point(&win, self.max_unfrozen, &fences) else {
+                self.tail = blocks;
                 return;
             };
             let prefix = parse_standalone(&win[..cut], &mut self.bytes_lexed, &mut self.lex_calls);
@@ -350,7 +352,7 @@ impl IncrementalMarkdown {
         // Unreachable for any real input: each round moves `window_start` forward.
         // Rendering the window as-is is the safe thing to do with a stream that
         // somehow kept producing work.
-        self.tail = self.project();
+        self.tail = self.project().0;
     }
 
     /// Make the block stream hold `raw[window_start..]`, incrementally where the
@@ -380,14 +382,15 @@ impl IncrementalMarkdown {
         self.block_len = self.raw.len();
     }
 
-    /// The window's blocks.
-    fn project(&mut self) -> Vec<Block> {
+    /// The window's blocks, and the byte ranges a cut may not land inside.
+    fn project(&mut self) -> (Vec<Block>, Vec<(usize, usize)>) {
         let Some(root) = self.block.as_ref().and_then(Stream::root) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let src = self.block.as_ref().map(|s| s.src().to_string()).unwrap_or_default();
         let spans = inline_spans(&src, &root, &mut self.bytes_lexed, &mut self.lex_calls);
-        blocks_of(&root, &src, &spans)
+        let fences = fence_spans(&root, src.len());
+        (blocks_of(&root, &src, &spans), fences)
     }
 }
 
@@ -654,6 +657,55 @@ fn blocks_of(root: &Node, src: &str, spans: &[Span]) -> Vec<Block> {
 /// Containers the block grammar wraps blocks in. They carry no text of their own.
 fn is_container(kind: &str) -> bool {
     matches!(kind, "document" | "section")
+}
+
+/// The byte ranges a cut may not land inside: one per fence in the tree, from its opening
+/// delimiter to its closing one — or to the end of the window when it has none.
+///
+/// **Both ends are allowed and the middle is not.** A cut at `start` leaves the fence
+/// entirely in the window, which is right; a cut at `end` leaves it entirely in the
+/// prefix, which is also right, because a prefix that ends with a complete fence parses
+/// as that fence. Anywhere strictly between them splits one code block in two, and the
+/// half that keeps neither delimiter is not code at all — it parses as a paragraph. That
+/// is not a spelling mistake a reader shrugs at; it is the model's code shown as prose.
+///
+/// An unclosed fence runs to the end of the input in CommonMark, so its range reaches
+/// `win_len`: nothing at or after it may settle, which is what keeps a settle out of an
+/// open code block. Found the hard way (2026-09-20, "code blocks still broken"): the text
+/// guards count fences by lines that *start* with ```, a fence may contain such a line,
+/// and the count then inverts — so the guard called a really-open fence closed and cut
+/// inside it.
+fn fence_spans(root: &Node, win_len: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    fn walk(n: &Node, win_len: usize, out: &mut Vec<(usize, usize)>) {
+        if n.kind == "fenced_code_block" {
+            let delims: Vec<&Node> = n
+                .children
+                .iter()
+                .filter(|c| c.kind == "fenced_code_block_delimiter")
+                .collect();
+            let end = if delims.len() < 2 {
+                win_len
+            } else {
+                delims[delims.len() - 1].end
+            };
+            if end > n.start {
+                out.push((n.start, end));
+            }
+            // Not descending: a fence's body is raw text, and a ``` inside it is content.
+            return;
+        }
+        for c in &n.children {
+            walk(c, win_len, out);
+        }
+    }
+    walk(root, win_len, &mut out);
+    out
+}
+
+/// Is `at` inside a fence rather than at one of its ends?
+fn inside_a_fence(fences: &[(usize, usize)], at: usize) -> bool {
+    fences.iter().any(|&(s, e)| at > s && at < e)
 }
 
 fn collect_blocks(node: &Node, src: &str, spans: &[Span], blocks: &mut Vec<Block>) {
@@ -1160,35 +1212,48 @@ fn run(text: String, style: InlineStyle) -> Run {
     Run { text, style }
 }
 
-/// Where to settle an over-long window.
+/// Where to settle an over-long window. `None` means nothing may settle yet.
 ///
-/// [`stable_boundary_with`] first: a blank line the guards agree about, which is where
-/// two parses of the halves agree with one parse of the whole. While the window is
-/// under the cap that is the *only* answer — no safe boundary means nothing settles,
-/// which is the strict and correct behaviour, and is why a window can sit at a few
-/// kilobytes for a while.
+/// [`stable_boundary_with`] first: a blank line the guards agree about, which is where two
+/// parses of the halves agree with one parse of the whole. A candidate **inside a fence**
+/// is refused whatever the guards say — see [`fence_spans`] for why, and for the bug that
+/// made this necessary.
 ///
-/// Past the cap the window would otherwise grow without bound and take the per-push
-/// cost with it, so the guards are relaxed: `stable_boundary_with` is handed the cap as
-/// its `relax_at`, and when there is no blank line at all — one paragraph with no blank
-/// line anywhere in it — the last line break, or failing that the last space.
+/// While the window is under the cap a refusal means nothing settles, which is the strict
+/// and correct behaviour and is why a window can sit at a few kilobytes for a while.
 ///
-/// The fallbacks are *wrong* in the way §13.3's notes say a bounded wrongness is
+/// Past the cap the window would otherwise grow without bound and take the per-push cost
+/// with it, so the guards are relaxed: `stable_boundary_with` gets the cap as its
+/// `relax_at`, and failing a blank line at all — one paragraph with no blank line anywhere
+/// in it — the last line break, or failing that the last space. Never inside a fence: a
+/// window that is one long code block has no legal cut in it at all, and it stays whole.
+/// The cost is linear per push in the block, which is what it has to be, because you
+/// cannot stream a block whose end you cannot see.
+///
+/// The relaxed cuts are *wrong* in the way §13.3's notes say a bounded wrongness is
 /// acceptable: two halves render as two paragraphs where the model wrote one. The
-/// alternative is quadratic on exactly the shape that has no other boundary, which is
-/// worse than a paragraph break whose cause a reader cannot see.
-fn cut_point(win: &str, max: usize) -> Option<usize> {
-    if let Some(b) = stable_boundary_with(win, max) {
+/// alternative is quadratic on exactly the shapes that have no other boundary.
+fn cut_point(win: &str, max: usize, fences: &[(usize, usize)]) -> Option<usize> {
+    if let Some(b) = stable_boundary_with(win, max)
+        && !inside_a_fence(fences, b)
+    {
         return Some(b);
     }
     if win.len() < max {
         return None;
     }
     let head = &win[..max];
-    if let Some(i) = head.rfind('\n') {
-        return Some(i + 1);
+    for (i, _) in head.match_indices('\n').rev() {
+        if !inside_a_fence(fences, i + 1) {
+            return Some(i + 1);
+        }
     }
-    head.rfind(' ').map(|i| i + 1)
+    for (i, _) in head.match_indices(' ').rev() {
+        if !inside_a_fence(fences, i + 1) {
+            return Some(i + 1);
+        }
+    }
+    None
 }
 
 // Hand-written because the parse state is a tree-sitter parser and tree, which have
@@ -1286,13 +1351,13 @@ pub fn stable_boundary_with(s: &str, relax_at: usize) -> Option<usize> {
             if ok
                 && !relaxed
                 && let Some(prev) = last_nonblank
-                && let Some((was, _)) = list_item(prev.trim_start())
+                && let Some(was) = list_kind(prev.trim_start())
             {
                 if !complete {
                     // The next line is still arriving; it cannot yet prove the
                     // list closed.
                     ok = false;
-                } else if let Some((now, _)) = list_item(t)
+                } else if let Some(now) = list_kind(t)
                     && was == now
                 {
                     ok = false;
@@ -1313,20 +1378,31 @@ pub fn stable_boundary_with(s: &str, relax_at: usize) -> Option<usize> {
     best
 }
 
-/// One list item: the number it was written with (`None` for a bullet) and its
-/// text. Used by guard 4 alone — the block pass reads items off the tree.
-fn list_item(t: &str) -> Option<(Option<usize>, String)> {
-    for m in ["- ", "* ", "+ "] {
-        if let Some(rest) = t.strip_prefix(m) {
-            return Some((None, rest.to_string()));
-        }
+/// The kind of list item this line opens: `Some(true)` for ordered, `Some(false)` for a
+/// bullet, `None` if the line is not one. Used by guard 4 alone — the block pass reads
+/// items off the tree.
+///
+/// **The kind, not the number.** Guard 4 asks "can this be another item of the list
+/// above?", and CommonMark's answer is about the marker's *kind*: `1. a\n\n2. b` is one
+/// loose list, and so is `- a\n\n- b`, while `- a\n\n1. b` is a bullet list and an
+/// ordered one. Comparing the written numbers said `1.` and `2.` were different items
+/// and cut between them, which made a settle land one block too early.
+///
+/// A marker still being typed counts as one: a bare `2.` is a list item whose content
+/// has not arrived, and reading it as "not a list" is what let the cut happen between
+/// the marker and its text.
+fn list_kind(t: &str) -> Option<bool> {
+    let t = t.trim_start();
+    if t == "-" || t == "*" || t == "+" || t.starts_with("- ") || t.starts_with("* ")
+        || t.starts_with("+ ")
+    {
+        return Some(false);
     }
     let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
     if !digits.is_empty() && digits.len() <= 9 {
         let rest = &t[digits.len()..];
-        if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
-            // A parse that cannot fail: at most nine ascii digits.
-            return Some((digits.parse::<usize>().ok(), r.to_string()));
+        if rest.starts_with('.') || rest.starts_with(')') {
+            return Some(true);
         }
     }
     None
@@ -1338,7 +1414,7 @@ mod tests {
     use letibot_sessionlog::testing::MARKDOWN;
 
     /// Feed a document in small pieces, the way deltas arrive.
-    fn stream(doc: &str, chunk: usize) -> IncrementalMarkdown {
+    pub(super) fn stream(doc: &str, chunk: usize) -> IncrementalMarkdown {
         let mut md = IncrementalMarkdown::new();
         let mut buf = String::new();
         for c in doc.chars() {
@@ -1354,7 +1430,7 @@ mod tests {
         md
     }
 
-    fn blocks(md: &IncrementalMarkdown) -> Vec<Block> {
+    pub(super) fn blocks(md: &IncrementalMarkdown) -> Vec<Block> {
         md.blocks().cloned().collect()
     }
 
@@ -1904,5 +1980,154 @@ mod nesting {
             texts[0] != "let a = 1;" && texts.iter().filter(|t| *t == "let a = 1;").count() == 1,
             "{texts:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod streaming_matches_one_parse {
+    use super::*;
+    use crate::markdown::tests::{blocks, stream};
+
+    /// Feed a document a byte at a time and assert the model equals a single parse.
+    ///
+    /// One byte is the cruellest chunk size and the only one worth a corpus this size: it
+    /// puts every partial line, every half-written marker and every mid-token window
+    /// under the guards. It is also cheap — the documents are a few hundred bytes — and it
+    /// is what caught all four divergences below.
+    fn agrees(doc: &str) {
+        let whole = lex(doc);
+        let strm = stream(doc, 1).blocks().cloned().collect::<Vec<_>>();
+        assert_eq!(strm, whole, "{doc:?}");
+    }
+
+    /// **A fence whose content contains a fence.** From the operator's screen: the
+    /// rendered message ended in an empty closed code box with the text after it spilled
+    /// out as prose (2026-09-20, "code blocks still broken").
+    ///
+    /// The guards count fences by lines that start with ```, and the quoted line *is* such
+    /// a line, so the count inverted from there on. The `\n\n` after the (really open)
+    /// fence was taken for a boundary, the prefix settled, and a prefix that ends really
+    /// does end at an end of input — so the open fence became a *closed* one, empty, and
+    /// everything after the cut was parsed fresh as prose. `open_fence_start` is the fix:
+    /// the tree says the fence has fewer than two delimiters, and nothing at or after it
+    /// settles.
+    #[test]
+    fn a_settle_never_lands_inside_an_open_fence() {
+        agrees("prose\n\n```\n``` inner\ncode\n```\n\ntail\n```\n\nreal tail\n");
+        agrees("```\nalpha\n```\nbeta\n```\n\nPinned as a test.\n");
+        agrees("para\n\n```\n```          →  code(alpha)\nalpha\n```\nbeta\n```\n\nPinned.\n");
+        // And the shape the operator actually saw, spelled out: the code block is one
+        // block, closed, and the text after the second fence belongs to the third.
+        let doc = "```\nalpha\n```\nbeta\n```\n\nPinned as a test.\n";
+        let b = lex(doc);
+        assert_eq!(b.len(), 3, "{b:#?}");
+        let Some(Block::Code { lines, closed, .. }) = b.get(2) else { panic!("{b:#?}") };
+        assert!(!*closed, "the last fence is open");
+        assert!(
+            lines.iter().any(|l| l.contains("Pinned")),
+            "the text after the open fence belongs to it: {lines:?}"
+        );
+    }
+
+    /// **A loose ordered list.** `1. first\n\n2. second` is one list, not two.
+    ///
+    /// Guard 4 asks "can this be another item of the list above?" and compared the
+    /// *written numbers*, so `1.` and `2.` read as different items of different lists and
+    /// the cut went between them. CommonMark's answer is about the marker's *kind*.
+    /// `MARKDOWN`'s list is tight (no blank lines), which is why the fixture never caught
+    /// this.
+    #[test]
+    fn a_loose_ordered_list_is_one_list_however_many_times_it_wraps() {
+        agrees("1. first\n\n2. second\n\n3. third\n\ntail\n");
+        agrees("1. first\n\n2. second\n\ntail\n");
+        // A bullet list and an ordered one are different lists and the cut is fine.
+        agrees("- a\n\n1. b\n\ntail\n");
+        // Six points, each a sentence, is the real shape this came from.
+        let doc = "1. one\n\n2. two\n\n3. three\n\n4. four\n\n5. five\n\n6. six\n\nThat is all.\n";
+        agrees(doc);
+        let blocks = lex(doc);
+        let Some(Block::List { items, start, .. }) = blocks.first() else { panic!() };
+        assert_eq!(*start, 1);
+        assert_eq!(items.len(), 6, "six points, one list");
+    }
+
+    /// A long code block stays whole, and the window stays the size of the block.
+    ///
+    /// There is no legal cut inside a fence (see [`fence_spans`]), so a window that is one
+    /// long code block has none at all and settles nothing until its closing fence arrives
+    /// — which is the price of showing the model's code **as code**. The alternative the
+    /// first version of this took, cutting at a line break inside the fence, split one
+    /// block in two and turned the half without delimiters into a paragraph: code on the
+    /// screen as prose.
+    ///
+    /// So the window is bounded by the cap for prose and by the largest code block
+    /// otherwise. That is the old lexer's behaviour too (its fence guard was never relaxed
+    /// either) and it is the honest bound: you cannot stream a block whose end you cannot
+    /// see. The per-push cost is the block's length times markdown's ~106 ns/byte, so a
+    /// 10 KB block costs about a millisecond a push while it streams — under a frame, and
+    /// only while that block is arriving.
+    #[test]
+    fn a_long_code_block_stays_whole_and_its_window_is_the_block() {
+        let doc: String = format!(
+            "```rust\n{}```\n",
+            (0..800).map(|i| format!("fn f{i}() {{}}\n")).collect::<String>()
+        );
+        assert!(doc.len() > 2 * DEFAULT_MAX_UNFROZEN, "{}", doc.len());
+        let mut md = IncrementalMarkdown::new();
+        for c in doc.as_bytes().chunks(8) {
+            md.push(std::str::from_utf8(c).unwrap());
+        }
+        // One code block, because the closing fence arrived and closed it.
+        let all = blocks(&md);
+        let code: Vec<&Block> = all.iter().filter(|b| matches!(b, Block::Code { .. })).collect();
+        assert_eq!(code.len(), 1, "the block was split: {code:#?}");
+        // Nothing else: the code did not become prose.
+        assert_eq!(all.len(), 1, "{all:#?}");
+        let Block::Code { lines, closed, .. } = code[0] else { panic!() };
+        assert!(*closed);
+        assert_eq!(lines.len(), 800, "a line was lost");
+        assert_eq!(lines[0], "fn f0() {}");
+        assert_eq!(lines[799], "fn f799() {}");
+        // And it never settled, because a window that is one fence has no legal cut in
+        // it: the block renders from the tail, at the cost of one parse of its length per
+        // push while it streams. Correct is the point; cheap is not available here.
+        assert_eq!(md.stable_count(), 0);
+        assert_eq!(md.tail().len(), 1);
+        // The contrast: a fence *followed by* a blank line does settle, because the cut
+        // after it is legal — it is past the closing delimiter.
+        let mut md = IncrementalMarkdown::new();
+        let with_prose = format!(
+            "```rust\n{}```\n\nprose after\n",
+            (0..800).map(|i| format!("fn f{i}() {{}}\n")).collect::<String>()
+        );
+        for c in with_prose.as_bytes().chunks(64) {
+            md.push(std::str::from_utf8(c).unwrap());
+        }
+        assert!(md.stable_count() >= 1, "the finished block settled");
+        let all = blocks(&md);
+        assert_eq!(all.len(), 2, "{all:#?}");
+        assert!(matches!(all[0], Block::Code { closed: true, .. }), "{all:#?}");
+    }
+
+    /// The shapes the corpus above was built from, plus the fixture, at several chunk
+    /// sizes so the assertion is about the guards and not about one stride.
+    #[test]
+    fn every_shape_agrees_at_every_chunk_size() {
+        let docs = [
+            "prose\n\n```\n``` inner\ncode\n```\n\ntail\n```\n\nreal tail\n",
+            "```\nalpha\n```\nbeta\n```\n\nPinned as a test.\n",
+            "1. first\n\n2. second\n\n3. third\n\ntail\n",
+            "- a\n\n1. b\n\ntail\n",
+            "> ```rust\n> let a = 1;\n> ```\n",
+            "- item\n\n  ```rust\n  let a = 1;\n  ```\n",
+            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+            "## h\n\ntext **bold** `code`\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\ntail\n",
+        ];
+        for doc in docs {
+            for chunk in [1, 2, 3, 7, 64, 4096] {
+                let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
+                assert_eq!(a, lex(doc), "chunk {chunk} on {doc:?}");
+            }
+        }
     }
 }
