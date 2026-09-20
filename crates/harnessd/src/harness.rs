@@ -3337,6 +3337,31 @@ impl<'a> Harness<'a> {
     /// transcript either way — nothing is reduced until the fork lands, so a
     /// refusal here leaves the session exactly as it was, and the next attempt
     /// appends a fresh instruction over this one.
+    /// **Who answers this session's summary turns.**
+    ///
+    /// The provider when there is one, so a compaction is rendered, counted and
+    /// billed as part of the conversation it is summarising. Compaction used to
+    /// call the engine's local path unconditionally, which sent a metered
+    /// session's whole history to the daemon's own model — and a 1.5M-token
+    /// history to a 262144-token server is a 400, which is why a conversation
+    /// that had overrun could not compact its way out.
+    ///
+    /// Borrowed from three separate fields, so the caller can still take
+    /// `&mut self.engine` and `&mut self.session` beside it.
+    fn answerer<'p>(
+        provider: &'p Option<Box<dyn letibot_backend::MessagesBackend>>,
+        prefix: &'p StablePrefix,
+    ) -> letibot_turn::compaction::Answerer<'p> {
+        match provider {
+            None => letibot_turn::compaction::Answerer::Local,
+            Some(p) => letibot_turn::compaction::Answerer::Provider {
+                backend: p.as_ref(),
+                system: &prefix.system,
+                tools_json: &prefix.tools_json,
+            },
+        }
+    }
+
     pub fn compact(&mut self) -> Result<CompactReport, HarnessError> {
         self.compacting = true;
         let out = self.compact_inner();
@@ -3445,7 +3470,8 @@ impl<'a> Harness<'a> {
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
             let mut sink = CapturingSink::new(self.hub.clone());
-            let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
+            let answerer = Self::answerer(&self.provider, &self.prefix);
+            let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink, &answerer)
                 .map_err(HarnessError::Turn)?;
             if outcome.tool_calls > 0 {
                 return Err(HarnessError::Setup(format!(
@@ -3531,8 +3557,10 @@ impl<'a> Harness<'a> {
         match plan_overrun(&per_item, prefix_tokens, window) {
             // The ordinary path, and the one that runs almost always.
             OverrunPlan::NotOverrun => {
-                let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink)
-                    .map_err(HarnessError::Turn)?;
+                let answerer = Self::answerer(&self.provider, &self.prefix);
+                let outcome =
+                    run_compaction(&mut self.engine, &mut self.session, &mut sink, &answerer)
+                        .map_err(HarnessError::Turn)?;
                 if outcome.tool_calls > 0 {
                     return Err(HarnessError::Setup(format!(
                         "the summary turn proposed {} tool call(s); a summary is a record, \
@@ -3584,6 +3612,7 @@ impl<'a> Harness<'a> {
                                      continuing on the summary plus the rest, verbatim"
                                 ),
                             });
+                            let answerer = Self::answerer(&self.provider, &self.prefix);
                             let h = summarise_first_half(
                                 &mut self.engine,
                                 &prefix,
@@ -3591,6 +3620,7 @@ impl<'a> Harness<'a> {
                                 &items,
                                 split,
                                 &mut sink,
+                                &answerer,
                             )
                             .map_err(HarnessError::Turn)?;
                             (h, items[split..].to_vec())
@@ -3598,6 +3628,7 @@ impl<'a> Harness<'a> {
                         // No workable fold: fall through to the two-half plan,
                         // which asks less of the split.
                         None => {
+                            let answerer = Self::answerer(&self.provider, &self.prefix);
                             let h = summarise_overrun(
                                 &mut self.engine,
                                 &prefix,
@@ -3605,6 +3636,7 @@ impl<'a> Harness<'a> {
                                 &items,
                                 &plan,
                                 &mut sink,
+                                &answerer,
                             )
                             .map_err(HarnessError::Turn)?;
                             (h, Vec::new())
@@ -3627,6 +3659,7 @@ impl<'a> Harness<'a> {
                             items.len() - tail_from
                         ),
                     });
+                    let answerer = Self::answerer(&self.provider, &self.prefix);
                     let h = summarise_overrun(
                         &mut self.engine,
                         &prefix,
@@ -3634,6 +3667,7 @@ impl<'a> Harness<'a> {
                         &items,
                         &plan,
                         &mut sink,
+                        &answerer,
                     )
                     .map_err(HarnessError::Turn)?;
                     (h, Vec::new())

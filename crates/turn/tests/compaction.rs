@@ -148,7 +148,10 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         .append_items(&engine1, &[user("count the things")], &mut sink)
         .unwrap();
     let ok = engine1.run_turn(&mut session, &mut sink).unwrap();
-    let witness = session.witness().expect("a completed turn left a witness").clone();
+    let witness = session
+        .witness()
+        .expect("a completed turn left a witness")
+        .clone();
     let _ = ok;
 
     // The compaction turn, served over the same session.
@@ -161,7 +164,13 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
     );
     let canned = Canned::serve(frames, 1);
     let mut engine2 = engine(&renderer, &parser, canned.endpoint.clone());
-    let outcome = letibot_turn::run_compaction(&mut engine2, &mut session, &mut sink).unwrap();
+    let outcome = letibot_turn::run_compaction(
+        &mut engine2,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+    )
+    .unwrap();
 
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
     assert_eq!(outcome.tool_calls, 0);
@@ -178,13 +187,16 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         .items
         .iter()
         .position(|i| {
-            matches!(i, TranscriptItem::System { origin: SystemOrigin::Update, .. })
-                && match i {
-                    TranscriptItem::System { text, .. } => {
-                        text == letibot_turn::SUMMARY_INSTRUCTION
-                    }
-                    _ => false,
+            matches!(
+                i,
+                TranscriptItem::System {
+                    origin: SystemOrigin::Update,
+                    ..
                 }
+            ) && match i {
+                TranscriptItem::System { text, .. } => text == letibot_turn::SUMMARY_INSTRUCTION,
+                _ => false,
+            }
         })
         .expect("the instruction is in the ledger as a system update");
     assert!(
@@ -239,7 +251,13 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
         .append_items(&engine, &[user("summarise")], &mut sink)
         .unwrap();
 
-    let outcome = letibot_turn::run_compaction(&mut engine, &mut session, &mut sink).unwrap();
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+    )
+    .unwrap();
     assert_eq!(outcome.tool_calls, 1, "{outcome:?}");
     assert!(outcome.summary.is_empty(), "{:?}", outcome.summary);
 }
@@ -285,7 +303,13 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         .unwrap();
     let before_compaction = session.ledger.tokens().to_vec();
 
-    let err = letibot_turn::run_compaction(&mut engine, &mut session, &mut sink).unwrap_err();
+    let err = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+    )
+    .unwrap_err();
     match err {
         TurnFailure::SalvageExhausted { streak, .. } => {
             assert_eq!(streak, 4, "the cap is three salvages plus the spent turn");
@@ -355,10 +379,7 @@ fn an_unfinished_reasoning_turn(n_prompt: u64) -> Vec<Frame> {
 
 fn token_frames(ids: &[u32]) -> Vec<Frame> {
     ids.iter()
-        .map(|id| Frame::Token {
-            id: *id,
-            text: "",
-        })
+        .map(|id| Frame::Token { id: *id, text: "" })
         .collect()
 }
 
@@ -389,8 +410,13 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         .unwrap();
     let before_compaction = session.ledger.tokens().to_vec();
 
-    let outcome = letibot_turn::run_compaction(&mut engine, &mut session, &mut sink)
-        .expect("the salvage takes the turn again, and the retry answers");
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+    )
+    .expect("the salvage takes the turn again, and the retry answers");
 
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
     assert_eq!(outcome.tool_calls, 0);
@@ -403,19 +429,23 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         .items
         .iter()
         .position(|i| {
-            matches!(i, TranscriptItem::System { origin: SystemOrigin::Update, .. })
-                && match i {
-                    TranscriptItem::System { text, .. } => {
-                        text == letibot_turn::SUMMARY_INSTRUCTION
-                    }
-                    _ => false,
+            matches!(
+                i,
+                TranscriptItem::System {
+                    origin: SystemOrigin::Update,
+                    ..
                 }
+            ) && match i {
+                TranscriptItem::System { text, .. } => text == letibot_turn::SUMMARY_INSTRUCTION,
+                _ => false,
+            }
         })
         .expect("the instruction is in the ledger as a system update");
     assert!(
-        session.items[..instruction_at]
-            .iter()
-            .all(|i| !matches!(i, TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. })),
+        session.items[..instruction_at].iter().all(|i| !matches!(
+            i,
+            TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
+        )),
         "nothing the failed turn said is in the ledger"
     );
 
@@ -453,8 +483,100 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
     // The server was asked to re-prefill only the notice, never the
     // conversation.
     assert!(
-        !sink.warnings().iter().any(|(c, _)| *c == "prefix_divergence"),
+        !sink
+            .warnings()
+            .iter()
+            .any(|(c, _)| *c == "prefix_divergence"),
         "the retry's prompt broke the prefix invariant: {:?}",
         sink.warnings()
     );
+}
+
+/// **A metered session's summary goes to the provider, not to the daemon's own
+/// model.**
+///
+/// `run_compaction` called `TurnEngine::run_turn` unconditionally, and that is
+/// the local endpoint — the engine holds one endpoint and knows nothing about a
+/// provider. So a conversation on deepseek had its summaries sent to the local
+/// qwen with the whole history in front of them. Measured on the operator's box,
+/// 2026-09-20, two lines apart in one log: `maximum context length is 1048576`
+/// from deepseek for the turn, then `exceeds the available context size
+/// (262144)` from qwen for the SUMMARY. The second is this bug.
+#[test]
+fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
+    use letibot_backend::{
+        BackendCaps, BackendError, Completion, Delta, MessagesBackend, StreamFlow, TurnRequest,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting {
+        calls: AtomicUsize,
+        text: String,
+    }
+    impl MessagesBackend for Counting {
+        fn caps(&self) -> BackendCaps {
+            BackendCaps::METERED_API
+        }
+        fn name(&self) -> &str {
+            "deepseek"
+        }
+        fn model(&self) -> &str {
+            "deepseek-flash"
+        }
+        fn complete(
+            &self,
+            _req: &TurnRequest<'_>,
+            on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
+        ) -> Result<Completion, BackendError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            on_delta(&Delta::Text(self.text.clone()));
+            Ok(Completion {
+                text: self.text.clone(),
+                reasoning: String::new(),
+                tool_calls: Vec::new(),
+                finish: letibot_backend::Finish::Stop,
+                cost: letibot_backend::TurnCost {
+                    meter: letibot_backend::Meter::Metered,
+                    prompt_tokens: 11,
+                    cached_tokens: 0,
+                    generated_tokens: 7,
+                    wall_ms: 5,
+                    micros_usd: Some(3),
+                },
+                raw_usage: None,
+            })
+        }
+    }
+
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    // A local server that must NOT be asked: it serves nothing, so any request
+    // to it fails the turn and the test with it.
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(&renderer, &parser, idle.endpoint.clone());
+    let mut session = session(&engine, "compact-provider");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("count the things")], &mut sink)
+        .unwrap();
+
+    let summary = "decided: the provider answered; open: none";
+    let backend = Counting {
+        calls: AtomicUsize::new(0),
+        text: summary.to_string(),
+    };
+    let answerer = letibot_turn::compaction::Answerer::Provider {
+        backend: &backend,
+        system: "you are a summariser",
+        tools_json: &[],
+    };
+    let outcome =
+        letibot_turn::run_compaction(&mut engine, &mut session, &mut sink, &answerer).unwrap();
+
+    assert_eq!(
+        backend.calls.load(Ordering::Relaxed),
+        1,
+        "the summary did not reach the provider"
+    );
+    assert_eq!(outcome.summary, summary);
 }

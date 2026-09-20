@@ -215,6 +215,67 @@ pub struct CompactionOutcome {
     pub generated_tokens: u64,
 }
 
+/// **Who answers a summary turn.**
+///
+/// Compaction called [`TurnEngine::run_turn`] unconditionally, and that is the
+/// LOCAL endpoint — the engine holds one `endpoint` and one `model` and knows
+/// nothing about a provider, which only ever arrives as an argument to
+/// [`TurnEngine::run_turn_messages`]. So a conversation running on a metered
+/// provider had its summaries sent to the daemon's own model, with the whole
+/// history in front of them.
+///
+/// Measured on the operator's box, 2026-09-20, in one log four lines apart:
+///
+/// ```text
+/// http 400: This model's maximum context length is 1048576 tokens.
+///           However, you requested 1048607 tokens          <- deepseek, the turn
+/// http 400: request (1504198 tokens) exceeds the available
+///           context size (262144 tokens)                   <- qwen, the SUMMARY
+/// ```
+///
+/// The second is this bug with its own error message: 1.5M tokens of a
+/// deepseek conversation handed to a local server with a 262144-token window,
+/// which is why compaction could not rescue a session that had overrun. Their
+/// question, which was the right one: *"maybe qwen was asked for summary?"*
+pub enum Answerer<'a> {
+    /// The daemon's own endpoint, for a session that runs there anyway.
+    Local,
+    /// The session's provider, with the prefix's system and tools — the same
+    /// four arguments the ordinary cloud turn passes, so the summary is rendered
+    /// and counted the way every other turn in that conversation is.
+    Provider {
+        backend: &'a dyn letibot_backend::MessagesBackend,
+        system: &'a str,
+        tools_json: &'a [String],
+    },
+}
+
+impl Answerer<'_> {
+    fn run(
+        &self,
+        engine: &mut TurnEngine<'_>,
+        session: &mut Session,
+        sink: &mut dyn EventSink,
+    ) -> Result<TurnOk, TurnFailure> {
+        match self {
+            Answerer::Local => engine.run_turn(session, sink),
+            Answerer::Provider {
+                backend,
+                system,
+                tools_json,
+            } => engine.run_turn_messages(
+                session,
+                sink,
+                &mut crate::steering::NoSteering,
+                *backend,
+                system,
+                tools_json,
+                None,
+            ),
+        }
+    }
+}
+
 /// Run the compaction turn: append [`SUMMARY_INSTRUCTION`] as a system update
 /// and take the turn that answers it.
 ///
@@ -246,6 +307,7 @@ pub fn run_compaction(
     engine: &mut TurnEngine<'_>,
     session: &mut Session,
     sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
 ) -> Result<CompactionOutcome, TurnFailure> {
     let instruction = TranscriptItem::System {
         text: SUMMARY_INSTRUCTION.to_string(),
@@ -275,28 +337,33 @@ pub fn run_compaction(
     // again is the failure repeating itself with fewer tokens each time.
     let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
         loop {
-        match engine.run_turn(session, sink) {
-            Ok(ok) => break Ok(ok),
-            Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+            match answerer.run(engine, session, sink) {
+                Ok(ok) => break Ok(ok),
+                Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                    append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+                }
+                Err(TurnFailure::EmptyLength { reason, .. }) => {
+                    let notice = empty_length_notice(reason);
+                    append_salvage_notice(session, engine, sink, &notice)?;
+                }
+                // SalvageExhausted lands here, and so does everything that is not a
+                // say-nothing turn: a guard trip, a socket error, a spent budget.
+                // Propagating is the honest answer — a compaction that did not run
+                // must say so, not disappear into a retry that never ends.
+                Err(e) => return Err(e),
             }
-            Err(TurnFailure::EmptyLength { reason, .. }) => {
-                let notice = empty_length_notice(reason);
-                append_salvage_notice(session, engine, sink, &notice)?;
-            }
-            // SalvageExhausted lands here, and so does everything that is not a
-            // say-nothing turn: a guard trip, a socket error, a spent budget.
-            // Propagating is the honest answer — a compaction that did not run
-            // must say so, not disappear into a retry that never ends.
-            Err(e) => return Err(e),
-        }
         }
     })?;
 
-    let Harvest { summary, tool_calls, truncated } = harvest(&ok.items);
+    let Harvest {
+        summary,
+        tool_calls,
+        truncated,
+    } = harvest(&ok.items);
     let reusable = match &ok.metrics.prefix_check {
         crate::prefix::PrefixCheck::Held {
-            expected_cached_min, ..
+            expected_cached_min,
+            ..
         } => *expected_cached_min,
         // FirstTurn and Skipped both mean nobody measured a reuse: a session
         // with no previous turn has nothing to reuse, and a skipped check is
@@ -313,7 +380,6 @@ pub fn run_compaction(
         generated_tokens: ok.metrics.predicted_tokens,
     })
 }
-
 
 /// What a summary turn produced, read off its items.
 ///
@@ -332,7 +398,13 @@ pub struct Harvest {
 pub fn harvest(items: &[TranscriptItem]) -> Harvest {
     let mut h = Harvest::default();
     for item in items {
-        if let TranscriptItem::Assistant { text, tool_calls, truncated, .. } = item {
+        if let TranscriptItem::Assistant {
+            text,
+            tool_calls,
+            truncated,
+            ..
+        } = item
+        {
             h.summary.push_str(text);
             h.tool_calls += tool_calls.len();
             // ANY truncated part truncates the whole: the summary is the
@@ -366,8 +438,14 @@ mod harvesting_a_summary {
     /// The measured case: the model ran out of room mid-expression.
     #[test]
     fn a_summary_that_ran_out_of_room_is_marked_cut() {
-        let h = harvest(&[assistant("…`super::quarantine(call_id, &page.final_url, &page", true)]);
-        assert!(h.truncated, "the flag the engine stamped must survive the harvest");
+        let h = harvest(&[assistant(
+            "…`super::quarantine(call_id, &page.final_url, &page",
+            true,
+        )]);
+        assert!(
+            h.truncated,
+            "the flag the engine stamped must survive the harvest"
+        );
     }
 
     /// One cut part cuts the whole, because the summary is their concatenation.
@@ -501,7 +579,10 @@ pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Ove
         return OverrunPlan::NotOverrun;
     }
     if prefix_tokens + WRITE_ROOM + CUT_MARGIN >= window {
-        return OverrunPlan::Hopeless { prefix_tokens, window };
+        return OverrunPlan::Hopeless {
+            prefix_tokens,
+            window,
+        };
     }
 
     // The largest prefix of the history that still leaves room to write about it.
@@ -574,7 +655,9 @@ mod overrun_planning {
     #[test]
     fn arriving_past_the_trigger_with_room_for_a_summary_is_not_an_overrun() {
         let resident = 247_301u64;
-        let items: Vec<u64> = std::iter::repeat(1_000).take(((resident - P) / 1_000) as usize).collect();
+        let items: Vec<u64> = std::iter::repeat(1_000)
+            .take(((resident - P) / 1_000) as usize)
+            .collect();
         assert_eq!(
             plan_overrun(&items, P, W),
             OverrunPlan::NotOverrun,
@@ -587,8 +670,13 @@ mod overrun_planning {
     #[test]
     fn the_case_that_truncated_a_summary_is_still_an_overrun() {
         let resident = 260_390u64;
-        let items: Vec<u64> = std::iter::repeat(1_000).take(((resident - P) / 1_000) as usize).collect();
-        assert!(matches!(plan_overrun(&items, P, W), OverrunPlan::Cut { .. }));
+        let items: Vec<u64> = std::iter::repeat(1_000)
+            .take(((resident - P) / 1_000) as usize)
+            .collect();
+        assert!(matches!(
+            plan_overrun(&items, P, W),
+            OverrunPlan::Cut { .. }
+        ));
     }
 
     /// The measured case: arrives at ~260k of a 262k window, so the in-place
@@ -596,7 +684,13 @@ mod overrun_planning {
     #[test]
     fn a_conversation_that_arrived_over_the_budget_is_cut() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(255).collect();
-        let OverrunPlan::Cut { cut, tail_from, old_tokens, tail_tokens } = plan_overrun(&items, P, W) else {
+        let OverrunPlan::Cut {
+            cut,
+            tail_from,
+            old_tokens,
+            tail_tokens,
+        } = plan_overrun(&items, P, W)
+        else {
             panic!("260k of a 262k window is an overrun");
         };
 
@@ -606,14 +700,23 @@ mod overrun_planning {
             "the old half must be summarisable: {old_tokens}"
         );
         // The tail is only the excess, not half the conversation.
-        assert!(tail_tokens < old_tokens, "tail {tail_tokens} vs old {old_tokens}");
+        assert!(
+            tail_tokens < old_tokens,
+            "tail {tail_tokens} vs old {old_tokens}"
+        );
         // And the tail is itself summarisable, comfortably.
         assert!(P + tail_tokens + WRITE_ROOM <= W);
         // The halves overlap rather than abut: the tail starts at or before the
         // cut, and here it starts well before it.
-        assert!(tail_from <= cut, "tail_from {tail_from} must not be past cut {cut}");
+        assert!(
+            tail_from <= cut,
+            "tail_from {tail_from} must not be past cut {cut}"
+        );
         assert_eq!(tail_from + (tail_tokens / 1_000) as usize, items.len());
-        assert!(cut > tail_from, "there is a real overlap: {tail_from}..{cut}");
+        assert!(
+            cut > tail_from,
+            "there is a real overlap: {tail_from}..{cut}"
+        );
         // Bounded: an overlap is a seam, not a second copy of the conversation.
         assert!(
             cut - tail_from <= cut / 3 + 1,
@@ -645,7 +748,10 @@ mod overrun_planning {
     fn a_prefix_too_big_for_the_window_is_hopeless() {
         assert_eq!(
             plan_overrun(&[10, 10], 260_000, W),
-            OverrunPlan::Hopeless { prefix_tokens: 260_000, window: W }
+            OverrunPlan::Hopeless {
+                prefix_tokens: 260_000,
+                window: W
+            }
         );
     }
 
@@ -683,13 +789,28 @@ pub fn summarise_overrun(
     items: &[TranscriptItem],
     plan: &OverrunPlan,
     sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
     let OverrunPlan::Cut { cut, tail_from, .. } = plan else {
         return Ok(Harvest::default());
     };
 
-    let tail = summarise_one(engine, prefix, &format!("{scratch_id}-tail"), &items[*tail_from..], sink)?;
-    let old = summarise_one(engine, prefix, &format!("{scratch_id}-old"), &items[..*cut], sink)?;
+    let tail = summarise_one(
+        engine,
+        prefix,
+        &format!("{scratch_id}-tail"),
+        &items[*tail_from..],
+        sink,
+        answerer,
+    )?;
+    let old = summarise_one(
+        engine,
+        prefix,
+        &format!("{scratch_id}-old"),
+        &items[..*cut],
+        sink,
+        answerer,
+    )?;
 
     // The overlap is stated rather than hidden. A reader that finds the same
     // decision in both halves should know the halves were meant to share a seam,
@@ -724,6 +845,7 @@ fn summarise_one(
     scratch_id: &str,
     slice: &[TranscriptItem],
     sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
     // `ProgressOnly`: the rows are a copy of history the operator has already
     // seen, so announcing them puts `waiting for the body of …` placeholders on
@@ -738,19 +860,28 @@ fn summarise_one(
     let _ = sink;
     let mut quiet = NullSink;
     let mut scratch = engine.open(scratch_id, prefix).map_err(TurnFailure::from)?;
-    scratch.append_items(engine, slice, &mut quiet).map_err(TurnFailure::from)?;
+    scratch
+        .append_items(engine, slice, &mut quiet)
+        .map_err(TurnFailure::from)?;
     let instruction = TranscriptItem::System {
         text: SUMMARY_INSTRUCTION.to_string(),
         origin: SystemOrigin::Update,
     };
-    scratch.append_items(engine, &[instruction], &mut quiet).map_err(TurnFailure::from)?;
+    scratch
+        .append_items(engine, &[instruction], &mut quiet)
+        .map_err(TurnFailure::from)?;
 
     let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
         loop {
-            match engine.run_turn(&mut scratch, &mut quiet) {
+            match answerer.run(engine, &mut scratch, &mut quiet) {
                 Ok(ok) => break Ok(ok),
                 Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                    append_salvage_notice(&mut scratch, engine, &mut quiet, UNFINISHED_REASONING_NOTICE)?;
+                    append_salvage_notice(
+                        &mut scratch,
+                        engine,
+                        &mut quiet,
+                        UNFINISHED_REASONING_NOTICE,
+                    )?;
                 }
                 Err(TurnFailure::EmptyLength { reason, .. }) => {
                     let notice = empty_length_notice(reason);
@@ -838,8 +969,9 @@ pub fn summarise_first_half(
     items: &[TranscriptItem],
     split: usize,
     sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
-    summarise_one(engine, prefix, scratch_id, &items[..split], sink)
+    summarise_one(engine, prefix, scratch_id, &items[..split], sink, answerer)
 }
 
 #[cfg(test)]
@@ -864,8 +996,14 @@ mod folding {
 
         let first: u64 = items[..split].iter().sum();
         let second: u64 = items[split..].iter().sum();
-        assert!(P + first + WRITE_ROOM <= W, "the first half is summarisable");
-        assert!(P + second + WRITE_ROOM <= W, "the second half leaves room to work");
+        assert!(
+            P + first + WRITE_ROOM <= W,
+            "the first half is summarisable"
+        );
+        assert!(
+            P + second + WRITE_ROOM <= W,
+            "the second half leaves room to work"
+        );
     }
 
     /// One enormous item outweighs many small ones, and the split follows the
