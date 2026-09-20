@@ -644,13 +644,13 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             Ok(ClientFrame::ReseatSession {
                 client_request_id,
                 expected_seq,
-                verbatim,
+                summarise,
             }) => {
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,
                     expected_seq,
-                    CommandKind::Reseat { verbatim },
+                    CommandKind::Reseat { summarise },
                 );
                 writer.lock().unwrap().write(&f)?;
             }

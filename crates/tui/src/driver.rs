@@ -176,8 +176,8 @@ pub fn tick(
             Action::Compact => {
                 client.compact(app.seq)?;
             }
-            Action::Reseat { verbatim } => {
-                client.reseat(app.seq, verbatim)?;
+            Action::Reseat { summarise } => {
+                client.reseat(app.seq, summarise)?;
             }
             Action::Mode { name, consented } => {
                 client.set_mode(app.seq, &name, consented)?;

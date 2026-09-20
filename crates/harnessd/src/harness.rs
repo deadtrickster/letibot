@@ -2317,7 +2317,7 @@ impl<'a> Harness<'a> {
                             ));
                             }
                             say.push_str(
-                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it the way a compaction does;                              a new session gets the seated list from the start.",
+                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it and carrying it across as it                              is; a new session gets the seated list from the start.",
                         );
                             notes.push(say);
                         }
@@ -3199,7 +3199,8 @@ impl<'a> Harness<'a> {
             );
             out.push(
                 "  `/compact` now forks onto the seated prompt and picks them up; \
-                 `/reseat` does the same without waiting for the context to fill."
+                 `/reseat` does the same without waiting for the context to fill, and \
+                 without summarising."
                     .into(),
             );
         }
@@ -3473,8 +3474,11 @@ impl<'a> Harness<'a> {
 
     /// **Re-seat without summarising: carry the whole conversation across.**
     ///
-    /// The operator: *"is there a way to reseat without summarizing? … like
-    /// reingest full context"*.
+    /// **This is what `/reseat` does.** The operator asked for it — *"is there a
+    /// way to reseat without summarizing? … like reingest full context"* — and
+    /// then made it the default: *"id say flip it - reset is loseless and reset
+    /// summarize will be not"*. A verb named for message zero should not cost
+    /// you everything under message zero unless you said so.
     ///
     /// A tool's schema lives in the stable prefix, which is message zero, so a
     /// running session keeps the prompt it opened under and a schema change
@@ -3490,7 +3494,9 @@ impl<'a> Harness<'a> {
     /// matches and the next turn pays a cold prefill of the WHOLE history — on a
     /// metered provider, the whole conversation re-sent and re-billed once. That
     /// is the trade against `reseat`, and it is the operator's to make: a summary
-    /// is cheaper and lossy, this is dearer and lossless.
+    /// is cheaper and lossy, this is dearer and lossless. The default is the
+    /// lossless one, because a re-seat that quietly ate the conversation is a
+    /// surprise you cannot undo, and a bill is one you can see coming.
     ///
     /// It refuses where it cannot help: over the window, a verbatim carry would
     /// fork onto a base that cannot be prefilled at all, and the honest answer
@@ -3531,8 +3537,8 @@ impl<'a> Harness<'a> {
                 "carrying this conversation verbatim would put {resident} token(s) in front \
                  of a {window}-token window, leaving less than the {} a turn needs. \
                  Re-seating without summarising only works while the conversation still \
-                 fits; `/reseat` summarises and fits, and `/compact` does the same without \
-                 changing the prompt. Nothing was changed.",
+                 fits; `/reseat summarise` summarises and fits, and `/compact` does the \
+                 same without changing the prompt. Nothing was changed.",
                 self.cfg.headroom()
             )));
         }
@@ -3571,6 +3577,12 @@ impl<'a> Harness<'a> {
         Ok(out)
     }
 
+    /// **Re-seat and summarise**, replacing the conversation with the summary.
+    ///
+    /// This is `/reseat summarise`: the lossy kind, and it is the one you ask for
+    /// by name. A bare `/reseat` runs [`Harness::reingest`]. Reach for this when
+    /// the point is to shrink as well as to change message zero, or when the
+    /// conversation no longer fits in front of the window.
     pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(

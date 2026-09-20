@@ -100,9 +100,9 @@ pub enum CommandKind {
     /// is created, so a conversation opened without a shell can never call one
     /// however its daemon is later seated. This is the only thing that changes it.
     Reseat {
-        /// Carry every item across instead of summarising. See
-        /// `ClientFrame::ReseatSession`.
-        verbatim: bool,
+        /// Summarise as well as re-seating. The default is to carry every item
+        /// across. See `ClientFrame::ReseatSession`.
+        summarise: bool,
     },
     Interrupt {
         reason: String,
@@ -902,10 +902,10 @@ impl Hub {
                 (CommandKind::Reseat { .. }, true) => {
                     format!("{REJECT_STALE_SEQ}: queued anyway")
                 }
-                (CommandKind::Reseat { verbatim }, false) => if *verbatim {
-                    "re-seat queued — carrying the conversation across, not summarising it"
+                (CommandKind::Reseat { summarise }, false) => if *summarise {
+                    "re-seat queued — summarising, so the conversation is replaced by it"
                 } else {
-                    "re-seat queued"
+                    "re-seat queued — the conversation is carried across as it is"
                 }
                 .into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
