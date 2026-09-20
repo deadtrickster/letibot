@@ -354,6 +354,28 @@ Two things the whole sequence says about the method, both worth keeping:
   It is not, for the closing delimiter — and every other reader of the tree inherited that.
   The rule the code now follows is the text's, with the tree doing only what it is good at.
 
+**Then the operator asked whether every bug had a test, and the answer was no.** Checked by
+mutation — put each bug back and see whether anything goes red — and two mutations changed
+no result. Chasing why found two more bugs and two pieces of dead code:
+
+- **A fence on a list marker's line was never found.** `- ```rust` rendered as item text
+  holding the markers plus a spurious empty code box, because the container prefix was read
+  as whitespace and `>` only. A list marker is now part of that prefix, as **blanks rather
+  than as itself** — a marker does not repeat on a continuation line, so `"- ```rust"` is
+  continued by `"  let a = 1;"` and the only prefix they share is the content column.
+  `closing_fence` strips each candidate line on its own for the same reason.
+- **Three pieces of code were unreachable and had never run.** After `mask` the tree holds
+  no `fenced_code_block` node at all, so the arms written to read one out of a container —
+  and `only_holds_a_fence` with the drop it guarded — could not fire. Measured both ways:
+  deleting them changed nothing, and `false` in place of the drop's condition changed
+  nothing. Removed, with `masking_leaves_no_fence_in_the_tree` asserting the invariant so
+  they cannot come back. The empty container they were written to drop renders as zero lines
+  anyway, which is why nobody noticed.
+
+The lesson generalises past this file: **a test that cannot fail is not evidence**, and the
+only cheap way to find one is to break the code it is supposed to guard. Two of the six
+regression tests in this file were like that until the mutation run.
+
 Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
 fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +
 `captures()` for any fence language), and it would want the same window discipline. It is
