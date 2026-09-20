@@ -626,6 +626,15 @@ pub struct App {
     /// end is what gets rendered first. `tail_cut` is the markdown half of that
     /// (`crates/tui/src/markdown.rs`); this is the walk's.
     hist_floor: usize,
+    /// The `seq` at which the head last read the `model` settings row, and the `seq` of
+    /// the `TurnStarted` that last named a model.
+    ///
+    /// The header picks whichever is later: a settings row is only ever sent as an
+    /// *answer*, so an attached head is not told about a mid-conversation provider
+    /// switch, while a turn arrives unprompted and names what is answering. See the
+    /// header's model selection for the whole argument.
+    model_from_settings_at: u64,
+    model_from_turn_at: u64,
     /// How much transcript this head will walk from the beginning before it renders the
     /// tail instead. [`SELF_WALK_LIMIT`] unless someone says otherwise.
     ///
@@ -1202,6 +1211,8 @@ impl App {
             hist_lines: Vec::new(),
             hist_upto: 0,
             hist_floor: 0,
+            model_from_settings_at: 0,
+            model_from_turn_at: 0,
             walk_limit: SELF_WALK_LIMIT,
             hist_first_class: None,
             hist_marks: Vec::new(),
@@ -1538,6 +1549,9 @@ impl App {
             // spilled to a file so no cap on the pane is a cap on the record.
             ServerFrame::Settings { rows } => {
                 self.settings = rows;
+                // Stamped, so the header can tell whether a turn has named a model
+                // since. See `model_from_settings_at`.
+                self.model_from_settings_at = self.seq;
                 self.redraw = true;
                 Disposition::Control
             }
@@ -1939,6 +1953,9 @@ impl App {
                 // there is nothing left to ask which they were.
                 let stale_from = self.turn_first_row();
                 self.model = model.clone();
+                // Stamped, so the header can prefer this over a settings row it read
+                // earlier at attach. See `model_from_turn_at`.
+                self.model_from_turn_at = self.seq;
                 self.turn = Some(TurnPane {
                     turn_id,
                     model,
@@ -5581,26 +5598,47 @@ impl App {
         // The dialect and the endpoint do not ride along: the dialect's name is
         // the model's name whenever the two differ at all, and the endpoint is a
         // socket path, which is the daemon's business and not the sentence's.
-        // **The live row first.** `wiring.model` is the daemon's word from
-        // `Hello`, sent once when this head attached — so a session switched to a
-        // provider mid-conversation went on being labelled with the model it
-        // started under: the operator switched leticl to deepseek and the top row
-        // still said qwen. The `model` settings row is republished whenever the
-        // provider changes, which makes it the fact and the other two the
-        // fallbacks for a head that has not been told yet.
-        let model = self
+        // **Whichever the head was told more recently**, and that is the whole fix
+        // for the stale label.
+        //
+        // `wiring.model` is the daemon's word from `Hello`, sent once at attach. The
+        // `model` settings row is republished *to the registry* whenever the provider
+        // changes — but `ServerFrame::Settings` is only ever sent as the **answer to a
+        // request**, so a head that attached earlier is never told. Found by reading
+        // the protocol (2026-09-20): one send site, and it is in the `ClientFrame::
+        // Settings` arm. So a mid-conversation switch updated the registry, the turns
+        // and the config pane, and left every attached head drawing the model it read
+        // at attach — the operator's *"still qwen"*.
+        //
+        // A turn, by contrast, **does** arrive unprompted and names the model that is
+        // answering it (`TurnStarted`). So the two are compared by the sequence number
+        // each arrived at, and the later one wins. `seq` is the only clock the head
+        // has, and it is the right one: both are facts about the same stream.
+        //
+        // The general fix is to push the rows to attached heads instead of only
+        // answering — `TODO.md` R20.1. This makes the head honest with the information
+        // it is actually given.
+        let from_settings = self
             .settings
             .iter()
             .find(|r| r.key == "model")
             .map(|r| header_model(&r.value))
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| {
-                if !self.wiring.model.is_empty() {
+            .filter(|m| !m.is_empty());
+        let turn_is_newer = self.model_from_turn_at > self.model_from_settings_at;
+        let model = match (from_settings, turn_is_newer) {
+            (Some(row), false) => row,
+            (Some(row), true) if self.model.is_empty() => row,
+            (Some(_), true) => self.model.clone(),
+            (None, _) => {
+                if !self.model.is_empty() {
+                    self.model.clone()
+                } else if !self.wiring.model.is_empty() {
                     self.wiring.model.clone()
                 } else {
                     self.model.clone()
                 }
-            });
+            }
+        };
         if !model.is_empty() {
             right.push(model);
         }
@@ -14822,6 +14860,61 @@ mod tests {
                 choices: choices.iter().map(|s| (*s).to_string()).collect(),
             }],
         }
+    }
+
+    /// **A provider switch reaches a head that was already attached.**
+    ///
+    /// This is the operator's report, reproduced: attach while the daemon is local,
+    /// switch to a provider, and the top row went on saying `qwen-3.8-27b`.
+    ///
+    /// The cause is in the protocol rather than in either end's logic.
+    /// `ServerFrame::Settings` has exactly **one** send site and it answers a request —
+    /// `set_settings` fills the registry's mailbox and nothing pushes. So the attached
+    /// head's `model` row is what it read at attach, for the life of the connection,
+    /// however many switches happen. `TurnStarted` *does* arrive unprompted and names
+    /// what is answering, so the header now takes whichever it was told more recently,
+    /// by `seq`.
+    #[test]
+    fn a_provider_switch_reaches_an_already_attached_head() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // Attached while local: the row the head will hold.
+        a.apply(model_settings("local (qwen-3.8-27b)", &["local"]));
+        assert!(
+            a.header_line(200).contains("qwen-3.8-27b"),
+            "the attach state: {}",
+            a.header_line(200)
+        );
+
+        // The operator switches. The daemon republishes to its registry, and the *turns*
+        // arrive naming the new model — but no `Settings` frame is sent to this head.
+        a.apply(ServerFrame::Event(env(
+            9,
+            SessionEvent::TurnStarted {
+                turn_id: "t1".into(),
+                model: "deepseek/deepseek-flash".into(),
+                ledger_head: "0000".into(),
+            },
+        )));
+        let h = a.header_line(200);
+        assert!(
+            h.contains("deepseek/deepseek-flash"),
+            "the switch did not reach the header: {h}"
+        );
+        assert!(
+            !h.contains("qwen-3.8-27b"),
+            "the stale row outranked the live turn: {h}"
+        );
+
+        // And a fresh `/config` answer still wins, because it is later still.
+        a.apply(model_settings("grok/grok-4", &["local"]));
+        let h = a.header_line(200);
+        assert!(h.contains("grok/grok-4"), "{h}");
+        assert!(!h.contains("deepseek"), "{h}");
     }
 
     /// **The top row names what answers NOW.** `wiring.model` is the daemon's

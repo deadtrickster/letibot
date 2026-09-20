@@ -378,50 +378,40 @@ to fit a screen.
 Two reportable things from one message (*"when i start leticode - despite the fact that
 the model is you - deepseek, it still shows qwen. also how to switch diff style?"*).
 
-### R20.1 — the header says `qwen-3.8-27b` while the turns go to deepseek
+### R20.1 — the header says `qwen-3.8-27b` while the turns go to deepseek — **FIXED 2026-09-20 (head side); the general fix is below**
 
-**Confirmed on this box**: the daemon's live disclosure says *"turns go to deepseek
-(deepseek-flash)"* and the head's header row reads `qwen-3.8-27b`.
+**Reproduced, diagnosed, fixed, and the regression test fails without the fix.**
 
-What is known, read rather than guessed:
+The operator's `/config` reading settled it: the model row said
+`deepseek/deepseek-flash` while the header said `qwen-3.8-27b`. So the row was right and
+the head had it — which contradicted both my earlier guesses.
 
-- The header prefers the **`model` settings row** and falls back to `wiring.model` from
-  `Hello` (`header_model`, `App::header_row`). So a provider-shaped row would show
-  `deepseek/deepseek-flash`.
-- That row is built from `Config::settings` — `Some(pc)` gives `deepseek/deepseek-flash`,
-  `None` gives `local (qwen-3.8-27b)`.
-- `SessionLog`'s registry stores those rows **per session** (`Entry::settings`, filled by
-  `set_settings`) and the server answers a head's `Settings` from that store, so a stale
-  store is a stale header.
-- `/models` does republish after building the provider, with a comment about this exact
-  bug. So the runtime-switch path is handled.
+**The cause is in the protocol, not in either end's logic.** `ServerFrame::Settings` has
+exactly **one** send site and it is the *answer* to a `ClientFrame::Settings` request:
 
-**Half of it is now measured, and it is not the half I guessed.**
+    crates/sessionlog/src/server.rs:500
 
-- **The daemon's row is correct.** `the_model_row_names_the_provider_when_one_is_configured`
-  builds a `Config` with a provider and asserts the model row reads `deepseek/…`, with the
-  local alias gone and the source empty. It passes, so `Config::settings` is not the bug.
-- **The head's header is correct given the row.** `attaching_asks_for_the_settings_so_the_header_is_not_stale`
-  already applies a `model_settings("deepseek/deepseek-flash", …)` frame and asserts the
-  header follows it. It passes.
+`set_settings` fills the registry's mailbox and **nothing pushes**. So:
 
-So both ends do the right thing and the gap is **between** them — the rows are not
-reaching the head, or are reaching it under a different session id than the one it asks
-about. That is now the whole question, and it is one reading away:
+- a head attaches and asks → reads the rows once;
+- the operator switches provider → `publish_settings` updates the registry, the turns go
+  to the new model, and the *config pane* shows it (because opening `/config` asks again);
+- the attached head is never told, and goes on drawing the row it read at attach.
 
-**Open `/config` in the affected session.** If the model row there says
-`deepseek/deepseek-flash`, the rows *are* in the registry and the head is asking about the
-wrong session (`Registry::settings(session_id)` looks an entry up by exact id, and an
-empty or stale id returns an empty vec — which the head renders as the `Hello` fallback,
-`qwen-3.8-27b`). If it says `local (qwen-3.8-27b)`, `publish_settings` wrote under an id
-that is not the session's.
+`TurnStarted`, by contrast, **does** arrive unprompted and names the model answering that
+turn. So the header now takes whichever it was told more recently, by `seq` — the only
+clock it has, and the right one, since both are facts about the same stream
+(`model_from_settings_at`, `model_from_turn_at`).
 
-Not changed blind, because both plausible fixes pass every test that exists and I could
-not reproduce it interactively from here.
+`a_provider_switch_reaches_an_already_attached_head` is the reproduction, and it was
+checked by mutation: with the old row-first preference restored it fails with
+`1/1 · qwen-3.8-27b` — the operator's own line.
 
-**Where.** `crates/harnessd/src/harness.rs:2487` (the startup publish) against
-`:2439` where the provider is built; `crates/harnessd/src/config.rs:905-920` (the row);
-`crates/tui/src/app.rs`'s header model selection.
+**Still open, and it is the general fix**: push the rows to attached heads when they
+change, rather than only answering. That needs a frame queue beside the head's event
+queue (`Hub`'s `queue` is a `VecDeque<Envelope>`, so a `ServerFrame` has nowhere to go
+today) — and it makes every other settings row live rather than only this one. Worth
+doing; not needed for the symptom, which is gone.
 
 ### R20.2 — `how to switch diff style?` — the answer is nowhere on the screen
 
