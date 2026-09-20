@@ -33,7 +33,18 @@ impl Tool for Read {
                 "properties": {
                     "path": {"type": "string", "description": "File to read, relative to the session root."},
                     "offset": {"type": "integer", "description": "First line to return, 1-based."},
-                    "limit": {"type": "integer", "description": "How many lines to return."}
+                    "limit": {"type": "integer", "description": "How many lines to return."},
+                    "ranges": {
+                        "type": "array",
+                        "description": "Several windows of THIS file in one call, instead of one `read` per window. Each is `offset` (1-based) and optional `limit`. Use it when you already know two or three places to look — it is one call and one gate decision instead of several. Overrides `offset`/`limit`.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "offset": {"type": "integer"},
+                                "limit": {"type": "integer"}
+                            }
+                        }
+                    }
                 },
                 "required": ["path"]
             }),
@@ -140,22 +151,67 @@ impl Tool for Read {
         // because two hundred lines of two hundred characters is already the
         // budget. At least one line always renders: a cap that returns nothing
         // answers no question.
+        // **Several windows of one file, in one call.** `read` took one span, so
+        // three lookups were three round trips — and at `automode` a round trip is
+        // also a gate decision. That is the cost a model is avoiding when it
+        // reaches for `grep -n` piped into `sed -n 'A,Bp'` instead: the shell does
+        // the batch in one call. `ranges` is that batch, and it keeps what `sed`
+        // throws away — line numbers, the file's real bounds, and a refusal that
+        // says what is there instead of printing nothing.
+        //
+        // The budget is shared across the windows, not per window: the cap exists
+        // to bound one REPLY, and a per-window cap would make three ranges cost
+        // three times the ceiling.
+        let windows: Vec<(usize, usize)> = match args.get("ranges").and_then(|v| v.as_array()) {
+            Some(rs) if !rs.is_empty() => rs
+                .iter()
+                .map(|r| {
+                    let o = r
+                        .get("offset")
+                        .and_then(|v| v.as_i64())
+                        .filter(|n| *n > 0)
+                        .map(|n| n as usize)
+                        .unwrap_or(1)
+                        .min(total.max(1));
+                    let e = match r.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0) {
+                        Some(l) => (o - 1 + l as usize).min(total),
+                        None => (o - 1 + ctx.limits.max_read_lines).min(total),
+                    };
+                    (o, e)
+                })
+                .collect(),
+            _ => vec![(offset, want_end)],
+        };
+
         let mut body = String::new();
         let mut truncated = 0usize;
         let mut byte_capped = false;
         let mut end = offset - 1;
-        for (i, line) in lines[(offset - 1).min(total)..want_end].iter().enumerate() {
-            let (shown_line, clipped) = clip(line, ctx.limits.max_read_line_chars);
-            let chunk = format!("{:>6}| {shown_line}\n", offset + i);
-            if !body.is_empty() && body.len() + chunk.len() > ctx.limits.max_read_bytes {
-                byte_capped = true;
+        let mut first_window = true;
+        for (w_offset, w_end) in &windows {
+            let (w_offset, w_end) = (*w_offset, *w_end);
+            // A gap between windows is marked, so two regions are never read as
+            // one continuous stretch of the file.
+            if !first_window && !byte_capped {
+                body.push_str("   …\n");
+            }
+            first_window = false;
+            for (i, line) in lines[(w_offset - 1).min(total)..w_end].iter().enumerate() {
+                let (shown_line, clipped) = clip(line, ctx.limits.max_read_line_chars);
+                let chunk = format!("{:>6}| {shown_line}\n", w_offset + i);
+                if !body.is_empty() && body.len() + chunk.len() > ctx.limits.max_read_bytes {
+                    byte_capped = true;
+                    break;
+                }
+                if clipped {
+                    truncated += 1;
+                }
+                body.push_str(&chunk);
+                end = w_offset + i;
+            }
+            if byte_capped {
                 break;
             }
-            if clipped {
-                truncated += 1;
-            }
-            body.push_str(&chunk);
-            end = offset + i;
         }
 
         // Read-before-write's other half. Recorded here, at the moment the bytes
@@ -288,7 +344,12 @@ mod tests {
         let asked = h.call("read", r#"{"path":"big.txt","limit":50}"#);
         let notes = asked.notes.join(" ");
         eprintln!("limit=50 note: {notes:?}");
-        assert_eq!(asked.payload.lines().count(), 50, "it returned {}", asked.payload.lines().count());
+        assert_eq!(
+            asked.payload.lines().count(),
+            50,
+            "it returned {}",
+            asked.payload.lines().count()
+        );
         // It asked for fifty and got fifty: the window is its own, so there is
         // nothing to report. No note at all.
         assert!(
@@ -479,5 +540,56 @@ mod tests {
             other => panic!("a file over the ceiling must be refused: {other:?}"),
         }
         assert!(r.payload.contains("head -c"), "{}", r.payload);
+    }
+}
+
+#[cfg(test)]
+mod ranges_tests {
+    use crate::testing::writable_harness;
+
+    /// **Several windows, one call.** Three lookups were three round trips, and
+    /// at `automode` a round trip is also a gate decision — which is the cost a
+    /// model avoids by batching into one `bash`.
+    #[test]
+    fn ranges_returns_every_window_in_one_call_with_a_gap_marked() {
+        let mut h = writable_harness();
+        let r = h
+            .call(
+                "read",
+                r#"{"path":"src/lib.rs","ranges":[{"offset":1,"limit":2},{"offset":5,"limit":2}]}"#,
+            )
+            .render();
+        // Both windows are there, numbered as they are in the file.
+        assert!(r.contains("     1|"), "{r}");
+        assert!(r.contains("     5|"), "{r}");
+        // And the gap between them is marked, so two regions are never read as
+        // one continuous stretch.
+        assert!(
+            r.contains('…'),
+            "the gap between windows is not marked:\n{r}"
+        );
+    }
+
+    /// One range behaves exactly as `offset`/`limit` always did — the batch is
+    /// an addition, not a change to what a plain read means.
+    #[test]
+    fn a_single_range_reads_like_offset_and_limit() {
+        let mut h = writable_harness();
+        let a = h
+            .call("read", r#"{"path":"src/lib.rs","offset":2,"limit":3}"#)
+            .render();
+        let b = h
+            .call(
+                "read",
+                r#"{"path":"src/lib.rs","ranges":[{"offset":2,"limit":3}]}"#,
+            )
+            .render();
+        let body = |s: &str| -> Vec<String> {
+            s.lines()
+                .filter(|l| l.contains('|'))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(body(&a), body(&b), "a:\n{a}\nb:\n{b}");
     }
 }

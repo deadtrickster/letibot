@@ -275,11 +275,14 @@ impl HeadClient {
 
     /// Ask the daemon to rebuild this conversation's prompt from the tools it seats
     /// now, forking onto it. Queued like a compaction, because it is one.
-    pub fn reseat(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+    /// `summarise` replaces the conversation with a summary. The default —
+    /// `false` — changes message zero and carries every item across.
+    pub fn reseat(&mut self, expected_seq: u64, summarise: bool) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::ReseatSession {
             client_request_id: client_request_id.clone(),
             expected_seq,
+            summarise,
         })?;
         Ok(client_request_id)
     }

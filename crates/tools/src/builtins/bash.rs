@@ -136,6 +136,14 @@ impl Tool for Bash {
             );
         }
 
+        // **What the workspace looked like before this command.** A shell that
+        // rewrites a file hands the head nothing, so the change lands with no
+        // diff and no record; the sweep after the command is what turns it back
+        // into an edit card. See `crate::detect` — one `git status` on a clean
+        // tree, and nothing read.
+        let root = ctx.backend.root_path().map(std::path::PathBuf::from);
+        let before = root.as_deref().map(crate::detect::before);
+
         // The second gate, and it is a different mechanism from the first: a
         // session whose backend cannot start processes refuses here however the
         // adjudicator answered. Same asymmetry `write` keeps.
@@ -440,6 +448,58 @@ impl Tool for Bash {
                 format!("{body}\n\nThe process did not exit on its own."),
             ),
         };
+
+        // **And what it changed.** Attached as an edit when it is one file, which
+        // is the shape a script-that-edits has; named otherwise, because
+        // `ToolResult` carries one card and a merge touching forty files is not
+        // one card. Either way the operator is told, which is the whole point —
+        // a change nobody can see is a change nobody reviewed.
+        if let (Some(root), Some(base)) = (root.as_deref(), before.as_ref()) {
+            // Names first, and only names: one `git status` and a stat each. The
+            // diff below is computed for the ONE file it is drawn for, never for
+            // every file that moved — a merge touching forty of them costs forty
+            // stats, not forty reads and forty `git show`s.
+            let changed = crate::detect::changed_since(root, base);
+            match changed.len() {
+                0 => {}
+                1 => {
+                    if let Some(c) = crate::detect::diff_of(root, base, &changed[0]) {
+                        let was = c.before.clone().unwrap_or_default();
+                        inv = inv.with_note(format!(
+                            "this command changed `{}` — the diff beside it was detected \
+                             afterwards, not made by `edit`",
+                            c.path
+                        ));
+                        inv.edit = Some(crate::edit::FileEdit {
+                            path: c.path.clone(),
+                            before: was.clone(),
+                            after: c.after.clone(),
+                            created: c.created,
+                            before_digest: crate::spill::content_hash(was.as_bytes()),
+                            after_digest: crate::spill::content_hash(c.after.as_bytes()),
+                            replacements: 1,
+                            changed: crate::edit::changed_span(&was, &c.after),
+                        });
+                    }
+                }
+                n => {
+                    let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
+                    inv = inv.with_note(format!(
+                        "this command changed {n} file(s): {}{}. No diff is shown for a \
+                         change this wide; `git diff` is the one to read.",
+                        names.join(", "),
+                        if n > names.len() { ", …" } else { "" }
+                    ));
+                }
+            }
+            if base.skipped > 0 {
+                inv = inv.with_note(format!(
+                    "{} file(s) were already modified and beyond the snapshot budget, so a \
+                     change to one of them is not reported",
+                    base.skipped
+                ));
+            }
+        }
 
         // Clause 5's half of the bargain: the cap is stated with its denominator
         // and the way to the rest is a call, not advice.

@@ -1386,20 +1386,41 @@ impl<'a> Sessions<'a> {
             // runs through the same door and reports through the same one. What it
             // adds is the sentence naming which tools the model can call now that
             // it could not before — the reason anybody types this.
-            CommandKind::Reseat => {
+            CommandKind::Reseat { summarise } => {
+                // Two ways to change message zero, and the difference is what
+                // happens to everything under it: `reseat` pays a summary turn,
+                // `reingest` carries the conversation across and pays a cold
+                // prefill instead.
+                let summarise = *summarise;
                 let out = match self.harness(session_id) {
-                    Ok(h) => h.reseat(),
+                    Ok(h) => {
+                        if summarise {
+                            h.reseat()
+                        } else {
+                            h.reingest()
+                        }
+                    }
                     Err(e) => Err(e),
                 };
                 match out {
                     Ok(r) => {
                         if let Some(hub) = &hub {
-                            let mut said = format!(
-                                "this conversation now speaks the prompt this daemon \
-                                 seats: {} tokens of history replaced by a {}-token \
-                                 summary, and the tool list rebuilt",
-                                r.fork.was_tokens, r.fork.base_tokens
-                            );
+                            let mut said = if summarise {
+                                format!(
+                                    "this conversation now speaks the prompt this daemon \
+                                     seats: {} tokens of history replaced by a {}-token \
+                                     summary, and the tool list rebuilt",
+                                    r.fork.was_tokens, r.fork.base_tokens
+                                )
+                            } else {
+                                format!(
+                                    "this conversation now speaks the prompt this daemon \
+                                     seats: the tool list was rebuilt and all {} tokens of \
+                                     history carried across as they are — nothing \
+                                     summarised, nothing dropped",
+                                    r.fork.base_tokens
+                                )
+                            };
                             let gained = r.gained.clone();
                             let lost = r.lost.clone();
                             if !gained.is_empty() {
@@ -1411,11 +1432,16 @@ impl<'a> Sessions<'a> {
                             if !lost.is_empty() {
                                 said.push_str(&format!(". It has lost: {}", lost.join(", ")));
                             }
-                            said.push_str(
+                            said.push_str(if summarise {
                                 ". The server's cache for the new prompt is cold, so the \
                                  next turn prefills from scratch — that is what changing \
-                                 the announced tools costs.",
-                            );
+                                 the announced tools costs."
+                            } else {
+                                ". The server's cache for the new prompt is cold, so the \
+                                 next turn prefills the WHOLE conversation from scratch — \
+                                 that is what keeping it costs. `/reseat summarise` is the \
+                                 cheaper, lossy way."
+                            });
                             hub.publish(SessionEvent::Warning {
                                 code: "reseated".into(),
                                 detail: said,
@@ -1745,6 +1771,17 @@ impl StoreSessions {
 /// So: always the numbers, and the summary itself exactly when nobody saw it
 /// written. Printing it on the streamed path too would be the same text twice.
 fn compaction_said(r: &crate::harness::CompactReport) -> String {
+    // **An empty summary is a re-ingest**, which is the same signal
+    // `fork_to_summary` reads to decide what note to write. Nothing was
+    // summarised, so "compacted" would be a lie and `was → base` would be one
+    // number printed twice.
+    if r.summary_turn.summary.is_empty() {
+        return format!(
+            "re-seated: {} tokens of conversation carried onto the new prompt as they are, \
+             on transcript {}. Nothing was summarised and nothing was dropped.",
+            r.fork.base_tokens, r.fork.transcript_id
+        );
+    }
     let mut said = format!(
         "compacted: {} → {} tokens, on transcript {}.",
         r.fork.was_tokens, r.fork.base_tokens, r.fork.transcript_id

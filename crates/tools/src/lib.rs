@@ -92,6 +92,7 @@ pub mod attach;
 pub mod authorise;
 pub mod backend;
 pub mod builtins;
+pub mod detect;
 pub mod edit;
 pub mod events;
 pub mod exec;

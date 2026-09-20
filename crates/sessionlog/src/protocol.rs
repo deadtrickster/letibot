@@ -418,6 +418,19 @@ pub enum ClientFrame {
     ReseatSession {
         client_request_id: String,
         expected_seq: u64,
+        /// **Summarise the conversation as well, rather than carrying it.**
+        ///
+        /// A re-seat exists to change message zero. Doing that should not cost
+        /// the conversation, so the default carries every item verbatim and the
+        /// lossy kind is the one you ask for — the operator's rule: *"id say flip
+        /// it - reset is loseless and reset summarize will be not"*.
+        ///
+        /// `#[serde(default)]` is `false`, so a head too old to send this field
+        /// gets the lossless fork. That is a change in what an old head receives,
+        /// and it is the safe direction: it costs a cold prefill rather than a
+        /// conversation.
+        #[serde(default)]
+        summarise: bool,
     },
     /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
     /// an opencode name…). The daemon persists it in the mode store, so it applies
@@ -830,6 +843,36 @@ pub const REJECT_NOT_IN_STORE: &str = "no such session in the store";
 mod tests {
     use super::*;
     use crate::view::{SessionView, ViewBounds};
+
+    /// **A re-seat that does not say keeps the conversation.**
+    ///
+    /// The operator flipped the default here — *"id say flip it - reset is
+    /// loseless and reset summarize will be not"* — and the flip has a wire
+    /// consequence worth pinning: a head too old to send `summarise` sends the
+    /// frame without it, and what it then gets is the LOSSLESS fork, not the
+    /// summarising one it used to get. That is the safe direction (it costs a
+    /// prefill, not a conversation), and it is a decision, so it is asserted
+    /// rather than left to `#[serde(default)]`'s reputation.
+    #[test]
+    fn a_reseat_frame_without_the_field_is_the_lossless_kind() {
+        let f: ClientFrame = serde_json::from_str(
+            r#"{"frame":"reseat_session","client_request_id":"r1","expected_seq":7}"#,
+        )
+        .expect("an older head's frame still parses");
+        let ClientFrame::ReseatSession {
+            expected_seq,
+            summarise,
+            ..
+        } = f
+        else {
+            panic!("not a reseat: {f:?}");
+        };
+        assert_eq!(expected_seq, 7, "the rest of the frame still reads");
+        assert!(
+            !summarise,
+            "a frame that does not ask to summarise must not summarise"
+        );
+    }
 
     #[test]
     fn dropped_is_present_and_zero_on_hello() {

@@ -133,7 +133,10 @@ pub enum Action {
     Compact,
     /// Rebuild this conversation's prompt from the tools seated now, forking onto
     /// it. The only thing that changes a live session's tool list.
-    Reseat,
+    Reseat {
+        /// Summarise as well, replacing the conversation. The default carries it.
+        summarise: bool,
+    },
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     /// `consented` is the operator's answer to the unconfined-`allow-all`
@@ -1175,7 +1178,14 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
-    ("reseat", "rebuild the prompt from the tools seated now"),
+    (
+        "reseat",
+        "rebuild the prompt from the tools seated now, keeping the conversation",
+    ),
+    (
+        "reseat summarise",
+        "the same, but summarise the conversation instead of carrying it",
+    ),
     ("interrupt", "stop the running turn"),
     ("quit", "leave the head"),
 ];
@@ -4158,13 +4168,29 @@ impl App {
             // from what is seated now. Same refusal as `/compact` for the same
             // reason — it acts on the session this head is in, never one you are
             // only looking at.
-            "reseat" => {
+            // Both kinds change message zero; the difference is what happens to
+            // everything under it. **The lossless one is the default** — the
+            // operator: *"id say flip it - reset is loseless and reset summarize
+            // will be not"*. Re-seating is about the prompt, and paying for it
+            // with the conversation should be the thing you ask for by name.
+            "reseat" | "reseat keep" | "reseat verbatim" | "reseat summarise"
+            | "reseat summarize" => {
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                self.say("re-seating: summarising, then rebuilding the prompt…");
-                Some(Action::Reseat)
+                let summarise = cmd.ends_with("summarise") || cmd.ends_with("summarize");
+                if summarise {
+                    self.say(
+                        "re-seating: summarising, so the summary replaces the conversation…",
+                    );
+                } else {
+                    self.say(
+                        "re-seating: carrying the conversation across as it is. The next \
+                         turn re-sends all of it once.",
+                    );
+                }
+                Some(Action::Reseat { summarise })
             }
             other => {
                 // The daemon's verbs. The head does not know them and does not
@@ -10366,6 +10392,42 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("no oracle was consulted"), "{screen}");
+    }
+
+    /// **`/reseat` keeps the conversation; only `/reseat summarise` spends it.**
+    ///
+    /// The operator flipped this: *"id say flip it - reset is loseless and reset
+    /// summarize will be not"*. The bare verb is the one people type without
+    /// reading, so it is the one that must not cost them anything they cannot
+    /// get back.
+    #[test]
+    fn a_bare_reseat_is_the_lossless_one() {
+        let mut a = app();
+        a.session_id = "s".into();
+        typed(&mut a, "/reseat");
+        assert_eq!(a.key(Key::Enter), Some(Action::Reseat { summarise: false }));
+        for spelling in ["/reseat summarise", "/reseat summarize"] {
+            let mut a = app();
+            a.session_id = "s".into();
+            typed(&mut a, spelling);
+            assert_eq!(
+                a.key(Key::Enter),
+                Some(Action::Reseat { summarise: true }),
+                "{spelling}"
+            );
+        }
+        // And the old spellings still mean what they said — they asked to keep
+        // the conversation, which is now simply what the bare verb does.
+        for spelling in ["/reseat keep", "/reseat verbatim"] {
+            let mut a = app();
+            a.session_id = "s".into();
+            typed(&mut a, spelling);
+            assert_eq!(
+                a.key(Key::Enter),
+                Some(Action::Reseat { summarise: false }),
+                "{spelling}"
+            );
+        }
     }
 
     #[test]

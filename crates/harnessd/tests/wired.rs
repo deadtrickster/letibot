@@ -787,3 +787,56 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **Re-seating without summarising runs no summary turn and keeps the history.**
+///
+/// The operator: *"is there a way to reseat without summarizing? … like reingest
+/// full context"*. A tool's schema lives in the stable prefix, so a schema change
+/// needs a fork; paying for that fork with a summary turn is right when the point
+/// is to shrink and pure loss when the point is only to change message zero.
+///
+/// No model runs here, and that IS the assertion: `reseat` could not be tested
+/// this way at all, because it has to ask one for a summary.
+#[test]
+fn reingest_writes_no_summary_and_says_so_in_the_note() {
+    let dir = std::env::temp_dir().join(format!("letibot-reingest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let mut cfg = config(Seat::Orchestrator);
+    cfg.store = Some(dir.join("s.db"));
+    cfg.session_id = "reingest".into();
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
+        .expect("the session opens");
+
+    // Nothing to re-seat onto yet: the conversation already speaks the seated
+    // prompt, and saying so is the right refusal.
+    let Err(err) = h.reingest() else {
+        panic!("re-seating a conversation already on the seated prompt should refuse");
+    };
+    assert!(err.to_string().contains("already carries"), "{err}");
+
+    // Change message zero — which is exactly what seating a new tool does to the
+    // prefix — and now there is.
+    h.config_mut().system = "a different base prompt entirely".into();
+    let r = h.reingest().expect("reingest");
+
+    assert!(r.summary_turn.summary.is_empty(), "a summary turn ran");
+    assert_eq!(r.summary_turn.generated_tokens, 0, "a model was asked");
+    // The note says what happened, and does not claim a summary the reader
+    // cannot see.
+    match h.items().first().expect("the new base has an item") {
+        letibot_transcript::TranscriptItem::System { text, .. } => {
+            assert!(text.contains("re-seated onto a new prompt"), "{text}");
+            assert!(text.contains("Nothing was summarised"), "{text}");
+            assert!(
+                !text.contains("replaced by the summary"),
+                "it claims a compaction: {text}"
+            );
+        }
+        other => panic!("the note is not first: {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

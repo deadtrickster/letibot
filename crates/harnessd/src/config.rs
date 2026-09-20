@@ -613,6 +613,16 @@ compaction replaces earlier turns with a summary, and the turns themselves are s
 Do not call a tool for a question about the world, about a definition, or about arithmetic; \
 answer those directly. When a tool reports that it found nothing, say so — do not fill the gap \
 from memory.\n\n\
+Find with `grep` and read with `read`, not by piping `grep -n` into `sed`. `grep` takes a \
+`context` count and returns the region around each match, numbered — that is the find and the \
+look in one call. `read` takes a `ranges` list for several windows of one file at once. A `sed` \
+slice has no line numbers, does not say where the file continues, and prints nothing for a range \
+that is wrong, which reads exactly like a range that was right.\n\n\
+Change files with `edit` and `write`, never by piping a script into a shell. `edit` takes an \
+`edits` list: several changes to one file, applied in order and all-or-nothing, each one either \
+`old_string`+`new_string` or `insert_before`/`insert_after`+`new_string`. That is what a heredoc \
+was for, and it is one call instead of four. A shell that rewrites a file also produces no diff \
+for the operator to read and no record of what changed.\n\n\
 You have a scratch directory of your own — the `scratch` row of `harness status` names the \
 exact path. Put working files there: a generated script, a downloaded page, intermediate \
 output, anything you need on disk that the operator did not ask for. It is outside their tree, \

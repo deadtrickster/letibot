@@ -2317,7 +2317,7 @@ impl<'a> Harness<'a> {
                             ));
                             }
                             say.push_str(
-                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it the way a compaction does;                              a new session gets the seated list from the start.",
+                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it and carrying it across as it                              is; a new session gets the seated list from the start.",
                         );
                             notes.push(say);
                         }
@@ -3199,7 +3199,8 @@ impl<'a> Harness<'a> {
             );
             out.push(
                 "  `/compact` now forks onto the seated prompt and picks them up; \
-                 `/reseat` does the same without waiting for the context to fill."
+                 `/reseat` does the same without waiting for the context to fill, and \
+                 without summarising."
                     .into(),
             );
         }
@@ -3471,6 +3472,117 @@ impl<'a> Harness<'a> {
         Ok(Some((next, id)))
     }
 
+    /// **Re-seat without summarising: carry the whole conversation across.**
+    ///
+    /// **This is what `/reseat` does.** The operator asked for it — *"is there a
+    /// way to reseat without summarizing? … like reingest full context"* — and
+    /// then made it the default: *"id say flip it - reset is loseless and reset
+    /// summarize will be not"*. A verb named for message zero should not cost
+    /// you everything under message zero unless you said so.
+    ///
+    /// A tool's schema lives in the stable prefix, which is message zero, so a
+    /// running session keeps the prompt it opened under and a schema change
+    /// needs a fork. [`Harness::reseat`] pays for that fork with a summary turn
+    /// — which is right when the point is to shrink, and pure loss when the
+    /// point is only to change message zero.
+    ///
+    /// This forks onto the seated prompt with every item carried verbatim. The
+    /// machinery is `fork_to_summary`'s own: `tail` has always been "items kept
+    /// as themselves", and this passes all of them with no summary in front.
+    ///
+    /// **What it costs.** The prefix changed, so nothing the server has cached
+    /// matches and the next turn pays a cold prefill of the WHOLE history — on a
+    /// metered provider, the whole conversation re-sent and re-billed once. That
+    /// is the trade against `reseat`, and it is the operator's to make: a summary
+    /// is cheaper and lossy, this is dearer and lossless. The default is the
+    /// lossless one, because a re-seat that quietly ate the conversation is a
+    /// surprise you cannot undo, and a bill is one you can see coming.
+    ///
+    /// It refuses where it cannot help: over the window, a verbatim carry would
+    /// fork onto a base that cannot be prefilled at all, and the honest answer
+    /// there is the summary it was trying to avoid.
+    pub fn reingest(&mut self) -> Result<ReseatReport, HarnessError> {
+        if self.store.is_none() {
+            return Err(HarnessError::Setup(
+                "re-seating forks the conversation onto a new prompt, and a fork needs a \
+                 store to write it to; this session has none."
+                    .into(),
+            ));
+        }
+        let Some((next, next_id)) = self.reseat_target()? else {
+            return Err(HarnessError::Setup(
+                "this conversation's prompt already carries exactly the tools that are \
+                 seated, so there is nothing to re-seat."
+                    .into(),
+            ));
+        };
+        // The carry has to FIT. `plan_overrun` answers that against the window
+        // this session plans in — see `Config::planning_window` — and a fork onto
+        // a base too big to prefill would trade a summary for a session that
+        // cannot take a turn at all.
+        let per_item: Vec<u64> = (0..self.session.items.len())
+            .map(|i| {
+                self.session
+                    .ledger
+                    .item_tokens(i)
+                    .map(|t| t.len() as u64)
+                    .unwrap_or(0)
+            })
+            .collect();
+        let resident: u64 = per_item.iter().sum();
+        if let Some(window) = self.cfg.planning_window()
+            && resident + self.cfg.headroom() >= window
+        {
+            return Err(HarnessError::Setup(format!(
+                "carrying this conversation verbatim would put {resident} token(s) in front \
+                 of a {window}-token window, leaving less than the {} a turn needs. \
+                 Re-seating without summarising only works while the conversation still \
+                 fits; `/reseat summarise` summarises and fits, and `/compact` does the \
+                 same without changing the prompt. Nothing was changed.",
+                self.cfg.headroom()
+            )));
+        }
+
+        let before = tool_names(&self.prefix.tools_json);
+        let after = tool_names(&next.tools_json);
+        let items: Vec<TranscriptItem> = self.session.items.clone();
+
+        // No summary turn at all — that is the whole point — so the outcome is
+        // the empty one, and `fork_to_summary` reads an empty summary as "this
+        // was not a compaction" and writes the note that says so.
+        let outcome = CompactionOutcome {
+            turn_id: format!("{}#reingest", self.transcript_id),
+            summary: String::new(),
+            tool_calls: 0,
+            truncated: false,
+            cached_tokens: 0,
+            reusable: 0,
+            generated_tokens: 0,
+        };
+        self.compacting = true;
+        let out = (|| -> Result<ReseatReport, HarnessError> {
+            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &items)?;
+            Ok(ReseatReport {
+                fork,
+                summary_turn: outcome,
+                gained: after.difference(&before).cloned().collect(),
+                lost: before.difference(&after).cloned().collect(),
+            })
+        })();
+        self.compacting = false;
+        let mut out = out?;
+        out.gained.sort();
+        out.lost.sort();
+        self.publish_settings();
+        Ok(out)
+    }
+
+    /// **Re-seat and summarise**, replacing the conversation with the summary.
+    ///
+    /// This is `/reseat summarise`: the lossy kind, and it is the one you ask for
+    /// by name. A bare `/reseat` runs [`Harness::reingest`]. Reach for this when
+    /// the point is to shrink as well as to change message zero, or when the
+    /// conversation no longer fits in front of the window.
     pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -3846,13 +3958,28 @@ impl<'a> Harness<'a> {
         } else {
             ""
         };
+        // **A fork that summarised says so; one that did not must not.**
+        //
+        // An empty summary is `reingest`: the prompt changed and the conversation
+        // did not. Telling the model "everything before this is replaced by the
+        // summary below" and then showing it no summary — with the whole history
+        // underneath — is a sentence that contradicts what it can see.
         let note: TranscriptItem = TranscriptItem::System {
-            text: format!(
-                "This conversation was compacted: everything said before this point is \
-                 replaced by the summary below, which was written over the full history \
-                 of transcript {old_id} and proposed no tool calls.{cut}\n\n{}",
-                outcome.summary
-            ),
+            text: if outcome.summary.is_empty() {
+                format!(
+                    "This conversation was re-seated onto a new prompt: message zero now \
+                     announces the tools this daemon seats, and everything said before \
+                     this point follows unchanged from transcript {old_id}. Nothing was \
+                     summarised and nothing was dropped."
+                )
+            } else {
+                format!(
+                    "This conversation was compacted: everything said before this point is \
+                     replaced by the summary below, which was written over the full history \
+                     of transcript {old_id} and proposed no tool calls.{cut}\n\n{}",
+                    outcome.summary
+                )
+            },
             origin: SystemOrigin::Update,
         };
         // **The recent past is carried over verbatim, not described.**
