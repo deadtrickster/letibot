@@ -381,13 +381,7 @@ impl Parser for ChatMlParser {
     }
 }
 
-fn flush(
-    buf: &mut String,
-    out: &mut Vec<ParsedSpan>,
-    reasoning: bool,
-    start: usize,
-    end: usize,
-) {
+fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool, start: usize, end: usize) {
     if buf.is_empty() {
         return;
     }
