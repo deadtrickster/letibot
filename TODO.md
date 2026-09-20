@@ -534,6 +534,106 @@ to fit a screen.
 
 ---
 
+## R22 — a 1.35M-token conversation compacted to a 2,250-token summary — **OPEN, designed with the operator 2026-09-20**
+
+Measured on the operator's own session, 2026-09-20, `s-1789462738453908838`:
+
+    ! compacted — compacted: 1352917 → 11353 tokens, on transcript …#t22
+
+The base is 11,353 tokens and 9,103 of those are the stable prefix, so **the summary
+standing in for 3,590 rows is about 2,250 tokens**. A 600:1 reduction. The conversation
+itself is not lost — `#t21` still holds all 3,590 rows and 1,343,686 tokens in the store —
+but the live session continued on a base that cannot carry it.
+
+### It was not truncated, and that matters
+
+Nothing caps the output, on either path, and both are deliberate:
+
+* **Local.** `CompletionRequest` has no `n_predict` field at all, and
+  `there_is_no_n_predict_cap_anywhere_in_the_body` asserts it. §5.7's argument: *"a cap
+  is a truncation you chose"*, written because opencode capped at 32,000 tokens and threw
+  the resulting `finish_reason` away.
+* **Provider.** `TurnRequest::max_output_tokens` exists and `openai.rs:71` would set
+  `max_tokens` from it — but **both call sites pass `None`** (`compaction.rs:273` for the
+  summary turn, `harness.rs:4340` for an ordinary one). `max_tokens` is never in the body.
+
+`report.fork.truncated` was false and the `compacted` line carried no CUT OFF clause,
+which is the other half of the same evidence. **The model chose to stop.**
+
+### So the lever is the instruction, and the instruction argues for this
+
+`compaction.rs`'s `SUMMARY_INSTRUCTION` is a constant that says *"Write a **compact**
+factual record"* and names no budget at all. It was asked to be compact, given no sense of
+scale, and obliged. With a 1,440,006-token window and a 9,103-token prefix the summary
+could have been 100k+ and still left the session most of its room.
+
+### The design, as the operator framed it
+
+*"we should live overruns as is and for normal cases try to preserve as much as possible
+but not more, some fixed ratio that includes total context, our base prompt and desired
+fdelity."*
+
+1. **Leave the overrun path alone.** Folding halves is the right answer when the
+   conversation does not fit in front of the window. Different failure, different shape.
+2. **A budget from a ratio.** Room is `planning_window − prefix − headroom`; the summary
+   takes `room × fidelity` and the rest is working span. For the measured session: ~1.34M
+   of room, so a fidelity of 0.15 is ~200k ledger ≈ 135k provider tokens, and the session
+   still gets 85% of its window before compacting again.
+3. **The budget alone will not work.** Telling a model it *may* write 135k tokens does not
+   make it write them, and the word "compact" is doing damage no number beside it undoes.
+   The instruction has to change character from compression to **enumeration** — one line
+   per decision, per file changed, per command and outcome, per open question; do not
+   merge entries; do not summarise across items. The budget is permission; the enumeration
+   is the mechanism.
+4. **A fidelity check, which is the strongest piece and needs no model.** Count the
+   distinct file paths, commands and decisions in the conversation, then count how many
+   appear in the summary. A summary naming 3 of the 47 files touched has failed, and it
+   can be told exactly that and re-asked once. That is a closed loop in
+   `docs/closed-loop.md`'s own terms and the same shape as `stall_rounds` and
+   `UNFINISHED_REASONING_NOTICE`, both of which work. It is the difference between hoping
+   for a good summary and **detecting a bad one**.
+
+### Per-topic budgets, and why not a SOM
+
+The operator: *"I wonder tho, if we can compute some sort of similarity metric on the whole
+conversation, like a SOM and then analyzer how many topics, and act accordingly with per
+topic budget and maybe a nudge."*
+
+Per-topic budgeting is a good idea — not every thread in a long conversation deserves equal
+compression, and a dead one should not cost what a live one does. **Derive the topics from
+structure rather than from geometry.** That transcript is 3,590 rows and **82 of them are
+user turns**: the operator's own messages are where topics change, and segmenting there is
+free, deterministic and auditable. The todo list is a second declared decomposition,
+already in the store.
+
+Three objections to the SOM, in order of weight:
+
+1. **It is not explainable, and this codebase is built on explaining.** `Prereq::how()`,
+   `Disclosure` and `progress::evidence` all say *why*. "The map says 7 topics" is exactly
+   the unarguable number the rest of the system refuses — and when a compaction drops
+   something that was needed, there would be no way to ask why.
+2. **It would be tuned to produce a number that could have been chosen.** Cluster count is
+   a hyperparameter; the map depends on initialisation and schedule.
+3. **There is no embedding path in the tree**, so it is a new model dependency in a path
+   that has to work when the main model is metered and remote.
+
+Keep it as a research question off the critical path. If structural boundaries prove too
+coarse, it earns its own experiment then.
+
+**Order.** (2) + (3) + (4) first — contained, and expected to be most of the win. Per-topic
+budgets on structural boundaries second, once it is visible whether flat budgeting was
+already enough.
+
+**Still open?** `grep -n 'compact factual record' crates/turn/src/compaction.rs` — if
+`SUMMARY_INSTRUCTION` still names no budget, this is open.
+
+**Done when.** A compaction of a conversation near the window produces a summary whose size
+is a stated fraction of the room rather than the model's guess; a summary that omits most
+of the files the conversation touched is detected and re-asked once, with the gap named;
+and the overrun path is untouched.
+
+---
+
 ## R21 — the jobs pane cannot show a job's output, and the reply path is why — **DONE 2026-09-20 (`3aabe4f`)**
 
 The operator, 2026-09-20: *"when i press enter on jobs pane im not shown the job output im brought
