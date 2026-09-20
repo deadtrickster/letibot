@@ -2491,7 +2491,7 @@ mod tests {
             arguments_digest: "d".into(),
             boundary_facts: vec![],
             kind: RequestKind::Permission,
-            options: permission_options("src/main.rs"),
+            options: permission_options(Some("src/main.rs")),
             on_timeout: OnTimeout::Deny,
             resolved: !matches!(b.verdict, crate::intent::BaselineVerdict::NotRun { .. }),
             tier: b.tier.clone(),

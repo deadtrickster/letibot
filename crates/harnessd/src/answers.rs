@@ -667,7 +667,7 @@ mod tests {
             arguments_digest: "fnv1a:0".into(),
             boundary_facts: vec!["workspace: /tmp/p".into()],
             kind: RequestKind::Permission,
-            options: letibot_tools::adjudicate::permission_options("src/main.rs"),
+            options: letibot_tools::adjudicate::permission_options(Some("src/main.rs")),
             on_timeout: OnTimeout::Deny,
             tier: Tier::MayApprove,
             resolved: true,
