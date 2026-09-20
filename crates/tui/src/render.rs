@@ -1313,6 +1313,37 @@ done
         assert!(out.contains(sgr::CYAN), "nothing came out as code: {out:?}");
     }
 
+    /// The whole of a real message, rendered: the one the operator saw as cyan prose.
+    ///
+    /// The fixture is the exact bytes from the store, and the failure it pins was visible
+    /// rather than structural — ten numbered items rendered with their `**` showing and
+    /// the whole message in code cyan, because a code span in the first paragraph closed
+    /// three kilobytes later. So this is the assertion at the level the operator saw it.
+    #[test]
+    fn a_real_message_renders_without_its_markers() {
+        const REAL: &str = include_str!("../tests/fixtures/streamed-message.md");
+        let out: String = lex(REAL)
+            .iter()
+            .flat_map(|b| render_block(b, &cfg(200)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = strip(&out);
+        for n in 1..=10 {
+            assert!(
+                !text.contains(&format!("**{n}.")),
+                "item {n} kept its markers:\n{text}"
+            );
+        }
+        assert!(out.contains(sgr::BOLD), "nothing came out bold:\n{out:?}");
+        assert!(out.contains(sgr::CYAN), "nothing came out as code:\n{out:?}");
+        // Every item is still on the screen, and the last line of the 100-line fence.
+        for n in 1..=10 {
+            assert!(text.contains(&format!("\n{n}. ")), "item {n} is missing");
+        }
+        assert!(text.contains("fn f99()"), "the long code block is missing");
+        assert!(text.contains("a|b"), "the escaped pipe is missing");
+    }
+
     /// Drop the SGR sequences, so an assertion can be about the text.
     fn strip(s: &str) -> String {
         let mut out = String::new();

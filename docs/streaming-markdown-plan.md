@@ -136,20 +136,34 @@ extra bounded parse per settle.
   → `Table`, `thematic_break` → `Rule`, `paragraph` → `Paragraph`. The blocks are **not**
   `root`'s direct children: the grammar wraps the document in `document` and in a `section`
   per heading, so the walk descends through those containers.
-- **Secondary**: `Stream::new(Lang::MarkdownInline)` over the same window. Per push: walk
-  the primary tree for the `inline` **and `pipe_table_cell`** node ranges (table cells hold
-  inline content too), `set_included_ranges`, push the same window text, walk → `Vec<Run>`.
+- **Secondary**: `Stream::new(Lang::MarkdownInline)`, **one parse per range**, each over
+  that range's text alone. A range holding no character that can start a construct
+  (`` ` `` `*` `_` `~` `[` `<` `\` `!`) is skipped without parsing, which is most
+  paragraphs — and that skip is also what keeps the renderer's cost near the old lexer's.
 
-  Two things about the ranges this plan got wrong, both found by the tests. They are cut
-  around **`block_continuation`** children: a quote's second `> ` is block structure the
-  block grammar leaves *inside* the paragraph's inline node, and the inline grammar has
-  never heard of it, so it renders as a literal `> three`. And the span walk must be
-  **exhaustive, with an explicit "not text" marker**, rather than "text is whatever no span
-  covers": the markers are named nodes, so leaving them uncovered hands `**` back to the
-  renderer as literal text — the exact bug this workstream exists to remove. (The
-  named-children split in the earlier draft was wrong in the other direction too: this
-  grammar puts the content of `**bold**` in no node at all. Its children are four
-  `emphasis_delimiter`s, and the word is the gap between the second and the third.)
+  Three things about the ranges this plan got wrong. Two were caught by the tests; the
+  third was caught by the operator's screen, and it is the worst of the three.
+
+  1. **The ranges are not one document.** This plan said to hand them all to a single parse
+     with `set_included_ranges`. That is wrong: tree-sitter **concatenates** included ranges
+     in the byte stream, so a delimiter in one range pairs with a delimiter in another. The
+     operator's screen (2026-09-20, *"first rust block is perfect, second absolutely not"*)
+     showed a ``` in the message's first paragraph opening a code span that closed **3,000
+     bytes and ten blocks later** — every block in between rendered as code, with its `**`
+     showing. The grammar's own reference (`tree-sitter-md`'s `MarkdownParser`) parses one
+     inline node at a time for exactly this reason. What made it hard to see: the *streamed*
+     path was correct throughout, because a settled prefix is parsed on its own, so only the
+     one-shot path — a transcript replay after a restart — showed it.
+  2. The ranges are cut around **`block_continuation`** children: a quote's second `> ` is
+     block structure the block grammar leaves *inside* the paragraph's inline node, and the
+     inline grammar has never heard of it, so it renders as a literal `> three`.
+  3. The span walk must be **exhaustive, with an explicit "not text" marker**, rather than
+     "text is whatever no span covers": the markers are named nodes, so leaving them
+     uncovered hands `**` back to the renderer as literal text — the exact bug this
+     workstream exists to remove. (The named-children split in the earlier draft was wrong
+     in the other direction too: this grammar puts the content of `**bold**` in no node at
+     all. Its children are four `emphasis_delimiter`s, and the word is the gap between the
+     second and the third.)
 - **`Block` text fields widen** `String` → `Vec<Run>` (`Code` keeps raw lines — it is
   highlighted separately by `StreamingCode`). `title()` takes the first run's text.
 - **Inline caching**: settled blocks' runs are computed once, when they settle. Only the
@@ -284,6 +298,26 @@ All three are pinned in a new `streaming_matches_one_parse` module: a corpus of 
 documents at six chunk sizes, plus the byte-at-a-time case. The property is the whole
 safety argument for the window, and the corpus has to keep the shapes that break it —
 fences in fences, loose lists, quotes holding fences, tables, rules.
+
+**Then "code blocks still broken" turned out to be the inline pass, not the guards.** The
+next report (2026-09-20, *"first rust block is perfect, second absolutely not"*) was a code
+span spanning ten blocks, and it is item 1 of the secondary pass above. Three things about
+it are worth keeping:
+
+- **The bug was in the path the operator was looking at and not the one I was testing.**
+  Every test asserted `stream(...) == lex(...)` — but the *stream* was right and the
+  *one-shot* was wrong, so only a document long enough to hold two ``` in one parse could
+  show it, and every fixture was a few lines. The fixture is now a real 3.4 KB message, the
+  exact bytes from the session store, kept at `crates/tui/tests/fixtures/streamed-message.md`
+  and asserted at both the model level (`markdown.rs`) and on the rendered screen
+  (`render.rs`), because that is where the operator saw it.
+- **The fix made the renderer cheaper.** One parse per range, with ranges holding no syntax
+  characters skipped, replaced one parse of the whole window: `letibot-tui`'s suite went
+  from 26 s to 5.6 s on the same tests.
+- **It is the class of bug the failing-criterion policy is for.** rano's ignored
+  measurement, this, and the three guard bugs are all "the number looked fine at the size I
+  tested". Each is now pinned with the input that broke it rather than with a rule derived
+  from it.
 
 Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
 fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +

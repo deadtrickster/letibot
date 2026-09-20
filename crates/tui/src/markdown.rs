@@ -443,26 +443,58 @@ struct Span {
 /// Run the inline grammar over the parts of `root` that hold inline content and
 /// return the styled spans, in document order.
 ///
-/// This is markdown's two-pass structure (its README, "Standalone usage"): the block
-/// grammar marks the ranges that are inline content, and a second parse with
-/// `ts_parser_set_included_ranges` reads them. The ranges are the `inline` nodes and
-/// the `pipe_table_cell` nodes — a table cell holds inline content too, which is easy
-/// to miss and leaves every table cell plain.
+/// **One parse per range**, each over that range's text alone. That is not a
+/// preference — it is what correctness costs. The obvious shape, one parse with
+/// `set_included_ranges` over all the ranges, is *wrong*: tree-sitter concatenates
+/// included ranges in the byte stream, so a delimiter in one range pairs with a
+/// delimiter in another. Shipped that way (2026-09-20) and the operator's screen showed
+/// the result — a paragraph's ``` opening a code span that closed 3,000 bytes later,
+/// swallowing ten blocks of the message. The grammar's own reference implementation
+/// (`tree-sitter-md`'s `MarkdownParser`) parses one inline node at a time for this
+/// reason.
+///
+/// A range with nothing in it that can start a construct is skipped without parsing,
+/// which is most paragraphs.
 fn inline_spans(src: &str, root: &Node, bytes_lexed: &mut u64, lex_calls: &mut u64) -> Vec<Span> {
-    let ranges = inline_ranges(root);
-    if ranges.is_empty() {
-        return Vec::new();
-    }
-    let mut stream = Stream::new(Lang::MarkdownInline);
-    stream.set_included_ranges(&ranges);
-    stream.push(src);
-    *bytes_lexed += src.len() as u64;
-    *lex_calls += 1;
     let mut spans = Vec::new();
-    if let Some(inline_root) = stream.root() {
-        collect_spans(&inline_root, src, InlineStyle::Plain, &mut spans);
+    for (a, b) in inline_ranges(root) {
+        let text = &src[a..b];
+        if !has_inline_syntax(text) {
+            continue;
+        }
+        let mut stream = Stream::new(Lang::MarkdownInline);
+        stream.push(text);
+        *bytes_lexed += text.len() as u64;
+        *lex_calls += 1;
+        let Some(root) = stream.root() else {
+            continue;
+        };
+        let mut local = Vec::new();
+        collect_spans(&root, text, InlineStyle::Plain, &mut local);
+        // Offsets are relative to the slice; the rest of this module works in offsets
+        // into the whole document.
+        for mut s in local {
+            s.start += a;
+            s.end += a;
+            spans.push(s);
+        }
     }
     spans
+}
+
+/// Whether `text` holds anything the inline grammar could read as a construct.
+///
+/// The converse is the useful direction: if it holds none of these, the grammar can only
+/// find plain text, so the range can be left alone. Escapes (`\`) and autolinks (`<`) and
+/// images (`!`) are in the set because they *are* constructs; `&` is not, because an
+/// entity reference is shown as written either way and a parse would change nothing.
+///
+/// The one case this lets through is a hard line break — two trailing spaces — which a
+/// parse would turn into a break and a skip leaves as trailing whitespace on a rendered
+/// line. Invisible, and not worth a parse per paragraph.
+fn has_inline_syntax(text: &str) -> bool {
+    text.bytes()
+        .any(|b| matches!(b, b'`' | b'*' | b'_' | b'~' | b'[' | b'<' | b'\\' | b'!'))
 }
 
 /// The byte ranges that are inline content, with markdown's own block markers
@@ -2128,6 +2160,127 @@ mod streaming_matches_one_parse {
                 let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
                 assert_eq!(a, lex(doc), "chunk {chunk} on {doc:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod inline_ranges_are_not_one_document {
+    use super::*;
+    use crate::markdown::tests::{blocks, stream};
+
+    /// A real message, 3.4 KB with ten blocks, captured from the operator's screen when it
+    /// rendered as eleven blocks of code.
+    ///
+    /// It is here as bytes rather than paraphrased because that is what it is: the shape
+    /// that broke the inline pass, at the length where it broke. The signature is an odd
+    /// ``` in the opening paragraph and another one ten blocks later — and a paragraph
+    /// with no syntax characters at all is the other half of it, because the pass that
+    /// skips those is the one that made the pairing rare enough to ship.
+    const REAL: &str = include_str!("../tests/fixtures/streamed-message.md");
+
+    /// **One parse over every inline range makes one document out of them.**
+    ///
+    /// `set_included_ranges` concatenates the ranges in the byte stream: the parser is
+    /// handed the paragraphs as if they were adjacent, so a ``` in one pairs with a ``` in
+    /// another. In this message that produced a code span from byte 180 to byte 3209 —
+    /// three kilobytes, spanning ten blocks — and every block in between rendered as code
+    /// on the operator's screen (2026-09-20, "first rust block is perfect, second
+    /// absolutely not").
+    ///
+    /// The streamed path never showed it, because a settled prefix is parsed on its own;
+    /// only the one-shot path (a transcript replay after a restart) did. So the assertion
+    /// is on the specific damage, not only on agreement.
+    #[test]
+    fn a_delimiter_does_not_pair_with_one_in_another_paragraph() {
+        let blocks = lex(REAL);
+        // The first paragraph is prose with two code spans in it ...
+        let Block::Paragraph { lines } = &blocks[0] else { panic!("{:#?}", blocks[0]) };
+        assert!(
+            runs_text(&lines[0])
+                .starts_with("Here — each block below exercises one of the paths I just fixed"),
+            "{:?}",
+            runs_text(&lines[0])
+        );
+        // ... and its ``` is literal text, not a delimiter.
+        let text = runs_text(&lines[0]);
+        assert!(text.contains("``` markers"), "{text:?}");
+        assert!(text.contains("still arriving."), "{text:?}");
+        // The second block keeps the bold it was written with — under the bug the whole
+        // paragraph was one Code run and the markers showed.
+        let Block::Paragraph { lines } = &blocks[1] else { panic!("{:#?}", blocks[1]) };
+        assert!(
+            lines[0].iter().any(|r| r.style == InlineStyle::Bold),
+            "{:?}",
+            lines[0]
+        );
+        assert_eq!(
+            runs_text(&lines[0]).chars().take(14).collect::<String>(),
+            "1. Plain, with"
+        );
+        // The blocks as written: 10 numbered items, the fences and lists among them, and
+        // the two closing paragraphs. Counted rather than shape-matched because a block
+        // that goes *missing* is the other failure this projection has had.
+        assert_eq!(blocks.len(), 22, "{blocks:#?}");
+
+        // And the property that catches the next one of these: the one-shot parse and the
+        // byte-at-a-time stream are the same document and must agree.
+        for chunk in [1, 7, 64, 4096] {
+            let a = stream(REAL, chunk).blocks().cloned().collect::<Vec<_>>();
+            assert_eq!(a, blocks, "chunk {chunk}");
+        }
+    }
+
+    /// The same shape in eight lines, so the mechanism is visible without the fixture.
+    #[test]
+    fn the_smallest_case_of_the_same_bug() {
+        let doc = "a ``` b\n\n**bold** c\n\n```rust\nlet a = 1;\n```\n\nd ``` e\n";
+        let b = lex(doc);
+        let Some(Block::Paragraph { lines }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(runs_text(&lines[0]), "a ``` b", "the ``` is text, not a delimiter");
+        assert!(
+            lines[0].iter().all(|r| r.style == InlineStyle::Plain),
+            "{:?}",
+            lines[0]
+        );
+        let Some(Block::Paragraph { lines }) = b.get(1) else { panic!("{b:#?}") };
+        assert_eq!(runs_text(&lines[0]), "bold c");
+        assert!(lines[0].iter().any(|r| r.style == InlineStyle::Bold), "{:?}", lines[0]);
+        let Some(Block::Paragraph { lines }) = b.last() else { panic!("{b:#?}") };
+        assert_eq!(runs_text(&lines[0]), "d ``` e");
+        // One-shot and streamed must be the same document.
+        for chunk in [1, 3, 4096] {
+            let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
+            assert_eq!(a, b, "chunk {chunk}");
+        }
+    }
+
+    /// Two paragraphs that each hold a code span keep them separate.
+    ///
+    /// The other face of the same bug: with the ranges concatenated, `` `a` `` in the first
+    /// paragraph and `` `b` `` in the second could be read as one span from one to the
+    /// other, so the text between them — including the blank line — became code.
+    #[test]
+    fn code_spans_in_different_paragraphs_stay_in_their_own() {
+        let doc = "`a` here\n\nplain prose\n\n`b` there\n";
+        let b = lex(doc);
+        assert_eq!(b.len(), 3, "{b:#?}");
+        let spans = |i: usize| -> Vec<(InlineStyle, String)> {
+            let Block::Paragraph { lines } = &b[i] else { panic!("{b:#?}") };
+            lines[0].iter().map(|r| (r.style, r.text.clone())).collect()
+        };
+        assert_eq!(
+            spans(0),
+            [
+                (InlineStyle::Code, "a".to_string()),
+                (InlineStyle::Plain, " here".to_string())
+            ]
+        );
+        assert!(spans(1).iter().all(|(s, _)| *s == InlineStyle::Plain));
+        assert!(spans(2).iter().any(|(s, t)| *s == InlineStyle::Code && t == "b"));
+        for chunk in [1, 5, 4096] {
+            let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
+            assert_eq!(a, b, "chunk {chunk}");
         }
     }
 }
