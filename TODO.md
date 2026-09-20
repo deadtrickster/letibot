@@ -350,6 +350,23 @@ coarse bound is `3 × ViewBounds::item_bytes` ≈ 24 MB today, and the moment an
 rows on demand it becomes unbounded: scrolling through a 160 MB conversation would render all
 of it and keep all of it.
 
+**First, a correction about what "dropped" means, because an earlier version of this item got it
+wrong in a way that changes the design.** There are not one but **two rings in the daemon's
+memory**, with two different bounds, plus the disk:
+
+| where | holds | bound | who reads it |
+|---|---|---|---|
+| **view** (`ViewBounds`) | materialised rows, bodies included | 2,000 rows / 8 MiB | the `Hello` snapshot |
+| **log** (`LogBounds`) | *every event*, including `TranscriptContent` — **which carries the body** | 20,000 events / 16 MiB | **`Peek`**, and a resume gap |
+| store | every row, forever | disk | resume, `--replay` |
+
+So a row trimmed from the **view** may still be whole in the **log**, and `Peek` already reads
+the log (`hub.retained()`) — the mechanism exists and is wired. `FetchRow`'s `None` for a trimmed
+row is therefore **not necessarily final**; the parts below say what to try before reaching for
+the disk. A row costs several events (`TranscriptAppended`, `TranscriptContent`, and for a call
+`ToolStarted`/`ToolProgress`/`ToolFinished`), so the log's window is a few thousand rows rather
+than 20,000 — larger than the view's 2,000, not unlimited.
+
 **(a) A ring over rendered lines — the head holds a window, not a history.** `hist_lines` is a
 `Vec<String>` indexed by *absolute line* (`take_window` slices `[start, end)` across the
 concatenation of segs, with `hist_lines` as seg 0). Two things make this more than a `VecDeque`
@@ -388,13 +405,22 @@ The window arithmetic is unchanged and was always right: clamp `at`, round it to
 boundary, cap `len` **at the daemon** rather than trusting the request, send the body's `total`
 beside the window, and answer `body: None` rather than `""` for a row nobody holds.
 
-**Still to write, and neither is small:** the head must know which ordinal it is missing (it has
-no such flag today), ask, track the answer and render from a window; and a row the daemon itself
-trimmed needs the store read at `~/.local/share/letibot/sessions.db`. That path is a *read of the
-store* from a layer that currently only reads its in-memory view —
-`crates/harnessd/src/transcript_source.rs:196` already does exactly that query
-(`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`), so the SQL exists and
-the question is ownership rather than shape.
+**Still to write, in this order** — the order changed once the two rings above were separated out:
+
+1. **The head does not ask yet.** It has no flag for "this ordinal is missing", no tracking of an
+   answer, and no partial-body render. This is the blocking piece; the two below are about where
+   the answer comes from.
+2. **A row trimmed from the *view* is probably still in the log.** `Peek` already reads it, and
+   `TranscriptContent` carries the body. So the cheap next step is not a new store read but a
+   **log-ring read shaped like `FetchRow`** — same ordinal, same window, one source. Worth
+   measuring first how many rows the log's 20,000 events actually cover, since a row costs several
+   events and the honest answer may be "a few thousand more than the view, not a different order".
+3. **Only past both rings does the disk matter.** `~/.local/share/letibot/sessions.db` has every
+   row, and `crates/harnessd/src/transcript_source.rs:196` already runs exactly the query
+   (`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`). What it needs is a
+   *dependency direction*: `sessionlog` speaks the head protocol and reads its in-memory view and
+   nothing else, so the store read has to arrive as a seam — a trait the daemon implements —
+   rather than by teaching the protocol layer about sqlite.
 
 **(a) is the one that matters first**, and it is also the smaller: it needs no daemon change, no
 store read and no protocol, and it is what makes (b) safe to add — without it, giving the head
