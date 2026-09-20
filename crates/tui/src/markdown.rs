@@ -724,7 +724,7 @@ fn fences_in(src: &str) -> Vec<Fence> {
             if n >= 3 {
                 let lang = marker[n..].trim().to_string();
                 let body = (line_end + 1).min(src.len());
-                let (close, end, closed) = match closing_fence(src, body, prefix, ch, n) {
+                let (close, end, closed) = match closing_fence(src, body, ch, n) {
                     Some((start, after)) => (start, after, true),
                     None => (src.len(), src.len(), false),
                 };
@@ -752,30 +752,71 @@ fn fences_in(src: &str) -> Vec<Fence> {
 ///
 /// The prefix is what a continuation line repeats, so it is what [`closing_fence`] has to
 /// strip to recognise a closing delimiter, and what [`fence_lines`] has to strip to get at
-/// the code. Quote markers are part of it: a fence in a quote is written `"> ```rust"`, and
-/// a scan that only skipped whitespace would miss every one of them.
-fn split_container(line: &str) -> (&str, &str) {
+/// the code.
+///
+/// Split a line into the container syntax it carries and what follows: `("> ", "```rust")`
+/// for a fence inside a quote, `("  ", "```rust")` for one after a list marker, `("", "text")`
+/// for a plain line.
+///
+/// The prefix is the **content column** — what every line of the block has in common — which
+/// is why a list marker comes back as blanks of its own width rather than as itself. A quote
+/// marker repeats on every line (`"> ```rust"`, `"> let a = 1;"`), and so does indentation,
+/// but a list marker does not: `"- ```rust"` is continued by `"  let a = 1;"`. Substituting
+/// blanks gives one prefix that strips both, and it is what makes a fence in a list item
+/// detectable at all — a scan that only skipped whitespace and `>` missed every one of them,
+/// which is how `- ```rust` came out as an item holding the literal markers.
+fn split_container(line: &str) -> (String, &str) {
+    let mut prefix = String::new();
     let mut cut = 0;
     loop {
         let rest = &line[cut..];
         let ws = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        prefix.push_str(&rest[..ws]);
         cut += ws;
         if line[cut..].starts_with('>') {
+            prefix.push('>');
             cut += 1;
-        } else {
-            break;
+            continue;
+        }
+        if let Some(len) = list_marker_len(&line[cut..]) {
+            prefix.push_str(&" ".repeat(len));
+            cut += len;
+            continue;
+        }
+        break;
+    }
+    (prefix, &line[cut..])
+}
+
+/// The byte length of the list marker at the start of `s` — `"- "`, `"1. "` — or `None`.
+///
+/// The trailing space is part of it, because that is what separates the marker from the
+/// item's content and so what decides the content column.
+fn list_marker_len(s: &str) -> Option<usize> {
+    for m in ["- ", "* ", "+ "] {
+        if s.starts_with(m) {
+            return Some(m.len());
         }
     }
-    (&line[..cut], &line[cut..])
+    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && digits <= 9 {
+        let rest = &s[digits..];
+        if rest.starts_with(". ") || rest.starts_with(") ") {
+            return Some(digits + 2);
+        }
+    }
+    None
 }
 
 /// The closing fence of a block opened with `n` of `ch`: `(its line's start, offset just
 /// after it)`.
 ///
-/// The prefix the opening line carries — `"> "` in a quote, an item's indent in a list —
-/// is stripped before each line is tested, because CommonMark's continuation rule puts it
-/// on every line of the block and a closing fence inside a quote is written `"> ```"`.
-fn closing_fence(src: &str, from: usize, prefix: &str, ch: u8, n: usize) -> Option<(usize, usize)> {
+/// Each candidate line has its own container syntax stripped before the test, which is what
+/// recognises `"> ```"` in a quote and `"  ```"` in a list item. Testing the *opening* line's
+/// prefix against the continuation instead would be wrong: a list marker does not repeat, so
+/// `"- ```rust"` and its closing `"  ```"` have different prefixes and only the second is the
+/// one a closing fence is written with.
+fn closing_fence(src: &str, from: usize, ch: u8, n: usize) -> Option<(usize, usize)> {
     let mut off = from;
     while off < src.len() {
         let line_end = match src[off..].find('\n') {
@@ -783,11 +824,6 @@ fn closing_fence(src: &str, from: usize, prefix: &str, ch: u8, n: usize) -> Opti
             None => src.len(),
         };
         let (_, marker) = split_container(&src[off..line_end]);
-        let marker = if let Some(m) = marker.strip_prefix(prefix.trim_start()) {
-            m
-        } else {
-            marker
-        };
         let t = marker.trim();
         if t.len() >= n && t.bytes().all(|b| b == ch) {
             return Some((off, (line_end + 1).min(src.len())));
@@ -807,7 +843,14 @@ fn fence_lines(src: &str, f: &Fence) -> Vec<String> {
     let body = &src[f.body..f.close];
     let mut lines: Vec<String> = body
         .split('\n')
-        .map(|l| l.strip_prefix(f.prefix.as_str()).unwrap_or(l).to_string())
+        .map(|l| {
+            // The content column, or — for a line that does not carry it, which a list
+            // item's continuation need not — its own leading whitespace.
+            match l.strip_prefix(f.prefix.as_str()) {
+                Some(rest) => rest.to_string(),
+                None => l.trim_start().to_string(),
+            }
+        })
         .collect();
     // `"a\n"` splits to `["a", ""]`; the empty tail is the newline, not a line.
     if lines.last().is_some_and(|l| l.is_empty()) {
@@ -838,11 +881,6 @@ fn fence_spans(src: &str) -> Vec<(usize, usize)> {
 /// Is `at` inside a fence rather than at one of its ends?
 fn inside_a_fence(fences: &[(usize, usize)], at: usize) -> bool {
     fences.iter().any(|&(s, e)| at > s && at < e)
-}
-
-/// The fence that opens at `at`, if any.
-fn fence_at(fences: &[Fence], at: usize) -> Option<&Fence> {
-    fences.iter().find(|f| f.open == at)
 }
 
 /// Map the parsed tree's block children to blocks, with the fences in their place.
@@ -900,40 +938,12 @@ fn collect_blocks(
         if fences.iter().any(|f| c.start >= f.open && c.start < f.end) {
             continue;
         }
-        // A container whose only content was a fence. `> ```rust … ``` ` is read by the
-        // grammar as a quote that holds nothing once the fence is masked away — an empty
-        // rail sitting beside the code box that took its content. Dropped, which is what
-        // keeps the code on the screen without a stray marker above it.
-        if fences.iter().any(|f| f.open >= c.start && f.open < c.end)
-            && only_holds_a_fence(&src[c.start..c.end.min(src.len())])
-        {
-            continue;
-        }
         if let Some(block) = block_of(c, src, spans, fences) {
             blocks.push((c.start, block));
         }
     }
 }
 
-/// Is a fence the only thing in `text`, container markers aside?
-///
-/// A fence's own lines do not count — they are about to become a code block of their own —
-/// and a line's container syntax (`"> "`, `"- "`, an item's indent) is not content either.
-/// Everything else is: one word of prose and the container belongs on the screen.
-fn only_holds_a_fence(text: &str) -> bool {
-    let mut in_fence = false;
-    for line in text.split('\n') {
-        let (_, marker) = split_container(line);
-        if marker.starts_with("```") || marker.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if !in_fence && !marker.trim().is_empty() {
-            return false;
-        }
-    }
-    true
-}
 
 fn block_of(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Option<Block> {
     match node.kind.as_str() {
@@ -956,7 +966,9 @@ fn block_of(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Option<
             }
             Some(Block::Quote { lines })
         }
-        "fenced_code_block" | "indented_code_block" => Some(code_block(node, src, fences)),
+        // Only an indented block can reach here: a *fenced* one was masked away before the
+        // parse, and `collect_blocks` emits it from the scan.
+        "indented_code_block" => Some(code_block(node, src)),
         "list" => Some(list_block(node, src, spans, fences)),
         "pipe_table" => Some(table_block(node, src, spans)),
         "thematic_break" => Some(Block::Rule),
@@ -1041,29 +1053,11 @@ fn subtree_lines(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: 
             | "link_destination" | "link_title" | "link_label" => {}
             // Text, with inline styling.
             "inline" => lines_of_ranges(src, spans, &inline_ranges(c), out),
-            // A fence: its extent from the text, for the reason [`fences_in`] gives. A
-            // fence inside a quote or an item is the case the grammar gets wrong most
-            // often, because a quoted closing delimiter has `"> "` in front of it.
-            "fenced_code_block" => match fence_at(fences, c.start) {
-                Some(f) => {
-                    for line in fence_lines(src, f) {
-                        out.push(vec![run(line, InlineStyle::Plain)]);
-                    }
-                }
-                // Not recognised as a fence at its own start: show its content as the
-                // tree read it rather than dropping the block.
-                None => {
-                    for line in text_without_continuations(c, src).lines() {
-                        out.push(vec![run(line.to_string(), InlineStyle::Plain)]);
-                    }
-                }
-            },
-            // Raw code: its content, continuation markers cut, as plain lines.
-            "code_fence_content" => {
-                for line in text_without_continuations(c, src).lines() {
-                    out.push(vec![run(line.to_string(), InlineStyle::Plain)]);
-                }
-            }
+            // No arm for `fenced_code_block` or `code_fence_content`: after [`mask`] the
+            // tree holds neither, because every fence's bytes are spaces by the time the
+            // parser sees them (asserted by `masking_leaves_no_fence_in_the_tree`). A
+            // fence that belongs to a container is emitted from the scan and the container
+            // is dropped beside it, so a container that reaches here holds prose only.
             // A nested table: one line per row, cells joined. The flat model has no
             // columns to give it here.
             "pipe_table" => {
@@ -1158,51 +1152,28 @@ fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], fences: &[Fence], o
 /// means the node starts somewhere other than a fence's opening delimiter — an indented
 /// code block, or a fence whose opening line the grammar placed differently. Reading it
 /// off the tree is the fallback rather than the rule.
-fn code_block(node: &Node, src: &str, fences: &[Fence]) -> Block {
-    if let Some(f) = fence_at(fences, node.start) {
-        return Block::Code {
-            lang: f.lang.clone(),
-            lines: fence_lines(src, f),
-            closed: f.closed,
-        };
-    }
-    let mut lang = String::new();
-    let mut delims = 0;
-    for c in &node.children {
-        match c.kind.as_str() {
-            "info_string" => lang = src[c.start..c.end].trim().to_string(),
-            "fenced_code_block_delimiter" => delims += 1,
-            _ => {}
-        }
-    }
-    // `tree-sitter-md` closes a fence at end of input, the way CommonMark does, so the
-    // *missing* closing delimiter is not an error node — it is simply absent. Counting
-    // delimiters is what tells the renderer to say "(still writing…)".
-    let closed = node.kind == "indented_code_block" || delims >= 2;
-    Block::Code {
-        lang,
-        lines: fence_content_lines(node, src),
-        closed,
-    }
-}
-
-/// The code lines of a fence, with the `block_continuation` markers cut out.
+/// An indented code block: four spaces and no fence, so there are no markers to strip and
+/// no language to name.
 ///
-/// The content node carries them: a fence inside a block quote has content
-/// `"let a = 1;\n> "` — the `> ` that opens the closing line is a child of the
-/// *content*, not of the quote. Left in, the code block's last line would be a bare
-/// `> `.
-fn fence_content_lines(node: &Node, src: &str) -> Vec<String> {
-    let Some(body) = node.children.iter().find(|c| c.kind == "code_fence_content") else {
-        return Vec::new();
-    };
-    // The content's range stops before the closing fence, but its text ends with the
-    // newline that opened that line.
-    text_without_continuations(body, src)
+/// It is the only kind that reaches the tree at all. A *fenced* block is masked away before
+/// the parse and emitted by `collect_blocks` from the scan, so this is not a fallback for
+/// one — a fence never has to be read off a tree that gets its extent wrong.
+fn code_block(node: &Node, src: &str) -> Block {
+    let mut lines: Vec<String> = text_without_continuations(node, src)
         .trim_end_matches('\n')
         .lines()
         .map(str::to_string)
-        .collect()
+        .collect();
+    // An indented block has no delimiters, and CommonMark runs it to the end of the input
+    // like a fence does at EOF — so it is never "still being written".
+    if lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    Block::Code {
+        lang: String::new(),
+        lines,
+        closed: true,
+    }
 }
 
 /// A node's text with its `block_continuation` children cut out.
@@ -2540,6 +2511,132 @@ mod a_fence_ends_only_at_a_line_of_its_own {
             assert!(closed, "{src:?}");
             assert_eq!(lines, &want, "{src:?}");
         }
+    }
+
+    /// **After masking, the tree holds no fence at all.** That is why there is no
+    /// `fenced_code_block` arm anywhere in the projection, and why a fence inside a quote
+    /// or an item can only come from the scan.
+    ///
+    /// This test exists because its absence hid a real thing: the first version of the
+    /// container handling had arms for `fenced_code_block` and `code_fence_content` in
+    /// `subtree_lines`, and a mutation that deleted them changed no test result. They were
+    /// unreachable, and unreachable code is where a wrong assumption sits unexamined.
+    /// Measured (2026-09-20): masking leaves zero nodes whose kind mentions a fence or code,
+    /// for every container shape in this file's corpus.
+    #[test]
+    fn masking_leaves_no_fence_in_the_tree() {
+        for src in [
+            "> ```rust\n> let a = 1;\n> ```\n",
+            "- item\n\n  ```rust\n  let a = 1;\n  ```\n",
+            "```rust\nfn main() {}\n```\n",
+            "> prose\n>\n> ```rust\n> let a = 1;\n> ```\n",
+            "prose\n\n```\nabc ```\ndef\n```\n",
+            "````\n```rust\nlet a = 1;\n```\n````\n",
+        ] {
+            let masked = mask(src, &fences_in(src));
+            let mut stream = Stream::new(Lang::Markdown);
+            stream.push(&masked);
+            let root = stream.root().expect("a parse");
+            let mut kinds = Vec::new();
+            fn walk(n: &Node, kinds: &mut Vec<String>) {
+                if n.kind.contains("fence") || n.kind.contains("code") {
+                    kinds.push(n.kind.clone());
+                }
+                for c in &n.children {
+                    walk(c, kinds);
+                }
+            }
+            walk(&root, &mut kinds);
+            assert!(kinds.is_empty(), "{src:?} left {kinds:?} in the tree");
+            // Indented code is the one exception and is not a fence: no backticks, so it is
+            // never masked and the tree is the only place it can be read from.
+            if src.contains("    ") && !src.contains("```") {
+                assert!(masked.contains("    "));
+            }
+        }
+        // An indented block *is* still in the tree, which is what makes `code_block` live.
+        let mut stream = Stream::new(Lang::Markdown);
+        stream.push("    let a = 1;\n");
+        let root = stream.root().unwrap();
+        let mut kinds = Vec::new();
+        fn walk2(n: &Node, kinds: &mut Vec<String>) {
+            kinds.push(n.kind.clone());
+            for c in &n.children {
+                walk2(c, kinds);
+            }
+        }
+        walk2(&root, &mut kinds);
+        assert!(kinds.iter().any(|k| k == "indented_code_block"), "{kinds:?}");
+    }
+
+    /// **A fence on the list marker's own line.** `- ```rust` was not found by the scan at
+    /// all, because it looked only at whitespace and `>`, so the item rendered as one run of
+    /// text holding the markers — `"```rust let a = 1;   ```"` — beside a spurious empty
+    /// code box.
+    ///
+    /// The fix is that a list marker is part of the container prefix. It comes back as
+    /// blanks rather than as itself, because a marker does not repeat on a continuation
+    /// line: `"- ```rust"` is continued by `"  let a = 1;"`, so the only prefix both share
+    /// is the content column.
+    #[test]
+    fn a_fence_on_a_list_markers_line_is_not_item_text() {
+        for src in ["- ```rust\n  let a = 1;\n  ```\n", "1. ```rust\n   let a = 1;\n   ```\n"] {
+            let b = lex(src);
+            assert_eq!(b.len(), 1, "{src:?} gave {b:#?}");
+            let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+            assert_eq!(lang, "rust", "{src:?}");
+            assert_eq!(lines, &["let a = 1;"], "{src:?}");
+            assert!(*closed, "{src:?}");
+        }
+        // A marker the model wrote as `*` or `+` is the same shape.
+        for marker in ["-", "*", "+"] {
+            let src = format!("{marker} ```rust\n  let a = 1;\n  ```\n");
+            let b = lex(&src);
+            let Some(Block::Code { lang, .. }) = b.first() else { panic!("{src:?} gave {b:#?}") };
+            assert_eq!(lang, "rust", "{src:?}");
+        }
+    }
+
+    /// Two things the marker-stripping must **not** eat, because either would be worse than
+    /// the bug it fixed.
+    #[test]
+    fn stripping_a_content_column_does_not_eat_content() {
+        // Indentation inside a top-level fence is the code's, not the container's.
+        let b = lex("```rust\n    indented();\n\n        deeper();\n```\n");
+        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lines, &["    indented();", "", "        deeper();"]);
+
+        // A list *inside* a fence is the code's too.
+        let b = lex("- item\n\n  ```\n  - a\n  - b\n  ```\n");
+        assert_eq!(b.len(), 2, "{b:#?}");
+        let Some(Block::Code { lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        assert_eq!(lines, &["- a", "- b"]);
+
+        // And a quoted fence's code that begins with `> ` keeps it.
+        let b = lex("> ```\n> > nested quote\n> ```\n");
+        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lines, &["> nested quote"]);
+    }
+
+    /// A fence indented by four spaces is read as an indented code block by CommonMark, and
+    /// as a fence here.
+    ///
+    /// A deliberate deviation, and it is recorded rather than fixed. What a model means by
+    /// `    ```rust` in a chat message is a code block with that language; CommonMark's
+    /// answer is a code block *containing the literal backticks*, which would show a reader
+    /// the markers instead of the code. The hand-written lexer this replaced read it the
+    /// same way, so nothing regressed — but a reader comparing against CommonMark deserves
+    /// to find it written down.
+    #[test]
+    fn a_four_space_indented_fence_is_read_as_a_fence() {
+        // CommonMark would make this literal text: ```rust / let a = 1; / ```
+        let b = lex("    ```rust\n    let a = 1;\n    ```\n");
+        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lang, "rust", "read as a fence, not as an indented code block");
+        assert_eq!(lines, &["let a = 1;"]);
+        assert!(*closed);
+        // And it is one block, not three lines of prose with the markers showing.
+        assert_eq!(b.len(), 1, "{b:#?}");
     }
 
     /// The box art that broke it, line for line. Six lines in, six lines out.
