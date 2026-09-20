@@ -43,9 +43,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use letibot_dialect::StablePrefix;
-use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::event::{TodoEntry, TodoStatus as WireTodoStatus};
+use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
+use letibot_tokencore::store::TodoItem;
 use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
 use letibot_tools::authorise::{
@@ -53,17 +54,16 @@ use letibot_tools::authorise::{
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
 use letibot_tools::builtins::todo::TodoBoard;
-use letibot_tokencore::store::TodoItem;
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
-    AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role,
-    ToolRuntime, Tool, roles,
+    AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,
+    ToolRuntime, roles,
 };
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
-    CompactionOutcome, Endpoint, EventSink, Session, SteeringMessage, SteeringSource, TurnEngine,
-    TurnEvent, TurnFailure, TurnMetrics, TurnOk, OverrunPlan, plan_fold, plan_overrun, run_compaction,
-    summarise_first_half, summarise_overrun,
+    CompactionOutcome, Endpoint, EventSink, OverrunPlan, Session, SteeringMessage, SteeringSource,
+    TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_fold, plan_overrun,
+    run_compaction, summarise_first_half, summarise_overrun,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -133,7 +133,8 @@ impl Parts {
         }
         let vocab = Vocab::load(&cfg.vocab_gguf)
             .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?;
-        let skills = std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
+        let skills =
+            std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
             crate::tasks::default_state_path(),
@@ -143,7 +144,9 @@ impl Parts {
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
-            mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open())),
+            mode_store: std::sync::Arc::new(
+                std::sync::RwLock::new(crate::modes::ModeStore::open()),
+            ),
             tasks,
             lsp,
             skills,
@@ -163,7 +166,9 @@ pub enum HarnessError {
     ///
     /// Reported, never silently truncated to whatever the last round happened to
     /// say.
-    LoopBound { rounds: usize },
+    LoopBound {
+        rounds: usize,
+    },
     /// The turn stopped because the next round would not fit in the context
     /// window. **Not a failure of the work**: everything already produced is
     /// committed, and `Sessions` compacts before the next turn.
@@ -178,7 +183,9 @@ pub enum HarnessError {
     /// `evidence` is a sentence naming what the detector saw — the calls, the
     /// outcomes and the denominator — because a stop that cites evidence is one an
     /// operator can contradict and a round count is not. See [`crate::progress`].
-    NoProgress { evidence: String },
+    NoProgress {
+        evidence: String,
+    },
 }
 
 impl std::fmt::Display for HarnessError {
@@ -921,7 +928,10 @@ fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
         .iter()
         .filter_map(|j| {
             let v: serde_json::Value = serde_json::from_str(j).ok()?;
-            let n = v.pointer("/function/name").or_else(|| v.get("name"))?.as_str()?;
+            let n = v
+                .pointer("/function/name")
+                .or_else(|| v.get("name"))?
+                .as_str()?;
             Some(n.to_string())
         })
         .collect()
@@ -1017,8 +1027,8 @@ impl<'a> Harness<'a> {
             .map(std::sync::Arc::new);
         // As the table holds it, including every earlier run's rows.
         let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
-        let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> = opened_corpus
-            .map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
+        let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
+            opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
         let stored = match &store {
             None => None,
             Some(s) => s
@@ -1094,7 +1104,30 @@ impl<'a> Harness<'a> {
         let mut mode_source = String::from("daemon flag / default");
         {
             let store = parts.mode_store.read().unwrap();
-            if store.is_set(&cfg.workspace) {
+            // **A subagent keeps its parent's point and never re-reads the row.**
+            //
+            // `sub_cfg` is built with `..self.base.clone()`, so the child already
+            // carries the point the parent resolved — and this lookup then threw it
+            // away and took the project's row instead. Two things wrong with that,
+            // and the second one is what the operator hit:
+            //
+            //   * a child could differ from its parent in either direction, which is
+            //     the one property a subagent must not have. Authority flows down;
+            //     `spec.downgrade` narrows it and nothing widens it.
+            //   * a row naming a point the child cannot carry kills the child even
+            //     though the parent is running at that very point. Measured
+            //     2026-09-20: `/mode allow-all` in leticl refused for the session
+            //     (no confinement) and still wrote `allow-all` to the project row,
+            //     after which every subagent opened, read the row, failed the
+            //     `Confinement` prerequisite and died before its first turn — the
+            //     operator saw only *"subagents dont work"*. The parent was fine,
+            //     because it had opened before the row was written.
+            //
+            // So the row is for a session somebody opened in that project. A
+            // subagent is not that; it is part of a session whose point is settled.
+            if cfg.parent_session_id.is_some() {
+                mode_source = "inherited from the parent session".into();
+            } else if store.is_set(&cfg.workspace) {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
                 mode_source = "project store (modes.tsv)".into();
@@ -1157,8 +1190,9 @@ impl<'a> Harness<'a> {
             // A placeholder the VM arm below replaces; the host tree is not touched
             // by a session placed in a VM, and this read-only view is never used.
             (
-                HostBackend::new(&cfg.workspace)
-                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                HostBackend::new(&cfg.workspace).map_err(|e| {
+                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
+                })?,
                 true,
             )
         } else if cfg.unconfined {
@@ -1212,14 +1246,16 @@ impl<'a> Harness<'a> {
             )
         } else if cfg.seat.needs_writable_backend() && may_write {
             (
-                HostBackend::writable(&cfg.workspace)
-                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                HostBackend::writable(&cfg.workspace).map_err(|e| {
+                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
+                })?,
                 false,
             )
         } else {
             (
-                HostBackend::new(&cfg.workspace)
-                    .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?,
+                HostBackend::new(&cfg.workspace).map_err(|e| {
+                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
+                })?,
                 false,
             )
         };
@@ -1253,7 +1289,8 @@ impl<'a> Harness<'a> {
             bool,
             Option<Arc<Monitors>>,
         ) = if in_vm {
-            let mut spec = letibot_tools::firecode::FirecodeSpec::new(&cfg.workspace, &cfg.session_id);
+            let mut spec =
+                letibot_tools::firecode::FirecodeSpec::new(&cfg.workspace, &cfg.session_id);
             spec.writable = may_write;
             spec.exec = may_exec;
             spec.up_args = cfg.vm_args.clone();
@@ -1286,7 +1323,10 @@ impl<'a> Harness<'a> {
                 // this binary — a `sudo` shim ahead of `PATH` that asks the head
                 // instead of a terminal. See `crate::sudo`.
                 let mut env = vec![
-                    ("LETIBOT_SOCKET".to_string(), cfg.socket.display().to_string()),
+                    (
+                        "LETIBOT_SOCKET".to_string(),
+                        cfg.socket.display().to_string(),
+                    ),
                     ("LETIBOT_SESSION".to_string(), cfg.session_id.clone()),
                 ];
                 if let Ok(home) = std::env::var("HOME") {
@@ -1335,9 +1375,7 @@ impl<'a> Harness<'a> {
                     // from. `web_search` stays the refusing tool and the banner
                     // says why.
                     Err(why) => {
-                        return Err(HarnessError::Setup(format!(
-                            "--web-search brave: {why}"
-                        )));
+                        return Err(HarnessError::Setup(format!("--web-search brave: {why}")));
                     }
                 },
                 other => {
@@ -1438,8 +1476,9 @@ impl<'a> Harness<'a> {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
-        let mut registry = letibot_tools::external_tools(registry, &external)
-            .map_err(|e| HarnessError::Setup(format!("registering the outside-world tools: {e}")))?;
+        let mut registry = letibot_tools::external_tools(registry, &external).map_err(|e| {
+            HarnessError::Setup(format!("registering the outside-world tools: {e}"))
+        })?;
         intent_tools::register_into(&mut registry, &intent_wiring)
             .map_err(|e| HarnessError::Setup(format!("registering the intent tools: {e}")))?;
         if let Some(t) = extra_tool {
@@ -1534,9 +1573,9 @@ impl<'a> Harness<'a> {
                     letibot_tools::builtins::transcript::TranscriptTool::new(src.clone()),
                 ))
                 .and_then(|_| {
-                    registry.register(Box::new(
-                        letibot_tools::builtins::digest::DigestTool::new(src, digest),
-                    ))
+                    registry.register(Box::new(letibot_tools::builtins::digest::DigestTool::new(
+                        src, digest,
+                    )))
                 })
                 .and_then(|_| {
                     registry.register(Box::new(
@@ -1731,7 +1770,8 @@ impl<'a> Harness<'a> {
         // **The gate, built here so the three seams cannot be skipped.** See
         // `open_with`'s docs for why this is not a parameter.
         let (gate, trail_installed, denials_surfaced): (Box<dyn Gate>, bool, bool) = match (
-            adjudicator, gated,
+            adjudicator,
+            gated,
         ) {
             // Nothing can reach it. `NoBoundary` is what every session that exists
             // today has, and keeping it means this file changed nothing for them.
@@ -1787,7 +1827,9 @@ impl<'a> Harness<'a> {
                 // exactly as it did before and `/supervise` refuses by name, which is
                 // a better answer than refusing to start.
                 let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match &cfg.oracle {
-                    Some(_) => Some(model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into()),
+                    Some(_) => {
+                        Some(model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into())
+                    }
                     None => None,
                 };
                 let trail_for_gate = trail.clone();
@@ -1804,7 +1846,11 @@ impl<'a> Harness<'a> {
                     // opencode's `permission` config (LETIBOT_PERMISSION), so the
                     // allow/deny/ask rules govern before the mode — and a subagent
                     // inherits them.
-                    .with_permission(downgraded_ruleset(&cfg.permission, &cfg.downgrade, &schemas))
+                    .with_permission(downgraded_ruleset(
+                        &cfg.permission,
+                        &cfg.downgrade,
+                        &schemas,
+                    ))
                     // *Always allow* is written to the operator's file, so it is a
                     // preapproval every later daemon starts with.
                     .with_permission_sink(std::sync::Arc::new(|rule| {
@@ -1842,9 +1888,9 @@ impl<'a> Harness<'a> {
                     // the banner-says-one-thing state this module refuses everywhere
                     // else. So the mode turns it on, and `--supervise` still turns it
                     // on for the points that do not.
-                    Some(a) => g
-                        .with_advisor(a)
-                        .start_supervised(cfg.supervise || cfg.mode.decider == letibot_tools::mode::Decider::Model),
+                    Some(a) => g.with_advisor(a).start_supervised(
+                        cfg.supervise || cfg.mode.decider == letibot_tools::mode::Decider::Model,
+                    ),
                     None => g,
                 };
                 // **The corpus.** Without this the gate's rows are a `Vec` that dies
@@ -2110,7 +2156,9 @@ impl<'a> Harness<'a> {
                         })?;
                         store
                             .append_item(&new_id, i as u32, &rebuilt.items[i], &rows[i], tokens)
-                            .map_err(|e| HarnessError::Store(format!("re-rendered row {i}: {e}")))?;
+                            .map_err(|e| {
+                                HarnessError::Store(format!("re-rendered row {i}: {e}"))
+                            })?;
                     }
 
                     let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
@@ -2140,90 +2188,96 @@ impl<'a> Harness<'a> {
                         notes: std::mem::take(&mut notes),
                     };
                     // Every row was written above, so none is pending.
-                    (new_id, rebuilt, rows, Some(report), prefix.clone(), new_prefix_id)
+                    (
+                        new_id,
+                        rebuilt,
+                        rows,
+                        Some(report),
+                        prefix.clone(),
+                        new_prefix_id,
+                    )
                 } else {
+                    let session = Session::restore(&loaded).map_err(|e| {
+                        HarnessError::Store(format!("session {}: {e}", cfg.session_id))
+                    })?;
 
-                let session = Session::restore(&loaded).map_err(|e| {
-                    HarnessError::Store(format!("session {}: {e}", cfg.session_id))
-                })?;
-
-                // The *fact*, not a proxy for it: render this daemon's stable prefix
-                // and compare the tokens with the ones the session is carrying. Equal
-                // means the vocabulary and the renderer agree, whatever the recorded
-                // GGUF path says; different means they do not, and the session keeps
-                // the prefix it was created with — which is correct and has to be
-                // said, because the operator's `--system` change did not take effect
-                // in this session and nothing else would tell them.
-                let fresh = engine
-                    .open(&format!("{transcript_id}#probe"), &prefix)
-                    .map_err(|e| HarnessError::Setup(format!("rendering the prefix: {e}")))?;
-                if fresh.ledger.prefix_tokens() != session.ledger.prefix_tokens() {
-                    notes.push(format!(
-                        "this session keeps the stable prefix it was created with \
+                    // The *fact*, not a proxy for it: render this daemon's stable prefix
+                    // and compare the tokens with the ones the session is carrying. Equal
+                    // means the vocabulary and the renderer agree, whatever the recorded
+                    // GGUF path says; different means they do not, and the session keeps
+                    // the prefix it was created with — which is correct and has to be
+                    // said, because the operator's `--system` change did not take effect
+                    // in this session and nothing else would tell them.
+                    let fresh = engine
+                        .open(&format!("{transcript_id}#probe"), &prefix)
+                        .map_err(|e| HarnessError::Setup(format!("rendering the prefix: {e}")))?;
+                    if fresh.ledger.prefix_tokens() != session.ledger.prefix_tokens() {
+                        notes.push(format!(
+                            "this session keeps the stable prefix it was created with \
                          ({} tokens, h_init {}). The prefix this daemon would render now \
                          is {} tokens — a changed system prompt, tool set or effort level. \
                          Rewriting message 0 is what forces a full cold re-prefill, so it \
                          is not done; start a new session to pick up the change.",
-                        session.ledger.prefix_len(),
-                        &hex32(&session.ledger.h_init())[..16],
-                        fresh.ledger.prefix_len(),
-                    ));
-                }
+                            session.ledger.prefix_len(),
+                            &hex32(&session.ledger.h_init())[..16],
+                            fresh.ledger.prefix_len(),
+                        ));
+                    }
 
-                // The prefix the session's own tokens came from — the store's
-                // record, not the daemon's current render. A compaction fork keeps
-                // it, exactly as the resume itself does.
-                let own = s
-                    .stable_prefix_record(&loaded.stable_prefix_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?;
-                let own_prefix = StablePrefix {
-                    system: own.system,
-                    tools_json: own.tools_json,
-                };
+                    // The prefix the session's own tokens came from — the store's
+                    // record, not the daemon's current render. A compaction fork keeps
+                    // it, exactly as the resume itself does.
+                    let own = s
+                        .stable_prefix_record(&loaded.stable_prefix_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    let own_prefix = StablePrefix {
+                        system: own.system,
+                        tools_json: own.tools_json,
+                    };
 
-                // **What the MODEL can call is the prefix, not the registry.**
-                //
-                // The tool schemas live in the stable prefix, and a resume replays
-                // the stored one — it must, the stored tokens were produced under
-                // it. The registry, meanwhile, is rebuilt from THIS daemon's flags.
-                // When the two disagree the session has tools the conversation has
-                // never been told about, and every disclosure below is computed
-                // from the registry: the banner announced `bash` and
-                // `Access: exec` at a session whose prompt lists nine tools and no
-                // shell, so the model never called it and the operator spent an
-                // hour on "still no exec" while the banner said exec was seated.
-                //
-                // Named here, where both halves are in hand. This does not refuse:
-                // the conversation is intact and every tool the PREFIX declares
-                // still works. What it may not do is let the disclosure claim the
-                // difference away.
-                {
-                    let now = parts.wiring.tools_json(&schemas);
-                    if now != own_prefix.tools_json {
-                        // Both shapes a tool schema is rendered in: OpenAI's
-                        // `{function:{name}}` and the bare `{name}`. A schema whose
-                        // name cannot be read is left out of the diff rather than
-                        // guessed at — the sentence below names what it is sure of.
-                        let named = |t: &[String]| -> std::collections::BTreeSet<String> {
-                            t.iter()
-                                .filter_map(|j| {
-                                    let v: serde_json::Value = serde_json::from_str(j).ok()?;
-                                    let n = v
-                                        .pointer("/function/name")
-                                        .or_else(|| v.get("name"))?
-                                        .as_str()?;
-                                    Some(n.to_string())
-                                })
-                                .collect()
-                        };
-                        let (was, is) = (named(&own_prefix.tools_json), named(&now));
-                        let added: Vec<&String> = is.difference(&was).collect();
-                        let gone: Vec<&String> = was.difference(&is).collect();
-                        let mut say = String::from(
-                            "this session's PROMPT carries the tool list it was created with,                              and this daemon seats a different one. A resume replays the                              stored prefix, so what the model can actually call is the                              stored list",
-                        );
-                        if !added.is_empty() {
-                            say.push_str(&format!(
+                    // **What the MODEL can call is the prefix, not the registry.**
+                    //
+                    // The tool schemas live in the stable prefix, and a resume replays
+                    // the stored one — it must, the stored tokens were produced under
+                    // it. The registry, meanwhile, is rebuilt from THIS daemon's flags.
+                    // When the two disagree the session has tools the conversation has
+                    // never been told about, and every disclosure below is computed
+                    // from the registry: the banner announced `bash` and
+                    // `Access: exec` at a session whose prompt lists nine tools and no
+                    // shell, so the model never called it and the operator spent an
+                    // hour on "still no exec" while the banner said exec was seated.
+                    //
+                    // Named here, where both halves are in hand. This does not refuse:
+                    // the conversation is intact and every tool the PREFIX declares
+                    // still works. What it may not do is let the disclosure claim the
+                    // difference away.
+                    {
+                        let now = parts.wiring.tools_json(&schemas);
+                        if now != own_prefix.tools_json {
+                            // Both shapes a tool schema is rendered in: OpenAI's
+                            // `{function:{name}}` and the bare `{name}`. A schema whose
+                            // name cannot be read is left out of the diff rather than
+                            // guessed at — the sentence below names what it is sure of.
+                            let named = |t: &[String]| -> std::collections::BTreeSet<String> {
+                                t.iter()
+                                    .filter_map(|j| {
+                                        let v: serde_json::Value = serde_json::from_str(j).ok()?;
+                                        let n = v
+                                            .pointer("/function/name")
+                                            .or_else(|| v.get("name"))?
+                                            .as_str()?;
+                                        Some(n.to_string())
+                                    })
+                                    .collect()
+                            };
+                            let (was, is) = (named(&own_prefix.tools_json), named(&now));
+                            let added: Vec<&String> = is.difference(&was).collect();
+                            let gone: Vec<&String> = was.difference(&is).collect();
+                            let mut say = String::from(
+                                "this session's PROMPT carries the tool list it was created with,                              and this daemon seats a different one. A resume replays the                              stored prefix, so what the model can actually call is the                              stored list",
+                            );
+                            if !added.is_empty() {
+                                say.push_str(&format!(
                                 " — seated here but NOT in this conversation's prompt, so the                                  model cannot call them: {}",
                                 added
                                     .iter()
@@ -2231,37 +2285,37 @@ impl<'a> Harness<'a> {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             ));
-                        }
-                        if !gone.is_empty() {
-                            say.push_str(&format!(
+                            }
+                            if !gone.is_empty() {
+                                say.push_str(&format!(
                                 " — in the prompt but not seated here, so a call to them                                  refuses: {}",
                                 gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
                             ));
-                        }
-                        say.push_str(
+                            }
+                            say.push_str(
                             ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it the way a compaction does;                              a new session gets the seated list from the start.",
                         );
-                        notes.push(say);
+                            notes.push(say);
+                        }
                     }
-                }
 
-                let rows = session.ledger.rows().len();
-                let report = ResumeReport {
-                    transcript_id: transcript_id.clone(),
-                    rows,
-                    tokens: session.ledger.len(),
-                    head: session.ledger_head(),
-                    workspace: cfg.workspace.display().to_string(),
-                    notes: std::mem::take(&mut notes),
-                };
-                (
-                    transcript_id,
-                    session,
-                    rows,
-                    Some(report),
-                    own_prefix,
-                    loaded.stable_prefix_id,
-                )
+                    let rows = session.ledger.rows().len();
+                    let report = ResumeReport {
+                        transcript_id: transcript_id.clone(),
+                        rows,
+                        tokens: session.ledger.len(),
+                        head: session.ledger_head(),
+                        workspace: cfg.workspace.display().to_string(),
+                        notes: std::mem::take(&mut notes),
+                    };
+                    (
+                        transcript_id,
+                        session,
+                        rows,
+                        Some(report),
+                        own_prefix,
+                        loaded.stable_prefix_id,
+                    )
                 }
             }
             None => {
@@ -2519,11 +2573,70 @@ impl<'a> Harness<'a> {
     /// confined is a property of the SEAT, and the prerequisite check is what
     /// refuses a point the seat cannot carry.
     pub fn set_mode(&mut self, mode: letibot_tools::mode::Mode) -> Result<String, String> {
+        self.set_mode_consented(mode, false)
+    }
+
+    /// **`/mode`, with the operator's answer to the unconfined-`allow-all` question.**
+    ///
+    /// `allow-all` requires a confinement and `backend_confined` is true for a
+    /// firecode placement and nothing else, so on the operator's own box the point
+    /// was unreachable by every route and the refusal pointed at cgroups and bwrap,
+    /// which could not have supplied it. Their words, 2026-09-20: *"allow-all doesnt
+    /// work"*, and then *"make it ask for confirmation on bare host and let it thru"*.
+    ///
+    /// So: the head asks, and a `yes` arrives here as `consented`. It selects
+    /// [`Mode::ALLOW_ALL_HERE`] — the same coordinate with the boundary told
+    /// truthfully — and only under all three of these, each checked rather than
+    /// assumed:
+    ///
+    ///   1. the point asked for is `allow-all`. Consent is for one question; it does
+    ///      not travel to a point the operator did not pick.
+    ///   2. this session really has no confinement. Inside a VM the ordinary
+    ///      `allow-all` already opens, and substituting the consented point there
+    ///      would record a person's answer where a structural fact was the reason.
+    ///   3. the substituted point passes `check` on its own. It drops only
+    ///      `Confinement`; a seat with no writable backend still cannot carry it.
+    ///
+    /// **It is not persisted.** `sessions.rs` writes the project's row from the name
+    /// the operator typed, which stays `allow-all` and stays refused for the next
+    /// daemon. Consent is a thing a person gave once, in front of one session; a
+    /// consented point that came back on every later start would be exactly the
+    /// "banner says one thing" state this module refuses everywhere else.
+    pub fn set_mode_consented(
+        &mut self,
+        mode: letibot_tools::mode::Mode,
+        consented: bool,
+    ) -> Result<String, String> {
+        let mut mode = mode;
+        let mut vouched = false;
         if let Some((have, seats)) = &self.supplies {
+            let unconfined = !have.contains(&letibot_tools::mode::Prereq::Confinement);
+            if consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name && unconfined {
+                mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                vouched = true;
+            }
             mode.check(have, *seats)?;
+        } else if consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name {
+            // No `supplies` means the open never ran the check — a session built by
+            // a test harness. Consent cannot be honoured against a list nobody
+            // computed, so it is refused rather than granted on a guess.
+            return Err("this session did not record what it can supply, so an \
+                        unconfined `allow-all` cannot be confirmed against it"
+                .into());
         }
         let dropped = self.runtime.gate.set_mode(mode)?;
         let mut said = format!("this session is at `{}` from the next call", mode.name);
+        if vouched {
+            // Said here rather than only in the confirmation the head showed: the
+            // banner, the warning on the log and this sentence are what a person
+            // reads later, and "you agreed to this" belongs in all three.
+            said.push_str(
+                " — nothing confines this box, and this point stands on your \
+                 confirmation rather than on a boundary. It lasts for this session \
+                 only; the project's row still reads `allow-all` and still refuses \
+                 at the next start",
+            );
+        }
         if dropped > 0 {
             said.push_str(&format!(
                 " — {dropped} standing grant(s) taken under `{}` no longer apply",
@@ -2549,7 +2662,8 @@ impl<'a> Harness<'a> {
     fn publish_settings(&self) {
         self.session_registry.set_settings(
             &self.cfg.session_id,
-            self.cfg.settings(&self.mode_source, self.runtime.gate.supervising()),
+            self.cfg
+                .settings(&self.mode_source, self.runtime.gate.supervising()),
         );
     }
 
@@ -2653,7 +2767,12 @@ impl<'a> Harness<'a> {
     /// nothing, which for an assistant turn is the `content: null` defect one layer
     /// down (C6).
     pub fn row_len(&self, i: usize) -> u32 {
-        self.session.ledger.rows().get(i).map(|r| r.tok_len).unwrap_or(0)
+        self.session
+            .ledger
+            .rows()
+            .get(i)
+            .map(|r| r.tok_len)
+            .unwrap_or(0)
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -2841,9 +2960,13 @@ impl<'a> Harness<'a> {
         };
         let jid = letibot_tools::exec::JobId(job.to_string());
         let Some(view) = host.job(&jid) else {
-            return Err(format!("no job `{job}` here; `/job` with no argument lists them"));
+            return Err(format!(
+                "no job `{job}` here; `/job` with no argument lists them"
+            ));
         };
-        let slice = host.output(&jid, offset, limit).map_err(|e| e.to_string())?;
+        let slice = host
+            .output(&jid, offset, limit)
+            .map_err(|e| e.to_string())?;
 
         // A job that has written nothing is not an empty answer about its output:
         // whether it is still running decides what the silence means. The same
@@ -2896,17 +3019,18 @@ impl<'a> Harness<'a> {
         let seated: std::collections::BTreeSet<String> =
             schemas.iter().map(|s| s.name.clone()).collect();
 
-        let mut out = vec![format!(
-            "{} tool(s) seated in this session.",
-            schemas.len()
-        )];
+        let mut out = vec![format!("{} tool(s) seated in this session.", schemas.len())];
         out.push(String::new());
         let mut by_name = schemas;
         by_name.sort_by(|a, b| a.name.cmp(&b.name));
         for s in &by_name {
             // A tool the prompt has never heard of is marked where the eye already
             // is, rather than only in a footnote below the list.
-            let mark = if announced.contains(&s.name) { "  " } else { "! " };
+            let mark = if announced.contains(&s.name) {
+                "  "
+            } else {
+                "! "
+            };
             out.push(format!(
                 "{mark}{:<14} {:<8} {}",
                 s.name,
@@ -2958,7 +3082,11 @@ impl<'a> Harness<'a> {
     /// What answers this session's turns right now, for `/models`.
     pub fn provider_line(&self) -> String {
         match &self.provider {
-            None => format!("local — {} at {}", self.cfg.model, self.cfg.endpoint.authority()),
+            None => format!(
+                "local — {} at {}",
+                self.cfg.model,
+                self.cfg.endpoint.authority()
+            ),
             Some(p) => format!("{}/{} (metered)", p.name(), p.model()),
         }
     }
@@ -3033,8 +3161,7 @@ impl<'a> Harness<'a> {
         // The harness talking to itself, not the operator. A firing must never be
         // able to authorise the action it reports on.
         self.trail.begin_turn();
-        self.trail
-            .say(Speaker::Agent, &text, Some(Instant::now()));
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
             parts: vec![UserPart::Text { text }],
         })
@@ -3282,7 +3409,13 @@ impl<'a> Harness<'a> {
         let reseat = self.reseat_target()?;
 
         let per_item: Vec<u64> = (0..self.session.ledger.rows().len())
-            .map(|i| self.session.ledger.item_tokens(i).map(|t| t.len() as u64).unwrap_or(0))
+            .map(|i| {
+                self.session
+                    .ledger
+                    .item_tokens(i)
+                    .map(|t| t.len() as u64)
+                    .unwrap_or(0)
+            })
             .collect();
         let prefix_tokens = self.session.ledger.prefix_len() as u64;
         let window = self.cfg.context_window.unwrap_or(u64::MAX);
@@ -3308,10 +3441,18 @@ impl<'a> Harness<'a> {
                     &[],
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
-                Ok(CompactReport { fork, summary_turn: outcome, gained, lost })
+                Ok(CompactReport {
+                    fork,
+                    summary_turn: outcome,
+                    gained,
+                    lost,
+                })
             }
 
-            OverrunPlan::Hopeless { prefix_tokens, window } => Err(HarnessError::Setup(format!(
+            OverrunPlan::Hopeless {
+                prefix_tokens,
+                window,
+            } => Err(HarnessError::Setup(format!(
                 "this session's PROMPT is {prefix_tokens} token(s) of a {window} token \
                  window, so no summary of the conversation can make room however short it \
                  is. Message zero is the system prompt and the tool schemas, and compaction \
@@ -3336,7 +3477,12 @@ impl<'a> Harness<'a> {
                                 ),
                             });
                             let h = summarise_first_half(
-                                &mut self.engine, &prefix, &scratch, &items, split, &mut sink,
+                                &mut self.engine,
+                                &prefix,
+                                &scratch,
+                                &items,
+                                split,
+                                &mut sink,
                             )
                             .map_err(HarnessError::Turn)?;
                             (h, items[split..].to_vec())
@@ -3345,7 +3491,12 @@ impl<'a> Harness<'a> {
                         // which asks less of the split.
                         None => {
                             let h = summarise_overrun(
-                                &mut self.engine, &prefix, &scratch, &items, &plan, &mut sink,
+                                &mut self.engine,
+                                &prefix,
+                                &scratch,
+                                &items,
+                                &plan,
+                                &mut sink,
                             )
                             .map_err(HarnessError::Turn)?;
                             (h, Vec::new())
@@ -3369,7 +3520,12 @@ impl<'a> Harness<'a> {
                         ),
                     });
                     let h = summarise_overrun(
-                        &mut self.engine, &prefix, &scratch, &items, &plan, &mut sink,
+                        &mut self.engine,
+                        &prefix,
+                        &scratch,
+                        &items,
+                        &plan,
+                        &mut sink,
                     )
                     .map_err(HarnessError::Turn)?;
                     (h, Vec::new())
@@ -3391,7 +3547,12 @@ impl<'a> Harness<'a> {
                     &tail,
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
-                Ok(CompactReport { fork, summary_turn: outcome, gained, lost })
+                Ok(CompactReport {
+                    fork,
+                    summary_turn: outcome,
+                    gained,
+                    lost,
+                })
             }
         }
     }
@@ -3548,7 +3709,7 @@ impl<'a> Harness<'a> {
             forked_at,
             was_tokens,
             base_tokens: self.session.ledger.len(),
-                    truncated: outcome.truncated,
+            truncated: outcome.truncated,
             tail_items: tail.len(),
         })
     }
@@ -3753,9 +3914,10 @@ impl<'a> Harness<'a> {
             let outcome = loop {
                 let mut steering = self.steering();
                 let attempted = match &self.provider {
-                    None => self
-                        .engine
-                        .run_turn_steered(&mut self.session, &mut sink, &mut steering),
+                    None => {
+                        self.engine
+                            .run_turn_steered(&mut self.session, &mut sink, &mut steering)
+                    }
                     // A cloud turn: the transcript as messages, the ledger as the
                     // record. Same events, same verdicts, same TurnOk.
                     Some(p) => self.engine.run_turn_messages(
@@ -3796,69 +3958,67 @@ impl<'a> Harness<'a> {
             // that propagates — a failure whose turn id is only recorded on the
             // success path is a failure the daemon cannot name.
             self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
-            let ok: TurnOk =
-                match outcome
-                {
-                    Ok(ok) => ok,
-                    // §5.7, and the notice goes where the model will read it.
-                    // Nothing was committed, so there is no tool-call row to answer
-                    // and the notice is a user item. Bounded by the engine's own
-                    // salvage budget: the round after this one either succeeds or
-                    // comes back as `SalvageExhausted`.
-                    Err(TurnFailure::BatchTruncated { notices, .. }) => {
-                        self.append_notice(&notices.join("\n"))?;
-                        continue;
-                    }
-                    // **The operator's own sentence, because it is the only one with evidence.**
-                    //
-                    // Measured in the transcript, 2026-09-18. The model overthought its way past the
-                    // output limit and said nothing. It was sent three machine notices in a row --
-                    // "continue or say why not", "Answer again, and put the answer before the
-                    // reasoning if you are close to the limit", then the first again -- and produced
-                    // three more empty turns. Then the operator typed:
-                    //
-                    //     you keep overthinking cut it short and do things
-                    //
-                    // and the very next reasoning block opened "The operator is frustrated. Let me
-                    // cut it short and just do the thing", followed by the work, in 34 tokens of
-                    // thinking instead of thousands.
-                    //
-                    // Why the old ones failed, specifically:
-                    //   * "continue or say why not" is an OPEN QUESTION. A model that just
-                    //     overthought is being invited to deliberate, and it accepts.
-                    //   * "if you are close to the limit" is a CONDITION it has to evaluate --
-                    //     more thinking -- and it is already true, so the hedge is pure cost.
-                    //   * Neither says the thing that worked: stop thinking, act.
-                    //
-                    // So: imperative, short, no question, no condition, and it names the behaviour
-                    // rather than the mechanism. A model does not need to be told about token
-                    // limits; it needs to be told what to do next.
-                    Err(TurnFailure::EmptyLength { reason, .. }) => {
-                        self.append_notice(&format!(
-                            "You keep overthinking. Cut it short and do things. Your last \
+            let ok: TurnOk = match outcome {
+                Ok(ok) => ok,
+                // §5.7, and the notice goes where the model will read it.
+                // Nothing was committed, so there is no tool-call row to answer
+                // and the notice is a user item. Bounded by the engine's own
+                // salvage budget: the round after this one either succeeds or
+                // comes back as `SalvageExhausted`.
+                Err(TurnFailure::BatchTruncated { notices, .. }) => {
+                    self.append_notice(&notices.join("\n"))?;
+                    continue;
+                }
+                // **The operator's own sentence, because it is the only one with evidence.**
+                //
+                // Measured in the transcript, 2026-09-18. The model overthought its way past the
+                // output limit and said nothing. It was sent three machine notices in a row --
+                // "continue or say why not", "Answer again, and put the answer before the
+                // reasoning if you are close to the limit", then the first again -- and produced
+                // three more empty turns. Then the operator typed:
+                //
+                //     you keep overthinking cut it short and do things
+                //
+                // and the very next reasoning block opened "The operator is frustrated. Let me
+                // cut it short and just do the thing", followed by the work, in 34 tokens of
+                // thinking instead of thousands.
+                //
+                // Why the old ones failed, specifically:
+                //   * "continue or say why not" is an OPEN QUESTION. A model that just
+                //     overthought is being invited to deliberate, and it accepts.
+                //   * "if you are close to the limit" is a CONDITION it has to evaluate --
+                //     more thinking -- and it is already true, so the hedge is pure cost.
+                //   * Neither says the thing that worked: stop thinking, act.
+                //
+                // So: imperative, short, no question, no condition, and it names the behaviour
+                // rather than the mechanism. A model does not need to be told about token
+                // limits; it needs to be told what to do next.
+                Err(TurnFailure::EmptyLength { reason, .. }) => {
+                    self.append_notice(&format!(
+                        "You keep overthinking. Cut it short and do things. Your last \
                              turn spent its whole output on reasoning ({}) and nothing was \
                              recorded. Answer first. Reason after, or not at all.",
-                            reason.as_str()
-                        ))?;
-                        continue;
-                    }
-                    // R7: the turn stopped inside its own reasoning block and said
-                    // nothing. GLM's end-of-turn token doubles as a nameable string,
-                    // so this is self-inflicted turn-ending, and the answer is the
-                    // same shape as the two arms above — tell the model, let the loop
-                    // run. Bounded by the engine's salvage budget exactly as they are:
-                    // once the cap is spent the engine returns `SalvageExhausted` and
-                    // this arm never sees another unfinished turn.
-                    Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                        self.append_notice(
-                            "You keep overthinking. Cut it short and do things. Your last \
+                        reason.as_str()
+                    ))?;
+                    continue;
+                }
+                // R7: the turn stopped inside its own reasoning block and said
+                // nothing. GLM's end-of-turn token doubles as a nameable string,
+                // so this is self-inflicted turn-ending, and the answer is the
+                // same shape as the two arms above — tell the model, let the loop
+                // run. Bounded by the engine's salvage budget exactly as they are:
+                // once the cap is spent the engine returns `SalvageExhausted` and
+                // this arm never sees another unfinished turn.
+                Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                    self.append_notice(
+                        "You keep overthinking. Cut it short and do things. Your last \
                              turn thought until it ran out and said nothing. Stop reasoning \
                              and act now.",
-                        )?;
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
+                    )?;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
 
             // **Pair against everything the ledger took, not just the model's rows.**
             //
@@ -4120,16 +4280,15 @@ impl<'a> Harness<'a> {
         self.trail.note_items(items.len());
         let ids = sink.take_ids();
         if ids.len() != items.len() {
-            self.hub
-                .publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "record_item_pairing".into(),
-                    detail: format!(
-                        "{} TranscriptAppended events for {} items; the head will show \
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "record_item_pairing".into(),
+                detail: format!(
+                    "{} TranscriptAppended events for {} items; the head will show \
                          empty rows. This is a daemon bug, not a transport one.",
-                        ids.len(),
-                        items.len()
-                    ),
-                });
+                    ids.len(),
+                    items.len()
+                ),
+            });
         }
         for (id, item) in ids.iter().zip(items) {
             self.hub.record_item(id, item.clone());
@@ -4248,7 +4407,6 @@ impl<'a> Harness<'a> {
     }
 }
 
-
 /// How many times a round is re-attempted when the model endpoint fails.
 ///
 /// Six, doubling from a second: 1, 2, 4, 8, 16, 32 — about a minute of waiting
@@ -4307,9 +4465,7 @@ fn http_retry_after(e: &letibot_turn::HttpError, attempt: u32) -> Option<std::ti
         // The two exceptions are the 4xx that are about timing rather than
         // content: 408 is the server saying it waited too long, 429 is it saying
         // not yet.
-        letibot_turn::HttpError::Status { code, .. } => {
-            matches!(code, 408 | 429) || *code >= 500
-        }
+        letibot_turn::HttpError::Status { code, .. } => matches!(code, 408 | 429) || *code >= 500,
     };
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
 }
@@ -4500,7 +4656,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         let id = sub_id.clone();
         let spawned = std::thread::Builder::new()
-            .name(format!("subagent-{}", letibot_sessionlog::registry::short_id(&sub_id)))
+            .name(format!(
+                "subagent-{}",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ))
             .spawn(move || {
                 let slot2 = slot.clone();
                 let status = match me.run_to_completion(&id, &prompt, &spec, &mut |n| slot2.note(n))
@@ -4513,7 +4672,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Err(e) = spawned {
             // Nothing is running; say so rather than handing back a handle for a
             // child that was never started.
-            self.slots.lock().expect("task slots").retain(|(h, _)| h != &sub_id);
+            self.slots
+                .lock()
+                .expect("task slots")
+                .retain(|(h, _)| h != &sub_id);
             return Err(format!("the subagent thread could not be started: {e}"));
         }
         Ok(sub_id)
@@ -4630,7 +4792,10 @@ impl HarnessTaskRunner {
                 "opening subagent {} in a firecode VM: copying the workspace, booting",
                 letibot_sessionlog::registry::short_id(&sub_id)
             ),
-            _ => format!("opening subagent {}", letibot_sessionlog::registry::short_id(&sub_id)),
+            _ => format!(
+                "opening subagent {}",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ),
         });
         // Every early return from here on records the failure rather than leaving a
         // "running" row forever.
@@ -4787,7 +4952,14 @@ pub fn build_provider(
 fn provider_sampling(sampling: &serde_json::Value) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     if let Some(obj) = sampling.as_object() {
-        for k in ["temperature", "top_p", "seed", "max_tokens", "presence_penalty", "frequency_penalty"] {
+        for k in [
+            "temperature",
+            "top_p",
+            "seed",
+            "max_tokens",
+            "presence_penalty",
+            "frequency_penalty",
+        ] {
             if let Some(v) = obj.get(k) {
                 out.insert(k.to_string(), v.clone());
             }
@@ -4821,7 +4993,10 @@ fn downgraded_ruleset(
     let well_known: &[(Access, &[&str])] = &[
         (Access::Write, &["write", "edit", "exit_plan_mode"]),
         (Access::Exec, &["bash", "monitor", "job_kill", "lsp"]),
-        (Access::Network, &["flowy", "web_search", "web_fetch", "forge", "mcp"]),
+        (
+            Access::Network,
+            &["flowy", "web_search", "web_fetch", "forge", "mcp"],
+        ),
     ];
     let mut names: Vec<String> = Vec::new();
     for (class, known) in well_known {
@@ -4925,7 +5100,14 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                 r.tools.retain(|t| {
                     !matches!(
                         t.as_str(),
-                        "bash" | "job_list" | "job_output" | "job_wait" | "job_kill" | "monitor" | "pkill" | "ps"
+                        "bash"
+                            | "job_list"
+                            | "job_output"
+                            | "job_wait"
+                            | "job_kill"
+                            | "monitor"
+                            | "pkill"
+                            | "ps"
                     )
                 });
             }
@@ -5058,13 +5240,22 @@ mod tests {
             .filter(|r| r.action == Action::Deny)
             .map(|r| r.permission.as_str())
             .collect();
-        assert!(denied.contains(&"edit") && denied.contains(&"write") && denied.contains(&"odd_writer"), "{denied:?}");
-        assert!(!denied.contains(&"read") && !denied.contains(&"bash") && !denied.contains(&"flowy"), "{denied:?}");
+        assert!(
+            denied.contains(&"edit") && denied.contains(&"write") && denied.contains(&"odd_writer"),
+            "{denied:?}"
+        );
+        assert!(
+            !denied.contains(&"read") && !denied.contains(&"bash") && !denied.contains(&"flowy"),
+            "{denied:?}"
+        );
         // Last rule wins: the parent's allow for `edit` is overridden.
         let r = letibot_tools::permission::evaluate("edit", "anything", &[&rules]);
         assert_eq!(r.action, Action::Deny);
         // No downgrade, no change.
-        assert_eq!(downgraded_ruleset(&parent, &Downgrade::none(), &seated), parent);
+        assert_eq!(
+            downgraded_ruleset(&parent, &Downgrade::none(), &seated),
+            parent
+        );
     }
 
     #[test]
@@ -5195,13 +5386,25 @@ mod tests {
     fn an_injected_notice_is_never_read_back_as_the_operator() {
         let m = TrailMirror::default();
         m.begin_turn();
-        m.say(Speaker::Operator, "ssh to lubuntu2 and check the build", None);
-        m.say(Speaker::Agent, "[intent check] you said you would ssh", None);
+        m.say(
+            Speaker::Operator,
+            "ssh to lubuntu2 and check the build",
+            None,
+        );
+        m.say(
+            Speaker::Agent,
+            "[intent check] you said you would ssh",
+            None,
+        );
 
         let t = m.trail();
         let words: Vec<&str> = t.operator_words().iter().map(|u| u.text.as_str()).collect();
         assert_eq!(words, vec!["ssh to lubuntu2 and check the build"]);
-        assert_eq!(t.utterances.len(), 2, "both are carried, with their speakers");
+        assert_eq!(
+            t.utterances.len(),
+            2,
+            "both are carried, with their speakers"
+        );
         assert!(
             t.utterances.iter().any(|u| u.speaker == Speaker::Agent),
             "the agent's own line is carried as context and never as authority"
@@ -5219,7 +5422,10 @@ mod tests {
         let m = TrailMirror::default();
         m.note_items(41);
         let t = m.trail();
-        assert!(t.was_collected(), "somebody looked; this is not `NotCollected`");
+        assert!(
+            t.was_collected(),
+            "somebody looked; this is not `NotCollected`"
+        );
         assert!(t.operator_words().is_empty());
         match t.provenance {
             TrailProvenance::Scanned {
@@ -5395,7 +5601,10 @@ pub(crate) fn model_adjudicator(
     // The guard's own model when the operator named one, else the session's. A
     // guard on another box is a different model, and naming this session's to that
     // server is both a wrong request and a wrong disclosure.
-    let guard_model = cfg.oracle_model.clone().unwrap_or_else(|| cfg.model.clone());
+    let guard_model = cfg
+        .oracle_model
+        .clone()
+        .unwrap_or_else(|| cfg.model.clone());
     let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget)
         .with_question(cfg.oracle_question);
     if let Some(scope) = &cfg.oracle_scope {
@@ -5405,32 +5614,36 @@ pub(crate) fn model_adjudicator(
     // it. Not copied from the request's own `baseline` string: that is prose for a
     // human, and the adjudicator needs the classification.
     let surroundings = letibot_tools::intent::Surroundings::default();
-    Ok(Box::new(letibot_tools::ModelAdjudicator::new(
-        Box::new(oracle),
-        move |req: &letibot_tools::AdjudicationRequest| {
-            let cmd = req
-                .arguments
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            letibot_tools::intent::Baseline::of_command(cmd, &surroundings)
-        },
-    )
-    // **The wait, announced before it starts.** Consulting the guard costs
-    // seconds on this box, and a turn that pauses with nothing on the screen
-    // reads as a hang — the operator went to `htop` to find out whether
-    // anything was wrong. Nothing was; the guard was deciding, and nobody
-    // said so. `ToolProgress` is the one the head already renders as the
-    // latest note on the running call.
-    .with_notice(move |req: &letibot_tools::AdjudicationRequest, note: &str| {
-        if let Some(h) = &hub {
-            h.publish(SessionEvent::ToolProgress {
-                turn_id: req.turn_id.clone(),
-                call_id: req.call_id.clone(),
-                note: note.to_string(),
-            });
-        }
-    })))
+    Ok(Box::new(
+        letibot_tools::ModelAdjudicator::new(
+            Box::new(oracle),
+            move |req: &letibot_tools::AdjudicationRequest| {
+                let cmd = req
+                    .arguments
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                letibot_tools::intent::Baseline::of_command(cmd, &surroundings)
+            },
+        )
+        // **The wait, announced before it starts.** Consulting the guard costs
+        // seconds on this box, and a turn that pauses with nothing on the screen
+        // reads as a hang — the operator went to `htop` to find out whether
+        // anything was wrong. Nothing was; the guard was deciding, and nobody
+        // said so. `ToolProgress` is the one the head already renders as the
+        // latest note on the running call.
+        .with_notice(
+            move |req: &letibot_tools::AdjudicationRequest, note: &str| {
+                if let Some(h) = &hub {
+                    h.publish(SessionEvent::ToolProgress {
+                        turn_id: req.turn_id.clone(),
+                        call_id: req.call_id.clone(),
+                        note: note.to_string(),
+                    });
+                }
+            },
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -5443,7 +5656,10 @@ mod endpoint_retry {
     use letibot_turn::HttpError;
 
     fn status(code: u16) -> HttpError {
-        HttpError::Status { code, body: String::new() }
+        HttpError::Status {
+            code,
+            body: String::new(),
+        }
     }
 
     /// The exception is the whole point: a credential the server rejected is
@@ -5472,7 +5688,10 @@ mod endpoint_retry {
         // a server going down mid-answer.
         assert!(
             http_retry_after(
-                &HttpError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "no")),
+                &HttpError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "no"
+                )),
                 0
             )
             .is_some()
@@ -5485,7 +5704,11 @@ mod endpoint_retry {
     #[test]
     fn the_wait_doubles_and_the_attempts_run_out() {
         let secs: Vec<u64> = (0..MAX_HTTP_ATTEMPTS)
-            .map(|a| http_retry_after(&status(503), a).expect("retryable").as_secs())
+            .map(|a| {
+                http_retry_after(&status(503), a)
+                    .expect("retryable")
+                    .as_secs()
+            })
             .collect();
         assert_eq!(secs, vec![1, 2, 4, 8, 16, 32]);
         assert_eq!(secs.iter().sum::<u64>(), 63, "about a minute in total");
@@ -5528,7 +5751,10 @@ mod endpoint_retry {
         // something a client can tell apart from a server restarting.
         assert!(
             http_retry_after(
-                &HttpError::Status { code: 500, body: "Context size has been exceeded".into() },
+                &HttpError::Status {
+                    code: 500,
+                    body: "Context size has been exceeded".into()
+                },
                 0
             )
             .is_some(),
@@ -5536,4 +5762,3 @@ mod endpoint_retry {
         );
     }
 }
-

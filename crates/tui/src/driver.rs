@@ -130,12 +130,7 @@ pub fn tick(
                 pattern,
                 note,
             } => {
-                client.answer_with(
-                    &req_id,
-                    &option_id,
-                    pattern.as_deref(),
-                    note.as_deref(),
-                )?;
+                client.answer_with(&req_id, &option_id, pattern.as_deref(), note.as_deref())?;
             }
             Action::Resync => client.request_resync()?,
             Action::ListSessions => client.list_sessions()?,
@@ -181,8 +176,8 @@ pub fn tick(
             Action::Reseat => {
                 client.reseat(app.seq)?;
             }
-            Action::Mode { name } => {
-                client.set_mode(app.seq, &name)?;
+            Action::Mode { name, consented } => {
+                client.set_mode(app.seq, &name, consented)?;
             }
             Action::Slash { line } => {
                 client.slash(app.seq, &line)?;

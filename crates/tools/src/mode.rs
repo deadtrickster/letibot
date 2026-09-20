@@ -204,9 +204,25 @@ impl Prereq {
                  the work. `--oracle HOST:PORT` overrides it for one run"
             }
             Prereq::Confinement => {
-                "exec needs a cgroup v2 subtree and a usable unprivileged namespace; \
-                 `Bwrap` probes for one and `NoConfinement` refuses rather than running \
-                 unscoped"
+                // **This named the wrong thing and cost the operator a diagnosis.**
+                //
+                // It said exec needs a cgroup v2 subtree and an unprivileged
+                // namespace, and that `Bwrap` probes for one. All true of the exec
+                // substrate, and none of it is what this prerequisite reads:
+                // `Harness::open` sets `backend_confined` from `placement ==
+                // Firecode` and from nothing else, so on the operator's own box no
+                // bwrap probe, no cgroup and no namespace could ever have supplied
+                // it. Measured 2026-09-20 — they read this sentence, went looking at
+                // the confinement machinery, and the answer was not there.
+                //
+                // Same rule as the `Oracle` arm above, which was fixed for the same
+                // reason: name the thing the reader can actually change.
+                "this is a firecode VM placement, and only that — `Harness::open` reads \
+                 it off the placement, so no cgroup or namespace on this box supplies \
+                 it. On your own box there is no confinement to build: pick the point \
+                 with `/mode allow-all` in the head, which asks you to confirm that \
+                 this box is the boundary and then runs the session at `allow-all` \
+                 for as long as it lasts"
             }
         }
     }
@@ -256,6 +272,26 @@ pub enum Boundary {
     /// A boundary that makes the action structural: nothing here reaches the
     /// operator, so nothing asks.
     Structural,
+    /// **The operator's own box, and the operator said so.** There is no structural
+    /// boundary here: `sudo` is `sudo` on this machine, a delete outside the project
+    /// deletes the operator's file, and a new host is reached from their network. The
+    /// always-ask list exists because those reach a person who cannot consent
+    /// in-session — so this coordinate is the person consenting OUT of session,
+    /// once, in advance, with the list in front of them.
+    ///
+    /// The operator, 2026-09-20: *"make it ask for confirmation on bare host and let
+    /// it thru"*. The confirmation is the whole difference between this and
+    /// [`Boundary::Structural`]; without one this is `Structural` with the safety
+    /// argument deleted, which is why no daemon flag selects it and no `parse` of
+    /// `allow-all` reaches it. It is named separately from `Structural` so the
+    /// banner, the corpus row and this enum all keep saying which of the two facts
+    /// was true — a consented box is not a confined one, and a reader six months
+    /// from now must not have to infer that from the mode's name.
+    ///
+    /// What it does NOT move is [`Tier::Blocked`]: a secret leaving the box is layer
+    /// A's refusal, taken before any point is consulted. Consent widens what may be
+    /// done without asking; it does not repeal the flow rules.
+    OperatorConsented,
 }
 
 /// **A named coordinate.**
@@ -456,8 +492,53 @@ impl Mode {
                   confinement prerequisite is what refuses this point on a bare host.",
     };
 
+    /// **`allow-all` on a box with no boundary, which the operator consented to.**
+    ///
+    /// Identical to [`Mode::ALLOW_ALL`] on every axis but two, and both differences
+    /// are the point:
+    ///
+    ///   `boundary`   `OperatorConsented`, not `Structural`. Nothing here is
+    ///                structurally contained; a person said the sentence instead.
+    ///   `requires`   no [`Prereq::Confinement`], because there is none and that is
+    ///                the admitted fact rather than a hidden one.
+    ///
+    /// **Why this exists at all.** `allow-all` requires a confinement, and
+    /// `backend_confined` is only ever true for a firecode placement — so on the
+    /// operator's own box `allow-all` could not be reached by any route, and the
+    /// refusal sent them to build a bwrap confinement that would not have satisfied
+    /// it either. Measured 2026-09-20, their words: *"allow-all doesnt work"*, then
+    /// *"ah, interesting, but it doesnt tell me that, make it ask for confirmation on
+    /// bare host and let it thru"*.
+    ///
+    /// **The confirmation is not here.** This constant is inert on its own: what
+    /// makes it honest is that the only thing that selects it is a head that asked
+    /// the operator first. It is deliberately NOT in [`Mode::NAMED`] and so not
+    /// reachable through [`Mode::parse`] — a name that a config file, a project row
+    /// or `--mode` could carry would be consent nobody gave, recorded once and
+    /// replayed by every later daemon. It is selected by
+    /// `Harness::consent_to_allow_all` and nothing else.
+    pub const ALLOW_ALL_HERE: Mode = Mode {
+        name: "allow-all (this box, consented)",
+        role: "coder",
+        write: Disposition::Admit,
+        exec: Disposition::Admit,
+        network: Disposition::Admit,
+        grants: GrantScope::Session,
+        decider: Decider::None,
+        boundary: Boundary::OperatorConsented,
+        requires: &[Prereq::WritableBackend],
+        summary: "write, exec and network all go through without asking, the always-ask \
+                  list included — on this box, with nothing confining it, because the \
+                  operator confirmed that for this session. Only a secret leaving the \
+                  box is still refused. Lasts as long as the session: no file records \
+                  it and no later daemon starts here.",
+    };
+
     /// The named points, in widening order. The order is the one a banner lists them
     /// in and the one an operator reads as a ladder.
+    ///
+    /// [`Mode::ALLOW_ALL_HERE`] is deliberately absent: see its own doc. A point that
+    /// stands for a person's confirmation must not be selectable by a string.
     pub const NAMED: &'static [Mode] = &[
         Mode::READ_ONLY,
         Mode::ALWAYS_ASK,
@@ -557,9 +638,12 @@ impl Mode {
         match tier {
             Tier::Auto | Tier::MayApprove => self.disposition(access) == Disposition::Admit,
             // Not negotiable by a point on the operator's box, in either direction.
-            // Inside a structural boundary there is nobody the list protects — see
-            // [`Boundary`].
-            Tier::AlwaysAsk { .. } => self.boundary == Boundary::Structural,
+            // Inside a structural boundary there is nobody the list protects, and at
+            // `OperatorConsented` the person it protects took it off themselves with
+            // the list in front of them — see [`Boundary`]. Written as "not
+            // `Operator`" rather than as a two-arm match so that adding a third
+            // boundary later is a compile error here, where the decision belongs.
+            Tier::AlwaysAsk { .. } => self.boundary != Boundary::Operator,
             // Layer A's own tier — a secret disclosed across the boundary — is
             // refused by the gate before any point is consulted, and a point cannot
             // reach it. A credential in the copy is still a credential.
@@ -713,10 +797,19 @@ mod tests {
             rule: crate::adjudicate::FlowRule::SecretOffBox,
             evidence: "a key, leaving".into(),
         };
-        let always = Tier::AlwaysAsk { rule: "credential_use", why: "a key, used".into() };
+        let always = Tier::AlwaysAsk {
+            rule: "credential_use",
+            why: "a key, used".into(),
+        };
         for access in [Access::Read, Access::Write, Access::Exec, Access::Network] {
-            assert!(!m.admits_unasked(&blocked, access), "{access:?} at a blocked tier");
-            assert!(!m.admits_unasked(&always, access), "{access:?} at an always-ask tier");
+            assert!(
+                !m.admits_unasked(&blocked, access),
+                "{access:?} at a blocked tier"
+            );
+            assert!(
+                !m.admits_unasked(&always, access),
+                "{access:?} at an always-ask tier"
+            );
         }
     }
 
@@ -726,10 +819,19 @@ mod tests {
     #[test]
     fn the_sixth_point_is_named_and_reachable() {
         assert!(Mode::NAMED.iter().any(|m| m.name == "automode-edits"));
-        assert_eq!(Mode::parse("automode-edits").unwrap().name, "automode-edits");
-        assert_eq!(Mode::parse("automode_edits").unwrap().name, "automode-edits");
+        assert_eq!(
+            Mode::parse("automode-edits").unwrap().name,
+            "automode-edits"
+        );
+        assert_eq!(
+            Mode::parse("automode_edits").unwrap().name,
+            "automode-edits"
+        );
         assert_eq!(Mode::parse("acceptEdits").unwrap().name, "writes allowed");
-        assert!(Mode::parse("automode-edit").is_err(), "a near miss is named, not guessed");
+        assert!(
+            Mode::parse("automode-edit").is_err(),
+            "a near miss is named, not guessed"
+        );
     }
 
     /// The two tiers a point on the operator's box may not move, at every such point
@@ -765,6 +867,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The consented point admits the same list the confined one does**, and
+    /// refuses the same flow rules. The operator, 2026-09-20: *"make it ask for
+    /// confirmation on bare host and let it thru"* — so `let it thru` has to mean
+    /// the same thing it means inside a VM, or the confirmation bought them a
+    /// banner and not a behaviour.
+    #[test]
+    fn the_consented_point_admits_the_always_ask_list_and_still_refuses_a_flow_rule() {
+        let ask = Tier::AlwaysAsk {
+            rule: "privilege_escalation",
+            why: "test".into(),
+        };
+        let never = Tier::Blocked {
+            rule: crate::adjudicate::FlowRule::SecretToTranscript,
+            evidence: "test".into(),
+        };
+        assert_eq!(Mode::ALLOW_ALL_HERE.boundary, Boundary::OperatorConsented);
+        for access in [Access::Write, Access::Exec, Access::Network] {
+            assert!(
+                Mode::ALLOW_ALL_HERE.admits_unasked(&ask, access),
+                "{access:?}"
+            );
+            assert!(
+                !Mode::ALLOW_ALL_HERE.admits_unasked(&never, access),
+                "consent does not repeal the flow rules: {access:?}"
+            );
+        }
+    }
+
+    /// **The one thing that must stay true of a point that stands for a person's
+    /// answer: no string reaches it.** A name in a project row, a `--mode` argument
+    /// or an opencode config is consent nobody gave, replayed by every later daemon
+    /// — which is the whole failure this point was added to avoid.
+    #[test]
+    fn no_string_selects_the_consented_point() {
+        assert!(
+            !Mode::NAMED
+                .iter()
+                .any(|m| m.name == Mode::ALLOW_ALL_HERE.name)
+        );
+        for spelling in [
+            "allow-all (this box, consented)",
+            "allow-all-here",
+            "bypassPermissions",
+            "allow-all",
+        ] {
+            let got = Mode::parse(spelling);
+            assert!(
+                got.map(|m| m.name != Mode::ALLOW_ALL_HERE.name)
+                    .unwrap_or(true),
+                "`{spelling}` parsed to the consented point"
+            );
+        }
+        // And it drops only the prerequisite it cannot have. A seat with no writable
+        // backend still cannot carry it, consent or no consent.
+        assert!(!Mode::ALLOW_ALL_HERE.requires.contains(&Prereq::Confinement));
+        assert!(
+            Mode::ALLOW_ALL_HERE
+                .requires
+                .contains(&Prereq::WritableBackend)
+        );
+    }
+
+    /// The refusal has to name something the reader can change. It named cgroups and
+    /// bwrap, which on a bare host supply nothing, and the operator went looking
+    /// there. See `Prereq::how`.
+    #[test]
+    fn the_confinement_refusal_names_the_placement_and_the_way_out() {
+        let seats = Seats {
+            write: true,
+            exec: true,
+            network: true,
+        };
+        let why = Mode::ALLOW_ALL
+            .check(&[Prereq::WritableBackend], seats)
+            .expect_err("no confinement on a bare host");
+        assert!(why.contains("firecode"), "{why}");
+        assert!(why.contains("/mode allow-all"), "{why}");
+        // It may still say "cgroup" — it says it to rule it out. What it must not
+        // do is send the reader to build one, which the old text did by naming a
+        // probe that supplies this on no host at all.
+        assert!(
+            why.contains("no cgroup or namespace on this box supplies it"),
+            "{why}"
+        );
+        assert!(!why.contains("`Bwrap` probes"), "{why}");
     }
 
     /// The operator's rule, 2026-09-14: *"allow-all should be the true allow-all."*

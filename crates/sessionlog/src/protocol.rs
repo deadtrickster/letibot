@@ -397,6 +397,17 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         name: String,
+        /// **The operator confirmed an unconfined `allow-all`.** Only ever read for
+        /// that one point, and only when the session has no confinement: `allow-all`
+        /// requires one, there is none on a bare host, and the operator's answer to
+        /// "this box is the boundary — confirm?" is the whole difference between
+        /// refusing and opening. See `Mode::ALLOW_ALL_HERE`.
+        ///
+        /// `#[serde(default)]`, so an older head that never sends it is read as
+        /// *nobody confirmed anything* — the fail-closed direction, and the reason
+        /// this is additive without a `PROTOCOL_VERSION` bump.
+        #[serde(default)]
+        consented: bool,
     },
     /// A slash command the head does not handle itself, handed to the daemon as
     /// the line the operator typed, without the leading `/`: `flowy login
@@ -864,7 +875,9 @@ mod tests {
                 option_id: "allow_once".into(),
                 // The round trip must cover the glob too: an added field that is
                 // never exercised is an added field that silently stops encoding.
-                pattern: Some("crates/**/*.rs".into()), note: None },
+                pattern: Some("crates/**/*.rs".into()),
+                note: None,
+            },
             ClientFrame::ListSessions,
             ClientFrame::ListTodos,
             ClientFrame::NewSession {

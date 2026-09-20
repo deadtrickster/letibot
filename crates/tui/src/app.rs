@@ -121,7 +121,10 @@ pub enum Action {
     /// The head switches to it on the same `Sessions` reply a `NewSession` produces.
     ResumeSession(String),
     /// Name a session, or clear its name with an empty title.
-    Rename { session_id: String, title: String },
+    Rename {
+        session_id: String,
+        title: String,
+    },
     /// Compact the session this head is in: one summary turn, then the history
     /// is replaced by that summary through a transcript fork.
     Compact,
@@ -130,13 +133,22 @@ pub enum Action {
     Reseat,
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
-    Mode { name: String },
+    /// `consented` is the operator's answer to the unconfined-`allow-all`
+    /// confirmation. False for every other point, and false for `allow-all`
+    /// until they say yes — the daemon reads it only where it matters and treats
+    /// a missing answer as no.
+    Mode {
+        name: String,
+        consented: bool,
+    },
     /// Take back every prompt this head queued that the running turn has not
     /// consumed yet — the companion of a recall: Up pulled the queued line into
     /// the composer to edit it, and the original must not land behind the edit.
     WithdrawPrompts,
     /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
-    Slash { line: String },
+    Slash {
+        line: String,
+    },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
     Secret {
         req_id: String,
@@ -217,7 +229,10 @@ pub enum Key {
     /// A left-button press, 0-based screen coordinates. An open picker takes
     /// it: the row under the pointer becomes the selected row, and Enter still
     /// does the switching — select and confirm stay two acts.
-    Click { x: u16, y: u16 },
+    Click {
+        x: u16,
+        y: u16,
+    },
 }
 
 impl Key {
@@ -271,13 +286,13 @@ impl Key {
 
 /// How much of a foldable thing is on the screen.
 ///
-    /// Two states and a key that flips them, rather than a per-item toggle: the
-    /// pointer here is a wheel, not a cursor — it scrolls and selects nothing — so a
-    /// per-item affordance would still need a cursor mode, and a cursor mode is a
-    /// second keymap for a head whose whole input surface is one line. The
-    /// **discoverability** is bought instead by the fold's own header
-    /// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
-    /// the moment the operator wants it.
+/// Two states and a key that flips them, rather than a per-item toggle: the
+/// pointer here is a wheel, not a cursor — it scrolls and selects nothing — so a
+/// per-item affordance would still need a cursor mode, and a cursor mode is a
+/// second keymap for a head whose whole input surface is one line. The
+/// **discoverability** is bought instead by the fold's own header
+/// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
+/// the moment the operator wants it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fold {
     /// A title and a count. The default for reasoning, because the reasoning is
@@ -704,6 +719,19 @@ pub struct App {
     /// drift. Each opener closes the other, so the screen holds one list and
     /// the arrows mean one thing.
     mode_picker: bool,
+    /// **`allow-all`, held one keystroke short of sent.** The point admits the
+    /// always-ask list — privilege escalation, a delete outside the project, a
+    /// host never seen — and on this box those land on the operator's own
+    /// machine. `allow-all` used to refuse outright here, naming a confinement
+    /// no bare host can build; it now asks instead, and this holds the name
+    /// while it is asking. `None` means nothing is pending.
+    ///
+    /// Asked for every `allow-all`, including inside a VM where the daemon
+    /// ignores the answer and opens the structural point regardless: a head
+    /// that decided when to ask would need to know whether the session is
+    /// confined, and a head that guesses that wrong asks nothing at exactly the
+    /// coordinate worth asking at.
+    mode_confirm: Option<String>,
     /// **The same picker, over the models this daemon can reach.** The operator:
     /// *"for starters i want it to be usual menu, like /mode"*. `/models` printed
     /// a wall of provider rows and the switch — the thing anybody types it for —
@@ -1001,10 +1029,19 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("help", "the key and command reference"),
     ("status", "the bottom border's telemetry, full screen"),
     ("think", "fold or unfold the model's reasoning"),
-    ("tools", "what this conversation can call, and what it only looks like it can"),
-    ("default-model", "what a NEW session starts on; /models switches this one"),
+    (
+        "tools",
+        "what this conversation can call, and what it only looks like it can",
+    ),
+    (
+        "default-model",
+        "what a NEW session starts on; /models switches this one",
+    ),
     ("verbosity", "cycle the event-stream detail"),
-    ("config", "every setting, the runtime-editable ones editable in place"),
+    (
+        "config",
+        "every setting, the runtime-editable ones editable in place",
+    ),
     ("mode", "the mode picker — or /mode NAME to type it"),
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
@@ -1079,6 +1116,7 @@ impl App {
             help: false,
             picker: false,
             mode_picker: false,
+            mode_confirm: None,
             models_picker: false,
             quit_card: false,
             quit_sel: 0,
@@ -1287,7 +1325,10 @@ impl App {
                     // asked, and leaving it up over the session you just joined is
                     // a screen the operator has to dismiss for no reason.
                     self.picker = false;
-                    self.say(&format!("switched to {}", self.session_label(&self.session_id)));
+                    self.say(&format!(
+                        "switched to {}",
+                        self.session_label(&self.session_id)
+                    ));
                 }
                 Disposition::Control
             }
@@ -1486,7 +1527,8 @@ impl App {
         // They reach the screen as `TurnPane::calls`, which carries each call's own
         // target on the row that is about to draw it; putting them in an id-keyed
         // table as well is how a live `call_0` came to relabel a settled one.
-        if let Some(TurnState::Finished { usage, timings, .. }) = s.turn.as_ref().map(|t| &t.state) {
+        if let Some(TurnState::Finished { usage, timings, .. }) = s.turn.as_ref().map(|t| &t.state)
+        {
             // A turn that finished measured its own cache, so the percentage is
             // real even though the row's copy may not have been.
             self.usage = Some(*usage);
@@ -1530,10 +1572,10 @@ impl App {
         // rather than the note list; a question — or a log recorded before the field
         // existed — has no call to ride and stays a note. The live arm makes the same
         // split, and the two have to agree.
-        let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) =
-            s.settled_decisions
-                .into_iter()
-                .partition(|d| d.call_id.is_some());
+        let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) = s
+            .settled_decisions
+            .into_iter()
+            .partition(|d| d.call_id.is_some());
         // Everything in a snapshot is history and none of it is anchored, so it
         // goes at the top rather than being invented a position among the rows.
         self.notes = s
@@ -1855,6 +1897,28 @@ impl App {
                             // model asked for it: a call that waited on a decision
                             // did not spend that time running.
                             c.started_ms = ts;
+                            // **And the note from before it started is over.**
+                            //
+                            // `ToolProgress` notes are facts about right now, and
+                            // the ones a call collects while it is `Proposed` are
+                            // about the DECISION — "asking the guard". Only
+                            // `ToolFinished` cleared the field, so that sentence
+                            // rode the card through the whole run.
+                            //
+                            // Measured 2026-09-20 in the rano session: `cargo test
+                            // stream_tests` ran for its full 300 s deadline with
+                            // "asking the guard" underneath it the entire time. The
+                            // operator read the screen exactly as it was written and
+                            // reported the session hung requesting the oracle — the
+                            // guard had answered in milliseconds and the diagnosis
+                            // cost an hour. A stale note is worse than no note: it
+                            // is a measurement of a moment that has passed, with
+                            // nothing on it to say so.
+                            //
+                            // Cleared rather than replaced: the tool is running and
+                            // the phase already says so. A note appears again when
+                            // the tool sends one of its own.
+                            c.note = None;
                         }
                         None => t.calls.push(CallRow {
                             call_id,
@@ -2399,6 +2463,28 @@ impl App {
         if !matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
             self.notice_ttl = self.notice_ttl.min(1);
         }
+        // **The `allow-all` confirmation owns the keyboard too**, and for the same
+        // reason the password field does: a question this consequential must not be
+        // answered by a keystroke the operator aimed at the composer. Only `y`
+        // confirms. Every other key cancels, rather than only Esc — the fail-closed
+        // direction, and the one that makes a mistyped answer a no.
+        if self.mode_confirm.is_some() {
+            let name = self.mode_confirm.take().unwrap();
+            self.redraw = true;
+            return match k {
+                Key::Char('y') | Key::Char('Y') => {
+                    self.say("allow-all confirmed for this session");
+                    Some(Action::Mode {
+                        name,
+                        consented: true,
+                    })
+                }
+                _ => {
+                    self.say("allow-all cancelled — the mode did not change");
+                    None
+                }
+            };
+        }
         // **A password field owns the keyboard.** While `sudo` is waiting, every
         // key is the password's: characters and pastes go into the buffer, Enter
         // sends it, Esc or Ctrl+C refuses. Nothing reaches the composer, the
@@ -2478,7 +2564,7 @@ impl App {
                 // one thing.
                 if self.picker {
                     self.mode_picker = false;
-            self.models_picker = false;
+                    self.models_picker = false;
                 }
                 // Opening it asks for a fresh list rather than drawing the one from
                 // the attach: sessions are a shared thing, and a picker showing what
@@ -2586,7 +2672,11 @@ impl App {
                     _ => (false, 3),
                 };
                 if let Some(v) = self.sub_out.as_mut() {
-                    v.scroll = if up { v.scroll + by } else { v.scroll.saturating_sub(by) };
+                    v.scroll = if up {
+                        v.scroll + by
+                    } else {
+                        v.scroll.saturating_sub(by)
+                    };
                     self.redraw = true;
                     return None;
                 }
@@ -2601,8 +2691,12 @@ impl App {
                 if self.picker || self.mode_picker || self.models_picker {
                     return None;
                 }
-                if self.help || self.stats || self.todos_pane || self.subagents_pane
-                    || self.jobs_pane || self.config_pane
+                if self.help
+                    || self.stats
+                    || self.todos_pane
+                    || self.subagents_pane
+                    || self.jobs_pane
+                    || self.config_pane
                 {
                     // **The polarity is the opposite of the transcript's**, and
                     // getting it wrong here made PageDown a no-op that looked
@@ -2672,7 +2766,11 @@ impl App {
             match k {
                 Key::Up => {
                     let n = self.config_rows().len().max(1);
-                    self.config_sel = if self.config_sel == 0 { n - 1 } else { self.config_sel - 1 };
+                    self.config_sel = if self.config_sel == 0 {
+                        n - 1
+                    } else {
+                        self.config_sel - 1
+                    };
                     self.redraw = true;
                     return None;
                 }
@@ -2688,8 +2786,15 @@ impl App {
                 _ => {}
             }
         }
-        if (self.help || self.picker || self.mode_picker || self.models_picker || self.stats || self.todos_pane
-            || self.subagents_pane || self.jobs_pane || self.config_pane)
+        if (self.help
+            || self.picker
+            || self.mode_picker
+            || self.models_picker
+            || self.stats
+            || self.todos_pane
+            || self.subagents_pane
+            || self.jobs_pane
+            || self.config_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
             self.help = false;
@@ -3013,7 +3118,9 @@ impl App {
                         // appearing off-screen.
                         if self.repo_open {
                             self.scroll_into_view(
-                                self.repo_first_row + self.repo_sel + rows[self.repo_sel].body.len(),
+                                self.repo_first_row
+                                    + self.repo_sel
+                                    + rows[self.repo_sel].body.len(),
                             );
                         }
                         self.redraw = true;
@@ -3034,7 +3141,11 @@ impl App {
             let n = self.jobs.len();
             match k {
                 Key::Up => {
-                    self.jobs_sel = if self.jobs_sel == 0 { n - 1 } else { self.jobs_sel - 1 };
+                    self.jobs_sel = if self.jobs_sel == 0 {
+                        n - 1
+                    } else {
+                        self.jobs_sel - 1
+                    };
                     self.redraw = true;
                     return None;
                 }
@@ -3299,7 +3410,9 @@ impl App {
             .filter(|s| {
                 s.session_id.starts_with(typed)
                     || (!s.title.is_empty()
-                        && s.title.to_ascii_lowercase().contains(&typed.to_ascii_lowercase()))
+                        && s.title
+                            .to_ascii_lowercase()
+                            .contains(&typed.to_ascii_lowercase()))
             })
             .collect();
         match hits.len() {
@@ -3308,7 +3421,9 @@ impl App {
                 self.switch_to(id)
             }
             0 => {
-                self.say(&format!("no session matches {typed:?} — esc closes the list"));
+                self.say(&format!(
+                    "no session matches {typed:?} — esc closes the list"
+                ));
                 None
             }
             n => {
@@ -3385,7 +3500,38 @@ impl App {
             self.say("already that mode");
             return None;
         }
-        Some(Action::Mode { name })
+        self.mode_action(name)
+    }
+
+    /// **The one place a mode leaves the head**, so the `allow-all` confirmation
+    /// cannot be reached by one route and skipped by another. The picker, `/mode
+    /// NAME` and the config pane's cycle all end here.
+    fn mode_action(&mut self, name: String) -> Option<Action> {
+        // The literal, not `Mode::ALLOW_ALL.name`: the head does not link
+        // `letibot-tools` and does not keep a mode list — every other name it
+        // handles comes from the daemon's `SettingRow::choices`. This is the one
+        // name it has to recognise, and it is the daemon's own spelling.
+        if name == "allow-all" {
+            self.mode_confirm = Some(name);
+            self.redraw = true;
+            return None;
+        }
+        Some(Action::Mode {
+            name,
+            consented: false,
+        })
+    }
+
+    /// The line the screen shows while `mode_confirm` is set. Spells out the three
+    /// classes the point stops asking about, because "are you sure" is a question
+    /// nobody can answer.
+    fn mode_confirm_line(&self) -> Option<String> {
+        self.mode_confirm.as_ref().map(|_| {
+            "allow-all: privilege escalation, deletes outside the project and \
+             first contact with a new host all stop asking. On this box that is \
+             this box. It lasts for this session only.  [y] confirm   [esc] cancel"
+                .into()
+        })
     }
 
     /// The mode row of the daemon's last settings answer, and the two facts
@@ -3399,7 +3545,9 @@ impl App {
     /// the head keeps no list of its own to fall back on, because a second
     /// copy of a list is a copy that drifts.
     fn mode_choices(&self) -> Vec<String> {
-        self.mode_row().map(|r| r.choices.clone()).unwrap_or_default()
+        self.mode_row()
+            .map(|r| r.choices.clone())
+            .unwrap_or_default()
     }
 
     /// The settings row whichever picker is open is picking from. Only one is ever
@@ -3414,7 +3562,9 @@ impl App {
     /// daemon's own settings row: the head keeping its own copy of a list is the
     /// mistake the `mode` row's comment records.
     fn pick_choices(&self) -> Vec<String> {
-        self.pick_row().map(|r| r.choices.clone()).unwrap_or_default()
+        self.pick_row()
+            .map(|r| r.choices.clone())
+            .unwrap_or_default()
     }
 
     fn pick_current(&self) -> String {
@@ -3667,7 +3817,7 @@ impl App {
                 self.redraw = true;
                 return Some(Action::Settings);
             }
-            return Some(Action::Mode { name });
+            return self.mode_action(name);
         }
         match cmd {
             "quit" | "q" => {
@@ -3722,7 +3872,7 @@ impl App {
                 // keep between themselves.
                 if self.config_pane {
                     self.mode_picker = false;
-            self.models_picker = false;
+                    self.models_picker = false;
                 }
                 self.redraw = true;
                 // Opening asks the daemon for its settings; the head's own are
@@ -3805,8 +3955,18 @@ impl App {
                 }
                 if matches!(
                     verb,
-                    "flowy" | "models" | "model" | "login" | "supervise" | "supervised" | "gate"
-                        | "job" | "jobs" | "tools" | "default-model" | "default_model"
+                    "flowy"
+                        | "models"
+                        | "model"
+                        | "login"
+                        | "supervise"
+                        | "supervised"
+                        | "gate"
+                        | "job"
+                        | "jobs"
+                        | "tools"
+                        | "default-model"
+                        | "default_model"
                         | "default"
                 ) {
                     if self.session_id.is_empty() {
@@ -4179,9 +4339,7 @@ impl App {
             // last question it will be asked, and a list under it is a list
             // nobody is going to use.
             (None, None) if self.quit_card => self.quit_card_lines(w),
-            (None, None) if self.mode_picker || self.models_picker => {
-                self.mode_picker_lines(w)
-            }
+            (None, None) if self.mode_picker || self.models_picker => self.mode_picker_lines(w),
             (None, None) => Vec::new(),
         };
         let dec_full = dec.len();
@@ -4245,6 +4403,17 @@ impl App {
 
         let (input_rows, caret_row, caret_col) = self.composer_rows(w, rows, boxed);
         let mut chrome: Vec<String> = Vec::new();
+        // **The `allow-all` confirmation sits at the front of the chrome**, above
+        // the decision card and the composer, because while it is up every key
+        // belongs to it (see `key`) and a question that owns the keyboard has to be
+        // the thing on screen. Wrapped rather than trimmed: this one is read, not
+        // glanced at.
+        if let Some(line) = self.mode_confirm_line() {
+            let p = self.cfg.palette();
+            for l in wrap(&line, w) {
+                chrome.push(p.paint(Role::Attention, &l));
+            }
+        }
         chrome.extend(dec.into_iter().take(dec_rows));
         if show_stuck && let Some(l) = stuck {
             chrome.push(l);
@@ -4606,7 +4775,9 @@ impl App {
                         .find(|r| &r.item_id == id)
                         .is_some_and(|r| r.item.is_some())
                 })
-                && t.calls.iter().all(|c| matches!(c.state, CallState::Finished { .. }))
+                && t.calls
+                    .iter()
+                    .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
         // The rows the live pane is still drawing. An assistant row in this set
         // does **not** draw its own unsettled calls: the pane below is drawing
@@ -4722,8 +4893,8 @@ impl App {
                         // one; a blank between each of them was a third of the
                         // vertical budget spent separating things a glyph in the
                         // first column already separates.
-                        let pack = *hist_class == Some(RowClass::Activity)
-                            && class == RowClass::Activity;
+                        let pack =
+                            *hist_class == Some(RowClass::Activity) && class == RowClass::Activity;
                         if !hist_lines.is_empty() && !pack {
                             hist_lines.push(String::new());
                         }
@@ -4814,7 +4985,10 @@ impl App {
                 if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live.iter() {
-                        owned.extend(step_in(call_card(c, &cfg, now_ms, tool, self.diff_split), ind));
+                        owned.extend(step_in(
+                            call_card(c, &cfg, now_ms, tool, self.diff_split),
+                            ind,
+                        ));
                     }
                     owned.push(String::new());
                     segs.push(Seg::Owned(owned));
@@ -5026,7 +5200,10 @@ impl App {
             // is held to: a row that carries the size but not the fraction shows
             // the size and says nothing about the cache.
             if cache_measured {
-                right.push(format!("{:.0}% cached", cached as f64 * 100.0 / total as f64));
+                right.push(format!(
+                    "{:.0}% cached",
+                    cached as f64 * 100.0 / total as f64
+                ));
             }
         }
         // The last turn's speed and duration, measured when it ended. A rate nobody
@@ -5057,7 +5234,11 @@ impl App {
             right.pop();
         }
         let tail = right.join(" · ");
-        let tail_cols = if tail.is_empty() { 0 } else { tail.chars().count() + 2 };
+        let tail_cols = if tail.is_empty() {
+            0
+        } else {
+            tail.chars().count() + 2
+        };
 
         let mut left = String::new();
         left.push_str(&p.paint(Role::UserAccent, "▌ "));
@@ -5104,8 +5285,16 @@ impl App {
         };
         let (p, notes) = crate::prefs::load(&path);
         self.diff_split = p.diff == crate::prefs::DiffPref::Split;
-        self.reasoning = if p.thinking == "open" { Fold::Open } else { Fold::Folded };
-        self.tools = if p.tools == "open" { Fold::Open } else { Fold::Folded };
+        self.reasoning = if p.thinking == "open" {
+            Fold::Open
+        } else {
+            Fold::Folded
+        };
+        self.tools = if p.tools == "open" {
+            Fold::Open
+        } else {
+            Fold::Folded
+        };
         self.raw_calls = p.raw_calls;
         for n in notes {
             self.say(&n);
@@ -5157,14 +5346,30 @@ impl App {
         };
         rows.push(head(
             "diff view",
-            if self.diff_split { "split".into() } else { "unified".into() },
+            if self.diff_split {
+                "split".into()
+            } else {
+                "unified".into()
+            },
             ConfigEdit::Head(HeadSetting::Diff),
         ));
-        rows.push(head("thinking", fold_word(self.reasoning).into(), ConfigEdit::Head(HeadSetting::Thinking)));
-        rows.push(head("tool output", fold_word(self.tools).into(), ConfigEdit::Head(HeadSetting::Tools)));
+        rows.push(head(
+            "thinking",
+            fold_word(self.reasoning).into(),
+            ConfigEdit::Head(HeadSetting::Thinking),
+        ));
+        rows.push(head(
+            "tool output",
+            fold_word(self.tools).into(),
+            ConfigEdit::Head(HeadSetting::Tools),
+        ));
         rows.push(head(
             "raw tool calls",
-            if self.raw_calls { "shown".into() } else { "hidden".into() },
+            if self.raw_calls {
+                "shown".into()
+            } else {
+                "hidden".into()
+            },
             ConfigEdit::Head(HeadSetting::RawCalls),
         ));
         for r in &self.settings {
@@ -5181,7 +5386,12 @@ impl App {
                 },
             });
         }
-        for f in ["modes.tsv", "permission.json", "providers.toml", "sensitive.json"] {
+        for f in [
+            "modes.tsv",
+            "permission.json",
+            "providers.toml",
+            "sensitive.json",
+        ] {
             let path = self
                 .prefs_path
                 .as_ref()
@@ -5189,7 +5399,9 @@ impl App {
                 .map(|d| d.join(f));
             let (value, source) = match &path {
                 Some(p) if p.is_file() => {
-                    let n = std::fs::read_to_string(p).map(|t| t.lines().count()).unwrap_or(0);
+                    let n = std::fs::read_to_string(p)
+                        .map(|t| t.lines().count())
+                        .unwrap_or(0);
                     (format!("{n} lines"), p.display().to_string())
                 }
                 Some(p) => ("not present".into(), p.display().to_string()),
@@ -5264,7 +5476,7 @@ impl App {
                         let at = row.choices.iter().position(|n| n == cur).unwrap_or(0);
                         let next = row.choices[(at + 1) % row.choices.len()].clone();
                         self.say(&format!("mode → {next} (asking the daemon)"));
-                        Some(Action::Mode { name: next })
+                        self.mode_action(next)
                     }
                     "supervise" => {
                         let on = row.value.starts_with("on");
@@ -5291,7 +5503,12 @@ impl App {
         let rows = self.config_rows();
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "config")];
         out.push(String::new());
-        let keyw = rows.iter().map(|r| r.key.chars().count()).max().unwrap_or(8).min(28);
+        let keyw = rows
+            .iter()
+            .map(|r| r.key.chars().count())
+            .max()
+            .unwrap_or(8)
+            .min(28);
         let mut section = "";
         let sel = self.config_sel.min(rows.len().saturating_sub(1));
         for (i, r) in rows.iter().enumerate() {
@@ -5396,10 +5613,7 @@ impl App {
     fn todos_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
-        out.push(dim(
-            &self.cfg,
-            "  this session — the model's plan, live:",
-        ));
+        out.push(dim(&self.cfg, "  this session — the model's plan, live:"));
         if self.todos.is_empty() {
             out.push(dim(
                 &self.cfg,
@@ -5424,7 +5638,10 @@ impl App {
         ));
         self.repo_first_row = out.len();
         match &self.repo_todos {
-            None => out.push(dim(&self.cfg, "    not read yet — close and reopen the pane.")),
+            None => out.push(dim(
+                &self.cfg,
+                "    not read yet — close and reopen the pane.",
+            )),
             Some(lines) => {
                 if lines.is_empty() {
                     out.push(dim(&self.cfg, "    no sections found."));
@@ -5439,13 +5656,15 @@ impl App {
                     // `···` says an item has more without saying how much — the
                     // count would be lines, which is not a unit anybody cares
                     // about, and the only useful answer is to look.
-                    let more = if !r.body.is_empty() && !open { " ···" } else { "" };
+                    let more = if !r.body.is_empty() && !open {
+                        " ···"
+                    } else {
+                        ""
+                    };
                     out.push(match r.mark {
-                        Some(m) => format!(
-                            "{pad}{cursor}{} {}{more}",
-                            m.painted(&self.cfg),
-                            r.text
-                        ),
+                        Some(m) => {
+                            format!("{pad}{cursor}{} {}{more}", m.painted(&self.cfg), r.text)
+                        }
                         // A heading with no items: no box to paint, and the text
                         // is the operator's prose rather than a task.
                         None => dim(&self.cfg, &format!("{pad}{cursor}{}", r.text)),
@@ -5463,9 +5682,7 @@ impl App {
             &self.cfg,
             "  the file itself is in the workspace; this pane never writes it.",
         ));
-        out.into_iter()
-            .map(|l| trim_to(&l, w))
-            .collect()
+        out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
     /// The subagent tree: the subagents this session spawned, their state and their
@@ -5489,7 +5706,10 @@ impl App {
                 "failed" => ("[!]", sgr::RED),
                 _ => ("[ ]", ""),
             };
-            let picked = i == self.subagents_sel.min(self.subagents.len().saturating_sub(1));
+            let picked = i
+                == self
+                    .subagents_sel
+                    .min(self.subagents.len().saturating_sub(1));
             let left = format!(
                 "{} {} {}",
                 if picked { "▸" } else { " " },
@@ -5522,9 +5742,7 @@ impl App {
             &self.cfg,
             "    arrows move, Enter reads the subagent's output, o switches into it — subagents are hidden from ctrl-s.",
         ));
-        out.into_iter()
-            .map(|l| trim_to(&l, w))
-            .collect()
+        out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
     /// The output view: a terminal, not a document. The tail shows by default;
@@ -5635,9 +5853,7 @@ impl App {
             "    a job still shows running until the daemon says it settled — between \
              turns, that saying is the daemon's alone.",
         ));
-        out.into_iter()
-            .map(|l| trim_to(&l, w))
-            .collect()
+        out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
     fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -5796,7 +6012,11 @@ impl App {
 
     fn quit_card_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
-        let mut out = vec![colour(&self.cfg, sgr::BOLD, "leave — and what happens to the daemon")];
+        let mut out = vec![colour(
+            &self.cfg,
+            sgr::BOLD,
+            "leave — and what happens to the daemon",
+        )];
         for (i, (name, why)) in self.quit_choices().iter().enumerate() {
             let picked = i == self.quit_sel.min(1);
             let mark = if picked { "▸" } else { " " };
@@ -6045,8 +6265,7 @@ impl App {
         // promised *"tell the model why"* and the card never said how — so the
         // why was typed into the composer, refused by `match_option`, and left
         // sitting there while nothing was answered.
-        if d
-            .options
+        if d.options
             .iter()
             .any(|o| o.kind == letibot_sessionlog::event::OptionKind::RejectAlways)
         {
@@ -6118,7 +6337,10 @@ impl App {
         let count = if t.tokens > 0 {
             Some(format!(" · {} tok", progress::thousands(t.tokens)))
         } else if t.out_chars > 0 {
-            Some(format!(" · {} chars", progress::thousands(t.out_chars as u64)))
+            Some(format!(
+                " · {} chars",
+                progress::thousands(t.out_chars as u64)
+            ))
         } else {
             None
         };
@@ -6362,10 +6584,7 @@ impl App {
 /// somebody who wrote `allow_once src/**` meant the rule to cover `src/**`, and
 /// silently granting one call instead is the answer they did not give. Returning
 /// `None` leaves the line in the composer, where they can see it.
-fn match_option(
-    d: &OpenDecision,
-    typed: &str,
-) -> Option<(String, Option<String>, Option<String>)> {
+fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>, Option<String>)> {
     let line = typed.trim();
     let (word, rest) = match line.split_once(char::is_whitespace) {
         Some((w, r)) => (w, r.trim()),
@@ -6729,7 +6948,11 @@ fn split_row(left: &str, right: &str, w: usize) -> String {
 
 /// The last non-empty line of a growing document, trimmed to fit.
 fn last_line(raw: &str, cfg: &RenderConfig) -> String {
-    let l = raw.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let l = raw
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
     trim_to(l.trim(), cfg.width.saturating_sub(4))
 }
 
@@ -7010,7 +7233,10 @@ fn render_todo_md(body: &str) -> Vec<TodoRow> {
     for line in body.lines() {
         // `##` and deeper: `###` is a subsection and its items belong to it, not
         // to the `##` above, which is what org's outline says too.
-        if let Some(name) = line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
+        if let Some(name) = line
+            .strip_prefix("## ")
+            .or_else(|| line.strip_prefix("### "))
+        {
             flush(&mut out, &section, &items);
             section = Some(name.trim().to_string());
             items.clear();
@@ -7050,45 +7276,129 @@ fn strip_markup(text: &str) -> String {
 
 fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
     let rows = [
-        ("enter", "send what you typed; while a turn runs it is queued as a follow-up"),
-        ("alt+enter", "a newline inside the prompt, without sending it"),
-        ("esc esc", "interrupt the running turn — twice, within five seconds"),
-        ("ctrl-c", "clear what you typed; twice on an empty prompt, within a second, quits"),
-        ("↑ ↓", "move inside the prompt, then walk the prompts you have sent"),
-        ("pgup pgdn", "scroll the transcript; esc returns to following the stream"),
+        (
+            "enter",
+            "send what you typed; while a turn runs it is queued as a follow-up",
+        ),
+        (
+            "alt+enter",
+            "a newline inside the prompt, without sending it",
+        ),
+        (
+            "esc esc",
+            "interrupt the running turn — twice, within five seconds",
+        ),
+        (
+            "ctrl-c",
+            "clear what you typed; twice on an empty prompt, within a second, quits",
+        ),
+        (
+            "↑ ↓",
+            "move inside the prompt, then walk the prompts you have sent",
+        ),
+        (
+            "pgup pgdn",
+            "scroll the transcript; esc returns to following the stream",
+        ),
         ("wheel", "scroll the transcript; shift+drag selects text"),
-        ("ctrl-a ctrl-e", "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks"),
-        ("ctrl-z", "undo — a word at a time, and a kill is always its own step"),
-        ("paste", "five lines or more collapses to a marker and is sent in full"),
-        ("ctrl-s", "the session list: type a number or part of a name to switch"),
-        ("tab", "complete the /command being typed; more tabs walk the matches"),
-        ("click", "in the session list, picks the row under the pointer; enter still switches"),
-        ("ctrl-p", "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves, enter or tab unfolds an item, pgup/pgdn scrolls"),
-        ("/new [title]", "start a session in this daemon and go there"),
-        ("/switch WHAT", "go to a session by number, id or part of its name"),
+        (
+            "ctrl-a ctrl-e",
+            "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks",
+        ),
+        (
+            "ctrl-z",
+            "undo — a word at a time, and a kill is always its own step",
+        ),
+        (
+            "paste",
+            "five lines or more collapses to a marker and is sent in full",
+        ),
+        (
+            "ctrl-s",
+            "the session list: type a number or part of a name to switch",
+        ),
+        (
+            "tab",
+            "complete the /command being typed; more tabs walk the matches",
+        ),
+        (
+            "click",
+            "in the session list, picks the row under the pointer; enter still switches",
+        ),
+        (
+            "ctrl-p",
+            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves, enter or tab unfolds an item, pgup/pgdn scrolls",
+        ),
+        (
+            "/new [title]",
+            "start a session in this daemon and go there",
+        ),
+        (
+            "/switch WHAT",
+            "go to a session by number, id or part of its name",
+        ),
         ("ctrl-r", "fold or unfold the model's thinking"),
         ("ctrl-t", "fold or unfold tool output"),
-        ("ctrl-x", "show the raw <function=…> text of tool calls, as the model wrote it"),
+        (
+            "ctrl-x",
+            "show the raw <function=…> text of tool calls, as the model wrote it",
+        ),
         ("ctrl-l", "repaint the screen"),
-        ("/status", "this head's counters — dropped, scrubbed, resync — and what each means"),
-        ("/verbosity", "terse → normal → loud; /status counts what has been filtered"),
+        (
+            "/status",
+            "this head's counters — dropped, scrubbed, resync — and what each means",
+        ),
+        (
+            "/verbosity",
+            "terse → normal → loud; /status counts what has been filtered",
+        ),
         ("/interrupt", "interrupt, when a key is awkward"),
-        ("/compact", "summarize this session down to one record; the old transcript is forked, not lost"),
-        ("/mode", "move this project to a point: read-only, always-ask, writes-allowed, automode, automode-edits, allow-all (next session)"),
-        ("/supervise", "the guard model answers every gated call before you do, from the next call — on, off, status"),
-        ("/gate", "what the gate decided, and rule on it afterwards: recent, todo, corpus, ok|grant|revoke ID"),
-        ("/flowy", "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout"),
-        ("/models", "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local"),
-        ("/job", "read a background job's output: /job lists them, /job ID prints it, --offset N resumes"),
-        ("/tools", "the tools seated here — and any the prompt has never been told about, which the model cannot call"),
-        ("/default-model", "what a NEW session starts on: /default-model PROVIDER/MODEL, or `local` to clear it. Not this conversation — that is /models"),
-        ("/resync", "throw this head's state away and take a fresh snapshot"),
-        ("/quit", "detach. The turn keeps running: idle means quiet, not unwatched"),
+        (
+            "/compact",
+            "summarize this session down to one record; the old transcript is forked, not lost",
+        ),
+        (
+            "/mode",
+            "move this project to a point: read-only, always-ask, writes-allowed, automode, automode-edits, allow-all (next session)",
+        ),
+        (
+            "/supervise",
+            "the guard model answers every gated call before you do, from the next call — on, off, status",
+        ),
+        (
+            "/gate",
+            "what the gate decided, and rule on it afterwards: recent, todo, corpus, ok|grant|revoke ID",
+        ),
+        (
+            "/flowy",
+            "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout",
+        ),
+        (
+            "/models",
+            "which model answers: /models lists them with their auth; /models deepseek/deepseek-chat switches and sticks; /models local",
+        ),
+        (
+            "/job",
+            "read a background job's output: /job lists them, /job ID prints it, --offset N resumes",
+        ),
+        (
+            "/tools",
+            "the tools seated here — and any the prompt has never been told about, which the model cannot call",
+        ),
+        (
+            "/default-model",
+            "what a NEW session starts on: /default-model PROVIDER/MODEL, or `local` to clear it. Not this conversation — that is /models",
+        ),
+        (
+            "/resync",
+            "throw this head's state away and take a fresh snapshot",
+        ),
+        (
+            "/quit",
+            "detach. The turn keeps running: idle means quiet, not unwatched",
+        ),
     ];
-    let mut out = vec![
-        colour(cfg, sgr::BOLD, "keys and commands"),
-        String::new(),
-    ];
+    let mut out = vec![colour(cfg, sgr::BOLD, "keys and commands"), String::new()];
     for (k, v) in rows {
         let head = format!("  {k:<16}");
         for (i, l) in wrap(v, w.saturating_sub(19)).into_iter().enumerate() {
@@ -7188,14 +7498,24 @@ fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     let mut out = vec![p.paint(Role::Faint, "┌─ raw tool call · ctrl-x")];
     for l in raw.lines() {
         for w in wrap(l, cfg.width.saturating_sub(2)) {
-            out.push(format!("{}{}", p.paint(Role::Faint, "│ "), p.paint(Role::Code, &w)));
+            out.push(format!(
+                "{}{}",
+                p.paint(Role::Faint, "│ "),
+                p.paint(Role::Code, &w)
+            ));
         }
     }
     out.push(p.paint(Role::Faint, "└─"));
     out
 }
 
-fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_split: bool) -> Vec<String> {
+fn call_card(
+    c: &CallRow,
+    cfg: &RenderConfig,
+    now_ms: u64,
+    fold: Fold,
+    diff_split: bool,
+) -> Vec<String> {
     let mut card = card::Card::new(&c.name, &c.call_id);
     // §4.1, fixed. `ToolCallProposed` now carries a bounded display target beside
     // the digest — the path, the pattern, the command line — so a call that is
@@ -7210,7 +7530,9 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
     // decides what the header says, and the body decision needs both.
     let mut edit_excerpt: Option<letibot_sessionlog::event::ToolEdit> = None;
     card.phase = match &c.state {
-        CallState::Proposed => card::Phase::Proposed { note: c.note.clone() },
+        CallState::Proposed => card::Phase::Proposed {
+            note: c.note.clone(),
+        },
         CallState::Running => card::Phase::Running {
             elapsed_ms: now_ms.saturating_sub(c.started_ms),
             note: c.note.clone(),
@@ -7267,9 +7589,7 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             // actually have — or the frame trims the right panel's tail off
             // and the diff lies by omission. The transcript's own diff arm
             // does the same arithmetic at its `let w`.
-            width: cfg
-                .width
-                .saturating_sub(2 + activity_indent(cfg.width)),
+            width: cfg.width.saturating_sub(2 + activity_indent(cfg.width)),
             palette: cfg.palette(),
             // The excerpt already carries ±3 lines of context around the
             // change; re-diffing with the same keeps it intact.
@@ -7279,7 +7599,13 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
             max_rows: 60,
         };
         body = sidediff::render_edit_view(
-            &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
+            &e.path,
+            &e.before,
+            &e.after,
+            e.before_start,
+            e.after_start,
+            &dcfg,
+            view,
         );
         if e.truncated {
             body.push(cfg.palette().paint(
@@ -7307,10 +7633,10 @@ fn call_card(c: &CallRow, cfg: &RenderConfig, now_ms: u64, fold: Fold, diff_spli
         } else {
             format!("{} {}", d.by.kind, d.by.identity)
         };
-        body.push(cfg.palette().paint(
-            Role::Faint,
-            &format!("· {word}, by {who}"),
-        ));
+        body.push(
+            cfg.palette()
+                .paint(Role::Faint, &format!("· {word}, by {who}")),
+        );
         if fold.is_open() {
             for l in decision_detail(d, cfg.width.saturating_sub(4)) {
                 body.push(cfg.palette().paint(Role::Faint, &format!("  {l}")));
@@ -7412,7 +7738,10 @@ fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
         } else {
             " ".repeat(w.saturating_sub(2).saturating_sub(visible_width(l)))
         };
-        out.push(format!("{bar} {}", p.paint(Role::UserBlock, &format!("{l}{tail}"))));
+        out.push(format!(
+            "{bar} {}",
+            p.paint(Role::UserBlock, &format!("{l}{tail}"))
+        ));
     }
     out
 }
@@ -7661,7 +7990,11 @@ fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet
 /// out of every line is a bigger fraction than the hierarchy is worth — the same
 /// trade `App::gutter` makes at forty.
 fn activity_indent(w: usize) -> usize {
-    if w >= 60 { card::REASONING_RAIL_WIDTH } else { 0 }
+    if w >= 60 {
+        card::REASONING_RAIL_WIDTH
+    } else {
+        0
+    }
 }
 
 /// Drop a leading line-number gutter — `     1| ` — from one line of tool output.
@@ -7803,7 +8136,10 @@ fn decision_lines(
 /// has one slot and wants the name: `glm-5.3-flash`, or the provider pair, which
 /// is worth its width because it is also how you can tell you are being billed.
 fn header_model(value: &str) -> String {
-    match value.strip_prefix("local (").and_then(|v| v.strip_suffix(')')) {
+    match value
+        .strip_prefix("local (")
+        .and_then(|v| v.strip_suffix(')'))
+    {
         Some(alias) => alias.to_string(),
         None => value.to_string(),
     }
@@ -7847,13 +8183,20 @@ fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
     if !d.basis.is_empty() {
         // Named by the decider's own kind, so "decided:" never stands in for a
         // model when a person chose, or the reverse.
-        let who = if d.by.kind.is_empty() { "decided" } else { &d.by.kind };
+        let who = if d.by.kind.is_empty() {
+            "decided"
+        } else {
+            &d.by.kind
+        };
         out.extend(wrap(&format!("{who}: {}", d.basis), w));
     }
     match &d.advice {
         Some(a) => {
             out.extend(wrap(
-                &format!("oracle ({}, {}ms) would {}: {}", a.by, a.latency_ms, a.would, a.basis),
+                &format!(
+                    "oracle ({}, {}ms) would {}: {}",
+                    a.by, a.latency_ms, a.would, a.basis
+                ),
                 w,
             ));
             // **Empty cites is loud.** An authorisation the oracle could not ground
@@ -7941,7 +8284,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             }
             (RowClass::Activity, out)
         }
-        TranscriptItem::Assistant { text, tool_calls, .. } => {
+        TranscriptItem::Assistant {
+            text, tool_calls, ..
+        } => {
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
@@ -8014,10 +8359,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 // bytes, same question — and saying which one you are looking at is
                 // the difference between evidence and a guess.
                 if raw && !c.arguments.is_empty() {
-                    out.extend(raw_call_lines(
-                        cfg,
-                        &format!("{} {}", c.name, c.arguments),
-                    ));
+                    out.extend(raw_call_lines(cfg, &format!("{} {}", c.name, c.arguments)));
                 }
             }
             // A row that says something is speech; a row that only names calls is
@@ -8127,9 +8469,12 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // A path is shortened from its LEFT at a separator — the end of a path
             // is what identifies it, and `crates/tui/src/…` names nothing.
             let word = outcome_word(outcome);
-            let tail_cols = 3 + visible_width(word)
+            let tail_cols = 3
+                + visible_width(word)
                 + visible_width(&took)
-                + 3 + 6 + lines.len().to_string().len();
+                + 3
+                + 6
+                + lines.len().to_string().len();
             let lead = format!("{mark} {verb} ");
             let subject = shorten_subject(
                 &subject,
@@ -8155,9 +8500,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 // diff block, so the change was nowhere on the screen even when
                 // the head held both sides.
                 && edit.is_none())
-                .then(|| strip_gutter(lines[0]))
-                .filter(|l| !l.is_empty())
-                .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
+            .then(|| strip_gutter(lines[0]))
+            .filter(|l| !l.is_empty())
+            .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
             if let Some(l) = inline {
                 head.push_str(&p.paint(Role::Faint, " · "));
                 head.push_str(&p.paint(Role::Plain, &l));
@@ -8274,15 +8619,28 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 };
                 let view = sidediff::edit_view(diff_split);
                 let mut rows = sidediff::render_edit_view(
-                    &e.path, &e.before, &e.after, e.before_start, e.after_start, &dcfg, view,
+                    &e.path,
+                    &e.before,
+                    &e.after,
+                    e.before_start,
+                    e.after_start,
+                    &dcfg,
+                    view,
                 );
                 if e.truncated {
                     rows.push(p.paint(
                         Role::Faint,
-                        &format!("… the excerpt was capped; the file is {} lines now", e.after_lines),
+                        &format!(
+                            "… the excerpt was capped; the file is {} lines now",
+                            e.after_lines
+                        ),
                     ));
                 }
-                let keep = if tools.is_open() { rows.len() } else { 8.min(rows.len()) };
+                let keep = if tools.is_open() {
+                    rows.len()
+                } else {
+                    8.min(rows.len())
+                };
                 let hidden = rows.len() - keep;
                 out.extend(rows.into_iter().take(keep).map(|l| format!("  {l}")));
                 if hidden > 0 {
@@ -8323,10 +8681,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 step_in(out.into_iter().map(|l| trim_to(&l, w)).collect(), ind),
             )
         }
-        TranscriptItem::SegmentMark { label, .. } => (
-            RowClass::Other,
-            vec![dim(cfg, &format!("─── {label} ───"))],
-        ),
+        TranscriptItem::SegmentMark { label, .. } => {
+            (RowClass::Other, vec![dim(cfg, &format!("─── {label} ───"))])
+        }
     }
 }
 
@@ -8391,17 +8748,31 @@ fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
                 O::Selected { option_id } => (format!("REFUSED ({option_id})"), sgr::RED),
                 O::Cancelled => ("cancelled".to_string(), sgr::YELLOW),
                 // A deadline is not an answer, and must not read like one.
-                O::TimedOut => ("NOT ANSWERED — the deadline decided it".to_string(), sgr::RED),
+                O::TimedOut => (
+                    "NOT ANSWERED — the deadline decided it".to_string(),
+                    sgr::RED,
+                ),
             };
             let who = if d.by.identity.is_empty() {
                 d.by.kind.clone()
             } else {
                 format!("{} {}", d.by.kind, d.by.identity)
             };
-            let late = if d.late { " · an answer arrived after it had settled" } else { "" };
+            let late = if d.late {
+                " · an answer arrived after it had settled"
+            } else {
+                ""
+            };
             wrap(
-                &format!("? {} — {word}, by {who}{}{late}", d.summary,
-                    if d.basis.is_empty() { String::new() } else { format!(" ({})", d.basis) }),
+                &format!(
+                    "? {} — {word}, by {who}{}{late}",
+                    d.summary,
+                    if d.basis.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", d.basis)
+                    }
+                ),
                 cfg.width,
             )
             .into_iter()
@@ -8465,7 +8836,11 @@ mod tests {
     #[test]
     fn an_answer_can_carry_the_operators_own_glob() {
         use letibot_sessionlog::event::OptionKind;
-        let d = decision_with(&[OptionKind::AllowOnce, OptionKind::AllowAlways, OptionKind::RejectOnce]);
+        let d = decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::AllowAlways,
+            OptionKind::RejectOnce,
+        ]);
 
         // The bare id still answers, and asks for no pattern.
         assert_eq!(
@@ -8479,7 +8854,11 @@ mod tests {
         // lowercased the way the option id is.
         assert_eq!(
             match_option(&d, "allow_always crates/**/Cargo.toml"),
-            Some(("allow_always".into(), Some("crates/**/Cargo.toml".into()), None))
+            Some((
+                "allow_always".into(),
+                Some("crates/**/Cargo.toml".into()),
+                None
+            ))
         );
 
         // **A glob on anything but `allow_always` is refused, not dropped.**
@@ -8560,11 +8939,15 @@ mod tests {
         let with = decision_with(&[OptionKind::AllowOnce, OptionKind::AllowAlways]);
         let without = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
         assert!(
-            a.decision_lines(&with, 100).iter().any(|l| l.contains("allow_always <glob>")),
+            a.decision_lines(&with, 100)
+                .iter()
+                .any(|l| l.contains("allow_always <glob>")),
             "an always-allow on offer says how to scope it"
         );
         assert!(
-            !a.decision_lines(&without, 100).iter().any(|l| l.contains("<glob>")),
+            !a.decision_lines(&without, 100)
+                .iter()
+                .any(|l| l.contains("<glob>")),
             "a request with no rule to write must not advertise one"
         );
     }
@@ -8594,9 +8977,21 @@ mod tests {
 
         // The question above it names the tool and the access, and does NOT repeat
         // the command or carry layer A's vocabulary.
-        assert!(lines[0].contains("`bash` wants exec access"), "{}", lines[0]);
-        assert!(!lines[0].contains(cmd), "the command is back in the headline: {}", lines[0]);
-        assert!(!lines[0].contains("intents"), "the taxonomy is back on top: {}", lines[0]);
+        assert!(
+            lines[0].contains("`bash` wants exec access"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            !lines[0].contains(cmd),
+            "the command is back in the headline: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[0].contains("intents"),
+            "the taxonomy is back on top: {}",
+            lines[0]
+        );
 
         // And layer A is still there, under it, for whoever wants it.
         assert!(
@@ -8613,8 +9008,14 @@ mod tests {
             ask_without_target("`bash` wants exec access to `ls -la`", "ls -la").as_deref(),
             Some("`bash` wants exec access")
         );
-        assert_eq!(ask_without_target("something else entirely", "ls -la"), None);
-        assert_eq!(ask_without_target("`web_search` wants network access", ""), None);
+        assert_eq!(
+            ask_without_target("something else entirely", "ls -la"),
+            None
+        );
+        assert_eq!(
+            ask_without_target("`web_search` wants network access", ""),
+            None
+        );
     }
 
     /// **`/cells` sends the rows this head drew, with the operator's message.**
@@ -8640,20 +9041,29 @@ mod tests {
         assert!(text.starts_with("look at this\n\n"), "{text}");
         assert!(text.contains("100x12"), "the head's real size: {text}");
         // Delimited at both ends, so the model can see where the picture stops.
-        assert!(text.contains(CELLS_OPEN) && text.contains(CELLS_CLOSE), "{text}");
+        assert!(
+            text.contains(CELLS_OPEN) && text.contains(CELLS_CLOSE),
+            "{text}"
+        );
 
         // And the transcript shows the words plus one line, not the screen again.
         let folded = fold_cells(&text).expect("a cells message folds");
         assert!(folded.starts_with("look at this"), "{folded}");
         assert!(folded.contains("rows of this screen (100x12)"), "{folded}");
-        assert!(!folded.contains(CELLS_OPEN), "the marker leaked into the fold: {folded}");
+        assert!(
+            !folded.contains(CELLS_OPEN),
+            "the marker leaked into the fold: {folded}"
+        );
         assert_eq!(folded.lines().count(), 2, "one message, one note: {folded}");
         // An ordinary message is left exactly alone.
         assert_eq!(fold_cells("just a message"), None);
         // The rows themselves, not a summary of them.
         let drawn = a.screen(100, 12);
         let last = drawn.last().expect("a frame has rows");
-        assert!(text.contains(last.as_str()), "the rows are not in the message");
+        assert!(
+            text.contains(last.as_str()),
+            "the rows are not in the message"
+        );
 
         // The pending row holds what was SENT, byte for byte — that is what the
         // transcript's user item will match when it lands.
@@ -8662,7 +9072,10 @@ mod tests {
         // And it is DRAWN folded: the operator's words and one line, never a copy
         // of the screen inside the screen.
         let drawn = queued_lines(echo, &a.cfg);
-        assert!(drawn.iter().any(|l| l.contains("look at this")), "{drawn:#?}");
+        assert!(
+            drawn.iter().any(|l| l.contains("look at this")),
+            "{drawn:#?}"
+        );
         assert!(
             drawn.iter().any(|l| l.contains("rows of this screen")),
             "{drawn:#?}"
@@ -8702,7 +9115,10 @@ mod tests {
         // separate entries.
         a.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
         typed(&mut a, "fresh question");
-        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("fresh question".into())));
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("fresh question".into()))
+        );
         assert_eq!(a.pending_prompts.len(), 2);
     }
 
@@ -8877,13 +9293,23 @@ mod tests {
         let lines = note_lines(&a.cfg, &note.1);
         // One sentence, so at most a wrap of one. The thing being measured is that
         // it is not a paragraph per unresolved construct.
-        assert!(lines.len() <= 2, "a wall again, {} lines: {lines:#?}", lines.len());
+        assert!(
+            lines.len() <= 2,
+            "a wall again, {} lines: {lines:#?}",
+            lines.len()
+        );
         let l = lines.join(" ");
         let l = &l;
         assert!(l.contains("bash not_run"), "{l}");
-        assert!(l.contains("meaning does not exist yet"), "the gist survived: {l}");
+        assert!(
+            l.contains("meaning does not exist yet"),
+            "the gist survived: {l}"
+        );
         // Not the paragraph, not the id, not the loud register.
-        assert!(!l.contains("parameter_expansion"), "the model's detail leaked: {l}");
+        assert!(
+            !l.contains("parameter_expansion"),
+            "the model's detail leaked: {l}"
+        );
         assert!(!l.contains("adj-s-"), "an id nobody can use: {l}");
         assert!(!l.contains('!'), "still shouting: {l}");
     }
@@ -8895,14 +9321,20 @@ mod tests {
     fn a_reason_that_is_a_document_folds_to_its_first_sentence() {
         assert!(is_envelope("<<<TOOL_ERROR 5ebfdef6>>>"));
         assert!(is_envelope("  <<<END_TOOL_ERROR 5ebfdef6>>>  "));
-        assert!(!is_envelope("< < <TOOL_ERROR 5ebfdef6>>>"), "a neutralised body line");
+        assert!(
+            !is_envelope("< < <TOOL_ERROR 5ebfdef6>>>"),
+            "a neutralised body line"
+        );
         assert!(!is_envelope("error: could not find `Cargo.toml`"));
 
         let doc = "this command's meaning does not exist yet, so nothing can decide \
                    about it. The grammar read 315 bytes and could not resolve:\n  \
                    parameter_expansion at 1:2 decides the assignment";
         let gist = first_sentence(doc);
-        assert_eq!(gist, "this command's meaning does not exist yet, so nothing can decide about it.");
+        assert_eq!(
+            gist,
+            "this command's meaning does not exist yet, so nothing can decide about it."
+        );
         assert!(!gist.contains("parameter_expansion"));
         // A reason that IS a sentence is left exactly alone.
         let one = "the workspace has no writable backend";
@@ -9028,7 +9460,10 @@ mod tests {
         let border = a.status_line(200);
         assert!(border.contains("dropped 12"), "{border}");
         assert!(border.contains("resync 1"), "{border}");
-        assert!(border.contains("/status"), "and says where the rest is: {border}");
+        assert!(
+            border.contains("/status"),
+            "and says where the rest is: {border}"
+        );
     }
 
     #[test]
@@ -9062,7 +9497,10 @@ mod tests {
         // denied tool call left a prompt on the screen and then nothing where the
         // answer should have been.
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm -rf /"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::requested("r1", "rm -rf /"),
+        )));
         a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
         let screen = a.screen(120, 16).join("\n");
         assert!(screen.contains("rm -rf /"), "{screen}");
@@ -9086,8 +9524,14 @@ mod tests {
         let mut a = app();
         // A turn with one call, gated by a permission the oracle allowed.
         a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
-        a.apply(ServerFrame::Event(env(2, testing::requested("r1", "run rm -rf"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::proposed("t1", "c1", "bash"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::requested("r1", "run rm -rf"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::DecisionAnswered {
@@ -9105,18 +9549,28 @@ mod tests {
         )));
         // The decision rides the call's card, not the note list.
         let t = a.turn.as_ref().expect("a turn");
-        let c = t.calls.iter().find(|c| c.call_id == "c1").expect("the call");
+        let c = t
+            .calls
+            .iter()
+            .find(|c| c.call_id == "c1")
+            .expect("the call");
         assert_eq!(c.decision.as_ref().expect("the decision").by.kind, "model");
         // Folded: one dim line, who decided and how. Open: what was asked and the reply.
         let folded = call_card(c, &plain_cfg(120), 0, Fold::Folded, true).join("\n");
         assert!(folded.contains("allowed, by model oracle"), "{folded}");
-        assert!(!folded.contains("oracle:"), "folded shows no reply: {folded}");
+        assert!(
+            !folded.contains("oracle:"),
+            "folded shows no reply: {folded}"
+        );
         let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
         assert!(open.contains("asked: run rm -rf"), "{open}");
         // The basis is labelled by whoever DECIDED — here a model — and never as
         // the oracle's, which it is not. No oracle advised this one, and the card
         // says so rather than leaving a blank that reads like silence.
-        assert!(open.contains("model: the operator asked for this"), "{open}");
+        assert!(
+            open.contains("model: the operator asked for this"),
+            "{open}"
+        );
         assert!(open.contains("no oracle was consulted"), "{open}");
     }
 
@@ -9129,7 +9583,10 @@ mod tests {
     fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::proposed("t1", "c1", "bash"),
+        )));
         // The ask, carrying the oracle's verdict the way `/supervise` poses it.
         a.apply(ServerFrame::Event(env(
             2,
@@ -9172,7 +9629,11 @@ mod tests {
         )));
 
         let t = a.turn.as_ref().expect("a turn");
-        let c = t.calls.iter().find(|c| c.call_id == "c1").expect("the call");
+        let c = t
+            .calls
+            .iter()
+            .find(|c| c.call_id == "c1")
+            .expect("the call");
         let d = c.decision.as_ref().expect("the decision");
         // The advice survived the settle. It used to be dropped here.
         assert!(d.advice.is_some(), "the oracle's reply was carried across");
@@ -9186,9 +9647,15 @@ mod tests {
         );
         // The oracle's, under the oracle's, with what it would have done and what
         // it grounded that in.
-        assert!(open.contains("oracle (glm-5.3-flash, 2100ms) would admit"), "{open}");
+        assert!(
+            open.contains("oracle (glm-5.3-flash, 2100ms) would admit"),
+            "{open}"
+        );
         assert!(open.contains("clean rebuild in this turn"), "{open}");
-        assert!(open.contains("oracle cited: rebuild it from scratch"), "{open}");
+        assert!(
+            open.contains("oracle cited: rebuild it from scratch"),
+            "{open}"
+        );
         // And the thing that must never happen again.
         assert!(
             !open.contains("oracle (glm-5.3-flash, 2100ms) would admit: dead chose"),
@@ -9235,8 +9702,14 @@ mod tests {
         let mut a = app();
         // A turn with one call, gated by a permission the oracle allowed.
         a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
-        a.apply(ServerFrame::Event(env(2, testing::requested("r1", "run rm -rf"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::proposed("t1", "c1", "bash"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::requested("r1", "run rm -rf"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::DecisionAnswered {
@@ -9276,7 +9749,10 @@ mod tests {
                 edit: None,
             },
         )));
-        a.apply(ServerFrame::Event(env(6, testing::appended("i1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            testing::appended("i1", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             7,
             SessionEvent::TranscriptContent {
@@ -9293,11 +9769,17 @@ mod tests {
         a.apply(ServerFrame::Event(env(8, testing::turn_finished("t1"))));
         // The decision rode the live card; the result row took the call over, and
         // the approval carried across with it, keyed by the row's item id.
-        assert!(a.call_decisions.contains_key("i1"), "the decision carried across");
+        assert!(
+            a.call_decisions.contains_key("i1"),
+            "the decision carried across"
+        );
         // Folded: one dim line, who decided and how.
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("allowed, by model oracle"), "{screen}");
-        assert!(!screen.contains("oracle:"), "folded shows no reply: {screen}");
+        assert!(
+            !screen.contains("oracle:"),
+            "folded shows no reply: {screen}"
+        );
         // Open: what was asked and what the oracle said back. The fold is a render
         // input, so the history cache has to be told the rows can render differently.
         a.tools = Fold::Open;
@@ -9306,7 +9788,10 @@ mod tests {
         assert!(screen.contains("asked: run rm -rf"), "{screen}");
         // Labelled by the decider — a model chose this one — and never as the
         // oracle's, which nothing here was.
-        assert!(screen.contains("model: the operator asked for this"), "{screen}");
+        assert!(
+            screen.contains("model: the operator asked for this"),
+            "{screen}"
+        );
         assert!(screen.contains("no oracle was consulted"), "{screen}");
     }
 
@@ -9320,7 +9805,12 @@ mod tests {
         // Attached: the action, naming nobody — the daemon compacts the session
         // the head is sitting in, which is the one /compact can reach.
         let hub = letibot_sessionlog::hub::Hub::new("s");
-        let att = hub.attach("tui", "test", letibot_sessionlog::protocol::Caps::default(), 0);
+        let att = hub.attach(
+            "tui",
+            "test",
+            letibot_sessionlog::protocol::Caps::default(),
+            0,
+        );
         let mut a = app();
         a.apply(ServerFrame::Hello {
             protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
@@ -9347,14 +9837,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut a = app();
         a.prefs_path = Some(dir.join("head.toml"));
-        a.apply(hello("s", vec![brief("s", "one", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", true)],
+            Hub::new("s").snapshot(),
+        ));
 
-        assert_eq!(a.command("config"), Some(Action::Settings), "opening asks the daemon");
+        assert_eq!(
+            a.command("config"),
+            Some(Action::Settings),
+            "opening asks the daemon"
+        );
         assert!(a.config_pane);
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("diff view"), "{screen}");
         assert!(screen.contains("split"), "{screen}");
-        assert!(screen.contains("asked the daemon; nothing back yet"), "{screen}");
+        assert!(
+            screen.contains("asked the daemon; nothing back yet"),
+            "{screen}"
+        );
 
         // Row 0 is the diff view; Enter flips it and the file says so.
         assert!(a.diff_split);
@@ -9374,10 +9875,17 @@ mod tests {
                     source: "project store (modes.tsv)".into(),
                     editable: "/mode NAME".into(),
                     // The daemon's own list, which is what the pane cycles.
-                    choices: ["read-only", "always-ask", "writes-allowed", "automode", "automode-edits", "allow-all"]
-                        .iter()
-                        .map(|s| (*s).to_string())
-                        .collect(),
+                    choices: [
+                        "read-only",
+                        "always-ask",
+                        "writes-allowed",
+                        "automode",
+                        "automode-edits",
+                        "allow-all",
+                    ]
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
                 },
                 letibot_sessionlog::protocol::SettingRow {
                     key: "oracle.budget".into(),
@@ -9397,7 +9905,13 @@ mod tests {
         }
         // The next name after `writes-allowed` in the DAEMON's list — the head
         // has no list of its own any more.
-        assert_eq!(a.key(Key::Enter), Some(Action::Mode { name: "automode".into() }));
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Mode {
+                name: "automode".into(),
+                consented: false
+            })
+        );
         // The budget row is not editable now, and says so rather than doing nothing.
         a.key(Key::Down);
         assert_eq!(a.key(Key::Enter), None);
@@ -9419,18 +9933,30 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("letibot-prefs-start-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("head.toml");
-        crate::prefs::save(&path, &crate::prefs::HeadPrefs {
-            diff: crate::prefs::DiffPref::Unified,
-            thinking: "open".into(),
-            tools: "open".into(),
-            raw_calls: true,
-        }).unwrap();
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                diff: crate::prefs::DiffPref::Unified,
+                thinking: "open".into(),
+                tools: "open".into(),
+                raw_calls: true,
+            },
+        )
+        .unwrap();
         let mut a = app();
         a.prefs_path = Some(path.clone());
         let (p, _) = crate::prefs::load(&path);
         a.diff_split = p.diff == crate::prefs::DiffPref::Split;
-        a.reasoning = if p.thinking == "open" { Fold::Open } else { Fold::Folded };
-        a.tools = if p.tools == "open" { Fold::Open } else { Fold::Folded };
+        a.reasoning = if p.thinking == "open" {
+            Fold::Open
+        } else {
+            Fold::Folded
+        };
+        a.tools = if p.tools == "open" {
+            Fold::Open
+        } else {
+            Fold::Folded
+        };
         a.raw_calls = p.raw_calls;
         assert!(!a.diff_split);
         assert_eq!(a.reasoning, Fold::Open);
@@ -9491,7 +10017,11 @@ mod tests {
     #[test]
     fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true)],
+            Hub::new("s").snapshot(),
+        ));
         let spawn = SessionEvent::Subagent {
             subagent_id: "s-sub-1".into(),
             state: "running".into(),
@@ -9501,17 +10031,28 @@ mod tests {
         a.apply(ServerFrame::Event(env(1, spawn.clone())));
         a.key(Key::CtrlG);
         // Enter reads; `o` is the key that moves the head.
-        assert_eq!(a.key(Key::Char('o')), Some(Action::Switch("s-sub-1".into())));
+        assert_eq!(
+            a.key(Key::Char('o')),
+            Some(Action::Switch("s-sub-1".into()))
+        );
         assert!(!a.subagents_pane, "switching closes the pane");
 
-        a.apply(hello("s-sub-1", vec![brief("s", "parent", true)], Hub::new("s-sub-1").snapshot()));
+        a.apply(hello(
+            "s-sub-1",
+            vec![brief("s", "parent", true)],
+            Hub::new("s-sub-1").snapshot(),
+        ));
         assert_eq!(a.session_id, "s-sub-1");
         assert!(a.subagents.is_empty(), "the parent's tree came along");
         let screen = a.screen(100, 24).join("\n");
         assert!(!screen.contains("subagent running"), "{screen}");
 
         // Back to the parent: Hello, then the replayed backlog.
-        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true)],
+            Hub::new("s").snapshot(),
+        ));
         a.apply(ServerFrame::Event(env(1, spawn)));
         assert_eq!(a.subagents.len(), 1);
         a.key(Key::CtrlG);
@@ -9524,7 +10065,11 @@ mod tests {
     #[test]
     fn an_opening_subagent_is_listed_but_cannot_be_entered() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true)],
+            Hub::new("s").snapshot(),
+        ));
         a.apply(ServerFrame::Event(env(
             1,
             SessionEvent::Subagent {
@@ -9537,8 +10082,16 @@ mod tests {
         a.key(Key::CtrlG);
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("not attachable yet"), "{screen}");
-        assert_eq!(a.key(Key::Enter), None, "Enter peeked at a session that is not open");
-        assert_eq!(a.key(Key::Char('o')), None, "`o` switched into a session that is not open");
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "Enter peeked at a session that is not open"
+        );
+        assert_eq!(
+            a.key(Key::Char('o')),
+            None,
+            "`o` switched into a session that is not open"
+        );
         assert!(a.subagents_pane, "the pane stays where the operator was");
 
         // Open now: the same row, and Enter goes there.
@@ -9554,7 +10107,10 @@ mod tests {
         assert_eq!(a.subagents.len(), 1);
         assert_eq!(a.key(Key::Enter), Some(Action::Peek("s-sub-1".into())));
         a.sub_out_pending = None;
-        assert_eq!(a.key(Key::Char('o')), Some(Action::Switch("s-sub-1".into())));
+        assert_eq!(
+            a.key(Key::Char('o')),
+            Some(Action::Switch("s-sub-1".into()))
+        );
     }
 
     #[test]
@@ -9630,8 +10186,14 @@ mod tests {
         // went where the head puts things; the writer itself is exercised under
         // a directory this test owns.
         let spill = v.spill.as_ref().expect("spilled");
-        assert!(spill.ends_with("/letibot/subagent-s-sub-1.log") || spill.contains("/letibot-"), "{spill}");
-        assert!(!spill.starts_with("/tmp/letibot-subagent"), "spilled to a predictable /tmp name: {spill}");
+        assert!(
+            spill.ends_with("/letibot/subagent-s-sub-1.log") || spill.contains("/letibot-"),
+            "{spill}"
+        );
+        assert!(
+            !spill.starts_with("/tmp/letibot-subagent"),
+            "spilled to a predictable /tmp name: {spill}"
+        );
         let _ = std::fs::remove_file(spill);
         let dir = std::env::temp_dir().join(format!("letibot-peek-test-{}", std::process::id()));
         let under = spill_sub_out_under(&dir, "s-sub-1", &v.lines).expect("spilled");
@@ -9864,7 +10426,10 @@ mod tests {
             !all.contains("[x] Dependency graph") && !all.contains("[ ] Dependency graph"),
             "an empty section is neither done nor open: {all}"
         );
-        assert!(!all.contains("Dependency graph  ["), "and carries no cookie: {all}");
+        assert!(
+            !all.contains("Dependency graph  ["),
+            "and carries no cookie: {all}"
+        );
         assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
     }
 
@@ -9876,7 +10441,11 @@ mod tests {
     #[test]
     fn attaching_asks_for_the_settings_so_the_header_is_not_stale() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         assert!(
             a.take_actions().contains(&Action::Settings),
             "attach asks for them"
@@ -9895,7 +10464,11 @@ mod tests {
     #[test]
     fn a_metered_turn_puts_its_cost_on_the_header_and_the_total_accumulates() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         // A free turn lights nothing: free and unpriced are both "no number",
         // and a `$0.0000` on a local session would be noise on every header.
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
@@ -9906,13 +10479,20 @@ mod tests {
         a.apply(ServerFrame::Event(env(3, testing::turn_started("t2"))));
         a.apply(ServerFrame::Event(env(4, finished_costing("t2", Some(33)))));
         a.apply(ServerFrame::Event(env(5, testing::turn_started("t3"))));
-        a.apply(ServerFrame::Event(env(6, finished_costing("t3", Some(12_345)))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            finished_costing("t3", Some(12_345)),
+        )));
         let h = a.header_line(200);
         assert!(h.contains("$0.0124"), "33 + 12345 micro-USD: {h}");
 
         // The total is the conversation's, not the head's: switching sessions
         // must not carry one session's bill onto another's header.
-        a.apply(hello("s2", vec![brief("s", "one", false)], Hub::new("s2").snapshot()));
+        a.apply(hello(
+            "s2",
+            vec![brief("s", "one", false)],
+            Hub::new("s2").snapshot(),
+        ));
         assert!(!a.header_line(200).contains('$'), "{}", a.header_line(200));
     }
 
@@ -9959,7 +10539,10 @@ mod tests {
         a.key(Key::CtrlP);
         let top = a.screen(110, 20).join("\n");
         assert!(top.contains("T0 item number 0"), "{top}");
-        assert!(!top.contains("T59 item number 59"), "the tail is off-screen: {top}");
+        assert!(
+            !top.contains("T59 item number 59"),
+            "the tail is off-screen: {top}"
+        );
 
         // PageDown reaches it. Enough presses to pass the end — the clamp is
         // what stops it, and scrolling past into blank rows would be its own bug.
@@ -10039,7 +10622,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("scratch");
         std::fs::write(
             dir.join("TODO.md"),
-            concat!("## Phase 0\n", "\n", "- [ ] **T1** head\n", "  the body line\n"),
+            concat!(
+                "## Phase 0\n",
+                "\n",
+                "- [ ] **T1** head\n",
+                "  the body line\n"
+            ),
         )
         .expect("write");
         let mut a = app();
@@ -10047,9 +10635,15 @@ mod tests {
         a.key(Key::CtrlP);
         assert!(!a.screen(110, 30).join("\n").contains("the body line"));
         a.key(Key::Tab);
-        assert!(a.screen(110, 30).join("\n").contains("the body line"), "tab unfolds");
+        assert!(
+            a.screen(110, 30).join("\n").contains("the body line"),
+            "tab unfolds"
+        );
         a.key(Key::Tab);
-        assert!(!a.screen(110, 30).join("\n").contains("the body line"), "and folds");
+        assert!(
+            !a.screen(110, 30).join("\n").contains("the body line"),
+            "and folds"
+        );
 
         // With something typed, Tab is still the completion key: the pane does
         // not get to eat it just because it is open.
@@ -10088,7 +10682,10 @@ mod tests {
         );
         // The parse keeps it.
         let all = todo_plain(body);
-        assert!(all.contains("scripts/bootstrap.sh (yason 0c84b29)."), "{all}");
+        assert!(
+            all.contains("scripts/bootstrap.sh (yason 0c84b29)."),
+            "{all}"
+        );
         assert!(all.contains("Deps: none."), "{all}");
         assert!(
             !all.contains("Prose after a blank"),
@@ -10110,18 +10707,30 @@ mod tests {
         // and so carries no mark — `···` means "there is more", not "this is an
         // item".
         let screen = a.screen(110, 40).join("\n");
-        assert!(screen.contains("T1 vendor the deps, pinned in ···"), "{screen}");
+        assert!(
+            screen.contains("T1 vendor the deps, pinned in ···"),
+            "{screen}"
+        );
         assert!(screen.contains("T2 no body at all"), "{screen}");
         assert!(!screen.contains("T2 no body at all ···"), "{screen}");
-        assert!(!screen.contains("bootstrap.sh"), "folded hides it: {screen}");
+        assert!(
+            !screen.contains("bootstrap.sh"),
+            "folded hides it: {screen}"
+        );
 
         // The cursor starts on the first item, and Enter unfolds it.
         assert_eq!(a.key(Key::Enter), None);
         let screen = a.screen(110, 40).join("\n");
         assert!(screen.contains("▸"), "the cursor is drawn: {screen}");
-        assert!(screen.contains("scripts/bootstrap.sh (yason 0c84b29)."), "{screen}");
+        assert!(
+            screen.contains("scripts/bootstrap.sh (yason 0c84b29)."),
+            "{screen}"
+        );
         assert!(screen.contains("Deps: none."), "{screen}");
-        assert!(!screen.contains("pinned in ···"), "unfolded drops the mark: {screen}");
+        assert!(
+            !screen.contains("pinned in ···"),
+            "unfolded drops the mark: {screen}"
+        );
 
         // Enter again folds it; an arrow moves on and folds what it leaves.
         a.key(Key::Enter);
@@ -10137,7 +10746,10 @@ mod tests {
         // Down wraps past the last item rather than stopping, and never lands on
         // a heading — there is nothing to unfold on one.
         a.key(Key::Down);
-        assert_eq!(a.repo_sel, 1, "wrapped to the first ITEM, not to the heading");
+        assert_eq!(
+            a.repo_sel, 1,
+            "wrapped to the first ITEM, not to the heading"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -10159,7 +10771,10 @@ mod tests {
         )
         .expect("write");
 
-        let mut a = App::new(RenderConfig { color: true, ..plain_cfg(110) });
+        let mut a = App::new(RenderConfig {
+            color: true,
+            ..plain_cfg(110)
+        });
         a.wiring.workspace = dir.display().to_string();
         a.apply(ServerFrame::Event(env(
             1,
@@ -10180,12 +10795,24 @@ mod tests {
         let screen = a.screen(110, 40).join("\n");
 
         // The model's half.
-        assert!(screen.contains(&format!("{}[x]{} seated", sgr::GREEN, sgr::RESET)), "{screen:?}");
-        assert!(screen.contains(&format!("{}[~]{} seating", sgr::YELLOW, sgr::RESET)), "{screen:?}");
+        assert!(
+            screen.contains(&format!("{}[x]{} seated", sgr::GREEN, sgr::RESET)),
+            "{screen:?}"
+        );
+        assert!(
+            screen.contains(&format!("{}[~]{} seating", sgr::YELLOW, sgr::RESET)),
+            "{screen:?}"
+        );
         // The repo's half, painted the same way — including the heading, which
         // carries the rolled-up state and so carries its colour.
-        assert!(screen.contains(&format!("{}[~]{} Phase 0", sgr::YELLOW, sgr::RESET)), "{screen:?}");
-        assert!(screen.contains(&format!("{}[x]{} T1 done", sgr::GREEN, sgr::RESET)), "{screen:?}");
+        assert!(
+            screen.contains(&format!("{}[~]{} Phase 0", sgr::YELLOW, sgr::RESET)),
+            "{screen:?}"
+        );
+        assert!(
+            screen.contains(&format!("{}[x]{} T1 done", sgr::GREEN, sgr::RESET)),
+            "{screen:?}"
+        );
         // An open item is left alone: it is the default and the majority of any
         // list, and colouring the majority spends the signal the other two carry.
         assert!(screen.contains("[ ] T3 open"), "{screen:?}");
@@ -10239,9 +10866,7 @@ mod tests {
     /// belong to it rather than to the `##` above.
     #[test]
     fn a_subsection_owns_its_own_items() {
-        let all = todo_plain(
-            "## Phase 7\n\n- [x] **A** one\n\n### Strand B\n\n- [ ] **B1** two\n",
-        );
+        let all = todo_plain("## Phase 7\n\n- [x] **A** one\n\n### Strand B\n\n- [ ] **B1** two\n");
         assert!(all.contains("[x] Phase 7  [1/1]"), "{all}");
         assert!(all.contains("[ ] Strand B  [0/1]"), "{all}");
     }
@@ -10269,7 +10894,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: opts[0].clone(),
-                pattern: None, note: None })
+                pattern: None,
+                note: None
+            })
         );
 
         // Down moves one, and the answer follows the marker rather than the order the
@@ -10282,7 +10909,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r2".into(),
                 option_id: opts[1].clone(),
-                pattern: None, note: None })
+                pattern: None,
+                note: None
+            })
         );
 
         // Up from the top wraps to the bottom rather than sticking, so the last option
@@ -10295,7 +10924,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r3".into(),
                 option_id: opts[opts.len() - 1].clone(),
-                pattern: None, note: None })
+                pattern: None,
+                note: None
+            })
         );
     }
 
@@ -10322,7 +10953,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "allow".into(),
-                pattern: None, note: None })
+                pattern: None,
+                note: None
+            })
         );
         assert_eq!(a.input(), "some prose", "the words are held, not sent");
         assert!(a.pending_prompts.is_empty(), "nothing was sent");
@@ -10341,7 +10974,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "deny".into(),
-                pattern: None, note: None })
+                pattern: None,
+                note: None
+            })
         );
         assert_eq!(a.input(), "", "the typed id is consumed, not held");
     }
@@ -10360,7 +10995,11 @@ mod tests {
         assert_eq!(a.key(Key::CtrlC), None, "it clears, it does not quit");
         assert_eq!(a.input(), "");
         assert_eq!(a.key(Key::CtrlC), None, "one press on an empty composer");
-        assert_eq!(a.key(Key::CtrlC), None, "the second opens the card, it does not leave");
+        assert_eq!(
+            a.key(Key::CtrlC),
+            None,
+            "the second opens the card, it does not leave"
+        );
         assert!(a.quit_card, "the card is up");
     }
 
@@ -10391,7 +11030,9 @@ mod tests {
             Some(Action::Answer {
                 req_id: "r1".into(),
                 option_id: "deny".into(),
-                pattern: None, note: None }),
+                pattern: None,
+                note: None
+            }),
             "row 2 of the ask is `deny`"
         );
 
@@ -10456,7 +11097,11 @@ mod tests {
         a.key(Key::CtrlC);
         a.key(Key::CtrlC);
         a.key(Key::Down);
-        assert_eq!(a.key(Key::Enter), Some(Action::StopDaemon), "the second row");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::StopDaemon),
+            "the second row"
+        );
 
         // By number, without moving the cursor.
         let mut b = app();
@@ -10483,16 +11128,22 @@ mod tests {
     fn the_card_names_the_other_heads_that_would_lose_the_daemon() {
         let mut a = app();
         a.clock(1_000);
-        a.apply(ServerFrame::Event(env(1, SessionEvent::HeadAttached {
-            head_id: "h2".into(),
-            kind: "tui".into(),
-            identity: "someone".into(),
-        })));
-        a.apply(ServerFrame::Event(env(2, SessionEvent::HeadAttached {
-            head_id: "h3".into(),
-            kind: "tui".into(),
-            identity: "another".into(),
-        })));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::HeadAttached {
+                head_id: "h2".into(),
+                kind: "tui".into(),
+                identity: "someone".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::HeadAttached {
+                head_id: "h3".into(),
+                kind: "tui".into(),
+                identity: "another".into(),
+            },
+        )));
         a.key(Key::CtrlC);
         a.key(Key::CtrlC);
         let screen = a.screen(100, 24).join("\n");
@@ -10529,7 +11180,11 @@ mod tests {
         let (row, col) = a.cursor().expect("a composer always has a caret");
         assert!(screen[row].contains('│'), "walls: {:?}", screen[row]);
         assert!(screen[row - 1].contains('╭'), "top: {:?}", screen[row - 1]);
-        assert!(screen[row + 1].contains('╰'), "bottom: {:?}", screen[row + 1]);
+        assert!(
+            screen[row + 1].contains('╰'),
+            "bottom: {:?}",
+            screen[row + 1]
+        );
         assert!(
             !screen[row].contains("ask something"),
             "no prose inside the field: {:?}",
@@ -10585,13 +11240,20 @@ mod tests {
     fn the_composer_survives_a_narrow_terminal_and_a_short_one() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        typed(&mut a, "a question long enough to wrap in a narrow terminal");
+        typed(
+            &mut a,
+            "a question long enough to wrap in a narrow terminal",
+        );
         for w in [20usize, 30, 40, 60, 80, 200] {
             for h in [3usize, 5, 8, 12, 24, 60] {
                 let screen = a.screen(w, h);
                 assert_eq!(screen.len(), h, "w={w} h={h}");
                 for l in &screen {
-                    assert!(line_width(l) <= w, "w={w} h={h}: {} cols: {l}", line_width(l));
+                    assert!(
+                        line_width(l) <= w,
+                        "w={w} h={h}: {} cols: {l}",
+                        line_width(l)
+                    );
                 }
                 let (row, col) = a.cursor().unwrap();
                 assert!(row < h, "the caret is off the screen at w={w} h={h}");
@@ -10599,7 +11261,12 @@ mod tests {
                 // The box is either whole or gone; never one wall of it.
                 let top = screen.iter().filter(|l| l.contains('╭')).count();
                 let bot = screen.iter().filter(|l| l.contains('╰')).count();
-                assert_eq!(top, bot, "half a box at w={w} h={h}:\n{}", screen.join("\n"));
+                assert_eq!(
+                    top,
+                    bot,
+                    "half a box at w={w} h={h}:\n{}",
+                    screen.join("\n")
+                );
             }
         }
     }
@@ -10613,7 +11280,11 @@ mod tests {
         let screen = a.screen(80, 24);
         let (row, _) = a.cursor().unwrap();
         assert!(screen[row].contains("second line"), "{:?}", screen[row]);
-        assert!(screen[row - 1].contains("first line"), "{:?}", screen[row - 1]);
+        assert!(
+            screen[row - 1].contains("first line"),
+            "{:?}",
+            screen[row - 1]
+        );
         // Enter still sends the whole thing, both lines.
         match a.key(Key::Enter) {
             Some(Action::Prompt(t)) => assert_eq!(t, "first line\nsecond line"),
@@ -10679,7 +11350,11 @@ mod tests {
         // `Envelope::ts` is on every one of them and `ToolProgress { note }` was
         // being dropped on the floor.
         let mut a = app();
-        a.apply(ServerFrame::Event(env_at(1, 1_000, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
         a.apply(ServerFrame::Event(env_at(
             2,
             1_000,
@@ -10726,7 +11401,10 @@ mod tests {
             },
         )));
         let screen = a.screen(120, 24).join("\n");
-        assert!(screen.contains("Ran"), "past tense once it is done: {screen}");
+        assert!(
+            screen.contains("Ran"),
+            "past tense once it is done: {screen}"
+        );
         assert!(screen.contains("7.5s"), "{screen}");
     }
 
@@ -10888,7 +11566,10 @@ mod tests {
     fn a_turn_that_was_cut_short_does_not_read_like_one_that_finished() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::delta("t1", "half an ans"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", "half an ans"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::TurnFinished {
@@ -10987,9 +11668,8 @@ mod tests {
         // The heading has to actually be styled, or this test would pass on a
         // renderer that had simply stopped colouring anything.
         assert!(
-            rail.iter().any(|l| l.contains(
-                letibot_ui::style::Palette::Colour.open(Role::Subheading)
-            )),
+            rail.iter()
+                .any(|l| l.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading))),
             "no heading was styled inside the reasoning; the fixture is not exercising the bug"
         );
         for l in rail {
@@ -11217,7 +11897,10 @@ mod tests {
     fn a_spilled_result_reads_as_the_harness_working_not_as_damage() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::proposed("t1", "c1", "grep"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed("t1", "c1", "grep"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::ToolFinished {
@@ -11348,7 +12031,11 @@ mod tests {
         // §4.1, fixed. The whole difference between a tool list that is useful and
         // one that is decorative.
         let mut a = app();
-        a.apply(ServerFrame::Event(env_at(1, 1_000, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
         a.apply(ServerFrame::Event(env_at(
             2,
             1_000,
@@ -11378,7 +12065,10 @@ mod tests {
         // arguments on the settled row are the only place it survives. It uses the
         // *same* function the wire does, so both renderings agree.
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("t1.0", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TranscriptContent {
@@ -11395,11 +12085,11 @@ mod tests {
             },
         )));
         let screen = a.screen(120, 24).join("\n");
+        assert!(screen.contains("→ Read crates/ui/src/style.rs"), "{screen}");
         assert!(
-            screen.contains("→ Read crates/ui/src/style.rs"),
-            "{screen}"
+            !screen.contains("(c1)"),
+            "the id is not shown when a name is: {screen}"
         );
-        assert!(!screen.contains("(c1)"), "the id is not shown when a name is: {screen}");
     }
 
     /// Two rounds of one turn, both numbering their calls from `call_0`, which is
@@ -11425,21 +12115,27 @@ mod tests {
             }
         }
         fn assistant(a: &mut App, seq: u64, id: &str, calls: Vec<letibot_transcript::ToolCall>) {
-            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "assistant"))));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(id, "assistant"),
+            )));
             a.apply(ServerFrame::Event(env(
                 seq + 1,
                 SessionEvent::TranscriptContent {
                     item_id: id.into(),
-                item: Box::new(TranscriptItem::Assistant {
-                    text: String::new(),
-                    tool_calls: calls,
-                    truncated: false,
-                }),
+                    item: Box::new(TranscriptItem::Assistant {
+                        text: String::new(),
+                        tool_calls: calls,
+                        truncated: false,
+                    }),
                 },
             )));
         }
         fn result(a: &mut App, seq: u64, id: &str, call_id: &str, name: &str, payload: &str) {
-            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(id, "tool_result"),
+            )));
             a.apply(ServerFrame::Event(env(
                 seq + 1,
                 SessionEvent::TranscriptContent {
@@ -11456,13 +12152,37 @@ mod tests {
         }
 
         let mut a = app();
-        assistant(&mut a, 1, "r1.a", vec![call("call_0", "read", r#"{"path":"README.md"}"#)]);
+        assistant(
+            &mut a,
+            1,
+            "r1.a",
+            vec![call("call_0", "read", r#"{"path":"README.md"}"#)],
+        );
         // Two lines each, so the payload is a body under a header rather than
         // inlined onto it — the pairing is what is under test, and it is only
         // visible when the two are separate rows.
-        result(&mut a, 3, "r1.t", "call_0", "read", "FIRST-ROUND-PAYLOAD\nmore\n");
-        assistant(&mut a, 5, "r2.a", vec![call("call_0", "read", r#"{"path":"TODO.md"}"#)]);
-        result(&mut a, 7, "r2.t", "call_0", "read", "SECOND-ROUND-PAYLOAD\nmore\n");
+        result(
+            &mut a,
+            3,
+            "r1.t",
+            "call_0",
+            "read",
+            "FIRST-ROUND-PAYLOAD\nmore\n",
+        );
+        assistant(
+            &mut a,
+            5,
+            "r2.a",
+            vec![call("call_0", "read", r#"{"path":"TODO.md"}"#)],
+        );
+        result(
+            &mut a,
+            7,
+            "r2.t",
+            "call_0",
+            "read",
+            "SECOND-ROUND-PAYLOAD\nmore\n",
+        );
 
         // A tall enough screen that both rounds are on it at once, which is the
         // only way the pairing is visible at all.
@@ -11502,7 +12222,10 @@ mod tests {
     #[test]
     fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("r.a", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TranscriptContent {
@@ -11524,9 +12247,15 @@ mod tests {
             1,
             "a call with no result yet is announced exactly once:\n{before}"
         );
-        assert!(before.contains("no result"), "and says it has none:\n{before}");
+        assert!(
+            before.contains("no result"),
+            "and says it has none:\n{before}"
+        );
 
-        a.apply(ServerFrame::Event(env(3, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("r.t", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             4,
             SessionEvent::TranscriptContent {
@@ -11583,7 +12312,10 @@ mod tests {
         // `docs/tui-testing.md`: the round's own rows, then the terminal event,
         // then the result rows.
         a.apply(ServerFrame::Event(env(3, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(4, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::appended("r.a", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             5,
             SessionEvent::TranscriptContent {
@@ -11605,7 +12337,10 @@ mod tests {
         let before = a.screen(120, 40).join("\n");
         assert!(before.contains("no result"), "{before}");
 
-        a.apply(ServerFrame::Event(env(7, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            7,
+            testing::appended("r.t", "tool_result"),
+        )));
         let _ = a.screen(120, 40);
         a.apply(ServerFrame::Event(env(
             8,
@@ -11656,8 +12391,14 @@ mod tests {
         for (name, set) in panes {
             let mut a = app();
             for i in 0..40u64 {
-                a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("u.{i}"), "user"))));
-                a.apply(ServerFrame::Event(env(i * 2 + 2, testing::content(&format!("u.{i}"), &format!("line {i}")))));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 1,
+                    testing::appended(&format!("u.{i}"), "user"),
+                )));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 2,
+                    testing::content(&format!("u.{i}"), &format!("line {i}")),
+                )));
             }
             let _ = a.screen(80, 24);
             set(&mut a);
@@ -11673,8 +12414,14 @@ mod tests {
     fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
         let mut a = app();
         for i in 0..60u64 {
-            a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("u.{i}"), "user"))));
-            a.apply(ServerFrame::Event(env(i * 2 + 2, testing::content(&format!("u.{i}"), &format!("line {i}")))));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("u.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("u.{i}"), &format!("line {i}")),
+            )));
         }
         let _ = a.screen(80, 24);
         assert_eq!(a.scroll, 0, "following the stream");
@@ -11691,14 +12438,20 @@ mod tests {
         assert_eq!(a.scroll, 0, "the conversation did not");
         a.key(Key::Esc);
         assert!(a.sub_out.is_none());
-        assert_eq!(a.scroll, 0, "and coming back lands at the tail, not in the scrollback");
+        assert_eq!(
+            a.scroll, 0,
+            "and coming back lands at the tail, not in the scrollback"
+        );
         // A screen on top with no scroll of its own swallows the wheel.
         a.todos_pane = true;
         a.key(Key::WheelUp);
         assert_eq!(a.scroll, 0);
         a.todos_pane = false;
         a.key(Key::WheelUp);
-        assert_eq!(a.scroll, 3, "with nothing on top the wheel moves the conversation");
+        assert_eq!(
+            a.scroll, 3,
+            "with nothing on top the wheel moves the conversation"
+        );
     }
 
     /// A block of calls with a slow one in the middle: the fast ones go green
@@ -11713,7 +12466,10 @@ mod tests {
     fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("r.a", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::TranscriptContent {
@@ -11736,8 +12492,14 @@ mod tests {
                 }),
             },
         )));
-        a.apply(ServerFrame::Event(env(4, testing::proposed("t1", "call_0", "todo_write"))));
-        a.apply(ServerFrame::Event(env(5, testing::proposed("t1", "call_1", "task"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed("t1", "call_0", "todo_write"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::proposed("t1", "call_1", "task"),
+        )));
         a.apply(ServerFrame::Event(env(6, testing::turn_finished("t1"))));
         // The daemon's order: call_0 starts and finishes in a millisecond,
         // call_1 starts and stays running. No result row lands for either yet.
@@ -11778,8 +12540,14 @@ mod tests {
             !screen.contains("no result"),
             "a call that finished, and one still running, and neither is `no result`:\n{screen}"
         );
-        assert!(screen.contains("● todo_write"), "the finished call is drawn finished:\n{screen}");
-        assert!(screen.contains("◐ task"), "and the running one running:\n{screen}");
+        assert!(
+            screen.contains("● todo_write"),
+            "the finished call is drawn finished:\n{screen}"
+        );
+        assert!(
+            screen.contains("◐ task"),
+            "and the running one running:\n{screen}"
+        );
     }
 
     /// A message the operator sends while the calls run lands BETWEEN the calls
@@ -11792,7 +12560,10 @@ mod tests {
     #[test]
     fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::appended("r.a", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("r.a", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TranscriptContent {
@@ -11814,12 +12585,17 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
-                    parts: vec![UserPart::Text { text: "continue".into() }],
+                    parts: vec![UserPart::Text {
+                        text: "continue".into(),
+                    }],
                 }),
             },
         )));
         let _ = a.screen(120, 40);
-        a.apply(ServerFrame::Event(env(5, testing::appended("r.t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::appended("r.t", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             6,
             SessionEvent::TranscriptContent {
@@ -11862,7 +12638,10 @@ mod tests {
                 }),
             },
         )));
-        a.apply(ServerFrame::Event(env(3, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("t", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             4,
             SessionEvent::TranscriptContent {
@@ -11876,7 +12655,10 @@ mod tests {
                 }),
             },
         )));
-        a.apply(ServerFrame::Event(env(5, testing::appended("s", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::appended("s", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             6,
             SessionEvent::TranscriptContent {
@@ -11899,7 +12681,10 @@ mod tests {
         let question = at("what crates are in this workspace");
         let working = at("Read (call_0)");
         let answer = at("There are twelve.");
-        assert_eq!(question, answer, "the question and the answer share a column");
+        assert_eq!(
+            question, answer,
+            "the question and the answer share a column"
+        );
         assert_eq!(
             working,
             question + card::REASONING_RAIL_WIDTH,
@@ -11921,11 +12706,16 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
-                    parts: vec![UserPart::Text { text: "hello".into() }],
+                    parts: vec![UserPart::Text {
+                        text: "hello".into(),
+                    }],
                 }),
             },
         )));
-        a.apply(ServerFrame::Event(env(3, testing::appended("r", "reasoning"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("r", "reasoning"),
+        )));
         a.apply(ServerFrame::Event(env(
             4,
             SessionEvent::TranscriptContent {
@@ -11937,7 +12727,10 @@ mod tests {
                 }),
             },
         )));
-        a.apply(ServerFrame::Event(env(5, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::appended("t", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             6,
             SessionEvent::TranscriptContent {
@@ -11959,7 +12752,10 @@ mod tests {
         for glyph in ["▌", "▸", "┃", "╭", "│", "╰"] {
             assert!(screen.contains(glyph), "{glyph} is missing:\n{screen}");
         }
-        assert!(screen.contains("failed"), "and the word survives too:\n{screen}");
+        assert!(
+            screen.contains("failed"),
+            "and the word survives too:\n{screen}"
+        );
         assert!(screen.contains("no such path"), "{screen}");
     }
 
@@ -11973,7 +12769,10 @@ mod tests {
             ..RenderConfig::default()
         });
         let mut add = |seq: u64, id: &str, n: usize| {
-            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(id, "tool_result"),
+            )));
             a.apply(ServerFrame::Event(env(
                 seq + 1,
                 SessionEvent::TranscriptContent {
@@ -12010,7 +12809,10 @@ mod tests {
         );
         let joined = screen.join("\n");
         for cube in ["38;5;", "48;5;", "38;2;"] {
-            assert!(!joined.contains(cube), "{cube} is not a theme slot: {joined:?}");
+            assert!(
+                !joined.contains(cube),
+                "{cube} is not a theme slot: {joined:?}"
+            );
         }
     }
 
@@ -12018,7 +12820,10 @@ mod tests {
     #[test]
     fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::appended("t", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("t", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TranscriptContent {
@@ -12105,8 +12910,14 @@ mod tests {
             assert!(a.key(Key::Char(c)).is_none());
         }
         let typing = a.screen(100, 20).join("\n");
-        assert!(!typing.contains("hunter2"), "the password is on the screen:\n{typing}");
-        assert!(typing.contains("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"), "{typing}");
+        assert!(
+            !typing.contains("hunter2"),
+            "the password is on the screen:\n{typing}"
+        );
+        assert!(
+            typing.contains("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"),
+            "{typing}"
+        );
         assert!(a.input().is_empty(), "the composer must never hold it");
         assert!(a.key(Key::Backspace).is_none());
         assert!(a.key(Key::Char('2')).is_none());
@@ -12150,12 +12961,11 @@ mod tests {
         }
         // Streaming: the pane is the only place it exists, and it is showing.
         let live = a.screen(120, 30).join("\n");
-        assert_eq!(
-            live.matches("at the tree first.").count(),
-            1,
-            "{live}"
-        );
-        a.apply(ServerFrame::Event(env(3, testing::appended("t1.0", "assistant"))));
+        assert_eq!(live.matches("at the tree first.").count(), 1, "{live}");
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("t1.0", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             4,
             SessionEvent::TranscriptContent {
@@ -12175,7 +12985,10 @@ mod tests {
             "the pane kept a copy of what the transcript took over:\n{settled}"
         );
         // The next round's prose still streams into the pane.
-        a.apply(ServerFrame::Event(env(5, testing::delta("t1", "And now the answer."))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::delta("t1", "And now the answer."),
+        )));
         let next = a.screen(120, 30).join("\n");
         assert!(next.contains("And now the answer."), "{next}");
         assert_eq!(next.matches("at the tree first.").count(), 1, "{next}");
@@ -12192,7 +13005,10 @@ mod tests {
     fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::appended("t1.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("t1.0", "assistant"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::TranscriptContent {
@@ -12234,7 +13050,10 @@ mod tests {
     #[test]
     fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
         let mut a = app();
-        a.apply(ServerFrame::Event(env(1, testing::appended("t.0", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("t.0", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TranscriptContent {
@@ -12286,7 +13105,10 @@ mod tests {
         )));
         assert_eq!(a.filtered - before, 1);
         assert_eq!(
-            a.screen(120, 16).join("\n").matches("Connection refused").count(),
+            a.screen(120, 16)
+                .join("\n")
+                .matches("Connection refused")
+                .count(),
             1,
             "the same failure is on the screen twice"
         );
@@ -12410,7 +13232,9 @@ mod tests {
         // No `NNNh` anywhere: that shape is what an epoch renders as.
         let chars: Vec<char> = line.chars().collect();
         assert!(
-            !chars.windows(2).any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
+            !chars
+                .windows(2)
+                .any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
             "an epoch rendered as a duration: {line}"
         );
     }
@@ -12431,12 +13255,17 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 41_233,
                 cached_tokens: 38_100,
-                predicted_tokens: 200, cost_micros_usd: None },
+                predicted_tokens: 200,
+                cost_micros_usd: None,
+            },
             timings: Default::default(),
         });
         a.apply(hello(
             "s",
-            vec![brief("s", "the cache question", false), brief("s2", "", false)],
+            vec![
+                brief("s", "the cache question", false),
+                brief("s2", "", false),
+            ],
             hub.snapshot(),
         ));
         for w in [40usize, 60, 80, 110, 200] {
@@ -12469,7 +13298,9 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 44_700,
                 cached_tokens: 40_000,
-                predicted_tokens: 0, cost_micros_usd: None })
+                predicted_tokens: 0,
+                cost_micros_usd: None
+            })
         );
         let header = a.header_line(200);
         assert!(header.contains("44.7k ctx"), "{header}");
@@ -12485,7 +13316,9 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 51_000,
                 cached_tokens: 44_700,
-                predicted_tokens: 300, cost_micros_usd: None },
+                predicted_tokens: 300,
+                cost_micros_usd: None,
+            },
             timings: Default::default(),
         });
         let mut a = app();
@@ -12498,7 +13331,9 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 51_000,
                 cached_tokens: 44_700,
-                predicted_tokens: 300, cost_micros_usd: None }),
+                predicted_tokens: 300,
+                cost_micros_usd: None
+            }),
             "the snapshot's turn state is newer than the row"
         );
         // A backfilled row carries the size but not the fraction: the migration
@@ -12516,7 +13351,9 @@ mod tests {
             Some(Usage {
                 prompt_tokens: 44_700,
                 cached_tokens: 0,
-                predicted_tokens: 0, cost_micros_usd: None })
+                predicted_tokens: 0,
+                cost_micros_usd: None
+            })
         );
         let header = a.header_line(200);
         assert!(header.contains("44.7k ctx"), "{header}");
@@ -12549,7 +13386,9 @@ mod tests {
                 usage: Usage {
                     prompt_tokens: 41_233,
                     cached_tokens: 38_100,
-                    predicted_tokens: 1_200, cost_micros_usd: None },
+                    predicted_tokens: 1_200,
+                    cost_micros_usd: None,
+                },
                 timings: letibot_sessionlog::event::Timings {
                     prompt_ms: 900.0,
                     predicted_ms: 2_000.0,
@@ -12601,10 +13440,7 @@ mod tests {
         assert!(header.contains("92% cached"), "{header}");
         // Once something has arrived, the count is the one fact this line alone
         // knows — and it is the delta's own count, not a running estimate.
-        a.apply(ServerFrame::Event(env(
-            3,
-            testing::delta("t1", "hello"),
-        )));
+        a.apply(ServerFrame::Event(env(3, testing::delta("t1", "hello"))));
         let line = a.turn_status(120);
         assert!(line.contains("5 chars"), "{line}");
         // One compact string for the border to pin right — never a justified
@@ -12638,7 +13474,10 @@ mod tests {
         assert!(!line.contains("tok"), "{line}");
         assert!(!line.contains("chars"), "{line}");
         // The counter arrives and is the number shown.
-        a.apply(ServerFrame::Event(env(3, testing::tokens_generated("t1", 1234))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::tokens_generated("t1", 1234),
+        )));
         let line = a.turn_status(120);
         assert!(line.contains("1234 tok"), "{line}");
         // Text arrives too: the token count still wins, because it is the
@@ -12648,7 +13487,10 @@ mod tests {
         assert!(line.contains("1234 tok"), "{line}");
         assert!(!line.contains("chars"), "{line}");
         // A count for another turn does not move it.
-        a.apply(ServerFrame::Event(env(5, testing::tokens_generated("t2", 9))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::tokens_generated("t2", 9),
+        )));
         let line = a.turn_status(120);
         assert!(line.contains("1234 tok"), "{line}");
     }
@@ -12763,7 +13605,9 @@ mod tests {
         // A wall-clock time, from the log's own clock. Which one depends on the
         // box's zone, so the assertion is on the shape.
         assert!(
-            row.split_whitespace().last().is_some_and(|t| t.len() == 8 && t.contains(':')),
+            row.split_whitespace()
+                .last()
+                .is_some_and(|t| t.len() == 8 && t.contains(':')),
             "no timestamp on the row: {row:?}"
         );
         // The block is padded to the full **content** width, or the background
@@ -12779,7 +13623,10 @@ mod tests {
         // `01:00:00` would be a measurement nobody took rendered as one they did.
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "user"))));
-        a.apply(ServerFrame::Event(env(2, testing::content("s.0", "no clock here"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::content("s.0", "no clock here"),
+        )));
         let screen = a.screen(80, 16);
         let row = screen.iter().find(|l| l.contains("no clock here")).unwrap();
         assert!(!row.contains(':'), "a fabricated timestamp: {row:?}");
@@ -12800,7 +13647,10 @@ mod tests {
         let screen = a.screen(110, 24).join("\n");
         assert!(screen.contains("the cache question"), "{screen}");
         assert!(screen.contains("scratch"), "{screen}");
-        assert!(screen.contains("generating"), "the busy one says so:\n{screen}");
+        assert!(
+            screen.contains("generating"),
+            "the busy one says so:\n{screen}"
+        );
         typed(&mut a, "2");
         assert_eq!(a.key(Key::Enter), Some(Action::Switch("s2".into())));
     }
@@ -12869,7 +13719,10 @@ mod tests {
             .into_iter()
             .find(|l| l.contains("three") && l.contains('▸'))
             .unwrap();
-        assert!(row.contains('▸'), "the mark moved to the clicked row: {row}");
+        assert!(
+            row.contains('▸'),
+            "the mark moved to the clicked row: {row}"
+        );
         a.key(Key::Click { x: 0, y: 3 });
         assert_eq!(a.picker_sel, 0);
         // A click into the blank space under the list moves nothing: the row
@@ -12881,6 +13734,104 @@ mod tests {
         a.key(Key::Click { x: 4, y: 5 });
         assert_eq!(a.picker_sel, 2);
         assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
+    }
+
+    /// **`allow-all` costs one more keystroke, and no other point does.**
+    ///
+    /// The operator, 2026-09-20: *"make it ask for confirmation on bare host and
+    /// let it thru"*. Both halves are asserted here — that it asks, and that a
+    /// `y` then sends the point with the consent the daemon reads.
+    #[test]
+    fn allow_all_asks_before_it_is_sent_and_nothing_else_does() {
+        let mut a = App::new(plain_cfg(120));
+        a.apply(mode_settings(
+            "always-ask",
+            &["always-ask", "automode", "allow-all"],
+        ));
+
+        // An ordinary point goes straight out, unchanged.
+        assert_eq!(
+            a.take_mode("automode".into()),
+            Some(Action::Mode {
+                name: "automode".into(),
+                consented: false
+            })
+        );
+
+        // `allow-all` does not. It emits nothing and puts the question on screen.
+        assert_eq!(a.take_mode("allow-all".into()), None, "sent without asking");
+        let screen = a.screen(120, 30).join("\n");
+        assert!(screen.contains("privilege escalation"), "{screen}");
+        assert!(screen.contains("[y] confirm"), "{screen}");
+
+        // `y` sends it, with the operator's answer on the frame.
+        assert_eq!(
+            a.key(Key::Char('y')),
+            Some(Action::Mode {
+                name: "allow-all".into(),
+                consented: true
+            })
+        );
+        assert!(a.mode_confirm.is_none(), "the question outlived its answer");
+    }
+
+    /// **Any key but `y` is a no**, not just Esc: a question that owns the keyboard
+    /// collects keystrokes aimed at the composer, and those must not be consent.
+    #[test]
+    fn a_stray_key_cancels_the_allow_all_confirmation() {
+        for k in [Key::Enter, Key::Esc, Key::Char('n'), Key::Char('a')] {
+            let mut a = App::new(plain_cfg(120));
+            a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+            assert_eq!(a.take_mode("allow-all".into()), None);
+            let named = format!("{k:?}");
+            assert_eq!(a.key(k), None, "{named} sent the mode");
+            assert!(a.mode_confirm.is_none(), "{named} left the question up");
+        }
+    }
+
+    /// **A note about the decision does not outlive the decision.**
+    ///
+    /// The gate's "asking the guard" arrives as a `ToolProgress` while the call is
+    /// still `Proposed`. It used to be cleared only by `ToolFinished`, so a call
+    /// that took a long time to RUN carried a sentence about a wait that had
+    /// already ended. Measured 2026-09-20: a 300 s `cargo test` sat under "asking
+    /// the guard" for all five minutes and was reported as an oracle hang.
+    #[test]
+    fn the_guards_note_does_not_survive_the_tool_starting() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::proposed("t1", "c1", "bash"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::ToolProgress {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                note: "asking the guard".into(),
+            },
+        )));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains("asking the guard"),
+            "while deciding: {screen}"
+        );
+
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            !screen.contains("asking the guard"),
+            "the note outlived the wait: {screen}"
+        );
     }
 
     fn mode_settings(value: &str, choices: &[&str]) -> ServerFrame {
@@ -12902,7 +13853,11 @@ mod tests {
     #[test]
     fn the_header_follows_a_mid_session_model_switch() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         // What `Hello` said, which is all the header used to read.
         assert!(
             a.header_line(200).contains("qwen-3.8-flash-next"),
@@ -12910,7 +13865,10 @@ mod tests {
             a.header_line(200)
         );
         // The daemon republishes the row on a switch; the header takes it.
-        a.apply(model_settings("deepseek/deepseek-flash", &["local", "deepseek/deepseek-flash"]));
+        a.apply(model_settings(
+            "deepseek/deepseek-flash",
+            &["local", "deepseek/deepseek-flash"],
+        ));
         let h = a.header_line(200);
         assert!(h.contains("deepseek/deepseek-flash"), "{h}");
         assert!(!h.contains("qwen-3.8-flash-next"), "and not both: {h}");
@@ -12920,7 +13878,10 @@ mod tests {
         a.apply(model_settings("local (glm-5.3-flash)", &["local"]));
         let h = a.header_line(200);
         assert!(h.contains("glm-5.3-flash"), "{h}");
-        assert!(!h.contains("local ("), "the header takes the name alone: {h}");
+        assert!(
+            !h.contains("local ("),
+            "the header takes the name alone: {h}"
+        );
     }
 
     fn model_settings(value: &str, choices: &[&str]) -> ServerFrame {
@@ -12944,7 +13905,12 @@ mod tests {
         a.session_id = "s1".into();
         a.apply(model_settings(
             "glm/glm-5.3-flash",
-            &["local", "deepseek/deepseek-flash", "glm/glm-5.3-flash", "grok/grok-4.3"],
+            &[
+                "local",
+                "deepseek/deepseek-flash",
+                "glm/glm-5.3-flash",
+                "grok/grok-4.3",
+            ],
         ));
         // Bare `/models` opens the list AND asks the daemon, so a session whose
         // model moved in another head does not draw a stale `← now`.
@@ -12958,7 +13924,10 @@ mod tests {
         // Tall enough that the card's trailing hints survive the fit loop, which
         // drops them last-first when the screen is short.
         let screen = a.screen(110, 40).join("\n");
-        assert!(screen.contains("what answers this conversation"), "{screen}");
+        assert!(
+            screen.contains("what answers this conversation"),
+            "{screen}"
+        );
         assert!(screen.contains("grok/grok-4.3"), "{screen}");
         assert!(screen.contains("← now"), "{screen}");
         // The card says what it does and names the verb for the other thing,
@@ -12999,14 +13968,21 @@ mod tests {
     fn the_two_pickers_do_not_open_together() {
         let mut a = app();
         a.session_id = "s1".into();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         a.apply(mode_settings("read-only", MODES));
         a.apply(model_settings("local", &["local", "glm/glm-5.3-flash"]));
 
         assert_eq!(a.command("mode"), Some(Action::Settings));
         assert!(a.mode_picker && !a.models_picker);
         a.command("models");
-        assert!(a.models_picker && !a.mode_picker, "the second closes the first");
+        assert!(
+            a.models_picker && !a.mode_picker,
+            "the second closes the first"
+        );
         a.key(Key::Esc);
         assert!(!a.models_picker && !a.mode_picker, "esc closes it");
     }
@@ -13059,7 +14035,10 @@ mod tests {
             .iter()
             .find(|l| l.contains("always-ask") && l.contains('▸'))
             .expect("the current mode is on the screen");
-        assert!(row.contains("← now"), "the row says which mode is live: {row}");
+        assert!(
+            row.contains("← now"),
+            "the row says which mode is live: {row}"
+        );
         // Enter on the untouched list is a no-op that closes: the session is
         // already in the marked mode, and a round trip to be told what the
         // screen already showed is not worth its flicker.
@@ -13095,13 +14074,18 @@ mod tests {
         assert_eq!(a.mode_sel, 0);
         a.key(Key::Up);
         assert_eq!(a.mode_sel, 5);
+        // `allow-all` is the one point the head holds for a confirmation, so Enter
+        // closes the list and puts the question up instead of sending it. `y` is
+        // what sends it — see `allow_all_asks_before_it_is_sent_and_nothing_else_does`.
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(!a.mode_picker, "taking a mode closes the list");
         assert_eq!(
-            a.key(Key::Enter),
+            a.key(Key::Char('y')),
             Some(Action::Mode {
-                name: "allow-all".into()
+                name: "allow-all".into(),
+                consented: true
             })
         );
-        assert!(!a.mode_picker, "taking a mode closes the list");
     }
 
     #[test]
@@ -13125,7 +14109,10 @@ mod tests {
             .into_iter()
             .find(|l| l.contains("writes-allowed") && l.contains('▸'))
             .unwrap();
-        assert!(row.contains('▸'), "the mark moved to the clicked row: {row}");
+        assert!(
+            row.contains('▸'),
+            "the mark moved to the clicked row: {row}"
+        );
         // A click into the blank space under the card moves nothing: the card
         // proved six rows, and below them are its hints and the composer.
         a.key(Key::Click { x: 6, y: first + 9 });
@@ -13136,7 +14123,8 @@ mod tests {
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::Mode {
-                name: "always-ask".into()
+                name: "always-ask".into(),
+                consented: false
             })
         );
         assert!(!a.mode_picker);
@@ -13152,24 +14140,27 @@ mod tests {
         ));
         a.apply(mode_settings("read-only", MODES));
         assert_eq!(a.command("mode"), Some(Action::Settings));
-        assert!(a
-            .screen(110, 24)
-            .iter()
-            .any(|l| l.contains("the mode this session runs under")));
+        assert!(
+            a.screen(110, 24)
+                .iter()
+                .any(|l| l.contains("the mode this session runs under"))
+        );
         // A permission ask arrives: it takes the card slot and the ladder
         // keys — a second cursor under it would be a cursor nothing moves —
         // and the mode card waits, then comes back once it is answered.
         a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
-        assert!(!a
-            .screen(110, 24)
-            .iter()
-            .any(|l| l.contains("the mode this session runs under")));
+        assert!(
+            !a.screen(110, 24)
+                .iter()
+                .any(|l| l.contains("the mode this session runs under"))
+        );
         assert!(a.mode_picker, "the card waits, it does not close");
         a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
-        assert!(a
-            .screen(110, 24)
-            .iter()
-            .any(|l| l.contains("the mode this session runs under")));
+        assert!(
+            a.screen(110, 24)
+                .iter()
+                .any(|l| l.contains("the mode this session runs under"))
+        );
     }
 
     #[test]
@@ -13187,7 +14178,8 @@ mod tests {
         assert_eq!(
             a.key(Key::Char('5')),
             Some(Action::Mode {
-                name: "automode-edits".into()
+                name: "automode-edits".into(),
+                consented: false
             })
         );
         assert!(!a.mode_picker);
@@ -13197,7 +14189,8 @@ mod tests {
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::Mode {
-                name: "automode".into()
+                name: "automode".into(),
+                consented: false
             })
         );
         // Reopened: the daemon's spelling is not the only one accepted — the
@@ -13207,7 +14200,8 @@ mod tests {
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::Mode {
-                name: "automode-edits".into()
+                name: "automode-edits".into(),
+                consented: false
             })
         );
         // Reopened: an ambiguous prefix is refused with a count, list still up.
@@ -13237,7 +14231,8 @@ mod tests {
         assert_eq!(
             a.command("mode automode-edits"),
             Some(Action::Mode {
-                name: "automode-edits".into()
+                name: "automode-edits".into(),
+                consented: false
             }),
             "a named mode never opens the list"
         );
@@ -13306,7 +14301,9 @@ mod tests {
         a.completion = None;
         let screen = a.screen(110, 24);
         assert!(
-            screen.iter().any(|l| l.contains("/sessions") && l.contains("/switch")),
+            screen
+                .iter()
+                .any(|l| l.contains("/sessions") && l.contains("/switch")),
             "the live completions row shows the matches:\n{}",
             screen.join("\n")
         );
@@ -13328,7 +14325,11 @@ mod tests {
         ));
         a.key(Key::CtrlS);
         typed(&mut a, "cache");
-        assert_eq!(a.key(Key::Enter), None, "an ambiguous prefix must not switch");
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "an ambiguous prefix must not switch"
+        );
         let screen = a.screen(110, 24).join("\n");
         assert!(screen.contains("2 sessions match"), "{screen}");
     }
@@ -13347,7 +14348,9 @@ mod tests {
             usage: Usage {
                 prompt_tokens: 4_470,
                 cached_tokens: 1_500,
-                predicted_tokens: 10, cost_micros_usd: None },
+                predicted_tokens: 10,
+                cost_micros_usd: None,
+            },
             timings: Default::default(),
         });
         a.apply(hello("s1", vec![brief("s1", "one", false)], one.snapshot()));
@@ -13359,7 +14362,10 @@ mod tests {
             Hub::new("s2").snapshot(),
         ));
         let h = a.header_line(200);
-        assert!(!h.contains("4470"), "the old session's token count came along: {h}");
+        assert!(
+            !h.contains("4470"),
+            "the old session's token count came along: {h}"
+        );
         assert!(h.contains("2/2"), "{h}");
         assert!(a.turn.is_none(), "the old session's turn came along");
     }
@@ -13386,7 +14392,10 @@ mod tests {
         assert_eq!(a.scroll, 6);
         assert_eq!(a.key(Key::WheelDown), None);
         assert_eq!(a.key(Key::WheelDown), None);
-        assert_eq!(a.scroll, 0, "wheeling back to the bottom follows the stream");
+        assert_eq!(
+            a.scroll, 0,
+            "wheeling back to the bottom follows the stream"
+        );
     }
 
     #[test]
@@ -13397,7 +14406,10 @@ mod tests {
         // screen went blank with the banner alone on it.
         let mut a = app();
         for i in 0..40u64 {
-            a.apply(ServerFrame::Event(env(i * 2 + 1, testing::appended(&format!("s.{i}"), "user"))));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
             a.apply(ServerFrame::Event(env(
                 i * 2 + 2,
                 testing::content(&format!("s.{i}"), &format!("line {i}")),
@@ -13417,7 +14429,11 @@ mod tests {
             "scrolled to the top and the screen is empty:\n{}",
             screen.join("\n")
         );
-        assert!(screen.iter().any(|l| l.contains("line 0")), "{}", screen.join("\n"));
+        assert!(
+            screen.iter().any(|l| l.contains("line 0")),
+            "{}",
+            screen.join("\n")
+        );
     }
 
     fn env(seq: u64, event: SessionEvent) -> letibot_sessionlog::event::Envelope {
@@ -13481,27 +14497,48 @@ mod tests {
     }
 
     fn plain_cfg(width: usize) -> RenderConfig {
-        RenderConfig { width, color: false, ..Default::default() }
+        RenderConfig {
+            width,
+            color: false,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn an_edit_call_renders_the_two_panel_diff_when_it_is_on() {
-        let rows = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, true);
+        let rows = call_card(
+            &edit_row(Some(edit_excerpt())),
+            &plain_cfg(120),
+            0,
+            Fold::Open,
+            true,
+        );
         let joined = rows.join("\n");
-        assert!(joined.contains('│'), "two panels with a separator: {joined}");
-        assert!(joined.contains('-') && joined.contains("fn a() {}"), "{joined}");
+        assert!(
+            joined.contains('│'),
+            "two panels with a separator: {joined}"
+        );
+        assert!(
+            joined.contains('-') && joined.contains("fn a() {}"),
+            "{joined}"
+        );
         assert!(joined.contains('+') && joined.contains("x();"), "{joined}");
         // The removed and added first lines share one row — the change reads
         // across — and the two added lines that have no old counterpart get
         // their own rows with an empty left panel.
         assert!(
-            rows.iter().any(|r| r.contains('-') && r.contains('+') && r.contains('│')),
+            rows.iter()
+                .any(|r| r.contains('-') && r.contains('+') && r.contains('│')),
             "{joined}"
         );
         assert!(
-            rows.iter()
-                .filter(|r| r.contains('│'))
-                .any(|r| r.split_once('│').unwrap().0.trim().is_empty() && r.contains("x();")),
+            rows.iter().filter(|r| r.contains('│')).any(|r| r
+                .split_once('│')
+                .unwrap()
+                .0
+                .trim()
+                .is_empty()
+                && r.contains("x();")),
             "{joined}"
         );
     }
@@ -13512,18 +14549,39 @@ mod tests {
     /// read, and the width gate's other answer was *no diff at all*.
     #[test]
     fn the_diff_toggle_alone_picks_split_or_unified_at_any_width() {
-        let off = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(120), 0, Fold::Open, false);
+        let off = call_card(
+            &edit_row(Some(edit_excerpt())),
+            &plain_cfg(120),
+            0,
+            Fold::Open,
+            false,
+        );
         let text = off.join("\n");
         assert!(!text.contains('│'), "switched off: {off:?}");
-        assert!(text.contains("+    x();") || text.contains("+x();"), "no unified diff: {off:?}");
-        assert!(!text.contains("64 B"), "the byte count came back instead of a diff: {off:?}");
+        assert!(
+            text.contains("+    x();") || text.contains("+x();"),
+            "no unified diff: {off:?}"
+        );
+        assert!(
+            !text.contains("64 B"),
+            "the byte count came back instead of a diff: {off:?}"
+        );
 
         // Narrow and switched on: still a split. The panels are cramped; the
         // renderer wraps and degrades, and the change is on the screen.
-        let narrow = call_card(&edit_row(Some(edit_excerpt())), &plain_cfg(80), 0, Fold::Open, true);
+        let narrow = call_card(
+            &edit_row(Some(edit_excerpt())),
+            &plain_cfg(80),
+            0,
+            Fold::Open,
+            true,
+        );
         let text = narrow.join("\n");
         assert!(text.contains('│'), "narrow pane drew no split: {narrow:?}");
-        assert!(text.contains("x();"), "narrow pane lost the change: {narrow:?}");
+        assert!(
+            text.contains("x();"),
+            "narrow pane lost the change: {narrow:?}"
+        );
     }
 
     /// **A restarted head still draws the last turn's edit panels.**
@@ -13626,7 +14684,10 @@ mod tests {
 
         let mut a = app();
         let snap = hub.snapshot();
-        assert!(snap.turn.is_none(), "a resumed daemon's snapshot has no turn");
+        assert!(
+            snap.turn.is_none(),
+            "a resumed daemon's snapshot has no turn"
+        );
         a.apply(hello("s", vec![brief("s", "one", false)], snap));
         a.tools = Fold::Open;
 
@@ -13678,16 +14739,35 @@ mod tests {
             before_lines: 0,
             ..edit_excerpt()
         };
-        let rows = call_card(&edit_row(Some(created)), &plain_cfg(120), 0, Fold::Open, true);
-        let body: Vec<&str> = rows.iter().filter(|r| r.contains('│')).map(String::as_str).collect();
+        let rows = call_card(
+            &edit_row(Some(created)),
+            &plain_cfg(120),
+            0,
+            Fold::Open,
+            true,
+        );
+        let body: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.contains('│'))
+            .map(String::as_str)
+            .collect();
         assert!(!body.is_empty(), "{rows:?}");
         for r in &body {
             let (left, _right) = r.split_once('│').unwrap();
             assert!(left.trim().is_empty(), "created: no left panel: {r:?}");
         }
 
-        let capped = letibot_sessionlog::event::ToolEdit { truncated: true, ..edit_excerpt() };
-        let rows = call_card(&edit_row(Some(capped)), &plain_cfg(120), 0, Fold::Open, true);
+        let capped = letibot_sessionlog::event::ToolEdit {
+            truncated: true,
+            ..edit_excerpt()
+        };
+        let rows = call_card(
+            &edit_row(Some(capped)),
+            &plain_cfg(120),
+            0,
+            Fold::Open,
+            true,
+        );
         assert!(
             rows.iter().any(|r| r.contains("the excerpt was capped")),
             "{rows:?}"
@@ -13706,7 +14786,10 @@ mod tests {
     fn the_live_event_path_feeds_the_two_panel_view() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::proposed("t1", "c1", "edit"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed("t1", "c1", "edit"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::ToolFinished {
@@ -13733,7 +14816,10 @@ mod tests {
         let screen = a.screen(120, 24).join("\n");
         assert!(screen.contains("x();"), "{screen}");
         assert!(screen.contains("+"), "{screen}");
-        assert!(!screen.contains("64 B"), "the byte count came back: {screen}");
+        assert!(
+            !screen.contains("64 B"),
+            "the byte count came back: {screen}"
+        );
     }
 
     /// **The bug the operator reported.** The diff was drawn only by the live
@@ -13745,7 +14831,10 @@ mod tests {
     fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::proposed("t1", "c1", "edit"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed("t1", "c1", "edit"),
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::ToolFinished {
@@ -13761,7 +14850,10 @@ mod tests {
             },
         )));
         // The transcript takes the call over: the row lands, then its body.
-        a.apply(ServerFrame::Event(env(4, testing::appended("t1.r1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::appended("t1.r1", "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             5,
             SessionEvent::TranscriptContent {
@@ -13776,24 +14868,45 @@ mod tests {
             },
         )));
         let screen = a.screen(120, 30).join("\n");
-        assert!(screen.contains("x();"), "settled row lost the diff:\n{screen}");
-        assert!(!screen.contains("1 replacement(s)"), "the tool's prose was drawn instead of the diff:\n{screen}");
+        assert!(
+            screen.contains("x();"),
+            "settled row lost the diff:\n{screen}"
+        );
+        assert!(
+            !screen.contains("1 replacement(s)"),
+            "the tool's prose was drawn instead of the diff:\n{screen}"
+        );
 
         // The next turn takes the pane away; the settled row still has its pair.
         a.apply(ServerFrame::Event(env(6, testing::turn_started("t2"))));
         let screen = a.screen(120, 30).join("\n");
-        assert!(screen.contains("x();"), "the diff vanished when the next turn started:\n{screen}");
+        assert!(
+            screen.contains("x();"),
+            "the diff vanished when the next turn started:\n{screen}"
+        );
 
         // Narrow: unified, and still the change.
         let screen = a.screen(80, 30).join("\n");
-        assert!(screen.contains("x();"), "narrow settled row lost the change:\n{screen}");
+        assert!(
+            screen.contains("x();"),
+            "narrow settled row lost the change:\n{screen}"
+        );
         // The toggle reaches the settled row too, not only the live pane.
         let split = a.screen(120, 30).join("\n");
-        assert!(split.contains('│') && split.contains("1 - fn a() {}"), "{split}");
+        assert!(
+            split.contains('│') && split.contains("1 - fn a() {}"),
+            "{split}"
+        );
         flip_diff_view(&mut a);
         let unified = a.screen(120, 30).join("\n");
-        assert!(unified.contains("-fn a() {}") || unified.contains("- fn a() {}"), "{unified}");
-        assert!(!unified.contains("1 - fn a() {}                                          │"), "still split after the flip:\n{unified}");
+        assert!(
+            unified.contains("-fn a() {}") || unified.contains("- fn a() {}"),
+            "{unified}"
+        );
+        assert!(
+            !unified.contains("1 - fn a() {}                                          │"),
+            "still split after the flip:\n{unified}"
+        );
         if std::env::var("LETIBOT_SHOW").is_ok() {
             eprintln!("=== 120 unified ===\n{unified}");
         }
@@ -13839,12 +14952,18 @@ mod tests {
             1,
             proposed_bash("c1", "\"cargo test --workspace\""),
         )));
-        a.apply(ServerFrame::Event(env(2, backgrounded_finished("j1", "c1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            backgrounded_finished("j1", "c1"),
+        )));
         assert_eq!(a.jobs.len(), 1);
         assert_eq!(a.jobs[0].job, "j1");
         assert_eq!(a.jobs[0].call_id, "c1");
         assert_eq!(a.jobs[0].how, "asked");
-        assert!(a.jobs[0].state.is_empty(), "no settlement yet: it is running");
+        assert!(
+            a.jobs[0].state.is_empty(),
+            "no settlement yet: it is running"
+        );
 
         a.apply(ServerFrame::Event(env(
             3,
@@ -13871,7 +14990,10 @@ mod tests {
             2,
             proposed_bash("c1", "\"cargo test --workspace\""),
         )));
-        a.apply(ServerFrame::Event(env(3, backgrounded_finished("j1", "c1"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            backgrounded_finished("j1", "c1"),
+        )));
         let lines = a.jobs_lines(100).join("\n");
         assert!(lines.contains("j1"), "{lines}");
         assert!(lines.contains("cargo test --workspace"), "{lines}");
@@ -13931,7 +15053,10 @@ mod tests {
     fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(1, testing::proposed("t1", "c1", "bash"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::proposed("t1", "c1", "bash"),
+        )));
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::ToolStarted {
@@ -13956,7 +15081,10 @@ mod tests {
             },
         )));
         assert!(!a.turn_running(), "the turn is terminal");
-        assert!(a.running_call().is_some(), "and the command is still running");
+        assert!(
+            a.running_call().is_some(),
+            "and the command is still running"
+        );
         assert_eq!(
             a.key(Key::CtrlO),
             Some(Action::Promote),
@@ -13972,7 +15100,10 @@ mod tests {
         // Nothing at all.
         assert_eq!(a.key(Key::CtrlO), None);
         assert!(
-            a.notice.as_deref().unwrap_or("").contains("nothing is running"),
+            a.notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("nothing is running"),
             "{:?}",
             a.notice
         );
@@ -13994,7 +15125,11 @@ mod tests {
         assert_eq!(verb_arg("mode", "mode"), Some(""));
         assert_eq!(verb_arg("mode automode", "mode"), Some("automode"));
         assert_eq!(verb_arg("models", "mode"), None, "the reported one");
-        assert_eq!(verb_arg("newton", "new"), None, "not a session called `ton`");
+        assert_eq!(
+            verb_arg("newton", "new"),
+            None,
+            "not a session called `ton`"
+        );
         assert_eq!(verb_arg("renamed", "rename"), None);
         assert_eq!(verb_arg("cellsomething", "cells"), None);
     }
@@ -14027,17 +15162,26 @@ mod tests {
             2,
             proposed_bash("c1", "\"cargo build\""),
         )));
-        a.apply(ServerFrame::Event(env(3, backgrounded_finished("j1", "c1"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            backgrounded_finished("j1", "c1"),
+        )));
         a.apply(ServerFrame::Event(env(
             4,
             proposed_bash("c2", "\"cargo test\""),
         )));
-        a.apply(ServerFrame::Event(env(5, backgrounded_finished("j2", "c2"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            backgrounded_finished("j2", "c2"),
+        )));
         a.key(Key::CtrlQ);
         assert!(a.jobs_pane);
 
         // The cursor starts on the first row and the pane says which one it is on.
-        assert!(a.jobs_lines(100).join("\n").contains("\u{25b8}"), "a cursor is drawn");
+        assert!(
+            a.jobs_lines(100).join("\n").contains("\u{25b8}"),
+            "a cursor is drawn"
+        );
         a.key(Key::Down);
         assert_eq!(a.jobs_sel, 1);
 
@@ -14058,7 +15202,11 @@ mod tests {
     #[test]
     fn switching_drops_the_old_sessions_jobs_and_coming_back_rebuilds_them() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true)],
+            Hub::new("s").snapshot(),
+        ));
         let settled = SessionEvent::JobSettled {
             job: "j1".into(),
             state: "exited 0".into(),
@@ -14069,7 +15217,11 @@ mod tests {
         assert_eq!(a.jobs.len(), 1);
         a.jobs_sel = 0;
 
-        a.apply(hello("s2", vec![brief("s", "parent", true)], Hub::new("s2").snapshot()));
+        a.apply(hello(
+            "s2",
+            vec![brief("s", "parent", true)],
+            Hub::new("s2").snapshot(),
+        ));
         assert_eq!(a.session_id, "s2");
         assert!(a.jobs.is_empty(), "the other session's jobs came along");
         assert_eq!(a.jobs_sel, 0);
@@ -14079,7 +15231,11 @@ mod tests {
         a.key(Key::Esc);
 
         // Back, and the daemon replays the retained settlement that built the row.
-        a.apply(hello("s", vec![brief("s", "parent", true)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true)],
+            Hub::new("s").snapshot(),
+        ));
         a.apply(ServerFrame::Event(env(1, settled)));
         assert_eq!(a.jobs.len(), 1);
         assert_eq!(a.jobs[0].job, "j1");

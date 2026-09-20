@@ -221,12 +221,21 @@ impl HeadClient {
 
     /// Move this session's project to a named point. The daemon persists it in the
     /// mode store, so it applies without a daemon restart (D13).
-    pub fn set_mode(&mut self, expected_seq: u64, name: &str) -> Result<String, ClientError> {
+    /// `consented` says the operator answered the unconfined-`allow-all`
+    /// confirmation with yes. It is meaningless at every other point and is read
+    /// only where `Mode::ALLOW_ALL_HERE` is selected.
+    pub fn set_mode(
+        &mut self,
+        expected_seq: u64,
+        name: &str,
+        consented: bool,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Mode {
             client_request_id: client_request_id.clone(),
             expected_seq,
             name: name.to_string(),
+            consented,
         })?;
         Ok(client_request_id)
     }
