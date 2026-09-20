@@ -1160,16 +1160,45 @@ fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -
 /// and a counter here would also break the property this whole path exists for — the
 /// `screen()` call has to be the same for the same elapsed time, or the frame is not
 /// a function of the clock and the pre-attach draw cannot be driven at all.
+/// **Every frame is the same width, and the face is in the same columns in all of
+/// them.** Only what is *meant* to change changes.
+///
+/// The first set was not: `(=^.^=)` is seven columns and `(=^.-.=)` is eight,
+/// with a `~` on half of them, so the widths ran 7, 8, 7, 8, 8, 9, 8, 9. Padding
+/// each frame to the widest fixed the block's LEFT edge, which is where the
+/// previous attempt stopped — but the face inside the block still grew and shrank
+/// by a column, so the thing the eye actually tracks kept moving. The operator,
+/// having watched it: *"why dont you fix cats center during animation"*.
+///
+/// So the layout is fixed by construction rather than by padding afterwards:
+///
+/// ```text
+///   col  0 1 2 3 4 5 6 7
+///        ( = ^ X ^ = )  T
+///              ^        ^
+///              |        the tail, ~ or blank
+///              the expression, the one glyph that carries the animation
+/// ```
+///
+/// The expression sits at column 3, which is the face's own centre, so it changes
+/// **in place**; the ears and cheeks never move; the tail flicks in a column of
+/// its own past the face. `cat_frames_are_one_width_with_the_face_in_one_place`
+/// asserts all of that, because it is the kind of thing a later edit breaks by
+/// adding one nice-looking frame.
+///
+/// ASCII only, deliberately: `CAT_SLOT` measures with `str::len` and the centring
+/// arithmetic is in columns, and those are the same number only while every glyph
+/// is one byte and one column.
 const CAT_FRAMES: [&str; 8] = [
-    // A cat walking right, one leg changing per frame.
-    "(=^.^=)",
-    "(=^.-.=)",
-    "(=^o^=)",
-    "(=^-.-=)",
+    // A cat blinking, with its tail flicking behind it.
+    "(=^.^=) ",
+    "(=^-^=) ",
+    "(=^o^=) ",
+    "(=^-^=) ",
     "(=^.^=)~",
-    "(=^.-.=)~",
+    "(=^-^=)~",
     "(=^o^=)~",
-    "(=^-.-=)~",
+    "(=^-^=)~",
 ];
 
 /// When the waiting frame starts naming the way out, in milliseconds.
@@ -1183,12 +1212,11 @@ const ATTACH_IMPATIENT: u64 = 2_000;
 
 /// The width of the **slot** the cat walks in: the widest frame.
 ///
-/// The frames are not all the same width (`(=^.^=)` against `(=^.^=)~`), and a 7-wide
-/// and an 8-wide thing cannot both sit exactly centred. So the *slot* is what is
-/// centred and the cat sits at its left edge, which makes the cat a fixed thing whose
-/// expression changes rather than something that slides sideways and back as it
-/// walks. Measured rather than written down, so adding a frame cannot silently
-/// widen the slot past what the arithmetic assumes.
+/// Every frame is now that width — see [`CAT_FRAMES`], where a constant width is
+/// the point and not a coincidence — so the padding this feeds is a no-op and is
+/// kept as the guard rather than the fix. Measured rather than written down, so a
+/// frame added in a hurry widens the slot instead of silently overflowing the
+/// arithmetic that assumes it.
 const CAT_SLOT: usize = {
     let mut w = 0;
     let mut i = 0;
@@ -12478,6 +12506,48 @@ mod tests {
         }
     }
 
+    /// **The cat's centre does not move while it animates.**
+    ///
+    /// The operator, watching it: *"why dont you fix cats center during
+    /// animation"*. Padding the frames to a common slot fixed the block's left
+    /// edge and left the face inside it growing and shrinking — `(=^.^=)` is
+    /// seven columns, `(=^.-.=)` is eight — so the thing the eye tracks still
+    /// moved half a column every frame.
+    ///
+    /// Four claims, and the first two are what "centre" means here: one width for
+    /// every frame, the face's fixed glyphs in the same columns in every frame,
+    /// the expression at the face's own centre, and the tail outside the face
+    /// where it cannot push it. The last claim is that the animation still
+    /// animates — a single frame repeated eight times would satisfy everything
+    /// above.
+    #[test]
+    fn cat_frames_are_one_width_with_the_face_in_one_place() {
+        let w = CAT_FRAMES[0].len();
+        for f in CAT_FRAMES {
+            assert!(
+                f.is_ascii(),
+                "the slot is measured in bytes and centred in columns, which is \
+                 one number only for ASCII: {f:?}"
+            );
+            assert_eq!(f.len(), w, "every frame is one width: {f:?}");
+            assert_eq!(&f[0..3], "(=^", "the left of the face never moves: {f:?}");
+            assert_eq!(&f[4..7], "^=)", "nor the right: {f:?}");
+        }
+        // The expression is at the face's centre, so it changes IN PLACE rather
+        // than by pushing one side of the face outward.
+        assert_eq!(3, (w - 1) / 2, "column 3 is the middle of a {w}-wide slot");
+        // And the tail is past the face, where flicking it cannot move anything.
+        assert!(CAT_FRAMES.iter().any(|f| f.ends_with('~')));
+        assert!(CAT_FRAMES.iter().any(|f| f.ends_with(' ')));
+        // It still animates: without this, one frame eight times passes.
+        let expressions: std::collections::HashSet<&str> =
+            CAT_FRAMES.iter().map(|f| &f[3..4]).collect();
+        assert!(
+            expressions.len() >= 2,
+            "the expression has to change: {expressions:?}"
+        );
+    }
+
     /// **The waiting frame: a cat dead centre, walking in place.**
     ///
     /// Four properties, each of which an obvious implementation gets wrong:
@@ -13087,23 +13157,29 @@ mod tests {
             width: 100,
             ..Default::default()
         };
-        // **The premise.** Both variable fields have to actually vary across the
-        // sample, or a constant width below proves nothing about either.
+        // **The premise**: something on this line has to actually change across
+        // the sample, or a constant width below proves nothing at all.
+        //
+        // The cat is no longer one of those things — every frame is one width now,
+        // which `cat_frames_are_one_width_with_the_face_in_one_place` is what
+        // guarantees, and this test leans on it rather than re-proving it. What is
+        // asserted here is that the sample really does walk the animation, and
+        // that the NUMERATOR changes width, which is the variable field this line
+        // has to hold still around.
         let ticks: Vec<u64> = (0..8).map(|t| t * 400).collect();
         let mut frames: Vec<&str> = ticks.iter().map(|t| cat_frame(*t)).collect();
         frames.sort_unstable();
         frames.dedup();
         assert!(
-            frames.len() > 1 && frames.iter().map(|f| f.chars().count()).min()
-                != frames.iter().map(|f| f.chars().count()).max(),
-            "the sampled ticks must hit cat frames of DIFFERENT widths, or this \
-             test says nothing about the cat: {frames:?}"
+            frames.len() > 1,
+            "the sampled ticks must hit more than one cat frame, or the line is \
+             never redrawn in this test: {frames:?}"
         );
         assert_ne!(
             progress::thousands(0).chars().count(),
             progress::thousands(2702).chars().count(),
-            "and the numerator must change width across the run, or it says \
-             nothing about the count either"
+            "and the numerator must change width across the run, or the layout \
+             below says nothing about the count either"
         );
 
         let mut seen: Vec<usize> = Vec::new();
