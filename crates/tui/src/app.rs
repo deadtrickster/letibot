@@ -1519,7 +1519,12 @@ impl App {
                 self.sub_out_pending = None;
                 let mut lines = subagent_out_lines(&events);
                 if lines.is_empty() {
-                    lines.push("    no tool output in this subagent's scrollback.".to_string());
+                    lines.push(
+                        "    this subagent's scrollback has neither an answer nor tool \
+                         output. It may still be running, or its rows may have fallen \
+                         off the daemon's ring."
+                            .to_string(),
+                    );
                 }
                 let spill = spill_sub_out(&session_id, &lines);
                 self.sub_out = Some(SubOut {
@@ -6990,26 +6995,50 @@ fn fold_word(f: Fold) -> &'static str {
 /// tool produced, as the model received it. A `ToolFinished`'s spill locator is
 /// the full output on disk when the inline payload was bounded; those paths are
 /// named at the end, because *"there is more"* without a *where* is a dead end.
+/// **What a subagent did, and what it SAID.**
+///
+/// This used to render tool results and nothing else, which is right for a
+/// subagent that goes and does something and wrong for one whose whole product
+/// is prose. A `digest` subagent is handed a slice of transcript in its prompt
+/// and answers in text: it calls no tools by design, so the pane found nothing
+/// to show and said "no tool output in this subagent's scrollback" — throwing
+/// away the entire point of having run it.
+///
+/// Measured in the operator's store, 2026-09-20. Six subagents spawned to scout
+/// a transcript: one user item, one reasoning item, one assistant item each, and
+/// ZERO tool results. Their words: *"i see them and i see their output but when
+/// i enter - no output"*. The output was there; this function did not look at it.
+///
+/// Reasoning is still left out — it is the model thinking, not its answer, and
+/// that is the same line `compaction::harvest` draws for the same reason.
 fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut spills: Vec<String> = Vec::new();
     for env in events {
         match &env.event {
-            SessionEvent::TranscriptContent { item, .. } => {
-                if let TranscriptItem::ToolResult {
+            SessionEvent::TranscriptContent { item, .. } => match &**item {
+                TranscriptItem::ToolResult {
                     name,
                     outcome,
                     payload,
                     ..
-                } = &**item
-                {
+                } => {
                     out.push(format!("· {name} — {}", outcome_word(outcome)));
                     for line in payload.lines() {
                         out.push(format!("  {line}"));
                     }
                     out.push(String::new());
                 }
-            }
+                // The answer, in the order it was given, so a subagent that
+                // worked and then reported reads as the one conversation it was.
+                TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
+                    for line in text.lines() {
+                        out.push(line.to_string());
+                    }
+                    out.push(String::new());
+                }
+                _ => {}
+            },
             SessionEvent::ToolFinished {
                 spill: Some(path), ..
             } => spills.push(path.clone()),
@@ -10494,8 +10523,14 @@ mod tests {
             events: vec![],
         });
         // An empty scrollback says so; it does not look like a missing session.
+        // "Neither an answer nor tool output", because a subagent whose whole
+        // product is prose has no tool output by design and that is not a fault.
         let v = a.sub_out.as_ref().expect("the view opened");
-        assert!(v.lines[0].contains("no tool output"), "{}", v.lines[0]);
+        assert!(
+            v.lines[0].contains("neither an answer nor tool output"),
+            "{}",
+            v.lines[0]
+        );
         // Esc goes back to the tree — the tree, not everything closed.
         a.key(Key::Esc);
         assert!(a.sub_out.is_none());
@@ -14206,7 +14241,10 @@ mod tests {
             let named = format!("{k:?}");
             assert_eq!(
                 a.key(k),
-                Some(Action::Mode { name: "allow-all".into(), consented: true }),
+                Some(Action::Mode {
+                    name: "allow-all".into(),
+                    consented: true
+                }),
                 "{named} did not confirm"
             );
             assert!(a.mode_confirm.is_none(), "{named} left the question up");
@@ -14877,6 +14915,54 @@ mod tests {
             screen.iter().any(|l| l.contains("line 0")),
             "{}",
             screen.join("\n")
+        );
+    }
+
+    /// **A subagent whose whole product is prose is readable.**
+    ///
+    /// The peek rendered tool results and nothing else, so a `digest` subagent —
+    /// handed a slice of transcript in its prompt, answering in text, calling no
+    /// tools by design — showed "no tool output" and threw its report away.
+    /// Measured in the operator's store: six of them, one user item, one
+    /// reasoning item and one assistant item each, zero tool results. *"i see
+    /// them and i see their output but when i enter - no output"*.
+    #[test]
+    fn a_prose_only_subagent_shows_its_answer_and_not_its_thinking() {
+        let content = |id: &str, item: TranscriptItem| {
+            env(
+                1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(item),
+                },
+            )
+        };
+        let events = vec![
+            content(
+                "i0",
+                TranscriptItem::Reasoning {
+                    text: "let me weigh this up at length".into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
+                },
+            ),
+            content(
+                "i1",
+                TranscriptItem::Assistant {
+                    text: "**Nothing in this part bears on (a) or (c).**\nThe only lazy-loading \
+                           language is about background-job output."
+                        .into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            ),
+        ];
+        let lines = subagent_out_lines(&events).join("\n");
+        assert!(lines.contains("Nothing in this part bears"), "{lines}");
+        assert!(lines.contains("background-job output"), "{lines}");
+        assert!(
+            !lines.contains("weigh this up"),
+            "the thinking is not the answer: {lines}"
         );
     }
 
