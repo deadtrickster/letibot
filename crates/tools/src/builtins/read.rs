@@ -22,12 +22,16 @@ impl Tool for Read {
         ToolSchema::new(
             "read",
             "Return the text of a file, with line numbers. Give `path`; optionally \
-             `offset` (the first line, 1-based) and `limit` (how many lines). Without \
-             a limit, at most 200 lines and a few tens of KiB are returned per call, \
-             and the result says which offset continues the file; very long lines \
-             are clipped. A path that does not exist comes back with the nearest \
-             directory's listing rather than an error, and a directory comes back \
-             as its listing, so a wrong guess does not need a second call.",
+             `offset` (the first line, 1-based) and `limit` (how many lines), or \
+             `ranges` for SEVERAL windows of one file in a single call. Without a \
+             limit, at most 200 lines and a few tens of KiB are returned per call, and \
+             the result says which offset continues the file; very long lines are \
+             clipped. A path that does not exist comes back with the nearest \
+             directory's listing rather than an error, and a directory comes back as \
+             its listing, so a wrong guess does not need a second call. Prefer this to \
+             `sed -n 'A,Bp'`: the shell cites no line numbers, never says where the \
+             file continues, and prints nothing for a range that was wrong — which \
+             reads exactly like one that was right.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

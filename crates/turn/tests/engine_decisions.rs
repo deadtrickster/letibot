@@ -587,8 +587,102 @@ impl SteeringSource for Once {
     }
 }
 
+/// **A message already waiting when the turn begins goes in the prompt, not behind
+/// it.**
+///
+/// The poll used to live only in the stream loop and at the boundary under it, so
+/// the window where nobody listened was exactly "a tool is running" — and it cost
+/// a round on top: the next generation was built and sent without the operator's
+/// words, ran deaf, and appended them afterwards. Measured on the operator's own
+/// session, 2026-09-20: a line typed during a three-minute `job_wait` sat queued
+/// through that wait, through the next round, and through a 300-second permission
+/// ask. *"basically it should be a little bit greedy with my messages"*.
+///
+/// `Once` is the fixture on purpose — it answers the very first poll, which is
+/// what "was already waiting" means — and the two assertions are the two halves:
+/// the message is reported as `steering_before`, and it is in the transcript
+/// ahead of anything the model said this turn.
+#[test]
+fn a_message_already_waiting_is_read_before_the_model_speaks() {
+    let _lock = serial();
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let mut frames = vec![
+        Frame::Token {
+            id: THINK_OPEN,
+            text: "",
+        },
+        Frame::Token {
+            id: THINK_CLOSE,
+            text: "",
+        },
+    ];
+    let answer = ids_of("RFC 2812 then.");
+    frames.extend(token_frames(&answer));
+    frames.push(Frame::Token {
+        id: IM_END,
+        text: "",
+    });
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: 3 + answer.len() as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "greedy");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("which RFC?")], &mut sink)
+        .unwrap();
+    let before_len = session.items.len();
+
+    let mut steering = Once(Some(SteeringMessage::normal("use 2812, not 1459")));
+    let ok = engine
+        .run_turn_steered(&mut session, &mut sink, &mut steering)
+        .unwrap();
+
+    assert_eq!(
+        ok.steering_before.len(),
+        1,
+        "it was taken before the generation: {:?}",
+        ok.steering_before
+    );
+    assert!(
+        ok.steering_applied.is_empty(),
+        "and not again at the boundary: {:?}",
+        ok.steering_applied
+    );
+    // The row sits where it was read: immediately after what was already there,
+    // and ahead of the model's own items. That ordering is what `steering_before`
+    // exists to let the caller reconcile.
+    let TranscriptItem::User { parts } = &session.items[before_len] else {
+        panic!("expected the steering row at {before_len}: {:?}", session.items)
+    };
+    let UserPart::Text { text } = &parts[0] else {
+        panic!()
+    };
+    assert_eq!(text, "use 2812, not 1459");
+    let assistant_at = session
+        .items
+        .iter()
+        .position(|i| matches!(i, TranscriptItem::Assistant { .. }))
+        .expect("the model answered");
+    assert!(
+        assistant_at > before_len,
+        "the model spoke after reading it, not before"
+    );
+}
+
 /// A correction that arrives mid-turn is injected at the **step boundary**: the
 /// generation completes, then the message is appended as a plain user item.
+///
+/// The source is `After`, not `Once`, and that is the premise rather than a
+/// detail. A turn now polls once BEFORE it builds its prompt — the greedy poll —
+/// so a `Once` here would be consumed there and this test would silently measure
+/// the other path under this name. `After` makes "arrives while the model is
+/// speaking" a fact about the fixture instead of an accident of call order.
 #[test]
 fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     let _lock = serial();
@@ -622,13 +716,21 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
         .append_items(&engine, &[user("which RFC?")], &mut sink)
         .unwrap();
 
-    let mut steering = Once(Some(SteeringMessage::normal(
-        "the spec changed - RFC 2812 rather than 1459",
-    )));
+    let mut steering = After {
+        left: 2,
+        msg: Some(SteeringMessage::normal(
+            "the spec changed - RFC 2812 rather than 1459",
+        )),
+    };
     let ok = engine
         .run_turn_steered(&mut session, &mut sink, &mut steering)
         .unwrap();
 
+    assert!(
+        ok.steering_before.is_empty(),
+        "nothing was waiting when this turn began: {:?}",
+        ok.steering_before
+    );
     assert_eq!(ok.steering_applied.len(), 1);
     // It is a plain user item carrying exactly its own text — §18.1-I11.
     let TranscriptItem::User { parts } = session.items.last().unwrap() else {

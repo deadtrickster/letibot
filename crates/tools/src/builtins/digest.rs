@@ -290,8 +290,26 @@ impl Tool for DigestTool {
         let covered: usize = chunks.iter().take(total).map(|c| c.rows).sum();
 
         let mut so_far = String::new();
+        let mut cut_short_at = None;
         for (i, c) in chunks.iter().take(total).enumerate() {
             let n = i + 1;
+            // **The operator outranks the rest of the fold.**
+            //
+            // Twenty-four parts is minutes, and for all of them this call is the
+            // only thing the session is doing — nothing polls the head, so a line
+            // typed here sits queued until the whole read finishes. Measured on the
+            // operator's own session, 2026-09-20: this tool was on part 15 of 24
+            // when *"we did it with another agent"* had been waiting underneath it
+            // for over a minute, and the remaining nine parts were about to answer
+            // a question that sentence had already settled.
+            //
+            // So: stop, and say where it stopped. What the earlier parts
+            // established is real and is reported; the rest was work nobody had
+            // asked for any more.
+            if n > 1 && ctx.operator_waiting() {
+                cut_short_at = Some(n - 1);
+                break;
+            }
             // §8.5 liveness: a fold is minutes of work with nothing on the screen,
             // and the operator's rule from the oracle wait is that a pause nobody
             // announces reads as a hang.
@@ -321,6 +339,17 @@ impl Tool for DigestTool {
                     );
                 }
             }
+        }
+
+        if let Some(done) = cut_short_at {
+            return Invocation::ok(format!(
+                "{so_far}\n\n---\nSTOPPED EARLY at part {done} of {total}: the operator \
+                 typed something while this was running, and it is theirs to answer \
+                 first. What is above is what the OLDEST {done} part(s) established; \
+                 the newest rows were not read. Read their message before deciding \
+                 whether the rest of this is still worth doing — and if it is, call \
+                 `digest` again.\n"
+            ));
         }
 
         let mut out = format!(
@@ -492,12 +521,24 @@ mod tests {
         runner: Arc<dyn DigestRunner>,
         args: Value,
     ) -> crate::ToolResult {
+        ask_with(rows, runner, args, None)
+    }
+
+    fn ask_with(
+        rows: Vec<TranscriptRow>,
+        runner: Arc<dyn DigestRunner>,
+        args: Value,
+        waiting: Option<crate::runtime::OperatorWaiting>,
+    ) -> crate::ToolResult {
         let mut reg = crate::runtime::Registry::new();
         reg.register(Box::new(DigestTool::new(Arc::new(Rows(rows)), runner)))
             .unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let b = crate::backend::HostBackend::new(d.path()).unwrap();
         let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(b));
+        if let Some(w) = waiting {
+            rt = rt.with_operator_waiting(w);
+        }
         rt.invoke(
             "t",
             &letibot_transcript::ToolCall {
@@ -507,6 +548,66 @@ mod tests {
             },
             &mut crate::NullToolSink,
         )
+    }
+
+    /// **A fold stops when the operator speaks, and says where it stopped.**
+    ///
+    /// Measured on the operator's own session, 2026-09-20: `digest` was on part 15
+    /// of 24, over a minute in, with *"we did it with another agent"* queued
+    /// underneath it — a sentence that made the remaining nine parts pointless. A
+    /// tool that holds the floor for minutes has to be able to hear that.
+    ///
+    /// The fixture answers "yes" from the second part on, never the first: a cut
+    /// at part zero would return nothing and would be indistinguishable from a
+    /// digest that failed. The assertions are that it DID fold more than once, that
+    /// it did NOT fold all of them, and that the payload says so — a test that only
+    /// checked the wording would pass on a tool that quietly read everything.
+    #[test]
+    fn a_fold_stops_when_the_operator_is_waiting() {
+        let rows: Vec<TranscriptRow> = (0..40)
+            .map(|i| row(0, i, &format!("row {i}: {}", "x".repeat(2_000))))
+            .collect();
+        let rec: Arc<Recorder> = Arc::new(Recorder::default());
+
+        // How many parts it WOULD have folded, uninterrupted. Without this the
+        // "stopped early" assertion below has nothing to be early against.
+        let all: Arc<Recorder> = Arc::new(Recorder::default());
+        let _ = ask(
+            rows.clone(),
+            all.clone(),
+            serde_json::json!({"question": "what happened"}),
+        );
+        let total = all.seen.lock().unwrap().len();
+        assert!(total > 2, "the fixture must fold several parts, got {total}");
+
+        let waiting = std::sync::Arc::new(|| true) as crate::runtime::OperatorWaiting;
+        let r = ask_with(
+            rows,
+            rec.clone(),
+            serde_json::json!({"question": "what happened"}),
+            Some(waiting),
+        );
+        let folded = rec.seen.lock().unwrap().len();
+        assert_eq!(
+            folded, 1,
+            "the first part always runs — a cut before it would report nothing"
+        );
+        assert!(folded < total, "it stopped early: {folded} of {total}");
+        assert!(
+            r.payload.contains("STOPPED EARLY at part 1"),
+            "and it says where: {}",
+            r.payload
+        );
+        assert!(
+            r.payload.contains("after part 1"),
+            "what the first part established is still reported: {}",
+            r.payload
+        );
+        assert!(
+            !r.payload.contains("Read by a subagent over 40 row(s)"),
+            "it must not also claim it read them all: {}",
+            r.payload
+        );
     }
 
     /// The whole point: many rows go out, one answer comes back, and the rows are

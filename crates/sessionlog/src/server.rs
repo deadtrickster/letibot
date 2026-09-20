@@ -114,6 +114,29 @@ impl Drop for ServerHandle {
     }
 }
 
+/// `EMFILE` and `ENFILE`. Named here rather than pulled from `libc`, which this
+/// crate does not depend on and should not start depending on for two integers
+/// that have been fixed on Linux since before this program existed.
+const EMFILE: i32 = 24;
+const ENFILE: i32 = 23;
+
+/// **Can this `accept` error be retried?**
+///
+/// `ConnectionAborted` is a client that went away between `connect` and
+/// `accept`, and is ordinary. The two out-of-descriptors errnos are the process
+/// or the box being briefly out of room, which other threads are already fixing.
+/// `Interrupted` and `WouldBlock` are the usual suspects and cost nothing to
+/// include. Everything else means the listener itself is broken.
+fn is_transient(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::TimedOut
+    ) || matches!(e.raw_os_error(), Some(EMFILE) | Some(ENFILE))
+}
+
 /// Bind and start accepting for a single session.
 ///
 /// Kept because most of the workspace has exactly one hub and does not want to
@@ -148,15 +171,43 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
 
     let r = registry.clone();
+    let deaf_path = path.clone();
     let accept = std::thread::Builder::new()
         .name("head-accept".into())
         .spawn(move || {
-            for stream in listener.incoming() {
+            // **A failed `accept` is almost never a reason to stop accepting.**
+            //
+            // This loop used to read `Err(_) => break`, and a daemon paid for it in
+            // the field: the accept thread ended, the `UnixListener` it owns was
+            // dropped, the fd closed — and nothing else changed. The socket FILE
+            // stayed, because the `remove_file` lives on `ServerHandle::drop` and
+            // main still held the handle. The worker went on sleeping in
+            // `daemon.run`. So the process was alive, logged nothing, looked
+            // healthy, and was permanently deaf; a head then sat on a socket path
+            // with no listener, polling forever, because "not up yet" and "never
+            // coming back" are the same thing from out there.
+            //
+            // Measured on 2026-09-20: pid 1023699, 26 fds and not one socket, no
+            // `head-accept` thread, `5a0a8f3c88f8.sock` on disk with nothing behind
+            // it. The trigger was a head that died while its connection was still
+            // in the backlog — the operator quit the daemon that had spawned it —
+            // which is `ECONNABORTED`, the most ordinary accept error there is.
+            //
+            // The errno was discarded by `Err(_)`, so it could not even be named
+            // afterwards. Now: transients are retried, everything else is said out
+            // loud, and a loop that really does end takes the daemon with it
+            // instead of leaving a deaf process holding a lie.
+            let mut transient = 0u32;
+            loop {
                 if r.is_closed() {
                     break;
                 }
-                match stream {
-                    Ok(s) => {
+                match listener.accept() {
+                    Ok((s, _)) => {
+                        transient = 0;
+                        if r.is_closed() {
+                            break;
+                        }
                         let r2 = r.clone();
                         let _ =
                             std::thread::Builder::new()
@@ -171,9 +222,48 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                                     }
                                 });
                     }
-                    Err(_) => break,
+                    Err(e) if is_transient(&e) => {
+                        // A client that vanished before it was picked up costs
+                        // nothing and is not worth a line. Running out of file
+                        // descriptors is worth one, and is worth a pause: spinning
+                        // on `EMFILE` burns a core and frees nothing, while the
+                        // descriptors that would fix it are being closed by other
+                        // threads.
+                        transient = transient.saturating_add(1);
+                        if e.kind() != io::ErrorKind::ConnectionAborted {
+                            eprintln!(
+                                "head accept: {e} (transient, retrying; {transient} in a row)"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                    }
+                    Err(e) => {
+                        // Nothing here is recoverable — a listener that is not a
+                        // listener any more. Say which errno, because the whole
+                        // point of the incident above was that nobody could.
+                        eprintln!(
+                            "head accept failed and cannot continue: {e} ({:?}). This daemon \
+                             can no longer be reached, so it is stopping rather than \
+                             running on deaf.",
+                            e.kind()
+                        );
+                        break;
+                    }
                 }
             }
+            // **The socket file goes when the listener does.**
+            //
+            // Whatever ended this loop, the path must stop advertising a door: a
+            // head gets a refusal it can report instead of an eternal poll. The
+            // handle's own `Drop` removes it too, and removing it twice is an
+            // ignored `ENOENT` — much cheaper than the case this prevents.
+            let _ = std::fs::remove_file(&deaf_path);
+            // And the daemon comes down with it, gracefully: every head wakes with
+            // `Bye`, every worker falls out of `next_command`, and the operator
+            // sees a session end instead of a process that answers nothing. A
+            // shutdown that got here first has already done this and closing twice
+            // is idempotent.
+            r.close();
         })?;
 
     Ok(ServerHandle {
@@ -866,4 +956,53 @@ fn mint_session_id(registry: &Arc<Registry>) -> String {
         id = format!("s-{base}-{n}");
     }
     id
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+
+    /// **The errnos that must not take a daemon's ears off.**
+    ///
+    /// This loop read `Err(_) => break` and a daemon paid for it: pid 1023699 on
+    /// 2026-09-20, alive with no `head-accept` thread, no socket among its 26 fds,
+    /// and a socket file on disk with nothing behind it. The trigger was a head
+    /// that died while its connection was still in the backlog — `ECONNABORTED`,
+    /// the most ordinary accept error there is.
+    ///
+    /// Asserted as a classification rather than through a real `accept`, because
+    /// making a listener return `EMFILE` on demand means exhausting the process's
+    /// descriptors and that is a test which breaks whatever runs beside it.
+    #[test]
+    fn an_aborted_client_and_a_full_table_are_both_retryable() {
+        for (kind, why) in [
+            (io::ErrorKind::ConnectionAborted, "a client that went away"),
+            (io::ErrorKind::Interrupted, "a signal"),
+            (io::ErrorKind::WouldBlock, "nothing ready yet"),
+        ] {
+            assert!(
+                is_transient(&io::Error::new(kind, "x")),
+                "{kind:?} is {why} and must be retried"
+            );
+        }
+        for errno in [EMFILE, ENFILE] {
+            assert!(
+                is_transient(&io::Error::from_raw_os_error(errno)),
+                "errno {errno} is descriptors, which other threads are already freeing"
+            );
+        }
+    }
+
+    /// And the other half: a listener that is genuinely broken must NOT be
+    /// retried, or the loop spins forever on an fd that will never accept again.
+    /// `EBADF` is that case, and it is the one the retry must not swallow.
+    #[test]
+    fn a_broken_listener_is_not_retryable() {
+        const EBADF: i32 = 9;
+        assert!(!is_transient(&io::Error::from_raw_os_error(EBADF)));
+        assert!(!is_transient(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "x"
+        )));
+    }
 }

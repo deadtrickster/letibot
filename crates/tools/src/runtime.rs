@@ -207,6 +207,13 @@ impl Default for Limits {
 }
 
 /// What a tool is given for one call.
+/// **Is the operator waiting to say something?**
+///
+/// A closure rather than a flag, because the answer is the hub's and it changes
+/// while a call runs — which is the whole point. `crates/tools` must not know
+/// what a hub is, so the daemon supplies the question already answered.
+pub type OperatorWaiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
 pub struct InvokeCtx<'a> {
     pub backend: &'a dyn ExecBackend,
     pub spiller: &'a Spiller,
@@ -219,6 +226,7 @@ pub struct InvokeCtx<'a> {
     turn_id: &'a str,
     call_id: &'a str,
     sink: &'a mut dyn ToolEventSink,
+    operator_waiting: Option<&'a OperatorWaiting>,
 }
 
 impl InvokeCtx<'_> {
@@ -230,6 +238,21 @@ impl InvokeCtx<'_> {
             call_id: self.call_id.to_string(),
             note: note.into(),
         });
+    }
+
+    /// **The operator has typed something and is waiting for this call to end.**
+    ///
+    /// A tool that runs for minutes — a `digest` folding two dozen parts, a
+    /// `job_wait` holding a three-minute deadline — should ask, and should stop
+    /// when the answer is yes. Nothing is lost by stopping: what has been read is
+    /// reported, and the operator's sentence very often makes the rest of the work
+    /// pointless. The measured case, 2026-09-20: a `digest` reached part 15 of 24
+    /// while *"we did it with another agent"* sat queued underneath it.
+    ///
+    /// `false` when nobody wired the question, so a runtime without a hub behaves
+    /// exactly as it always did.
+    pub fn operator_waiting(&self) -> bool {
+        self.operator_waiting.map(|f| f()).unwrap_or(false)
     }
 
     pub fn call_id(&self) -> &str {
@@ -1124,6 +1147,8 @@ pub struct ToolRuntime {
     /// Session-scoped, and on the runtime rather than on a tool because
     /// read-before-write is a fact about the *session*, not about `edit`.
     pub files: crate::files::FileLedger,
+    /// See [`OperatorWaiting`]. `None` in a runtime with no head behind it.
+    pub operator_waiting: Option<OperatorWaiting>,
 }
 
 impl ToolRuntime {
@@ -1137,7 +1162,14 @@ impl ToolRuntime {
             gate: Box::new(NoBoundary),
             limits: Limits::default(),
             files: crate::files::FileLedger::new(),
+            operator_waiting: None,
         }
+    }
+
+    /// Wire the question a long-running tool asks before it spends another minute.
+    pub fn with_operator_waiting(mut self, f: OperatorWaiting) -> Self {
+        self.operator_waiting = Some(f);
+        self
     }
 
     pub fn with_spiller(mut self, spiller: Spiller) -> Self {
@@ -1336,6 +1368,7 @@ impl ToolRuntime {
                 turn_id,
                 call_id: &call.id,
                 sink,
+                operator_waiting: self.operator_waiting.as_ref(),
             };
             tool.invoke(&mut ctx, &args)
         };

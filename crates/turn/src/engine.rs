@@ -189,6 +189,14 @@ pub struct TurnOk {
     pub truncated: bool,
     /// Steering messages injected at this turn's step boundary (§5.8).
     pub steering_applied: Vec<TranscriptItem>,
+    /// **Steering that was already waiting when this generation began**, appended
+    /// before the prompt was built rather than after the model answered.
+    ///
+    /// Kept apart from [`Self::steering_applied`] because the two groups straddle
+    /// the model's own rows in the transcript, and the caller reconciles ledger
+    /// ids positionally: before, then the model's items, then after. One vector
+    /// could not say which side a message landed on.
+    pub steering_before: Vec<TranscriptItem>,
 }
 
 impl TurnOk {
@@ -199,6 +207,7 @@ impl TurnOk {
         verdict: LengthVerdict,
         interrupted: bool,
         steering_applied: Vec<TranscriptItem>,
+        steering_before: Vec<TranscriptItem>,
     ) -> TurnOk {
         assert!(
             verdict.may_record_as_success(),
@@ -218,6 +227,7 @@ impl TurnOk {
             metrics,
             verdict,
             steering_applied,
+            steering_before,
         }
     }
 }
@@ -519,6 +529,34 @@ impl TurnEngine<'_> {
         // correction would be silently dropped — which is worse than not
         // implementing steering at all.
         let mut pending = Pending::new();
+        // **Take the operator's words before spending a prompt, not after.**
+        //
+        // The poll used to live only inside the stream loop and at the step
+        // boundary under it, so the window where nobody listened was exactly "a
+        // tool is running" — and it cost a round on top. Typing during a
+        // three-minute `job_wait` left the message in the hub queue; the next
+        // round then built and sent its whole prompt without it, generated deaf,
+        // and only appended it afterwards. The operator, watching their line sit
+        // there through all of that: *"i backgrounded a job but my messsage still
+        // queued"*, and then the rule — *"basically it should be a little bit
+        // greedy with my messages"*.
+        //
+        // So: greedy. Anything waiting when a generation begins goes in FIRST, and
+        // the model reads it in this prompt rather than the next one. It also puts
+        // the row in its natural place — after the tool results of the round
+        // before, instead of wedged between an assistant's tool calls and their
+        // results, which is where the end-of-generation append leaves it.
+        // An urgent message is not queued by `absorb`; it is returned to be acted
+        // on, and there is no generation here to act on yet. Held, so the stream
+        // loop's first poll finds it — dropping it would turn an interrupt into
+        // silence.
+        if let Some(u) = pending.absorb(steering) {
+            pending.hold_urgent(u);
+        }
+        let steering_before = pending.take_items();
+        if !steering_before.is_empty() {
+            session.append_items(self, &steering_before, sink)?;
+        }
         // **Which lead this turn gets**, and the only turn that gets the other one
         // is the summary. See `PromptRenderer::generation_prompt_closing_reasoning`:
         // a summary turn runs when the window is nearly full, and a lead that opens
@@ -946,6 +984,7 @@ impl TurnEngine<'_> {
             verdict,
             interrupted,
             steering_items,
+            steering_before,
         ))
     }
 
@@ -1004,6 +1043,22 @@ impl TurnEngine<'_> {
         });
 
         let mut pending = Pending::new();
+        // Greedy, the same way and for the same reason as the local path above:
+        // whatever was typed while the last tool ran is in THIS request, not the
+        // one after it. On a metered provider the argument is sharper still — a
+        // round generated without the operator's correction is a round they paid
+        // for twice.
+        // An urgent message is not queued by `absorb`; it is returned to be acted
+        // on, and there is no generation here to act on yet. Held, so the stream
+        // loop's first poll finds it — dropping it would turn an interrupt into
+        // silence.
+        if let Some(u) = pending.absorb(steering) {
+            pending.hold_urgent(u);
+        }
+        let steering_before = pending.take_items();
+        if !steering_before.is_empty() {
+            session.append_items(self, &steering_before, sink)?;
+        }
         let req = TurnRequest {
             system,
             tools_json,
@@ -1199,7 +1254,15 @@ impl TurnEngine<'_> {
         if !steering_items.is_empty() {
             session.append_items(self, &steering_items, sink)?;
         }
-        Ok(TurnOk::new(turn_id, produced, metrics, verdict, false, steering_items))
+        Ok(TurnOk::new(
+            turn_id,
+            produced,
+            metrics,
+            verdict,
+            false,
+            steering_items,
+            steering_before,
+        ))
     }
 
     /// Metrics for a messages turn: the provider's figures where it gave them,
@@ -1622,6 +1685,7 @@ mod tests {
             metrics,
             LengthVerdict::HardFail(EmptyReason::ReasoningOnly),
             false,
+            vec![],
             vec![],
         );
     }
