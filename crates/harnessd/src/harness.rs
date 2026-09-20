@@ -876,6 +876,26 @@ pub struct CompactReport {
     pub gained: Vec<String>,
     /// Tools the old prompt announced and the new one does not.
     pub lost: Vec<String>,
+    /// **Did the operator watch the summary being written?**
+    ///
+    /// The ordinary compaction runs its summary turn through the session's own
+    /// sink, so the text streams to every head as it is generated and the fork
+    /// that follows needs no announcement. The overrun paths cannot: they
+    /// summarise a SCRATCH transcript, and `summarise_one` sends that to a
+    /// `NullSink` on purpose — forwarding its progress once made the head draw
+    /// the scratch prompt's token count as the session's context. Its comment
+    /// ends "progress is the caller's to report, in words, per half", and the
+    /// caller reported the start and nothing else.
+    ///
+    /// Measured 2026-09-20. The operator ran `/compact` on a session 1.5M
+    /// tokens over its window; it folded correctly, 1504081 -> 758940 tokens
+    /// onto a new transcript with a 2167-token summary as its first item — and
+    /// their screen said *"started summarization of the first 1500+ and then
+    /// scrolled some s-tasks and that is it, not summary output, nothing"*. The
+    /// work was right and the account of it went to the daemon's stderr.
+    ///
+    /// False means the summary has to be published, because nobody saw it.
+    pub summary_was_streamed: bool,
 }
 
 /// What a re-seat did: the fork it made, the summary that carried the conversation
@@ -3582,6 +3602,9 @@ impl<'a> Harness<'a> {
                     summary_turn: outcome,
                     gained,
                     lost,
+                    // This arm ran `run_compaction` through the session's own
+                    // sink, so every head watched the summary being written.
+                    summary_was_streamed: true,
                 })
             }
 
@@ -3694,6 +3717,8 @@ impl<'a> Harness<'a> {
                     summary_turn: outcome,
                     gained,
                     lost,
+                    // The scratch summary went to a `NullSink`; nobody saw it.
+                    summary_was_streamed: false,
                 })
             }
         }
