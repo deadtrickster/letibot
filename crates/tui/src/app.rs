@@ -2907,13 +2907,30 @@ impl App {
         // the ladder and cannot sensibly mean anything else -- the same argument the
         // picker arm above already makes for a bare row number.
         //
-        // Up/Down only with an EMPTY composer, so nothing is taken away: a half-typed
-        // line still scrolls and still edits. Enter is the ask's in both states —
-        // with an empty line the marked row is the answer here; with a typed line
-        // `submit` answers the ask and holds the words, because a permission arriving
-        // mid-typing must not turn Enter into "send the half-thought".
-        if !self.open.is_empty() && self.editor.text().is_empty() {
+        // **Up/Down move the ladder whether or not a line is being typed**, and
+        // this used to require an empty composer so that "a half-typed line still
+        // scrolls and still edits". The cost of that was not visible until the
+        // operator hit it: a permission arrives while you are typing, and the only
+        // way to reach the menu is to empty the composer first — so the words you
+        // were writing are the price of choosing an option. Their words,
+        // 2026-09-20: *"suppose i type a prompt and permission ask arrives — until
+        // i press down arrow I wont get into the permissions menu, by which time
+        // my prompt is erased and gone"*.
+        //
+        // The quit card and the jobs pane in this same file already take Up/Down
+        // unconditionally and gate only Enter; the ladder was the odd one out.
+        // Nothing is taken from the composer, because a one-line composer does not
+        // edit with Up/Down — what moves aside is scrollback scrolling, for as long
+        // as an ask is open, and PageUp/PageDown still do that.
+        //
+        // Enter and the digits keep the empty-composer guard, and for a reason that
+        // is the opposite of this one: with a typed line, Enter is `submit`'s, which
+        // answers the marked row and HOLDS the words — a permission arriving
+        // mid-typing must not turn Enter into "send the half-thought" — and a line
+        // being typed keeps its digits.
+        if !self.open.is_empty() {
             let n = self.open[0].options.len();
+            let typing = !self.editor.text().is_empty();
             match k {
                 Key::Up if n > 0 => {
                     self.sel = if self.sel == 0 { n - 1 } else { self.sel - 1 };
@@ -2925,13 +2942,11 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Enter if n > 0 => {
+                Key::Enter if n > 0 && !typing => {
                     return self.answer_marked();
                 }
                 // A row number is the row, and answering it — see `digit_row`.
-                // Gated on the empty composer like the arrows above, so a line
-                // already being typed keeps its digits.
-                _ if digit_row(&k, n).is_some() => {
+                _ if !typing && digit_row(&k, n).is_some() => {
                     self.sel = digit_row(&k, n).unwrap();
                     return self.answer_marked();
                 }
@@ -11024,10 +11039,19 @@ mod tests {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
         typed(&mut a, "some prose");
-        // The arrows still belong to the composer while a line is typed: the
-        // ladder cursor does not move under the operator's feet.
+        // **The arrows reach the ladder even mid-line, and the line is untouched.**
+        //
+        // They used to belong to the composer here, so that "the ladder cursor does
+        // not move under the operator's feet" — which sounded right and meant that
+        // the only way to choose an option while typing was to empty the composer
+        // first. The operator, 2026-09-20: *"until i press down arrow I wont get
+        // into the permissions menu, by which time my prompt is erased and gone"*.
+        a.key(Key::Down);
+        assert_eq!(a.sel, 1, "the ladder moved");
+        assert_eq!(a.input(), "some prose", "and the line is still there");
         a.key(Key::Up);
         assert_eq!(a.sel, 0);
+        assert_eq!(a.input(), "some prose");
         // Enter answers the ask with the marked row and holds the line.
         assert_eq!(
             a.key(Key::Enter),
