@@ -405,6 +405,24 @@ The window arithmetic is unchanged and was always right: clamp `at`, round it to
 boundary, cap `len` **at the daemon** rather than trusting the request, send the body's `total`
 beside the window, and answer `body: None` rather than `""` for a row nobody holds.
 
+**And the head's window and the daemon's ring are allowed to disagree** — the operator's call:
+*"regarding different heads that can display disjoint sets - it is their problem essentially"*.
+The daemon serves rows **by session ordinal**, and that ordinal is a property of the session, not
+of any head's buffer. Whether a given head can render what it asked for is the head's business: a
+head holding its own rendered window, a head showing forty rows, a head that never scrolls — the
+daemon satisfies none of them individually and all of them by answering "row N". So there is no
+reconciliation to design between `ViewBounds`, `LogBounds` and the head's ring; they are three
+different windows over one sequence, and only the sequence is shared.
+
+That is what makes the pieces independent rather than a single design:
+
+| piece | whose | needs |
+|---|---|---|
+| a ring over **rendered lines** | the head | nothing — stop holding every line it has drawn |
+| asking for a **missing ordinal** | the head | `items_dropped` plus its own index; no flag on the wire |
+| answering **by ordinal** | the daemon | the store read, behind the `SessionSource` seam |
+| heads with disjoint sets | theirs | — |
+
 **Still to write, in this order** — the order changed once the two rings above were separated out:
 
 1. **The head does not ask yet.** It has no flag for "this ordinal is missing", no tracking of an
@@ -415,12 +433,22 @@ beside the window, and answer `body: None` rather than `""` for a row nobody hol
    **log-ring read shaped like `FetchRow`** — same ordinal, same window, one source. Worth
    measuring first how many rows the log's 20,000 events actually cover, since a row costs several
    events and the honest answer may be "a few thousand more than the view, not a different order".
-3. **Only past both rings does the disk matter.** `~/.local/share/letibot/sessions.db` has every
-   row, and `crates/harnessd/src/transcript_source.rs:196` already runs exactly the query
-   (`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`). What it needs is a
-   *dependency direction*: `sessionlog` speaks the head protocol and reads its in-memory view and
-   nothing else, so the store read has to arrive as a seam — a trait the daemon implements —
-   rather than by teaching the protocol layer about sqlite.
+3. **Only past both rings does the disk matter** — and the seam it needs **already exists**.
+   `SessionSource` (`crates/sessionlog/src/registry.rs:311`) is a trait `sessionlog` defines and
+   `harnessd` implements as `StoreSessions` (`crates/harnessd/src/sessions.rs:1809`), introduced
+   for exactly this reason: *"A **trait and not a `Store`**: `letibot-sessionlog` does not depend
+   on `letibot-tokencore` and should not start… the daemon passes an implementation in, and a
+   registry with no source behaves exactly as it did before."* So a `row_body(session_id, ordinal)`
+   method on that trait is the whole of step 3, with no new direction of dependency —
+   `crates/harnessd/src/transcript_source.rs` already reads the rows in order
+   (`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`).
+
+   **What step 3 does have to answer** is that a session is not one table of rows: resume forks
+   mean the rows reaching the head are a **chain** of transcripts, which is why
+   `crates/harnessd/src/transcript_source.rs:129` walks `SELECT … FROM transcript … WHERE
+   t.session_id = ?1 ORDER BY t.created_at DESC` rather than querying items directly. The ordinal
+   the head counts must be the same sequence the chain produces, or a fetched row lands in the
+   wrong place.
 
 **(a) is the one that matters first**, and it is also the smaller: it needs no daemon change, no
 store read and no protocol, and it is what makes (b) safe to add — without it, giving the head
