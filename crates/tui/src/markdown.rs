@@ -1488,7 +1488,103 @@ impl std::fmt::Debug for IncrementalMarkdown {
 // The text boundary, kept for the one shape the tree cannot settle
 // ---------------------------------------------------------------------------
 
-/// The offset past the last `\n\n` that is safe to freeze, if any.
+/// A byte offset near the end of `src` from which the tail parses **standalone**, with at
+/// least `min_bytes` of text after it.
+///
+/// # Why this exists, and why it is not `stable_boundary`
+///
+/// [`stable_boundary_with`] walks **forward** and answers "how much of the front may I
+/// freeze". This answers the opposite question, and it is the one a head asks when it
+/// attaches: the document is *finished*, and the head wants its **tail** — the frame on
+/// screen and some scrollback above it. Nothing about that is incremental and there is
+/// nothing to reuse; the cost being avoided is lexing megabytes to draw the bottom of a
+/// 24-row window.
+///
+/// # What the tail is guaranteed to be
+///
+/// `lex(&src[cut..])` gives blocks whose **second and later** entries are the same blocks
+/// the whole document ends with. The **first** may be ragged, and that is not a defect to
+/// fix:
+///
+/// - a cut between two lines of one paragraph gives the tail a paragraph holding only the
+///   lower lines, where the whole had one paragraph of both;
+/// - a cut inside a loose list gives the tail a list that starts mid-way — and it renders
+///   **identically**, because the renderer numbers from the marker the model wrote
+///   (`start + i`), which is the same reason a loose list keeps its numbers.
+///
+/// So `[1..]` is the exact part and `[0]` is the price. A caller must therefore ask for
+/// more than it draws — the ragged block goes off the top of the window, and everything
+/// visible is exact. `a_tail_cut_is_exact_below_its_first_block` is that property, and it
+/// is the reason `min_bytes` is a floor rather than a size.
+///
+/// # The order of operations, which matters
+///
+/// Fences first, because **fence parity is the one thing a backward scan cannot decide
+/// alone**: whether a ``` opens or closes depends on how many came before it. [`fences_in`]
+/// answers that from the text for **0.39 ns/byte** against the parse's 451, so consulting
+/// it is three orders of magnitude cheaper than being wrong. Measured 2026-09-20 on a
+/// 543 KB transcript — where a naive "last blank line" cut really did land badly.
+///
+/// Then candidates backward from the floor, taking the first that passes. Backward
+/// because the smallest sufficient tail is the cheapest one.
+///
+/// `None` means no safe boundary in range: the caller lexes the whole thing, which is
+/// correct and slow rather than fast and wrong.
+pub fn tail_cut(src: &str, min_bytes: usize) -> Option<usize> {
+    if src.len() <= min_bytes {
+        return Some(0);
+    }
+    let fences: Vec<(usize, usize)> = fences_in(src).iter().map(|f| (f.open, f.end)).collect();
+    // Line starts. Every one is a char boundary, which is what keeps a cut from landing
+    // inside a multi-byte character — walking back by byte does not, and did not.
+    let mut starts: Vec<usize> = vec![0];
+    for (i, b) in src.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    let line_at = |i: usize| -> &str {
+        let from = starts[i];
+        let to = starts.get(i + 1).map(|s| s - 1).unwrap_or(src.len());
+        &src[from..to]
+    };
+    // The floor: the earliest line start that still leaves `min_bytes`.
+    let floor = src.len() - min_bytes;
+    let last_candidate = starts.partition_point(|&s| s <= floor).saturating_sub(1);
+    // A candidate is a line whose predecessor is blank — so the cut is "a blank line,
+    // then the start of real content", the same shape `stable_boundary_with` accepts.
+    for i in (2..=last_candidate).rev() {
+        if !line_at(i - 1).trim().is_empty() {
+            continue;
+        }
+        let at = starts[i];
+        if at == 0 || at >= src.len() {
+            continue;
+        }
+        // Guard: not inside a fence. The one a backward scan cannot decide alone.
+        if inside_a_fence(&fences, at) {
+            continue;
+        }
+        let next = line_at(i);
+        // Guard: the next line starts content, not an indented continuation.
+        if next.starts_with(' ') || next.starts_with('\t') {
+            continue;
+        }
+        // Guard: the previous content line must not be the marker of a list this line
+        // continues *with the same kind of marker*, which is one list rather than two.
+        // A different kind is a new list, which is what a cut there gives anyway.
+        let prev = (0..i - 1).rev().map(line_at).find(|l| !l.trim().is_empty());
+        if let (Some(was), Some(now)) = (prev.and_then(list_kind), list_kind(next))
+            && was == now
+        {
+            continue;
+        }
+        return Some(at);
+    }
+    None
+}
+
+/// The offset past the last `\n\n` that is safe to freeze, if any./// The offset past the last `\n\n` that is safe to freeze, if any.
 ///
 /// This was the whole mechanism; it is now the escape hatch, reached only when the
 /// window has grown past `max_unfrozen` with nothing settled — one long paragraph, or
