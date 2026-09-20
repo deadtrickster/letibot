@@ -42,6 +42,106 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
+
+> lets extend todo with this task - completely replace handrolled code with rano and
+> treesitter. I really want us to rely on rano as much as possible, you are free to go
+> and patch/extend it too
+
+Rano is the hub: `~/Projects/rano/rano`, a path dependency of `crates/ui` and
+`crates/tui`. It owns the tree-sitter engine — 28 languages, one capture walk, the
+palette left to the caller. The rule stated in `crates/ui/Cargo.toml:27-34` is that a
+**second tree-sitter integration in this process is the thing rano exists to prevent**.
+There are three. Surveyed 2026-09-20:
+
+| hand-rolled | where | size | what rano has instead |
+|---|---|---|---|
+| `StreamingCode` | `crates/ui/src/highlight.rs` | 699 lines, **10 languages** | `Stream` + `captures`, 28 languages |
+| its own grammar set | `crates/code/Cargo.toml:20-26` | tree-sitter 0.27 + **6 grammars** | the same tree-sitter, 28 grammars |
+| `scan_script` | `crates/tools/src/intent.rs:3390` | a hand-written shell scan | `crates/code::shell::shape` |
+
+Everything below `crates/tui/src/markdown.rs`'s projection is already rano's (the block
+pass, the inline pass, the `Node` tree) — `docs/streaming-markdown-plan.md` is the
+record. What that file keeps by hand is **not** in scope: `fences_in`, `mask`,
+`cut_point`, `stable_boundary_with`, `list_kind`, `unescape`. Each exists because the
+grammar gets something wrong (the closing fence is not line-anchored; a loose list
+cannot be settled by the tree) and finding it in the text *is* the fix. Deleting those
+would reintroduce the bugs of 2026-09-20.
+
+### R18.1 — `StreamingCode` goes, and the conversation gets 28 languages
+
+The visible win: a code fence is coloured by a 10-language hand-written lexer today, so a
+fence tagged `tsx`, `lua`, `ruby`, `diff` and eighteen others renders plain. Rano knows
+them all.
+
+**The trade, and measure it before deleting anything.** `StreamingCode`'s guarantee is
+that *a complete line is highlighted exactly once, ever* — rano cannot promise that, and
+rano measured why: markdown's push re-lexes the whole document (~106 ns/byte) and rust's
+reuses ~97% (~3.5 ns/byte). At the last figure a 10 KB fence costs ~35 µs per push, which
+is a frame's worth of nothing; at markdown's it would not be. So the number to take is
+rano's `bytes_reparsed`-equivalent for a rust/go/ts fence grown one token at a time, and
+the decision follows it. If it is not flat enough, the fence gets the same window
+discipline the conversation has.
+
+**Where.** `CodePaint` (`crates/tui/src/render.rs:176`) holds the `StreamingCode` and the
+byte offset it has been fed; `render_block_with`'s `Block::Code` arm draws what it
+returns. It becomes a rano `Stream` plus a capture walk over the fence's text. Delete
+`highlight.rs`'s lexer (`Syntax`, `State`, `StreamingCode`, the 10-language table) once
+nothing calls it, and its `bytes_highlighted` instrument with it — the number it exists
+for has a replacement in rano.
+
+### R18.2 — `crates/code` stops carrying its own tree-sitter
+
+`crates/code` is a second integration: its own `tree-sitter = "0.27"` and six grammars
+(rust, python, go, c, bash, json), used for `outline` (`crates/tools`) and the shell shape
+(`crates/harnessd`'s etalon map). Rano has every one of those grammars plus 22 more.
+
+**What this is not**: a merge of the two crates. `crates/code` exists because the grammars
+are C and pull a `cc` build, and `crates/tools` deliberately has no `build.rs`
+(`crates/tools/Cargo.toml:38-50`) — that reason stands. What goes is the duplication
+underneath: one grammar table, one language enum, one place a new grammar is added. If
+`outline` needs a walk rano's `Node` does not expose, the fix is rano's API, not a second
+engine.
+
+### R18.3 — the intent scanner's shell scan
+
+`crates/tools/src/intent.rs::scan_script` reads a command by hand while
+`crates/code::shell::shape` reads the same command with a grammar. `crates/code/src/shell.rs`
+documents them as two halves of one layer rather than alternatives, so **read that first**:
+if the hand scan really is a diagnosis over structure the grammar cannot carry, it stays
+and this subtask closes with the note saying why. If it re-derives what the parse already
+says, it goes.
+
+### Rano patches this needs — allowed, the operator said so
+
+- **`Lang::from_token(&str)`.** `detect()` maps a *path* (plus a first line) to a `Lang`.
+  A code fence hands over an info string — `rust`, `ts`, `sh`, `bash`, `dockerfile`. With
+  no token route a fence cannot be coloured from rano at all, so this blocks R18.1 and is
+  the first thing to build. Check the aliases against what models actually write, not what
+  extensions are called.
+- **A public route from `Lang` to its highlight query.** `Lang::query()` and
+  `Lang::language()` are private (`syntax.rs:75`, `syntax.rs:110`) and
+  `Stream::captures(query)` takes query *text*, so a consumer holding a `Lang` cannot ask
+  for its captures. Either make `query()` public or add `Stream::captures_highlighted()`.
+- **`Stream` over a growing text** is what a live fence needs; `Highlighter::classes`
+  full-reparses per call and is the wrong shape for one that is still arriving, which is
+  the case `StreamingCode` was written for.
+
+**Still open?** From `letibot/`:
+
+    grep -c 'name: "' crates/ui/src/highlight.rs        # 10; rano's Lang has 28
+    grep -c '^tree-sitter-' crates/code/Cargo.toml      # 6 grammars + the runtime
+    grep -c 'fn scan_script' crates/tools/src/intent.rs  # 1
+    ls crates/tools/build.rs                             # must stay absent
+
+**Done when.** A fence tagged `tsx` (or `lua`, `ruby`, `diff`) renders coloured in a live
+answer; `crates/ui/src/highlight.rs` holds no lexer; `crates/code` declares no
+`tree-sitter-*` of its own and `crates/tools` still has no `build.rs`; the conversation's
+per-push cost is measured against the old one and the number is in the plan doc; 2026-09-20's
+markdown fixtures still pass, since they are the record of what the grammar gets wrong.
+
+---
+
 ## R12 — the firecode backend for subagents, and the cookbook — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 Done: `crates/tools/src/firecode.rs` + the harness placement; live test
