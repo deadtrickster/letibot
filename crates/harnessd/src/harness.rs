@@ -2651,11 +2651,14 @@ impl<'a> Harness<'a> {
             // Said here rather than only in the confirmation the head showed: the
             // banner, the warning on the log and this sentence are what a person
             // reads later, and "you agreed to this" belongs in all three.
+            // Not "the project's row still reads `allow-all`" — it does not.
+            // Nothing was written, so the row reads whatever it read before, and
+            // claiming otherwise put a third false sentence on a card that already
+            // had two.
             said.push_str(
                 " — nothing confines this box, and this point stands on your \
                  confirmation rather than on a boundary. It lasts for this session \
-                 only; the project's row still reads `allow-all` and still refuses \
-                 at the next start",
+                 only: nothing was written down, and a daemon restart drops it",
             );
         }
         if dropped > 0 {

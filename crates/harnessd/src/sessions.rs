@@ -1609,20 +1609,55 @@ impl<'a> Sessions<'a> {
                     // this call reads it: the project row above is written from
                     // the NAME, which stays `allow-all` and stays refused for the
                     // next daemon. Consent is for the session in front of them.
-                    Some(h) => h.set_mode_consented(mode, *consented),
+                    // **Which point it actually landed on**, not which one was
+                    // asked for. A consented `allow-all` becomes
+                    // `allow-all (this box, consented)`, and the sentence below
+                    // used to name the requested one and print ITS summary — so a
+                    // bare host was told "the VM is the boundary and nothing inside
+                    // it reaches this box", two lines above the same card saying
+                    // the confinement prerequisite refuses that point here.
+                    Some(h) => h
+                        .set_mode_consented(mode, *consented)
+                        .map(|said| (said, h.config().mode)),
                     None => Err("this session has no harness open".into()),
                 };
                 if let Some(hub) = &hub {
                     let _ = match moved {
-                        Ok(said) => hub.publish(SessionEvent::Warning {
+                        Ok((said, applied)) => hub.publish(SessionEvent::Warning {
                             code: "mode_set".into(),
-                            detail: format!(
-                                "{} is at `{}` — {said}, and from every later session in \
-                                 this project. {}",
-                                workspace.display(),
-                                mode.name,
-                                mode.summary
-                            ),
+                            // **Say what is true of the project separately from what
+                            // is true of this session**, because with a consented
+                            // `allow-all` they differ. This sentence claimed the row
+                            // had been written and that every later session would
+                            // start there — neither of which happens when `persist`
+                            // is false — and then printed the REQUESTED point's
+                            // summary over the applied one.
+                            detail: {
+                                let row = self
+                                    .parts
+                                    .mode_store
+                                    .read()
+                                    .ok()
+                                    .map(|st| st.for_project(&workspace).name)
+                                    .unwrap_or(mode.name);
+                                format!(
+                                    "{said}. {}. {}",
+                                    if persist {
+                                        format!(
+                                            "{} is at `{}` from every later session too",
+                                            workspace.display(),
+                                            mode.name
+                                        )
+                                    } else {
+                                        format!(
+                                            "{}'s row is unchanged at `{row}`, so a new \
+                                             session here starts there",
+                                            workspace.display()
+                                        )
+                                    },
+                                    applied.summary
+                                )
+                            },
                         }),
                         Err(why) => hub.publish(SessionEvent::Warning {
                             code: "mode_set_next_session_only".into(),
