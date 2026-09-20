@@ -3387,6 +3387,32 @@ impl Baseline {
     /// shell-out); a secret path counts only when it follows a call that opens
     /// a file.
     /// The residue — code that edits a network client — is the residue.
+    /// Find the **capabilities** a non-shell script names: a network import, a shell-out,
+    /// a host, a secret path.
+    ///
+    /// # Why this is not `letibot_code::shell` and not a grammar
+    ///
+    /// Asked during R18 (*"rely on rano as much as possible"*), and the answer is that
+    /// this reads a different thing for a different reason. `shell::normalise` reads a
+    /// **bash command** to say what the shell will *do* — its structure, which is a
+    /// grammar question, and `ScriptLang::Shell` bodies go through it above.
+    ///
+    /// This reads a script in some **other** language for vocabulary: does the text being
+    /// written name a network module, a host, a secret. The bodies here are Python, node,
+    /// perl, ruby, php (see `ScriptLang::of_interpreter`), and the language is not always
+    /// declared — `ScriptLang::Other(prog)` is the program's own name. A bash grammar
+    /// would read all of them wrongly, and no single rano grammar covers them.
+    ///
+    /// The other half is that the question is deliberately **body-wide rather than
+    /// adjacency-based**: `host = "192.0.2.10"` three lines above `urlopen(f"http://{host}/")`
+    /// is BashArena's own shape, and a scan that needed the two to be near each other
+    /// would miss it. A parse would not change that. What a parse *would* improve is
+    /// precision: `import urllib.request` names the module in a node, where this matches
+    /// `NETWORK_IMPORTS` against a whole line. That is a change to what a gate decides,
+    /// so it is noted rather than made.
+    ///
+    /// A triple-quoted literal is data: a parse would also be fooled by one, and this
+    /// strips them first.
     fn scan_script(&mut self, body: &str, env: &Surroundings, program: &str) {
         // A triple-quoted literal is data: the text an edit script replaces,
         // the message a poster sends. Whatever it names, the script does not do.

@@ -63,7 +63,7 @@
 
 use std::fmt;
 
-use tree_sitter::{Node, Parser};
+use rano::syntax::{Lang, Node, Stream};
 
 // ---------------------------------------------------------------------------
 // Positions
@@ -85,13 +85,12 @@ pub struct Span {
 }
 
 impl Span {
-    fn of(node: Node<'_>) -> Span {
-        let p = node.start_position();
+    fn of(node: &Node) -> Span {
         Span {
-            start: node.start_byte(),
-            end: node.end_byte(),
-            line: p.row + 1,
-            column: p.column,
+            start: node.start,
+            end: node.end,
+            line: node.start_point.row + 1,
+            column: node.start_point.column,
         }
     }
 }
@@ -720,15 +719,10 @@ pub fn normalise(source: &str) -> Normalised {
         bytes: source.len(),
     };
 
-    let mut parser = Parser::new();
-    // Same reasoning as `crate::outline`: this can only fail on an ABI mismatch
-    // between `tree-sitter` and the grammar crate, which is a build fact and would
-    // break every command rather than this one.
-    parser
-        .set_language(&tree_sitter_bash::LANGUAGE.into())
-        .expect("grammar ABI matches the tree-sitter version this crate was built against");
+    let mut stream = Stream::new(Lang::Bash);
+    stream.push(source);
 
-    let Some(tree) = parser.parse(source, None) else {
+    let Some(root) = stream.root() else {
         out.partial = true;
         out.unresolved.push(Unresolved {
             construct: Construct::ParseError,
@@ -744,12 +738,11 @@ pub fn normalise(source: &str) -> Normalised {
         return out;
     };
 
-    let root = tree.root_node();
-    if root.has_error() {
+    if root.has_error {
         out.partial = true;
         // Name the first bad region rather than the whole command: "somewhere in
         // these 4 KiB" is not a position.
-        let (span, text) = first_error(root, source)
+        let (span, text) = first_error(&root, source)
             .map(|n| (Span::of(n), clip(src(n, source), 120)))
             .unwrap_or_else(|| {
                 (
@@ -773,28 +766,34 @@ pub fn normalise(source: &str) -> Normalised {
     }
 
     let mut ctx: Vec<Context> = Vec::new();
-    walk(root, source, &mut ctx, &mut out);
+    walk(&root, source, &mut ctx, &mut out);
     out
 }
 
-fn first_error<'t>(node: Node<'t>, _src: &str) -> Option<Node<'t>> {
-    if node.is_error() || node.is_missing() {
+fn first_error<'a>(node: &'a Node, _src: &str) -> Option<&'a Node> {
+    // tree-sitter's `is_error()` is a node KIND here — rano's `Node` is plain data and
+    // names it rather than carrying a flag for it.
+    if node.kind == "ERROR" || node.is_missing {
         return Some(node);
     }
-    if !node.has_error() {
+    if !node.has_error {
         return None;
     }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(n) = first_error(child, _src) {
-            return Some(n);
-        }
-    }
-    None
+    node.children.iter().find_map(|c| first_error(c, _src))
 }
 
-fn src<'a>(node: Node<'_>, source: &'a str) -> &'a str {
-    source.get(node.byte_range()).unwrap_or("")
+fn src<'a>(node: &Node, source: &'a str) -> &'a str {
+    source.get(node.start..node.end).unwrap_or("")
+}
+
+/// The child in field `name`, by **field** rather than by kind or position — the same
+/// helper `crate::outline` uses, for the same reason: the grammar states which child a
+/// field names, and matching kinds in the order they appear is guessing at a fact the
+/// grammar already has.
+fn child_field<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+    node.children
+        .iter()
+        .find(|c| c.field.as_deref() == Some(name))
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -821,8 +820,8 @@ fn certainty_of(ctx: &[Context]) -> Certainty {
 }
 
 /// Descend, building stages. `ctx` is the nesting as it stands at this node.
-fn walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) {
-    match node.kind() {
+fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) {
+    match node.kind.as_str() {
         "command" | "declaration_command" | "unset_command" => {
             stage(node, source, ctx, out, false, false);
         }
@@ -830,9 +829,9 @@ fn walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalis
             // The pipe flags are a property of position in the pipeline, and they
             // decide `Stage::stdout_surfaces` — which is the structural half of
             // §3's "may never enter the transcript".
-            let members: Vec<Node<'_>> = named_children(node)
+            let members: Vec<&Node> = kids(node)
                 .into_iter()
-                .filter(|c| c.kind() != "|" && c.kind() != "|&")
+                .filter(|c| c.kind != "|" && c.kind != "|&")
                 .collect();
             let last = members.len().saturating_sub(1);
             ctx.push(Context::Pipeline);
@@ -851,14 +850,14 @@ fn walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalis
             // side is guarded. Recording that asymmetry is the difference between
             // "this command runs rm" and "this command runs rm if the first part
             // failed".
-            let op = named_children(node)
+            let op = kids(node)
                 .into_iter()
-                .find(|c| c.kind() == "&&" || c.kind() == "||")
-                .map(|c| c.kind().to_string());
-            let kids = named_children(node);
+                .find(|c| c.kind.as_str() == "&&" || c.kind.as_str() == "||")
+                .map(|c| c.kind.to_string());
+            let kids = kids(node);
             let mut seen_op = false;
             for k in kids {
-                if k.kind() == "&&" || k.kind() == "||" {
+                if k.kind == "&&" || k.kind == "||" {
                     seen_op = true;
                     continue;
                 }
@@ -890,8 +889,7 @@ fn walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalis
         "command_substitution" => push_walk(node, source, ctx, out, Context::CommandSubstitution),
         "process_substitution" => push_walk(node, source, ctx, out, Context::ProcessSubstitution),
         "function_definition" => {
-            let name = node
-                .child_by_field_name("name")
+            let name = child_field(node, "name")
                 .map(|n| src(n, source).to_string())
                 .unwrap_or_else(|| "<anonymous>".into());
             push_walk(node, source, ctx, out, Context::FunctionBody(name))
@@ -904,18 +902,16 @@ fn walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalis
             scan_substitutions(node, source, ctx, out);
         }
         _ => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
+            for child in &node.children {
                 walk(child, source, ctx, out);
             }
         }
     }
 }
 
-fn push_walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised, c: Context) {
+fn push_walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised, c: Context) {
     ctx.push(c);
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    for child in &node.children {
         walk(child, source, ctx, out);
     }
     ctx.pop();
@@ -924,14 +920,14 @@ fn push_walk(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Nor
 /// One member of a pipeline: a command, or a redirected command, or something
 /// compound (a `while` loop reading from the pipe is real bash).
 fn pipe_member(
-    node: Node<'_>,
+    node: &Node,
     source: &str,
     ctx: &mut Vec<Context>,
     out: &mut Normalised,
     pipe_in: bool,
     pipe_out: bool,
 ) {
-    match node.kind() {
+    match node.kind.as_str() {
         "command" | "declaration_command" | "unset_command" => {
             stage(node, source, ctx, out, pipe_in, pipe_out);
         }
@@ -960,17 +956,17 @@ fn pipe_member(
 /// dropped — `cat <<'EOF' | sudo bash` normalised to a `cat`. See
 /// [`heredoc_tail`].
 fn redirected(
-    node: Node<'_>,
+    node: &Node,
     source: &str,
     ctx: &mut Vec<Context>,
     out: &mut Normalised,
     pipe_in: bool,
     pipe_out: bool,
 ) {
-    let body = node.child_by_field_name("body");
+    let body = child_field(node, "body");
     let before = out.stages.len();
     let depth = ctx.len();
-    let body_kind = body.map(|b| b.kind()).unwrap_or("");
+    let body_kind = body.map(|b| b.kind.as_str()).unwrap_or("");
     match body_kind {
         "command" | "declaration_command" | "unset_command" => {
             stage(body.unwrap(), source, ctx, out, pipe_in, pipe_out);
@@ -985,18 +981,17 @@ fn redirected(
     // `cat <<EOF > f` nests the `file_redirect` inside the `heredoc_redirect`, so
     // this recurses rather than scanning one level.
     let mut reds = Vec::new();
-    let mut tails: Vec<Node<'_>> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.id() == body.map(|b| b.id()).unwrap_or(usize::MAX) {
+    let mut tails: Vec<&Node> = Vec::new();
+    for child in &node.children {
+        if child.id == body.map(|b| b.id).unwrap_or(usize::MAX) {
             continue;
         }
         collect_redirects(child, source, out, &mut reds);
-        if child.kind() == "heredoc_redirect" {
+        if child.kind.as_str() == "heredoc_redirect" {
             // The substitutions inside the body are scanned here; the commands
             // that follow the operator are walked after the owner is known, so
             // they are not walked twice.
-            for k in named_children(child) {
+            for k in kids(child) {
                 if !is_continuation(k) {
                     scan_substitutions(k, source, ctx, out);
                 }
@@ -1040,10 +1035,9 @@ fn redirected(
 
 /// A named child of a `heredoc_redirect` that is a command rather than a part of
 /// the here-document: what followed the `<<` operator on its line.
-fn is_continuation(k: Node<'_>) -> bool {
-    k.is_named()
-        && !matches!(
-            k.kind(),
+fn is_continuation(k: &Node) -> bool {
+    k.named
+        && !matches!(k.kind.as_str(),
             "heredoc_start" | "heredoc_body" | "heredoc_end" | "file_redirect" | "herestring_redirect"
         )
 }
@@ -1052,18 +1046,17 @@ fn is_continuation(k: Node<'_>) -> bool {
 /// the owner by the operator token that precedes them. `| bash` makes the owner's
 /// stdout a pipe and `bash` a pipe member; `&& chmod` is a guarded sibling.
 fn heredoc_tail(
-    node: Node<'_>,
+    node: &Node,
     source: &str,
     ctx: &mut Vec<Context>,
     out: &mut Normalised,
     owner: Option<usize>,
 ) {
     let mut op: Option<String> = None;
-    let mut cursor = node.walk();
-    for k in node.children(&mut cursor) {
-        if !k.is_named() {
-            if matches!(k.kind(), "|" | "|&" | "&&" | "||" | ";" | "&") {
-                op = Some(k.kind().to_string());
+    for k in &node.children {
+        if !k.named {
+            if matches!(k.kind.as_str(), "|" | "|&" | "&&" | "||" | ";" | "&") {
+                op = Some(k.kind.to_string());
             }
             continue;
         }
@@ -1084,7 +1077,7 @@ fn feeds_pipe(s: &mut Stage) {
 }
 
 fn continuation(
-    node: Node<'_>,
+    node: &Node,
     op: Option<&str>,
     source: &str,
     ctx: &mut Vec<Context>,
@@ -1092,22 +1085,20 @@ fn continuation(
     owner: Option<usize>,
 ) {
     let piped = matches!(op, Some("|") | Some("|&"));
-    if node.kind() == "pipeline" {
+    if node.kind.as_str() == "pipeline" {
         // `pipeline(| bash)` or `pipeline(| pipeline(bash | wc))`: the leading
         // token says the owner feeds it, and a lone inner pipeline is the real
         // one.
-        let mut cursor = node.walk();
         let leading = node
-            .children(&mut cursor)
-            .next()
-            .map(|c| matches!(c.kind(), "|" | "|&"))
-            .unwrap_or(false)
+            .children
+            .first()
+            .is_some_and(|c| matches!(c.kind.as_str(), "|" | "|&"))
             || piped;
-        let members: Vec<Node<'_>> = named_children(node)
+        let members: Vec<&Node> = kids(node)
             .into_iter()
-            .filter(|c| c.kind() != "|" && c.kind() != "|&")
+            .filter(|c| c.kind != "|" && c.kind != "|&")
             .collect();
-        if members.len() == 1 && members[0].kind() == "pipeline" {
+        if members.len() == 1 && members[0].kind == "pipeline" {
             continuation(members[0], Some("|"), source, ctx, out, owner);
             return;
         }
@@ -1145,17 +1136,17 @@ fn continuation(
     }
 }
 
-fn collect_redirects(node: Node<'_>, source: &str, out: &mut Normalised, into: &mut Vec<Redirect>) {
-    match node.kind() {
+fn collect_redirects(node: &Node, source: &str, out: &mut Normalised, into: &mut Vec<Redirect>) {
+    match node.kind.as_str() {
         "file_redirect" => {
             if let Some(r) = file_redirect(node, source, out) {
                 into.push(r);
             }
         }
         "herestring_redirect" => {
-            let w = named_children(node)
+            let w = kids(node)
                 .into_iter()
-                .find(|c| c.is_named())
+                .find(|c| c.named)
                 .map(|c| word_of(c, source, out, Decides::RedirectTarget, Some(out.stages.len().saturating_sub(1))))
                 .unwrap_or(Word::Literal(String::new()));
             into.push(Redirect {
@@ -1168,27 +1159,24 @@ fn collect_redirects(node: Node<'_>, source: &str, out: &mut Normalised, into: &
         "heredoc_redirect" => {
             into.push(heredoc_redirect(node, source, out));
             // `<<EOF > f` puts the file redirect inside the heredoc redirect.
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "file_redirect"
+            for child in &node.children {
+                if child.kind.as_str() == "file_redirect"
                     && let Some(r) = file_redirect(child, source, out) {
                         into.push(r);
                     }
             }
         }
         _ => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
+            for child in &node.children {
                 collect_redirects(child, source, out, into);
             }
         }
     }
 }
 
-fn redirect_op(node: Node<'_>) -> Option<RedirectOp> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let op = match child.kind() {
+fn redirect_op(node: &Node) -> Option<RedirectOp> {
+    for child in &node.children {
+        let op = match child.kind.as_str() {
             "<" => RedirectOp::Read,
             ">" | ">|" => RedirectOp::Write,
             ">>" => RedirectOp::Append,
@@ -1199,8 +1187,8 @@ fn redirect_op(node: Node<'_>) -> Option<RedirectOp> {
         };
         // `&>` and `&>>` duplicate *and* write to a file; the file is what matters,
         // and calling it a duplicate would hide a write.
-        if matches!(child.kind(), "&>" | "&>>") {
-            return Some(if child.kind() == "&>>" {
+        if matches!(child.kind.as_str(), "&>" | "&>>") {
+            return Some(if child.kind.as_str() == "&>>" {
                 RedirectOp::Append
             } else {
                 RedirectOp::Write
@@ -1211,14 +1199,13 @@ fn redirect_op(node: Node<'_>) -> Option<RedirectOp> {
     None
 }
 
-fn file_redirect(node: Node<'_>, source: &str, out: &mut Normalised) -> Option<Redirect> {
+fn file_redirect(node: &Node, source: &str, out: &mut Normalised) -> Option<Redirect> {
     let op = redirect_op(node)?;
-    let fd = node
-        .child_by_field_name("descriptor")
+    let fd = child_field(node, "descriptor")
         .and_then(|n| src(n, source).parse::<u32>().ok());
-    let dest = node.child_by_field_name("destination");
+    let dest = child_field(node, "destination");
     let target = match dest {
-        Some(d) if op == RedirectOp::Duplicate && d.kind() == "number" => {
+        Some(d) if op == RedirectOp::Duplicate && d.kind == "number" => {
             RedirectTarget::Descriptor(src(d, source).parse().unwrap_or(0))
         }
         Some(d) => RedirectTarget::File(word_of(d, source, out, Decides::RedirectTarget, None)),
@@ -1232,23 +1219,23 @@ fn file_redirect(node: Node<'_>, source: &str, out: &mut Normalised) -> Option<R
     })
 }
 
-fn heredoc_redirect(node: Node<'_>, source: &str, out: &mut Normalised) -> Redirect {
-    let delim = named_children(node)
+fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect {
+    let delim = kids(node)
         .into_iter()
-        .find(|c| c.kind() == "heredoc_start")
+        .find(|c| c.kind.as_str() == "heredoc_start")
         .map(|c| src(c, source).to_string())
         .unwrap_or_default();
     // A quoted delimiter (`<<'EOF'`, `<<"EOF"`) means the body is literal. An
     // unquoted one means the shell expands it, and then the body's expansions are
     // themselves unresolvable.
     let literal = delim.starts_with('\'') || delim.starts_with('"');
-    let body_node = named_children(node)
+    let body_node = kids(node)
         .into_iter()
-        .find(|c| c.kind() == "heredoc_body");
+        .find(|c| c.kind.as_str() == "heredoc_body");
     let body = body_node.map(|b| src(b, source).to_string()).unwrap_or_default();
     if let Some(b) = body_node
         && !literal
-        && named_children(b).iter().any(|c| c.kind() != "heredoc_content")
+        && kids(b).iter().any(|c| c.kind != "heredoc_content")
     {
         out.unresolved.push(Unresolved {
             construct: Construct::ExpandedHeredoc,
@@ -1272,13 +1259,21 @@ fn heredoc_redirect(node: Node<'_>, source: &str, out: &mut Normalised) -> Redir
     }
 }
 
-fn named_children<'t>(node: Node<'t>) -> Vec<Node<'t>> {
-    let mut cursor = node.walk();
-    node.children(&mut cursor).collect()
+/// Every child, **anonymous tokens included**.
+///
+/// The name this had — `named_children` — was wrong, and the wrongness cost a bug the
+/// day it was "fixed": it was written as `node.children(&mut cursor).collect()`, which
+/// is every child, and a reader taking the name at its word filtered on `Node::named`
+/// and silently lost the `&&`, `|` and `;` this module decides *by*. An operator token
+/// is exactly the kind of child tree-sitter leaves anonymous, so "named children" is
+/// the wrong set for half its callers — see the `&&` asymmetry at `list`, which is a
+/// permission decision.
+fn kids(node: &Node) -> Vec<&Node> {
+    node.children.iter().collect()
 }
 
 fn stage(
-    node: Node<'_>,
+    node: &Node,
     source: &str,
     ctx: &mut Vec<Context>,
     out: &mut Normalised,
@@ -1304,23 +1299,23 @@ fn stage(
     let mut program: Option<Word> = None;
     let mut argv = Vec::new();
     let mut assignments = Vec::new();
-    let mut tails: Vec<Node<'_>> = Vec::new();
+    let mut tails: Vec<&Node> = Vec::new();
 
     // `declaration_command` and `unset_command` name themselves with an anonymous
     // keyword child rather than a `command_name`.
-    if matches!(node.kind(), "declaration_command" | "unset_command")
-        && let Some(kw) = named_children(node).into_iter().find(|c| !c.is_named())
+    if matches!(node.kind.as_str(), "declaration_command" | "unset_command")
+        && let Some(kw) = kids(node).into_iter().find(|c| !c.named)
     {
         program = Some(Word::Literal(src(kw, source).to_string()));
     }
 
-    for child in named_children(node) {
-        match child.kind() {
+    for child in kids(node) {
+        match child.kind.as_str() {
             "command_name" => {
                 // `command_name` wraps one word, which may itself be an expansion:
                 // `$X --now` has an unresolvable PROGRAM, and that is the gravest
                 // grade of unresolvable there is.
-                let inner = named_children(child).into_iter().next().unwrap_or(child);
+                let inner = kids(child).into_iter().next().unwrap_or(child);
                 program = Some(word_of(inner, source, out, Decides::Program, Some(index)));
             }
             "variable_assignment" => {
@@ -1332,11 +1327,11 @@ fn stage(
                 let mut reds = Vec::new();
                 collect_redirects(child, source, out, &mut reds);
                 out.stages[index].redirects.extend(reds);
-                if child.kind() == "heredoc_redirect" {
+                if child.kind.as_str() == "heredoc_redirect" {
                     tails.push(child);
                 }
             }
-            _ if !child.is_named() => {}
+            _ if !child.named => {}
             _ => {
                 argv.push(word_of(child, source, out, Decides::Argument, Some(index)));
             }
@@ -1361,15 +1356,15 @@ fn stage(
 }
 
 /// Walk the substitutions hanging under `node`, without re-entering `node` itself.
-fn scan_substitutions(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) {
-    for child in named_children(node) {
-        match child.kind() {
+fn scan_substitutions(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) {
+    for child in kids(node) {
+        match child.kind.as_str() {
             "command_substitution" | "process_substitution" => walk(child, source, ctx, out),
             // The commands nested after a here-document operator are walked by
             // `heredoc_tail`, substitutions and all; only the document itself is
             // scanned here.
             "heredoc_redirect" => {
-                for k in named_children(child) {
+                for k in kids(child) {
                     if !is_continuation(k) {
                         scan_substitutions(k, source, ctx, out);
                     }
@@ -1380,12 +1375,11 @@ fn scan_substitutions(node: Node<'_>, source: &str, ctx: &mut Vec<Context>, out:
     }
 }
 
-fn assignment(node: Node<'_>, source: &str, out: &mut Normalised, stage: Option<usize>) -> Assignment {
-    let name = node
-        .child_by_field_name("name")
+fn assignment(node: &Node, source: &str, out: &mut Normalised, stage: Option<usize>) -> Assignment {
+    let name = child_field(node, "name")
         .map(|n| src(n, source).to_string())
         .unwrap_or_default();
-    let value = match node.child_by_field_name("value") {
+    let value = match child_field(node, "value") {
         Some(v) => word_of(v, source, out, Decides::Assignment, stage),
         // `VAR=` with an empty value is a real assignment to the empty string.
         None => Word::Literal(String::new()),
@@ -1400,7 +1394,7 @@ fn assignment(node: Node<'_>, source: &str, out: &mut Normalised, stage: Option<
 /// Resolve one word node as far as the grammar resolves it, recording any
 /// unresolvable construct as a side effect.
 fn word_of(
-    node: Node<'_>,
+    node: &Node,
     source: &str,
     out: &mut Normalised,
     decides: Decides,
@@ -1410,10 +1404,10 @@ fn word_of(
     // ordinary words, so each element is resolved on its own terms — an array
     // holding one expansion is not wholly unknown, and flattening it into one
     // opaque blob would lose the elements that ARE known.
-    if node.kind() == "array" {
-        let parts: Vec<Word> = named_children(node)
+    if node.kind.as_str() == "array" {
+        let parts: Vec<Word> = kids(node)
             .into_iter()
-            .filter(|c| c.is_named())
+            .filter(|c| c.named)
             .map(|c| word_of(c, source, out, decides, stage))
             .collect();
         return Word::Array(parts);
@@ -1490,12 +1484,13 @@ enum Resolved<'t> {
         construct: Construct,
         /// The literal part before the unresolvable one, when there is one.
         prefix: Option<String>,
-        at: Node<'t>,
+        /// The node it was found at. Borrowed from the parse, which the caller owns.
+        at: &'t Node,
     },
 }
 
-fn resolve<'t>(node: Node<'t>, source: &str) -> Resolved<'t> {
-    match node.kind() {
+fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
+    match node.kind.as_str() {
         "word" => {
             let (text, glob) = unescape(src(node, source));
             if has_brace_expansion(&text) {
@@ -1521,8 +1516,8 @@ fn resolve<'t>(node: Node<'t>, source: &str) -> Resolved<'t> {
         "string" | "translated_string" => {
             // A double-quoted string is literal only if every part of it is.
             let mut lit = String::new();
-            for c in named_children(node) {
-                match c.kind() {
+            for c in kids(node) {
+                match c.kind.as_str() {
                     "\"" | "$" => {}
                     "string_content" => lit.push_str(src(c, source)),
                     "escape_sequence" => lit.push_str(src(c, source)),
@@ -1551,7 +1546,7 @@ fn resolve<'t>(node: Node<'t>, source: &str) -> Resolved<'t> {
         "concatenation" => {
             let mut lit = String::new();
             let mut glob = false;
-            for c in named_children(node) {
+            for c in kids(node) {
                 match resolve(c, source) {
                     Resolved::Literal(s) => lit.push_str(&s),
                     Resolved::Glob(s) => {
@@ -1616,12 +1611,12 @@ fn construct_of(kind: &str) -> Option<Construct> {
 
 /// Fill in the variable name for a parameter expansion, so a refusal can say
 /// `$HOME` rather than "a parameter".
-fn named(construct: Construct, node: Node<'_>, source: &str) -> Construct {
+fn named(construct: Construct, node: &Node, source: &str) -> Construct {
     match construct {
         Construct::ParameterExpansion { .. } => {
-            let name = named_children(node)
+            let name = kids(node)
                 .into_iter()
-                .find(|c| c.kind() == "variable_name" || c.kind() == "special_variable_name")
+                .find(|c| c.kind.as_str() == "variable_name" || c.kind.as_str() == "special_variable_name")
                 .map(|c| src(c, source).to_string())
                 .unwrap_or_else(|| src(node, source).trim_start_matches('$').to_string());
             Construct::ParameterExpansion { name }

@@ -17,10 +17,15 @@ repository.workspace = true
 # Nothing else in the workspace has to. `letibot-code` knows about source text
 # and line numbers; it does not know what a tool, a turn or a transcript is.
 [dependencies]
-tree-sitter = "0.27"
-tree-sitter-rust = "0.24"
-tree-sitter-python = "0.25"
-tree-sitter-go = "0.25"
-tree-sitter-c = "0.24"
-tree-sitter-bash = "0.25"
-tree-sitter-json = "0.24"
+# The grammars live in rano (`~/Projects/rano`), not here.
+#
+# This crate used to carry its own `tree-sitter` and six grammars — rust, python,
+# go, c, bash, json — because the `cc` build had to live somewhere and
+# `letibot-tools` deliberately has no `build.rs`. That reason is still good and
+# this crate is still the place for it; what it was *also* doing was a second
+# tree-sitter integration, which is what rano exists to prevent
+# (`crates/ui/Cargo.toml` says so at length). Rano has all six grammars and
+# twenty-two more, and one engine. Same deliberate absolute path as the other two
+# consumers, for the same reason: rano is an operator-local project, not a
+# published crate.
+rano = { path = "/home/dead/Projects/rano/rano" }

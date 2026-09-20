@@ -100,27 +100,52 @@ returns. It becomes a rano `Stream` plus a capture walk over the fence's text. D
 nothing calls it, and its `bytes_highlighted` instrument with it — the number it exists
 for has a replacement in rano.
 
-### R18.2 — `crates/code` stops carrying its own tree-sitter
+### R18.2 — `crates/code` stops carrying its own tree-sitter — **DONE 2026-09-20**
 
-`crates/code` is a second integration: its own `tree-sitter = "0.27"` and six grammars
+`crates/code` was a second integration: its own `tree-sitter = "0.27"` and six grammars
 (rust, python, go, c, bash, json), used for `outline` (`crates/tools`) and the shell shape
-(`crates/harnessd`'s etalon map). Rano has every one of those grammars plus 22 more.
+(`crates/harnessd`'s etalon map). All six are rano's already.
 
-**What this is not**: a merge of the two crates. `crates/code` exists because the grammars
-are C and pull a `cc` build, and `crates/tools` deliberately has no `build.rs`
-(`crates/tools/Cargo.toml:38-50`) — that reason stands. What goes is the duplication
-underneath: one grammar table, one language enum, one place a new grammar is added. If
-`outline` needs a walk rano's `Node` does not expose, the fix is rano's API, not a second
-engine.
+Done: `Cargo.toml` drops the seven dependencies for one `rano` path dep; `outline` and
+`shell::normalise` drive `Stream` and walk rano's `Node`; `examples/dump.rs` — the tool
+that prints a grammar's node skeleton, and how every kind string in `classify` was chosen
+— reads the same `Node`, so what it prints is what the outline sees.
 
-### R18.3 — the intent scanner's shell scan
+**What it is not**: a merge of the two crates. `crates/code` exists because the grammars
+are C and pull a `cc` build, and `crates/tools` deliberately has no `build.rs` — that
+reason stands, and this crate is still where it lives. What went was the second engine
+underneath it.
 
-`crates/tools/src/intent.rs::scan_script` reads a command by hand while
-`crates/code::shell::shape` reads the same command with a grammar. `crates/code/src/shell.rs`
-documents them as two halves of one layer rather than alternatives, so **read that first**:
-if the hand scan really is a diagnosis over structure the grammar cannot carry, it stays
-and this subtask closes with the note saying why. If it re-derives what the parse already
-says, it goes.
+**Rano grew four things to make it possible**, all of them "the hub's node should carry
+what its consumers need": `Node::field` (which field a child sits in — 17
+`child_by_field_name` call sites here), `Node::start_point`/`end_point` as rano's own
+`Point`, `Node::id` (two nodes can share a byte range, so identity is not a coordinate),
+and rano's `Point` no longer being tree-sitter's in its public API.
+
+**One bug this found, in this crate and not in the port.** `shell.rs`'s `named_children`
+was misnamed — it collected *every* child, anonymous tokens included. A reader taking the
+name at its word filtered on `Node::named` and lost the `&&`, `|` and `;` the module
+decides *by*: `test -f x && rm x` came back `Certainty::Always` for `rm` instead of
+`Conditional`. Renamed `kids` with the misnomer written down, because an operator token is
+exactly the kind of child a grammar leaves anonymous.
+
+### R18.3 — the intent scanner's shell scan — **CLOSED 2026-09-20: it stays, and not as a duplicate**
+
+`crates/tools/src/intent.rs::scan_script` is read at the call sites rather than guessed at,
+and it does not read shell at all: `ScriptLang::Shell` bodies already go through
+`shell::normalise` and the grammar. This handles `ScriptLang::Other` — a **script in
+another language**, named by its interpreter (`python`, `node`, `perl`, `ruby`, `php`),
+which a bash grammar would read wrongly and no single rano grammar covers.
+
+Its question is also a different one: not what the shell will *do*, but which
+**capabilities** the text names — a network import, a shell-out, a host, a secret path —
+deliberately **body-wide rather than adjacency-based**, because `host = "192.0.2.10"` three
+lines above `urlopen(f"http://{host}/")` is a real shape. A parse does not change that.
+
+What a parse *would* improve is precision (`import urllib.request` names its module in a
+node, where this matches a name list against a whole line) — noted in the function's own
+doc rather than done, because it changes what a gate decides and that is not a refactor.
+So: no grammar here, and the reason is recorded where the next reader asks.
 
 ### Rano patches this needed — **all three landed** (`e58600c`)
 
@@ -133,18 +158,28 @@ says, it goes.
   and removed — see rano's commit.
 - **`Stream` over a growing text** — it already existed; the fence feeds it the delta.
 
-**Still open?** From `letibot/`:
+**Still open?** Nothing — all three subtasks are closed. What *was* the check, for the
+record, is now the answer:
 
-    grep -c 'name: "' crates/ui/src/highlight.rs        # 10; rano's Lang has 28
-    grep -c '^tree-sitter-' crates/code/Cargo.toml      # 6 grammars + the runtime
-    grep -c 'fn scan_script' crates/tools/src/intent.rs  # 1
-    ls crates/tools/build.rs                             # must stay absent
+    grep -c 'name: "' crates/ui/src/highlight.rs        # 0  (was 10)
+    grep -c '^tree-sitter-' crates/code/Cargo.toml      # 0  (was 6)
+    ls crates/tools/build.rs                             # absent, as it must stay
 
 **Done when.** A fence tagged `tsx` (or `lua`, `ruby`, `diff`) renders coloured in a live
-answer; `crates/ui/src/highlight.rs` holds no lexer; `crates/code` declares no
-`tree-sitter-*` of its own and `crates/tools` still has no `build.rs`; the conversation's
-per-push cost is measured against the old one and the number is in the plan doc; 2026-09-20's
-markdown fixtures still pass, since they are the record of what the grammar gets wrong.
+answer — the rendering is pinned by tests in `crates/tui/src/render.rs`, and the one thing
+a test cannot assert is a live answer; `crates/ui/src/highlight.rs` holds no lexer;
+`crates/code` declares no `tree-sitter-*` of its own and `crates/tools` still has no
+`build.rs`; the conversation's per-push cost is measured against the old one and the number
+is in rano's `TODO.md` §9; 2026-09-20's markdown fixtures pass, since they are the record of
+what the grammar gets wrong.
+
+**The one piece left, and it is rano's.** The capture walk is O(text) per repaint. A code
+fence is a frame's budget at fence sizes — measured, and why this shipped — but an editor
+repainting a 200 KB file per keystroke is not, and that is exactly the consumer rano's
+README says it is for. rano's `TODO.md` §9 has it as open with the shape of the fix
+(a range-limited `QueryCursor` widened back to any overlapping node, which is where the
+correctness lives). It is not filed here as well, because it is one item and it belongs to
+the engine.
 
 ---
 

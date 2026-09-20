@@ -49,7 +49,7 @@ pub mod shell;
 
 use std::fmt;
 
-use tree_sitter::{Node, Parser};
+use rano::syntax::{Lang, Node, Stream};
 
 /// The languages with a grammar compiled in.
 ///
@@ -137,14 +137,22 @@ impl Language {
         }
     }
 
-    fn grammar(self) -> tree_sitter::Language {
+    /// The rano language this outline knows how to walk.
+    ///
+    /// Outline's list is a real **subset** of rano's: `Language` here means
+    /// "languages whose definitions this module knows how to name", which is a
+    /// different question from "languages rano can parse". Rano has 28; naming the
+    /// definitions in all of them is work, and doing it badly would print a symbol
+    /// table that is quietly wrong, so the six stay six until each is checked
+    /// against `examples/dump.rs`.
+    pub fn lang(self) -> Lang {
         match self {
-            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Language::Python => tree_sitter_python::LANGUAGE.into(),
-            Language::Go => tree_sitter_go::LANGUAGE.into(),
-            Language::C => tree_sitter_c::LANGUAGE.into(),
-            Language::Bash => tree_sitter_bash::LANGUAGE.into(),
-            Language::Json => tree_sitter_json::LANGUAGE.into(),
+            Language::Rust => Lang::Rust,
+            Language::Python => Lang::Python,
+            Language::Go => Lang::Go,
+            Language::C => Lang::C,
+            Language::Bash => Lang::Bash,
+            Language::Json => Lang::Json,
         }
     }
 }
@@ -247,15 +255,10 @@ pub struct Outline {
 /// beside functions — Rust's `#[cfg(test)] mod tests`, a Python class at module
 /// level — are unaffected, because they are not inside a function body.
 pub fn outline(source: &str, language: Language) -> Outline {
-    let mut parser = Parser::new();
-    // The grammar is compiled into this binary, so this can only fail on an ABI
-    // mismatch between `tree-sitter` and a grammar crate — a build-time fact, not
-    // a runtime one, and one that would break every file rather than this one.
-    parser
-        .set_language(&language.grammar())
-        .expect("grammar ABI matches the tree-sitter version this crate was built against");
     let lines = source.lines().count();
-    let Some(tree) = parser.parse(source, None) else {
+    let mut stream = Stream::new(language.lang());
+    stream.push(source);
+    let Some(root) = stream.root() else {
         return Outline {
             language,
             symbols: Vec::new(),
@@ -263,15 +266,14 @@ pub fn outline(source: &str, language: Language) -> Outline {
             partial: true,
         };
     };
-    let root = tree.root_node();
     let mut symbols = Vec::new();
     let mut stack: Vec<String> = Vec::new();
-    walk(root, source, language, &mut stack, 0, &mut symbols);
+    walk(&root, source, language, &mut stack, 0, &mut symbols);
     Outline {
         language,
         symbols,
         lines,
-        partial: root.has_error(),
+        partial: root.has_error,
     }
 }
 
@@ -293,7 +295,7 @@ struct Def {
 }
 
 fn walk(
-    node: Node<'_>,
+    node: &Node,
     src: &str,
     lang: Language,
     stack: &mut Vec<String>,
@@ -310,8 +312,8 @@ fn walk(
             name: def.name,
             container: def.container.or_else(|| stack.last().cloned()),
             signature: signature(node, src),
-            line: node.start_position().row + 1,
-            end_line: node.end_position().row + 1,
+            line: node.start_point.row + 1,
+            end_line: node.end_point.row + 1,
             depth,
         });
         child_depth = depth + 1;
@@ -323,8 +325,7 @@ fn walk(
     }
 
     if descend {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+        for child in &node.children {
             walk(child, src, lang, stack, child_depth, out);
         }
     }
@@ -333,15 +334,23 @@ fn walk(
     }
 }
 
-fn text(node: Node<'_>, src: &str) -> String {
-    src.get(node.byte_range())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+fn text(node: &Node, src: &str) -> String {
+    src.get(node.start..node.end).unwrap_or_default().trim().to_string()
 }
 
-fn field(node: Node<'_>, name: &str, src: &str) -> Option<String> {
-    node.child_by_field_name(name).map(|n| text(n, src))
+/// The child in field `name`.
+///
+/// By **field**, not by kind or position, which is what rano's `Node::field` exists
+/// for: a grammar states which child is a definition's name, and matching kinds in
+/// the order they happen to appear is guessing at a fact the grammar already has.
+fn child<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+    node.children
+        .iter()
+        .find(|c| c.field.as_deref() == Some(name))
+}
+
+fn field(node: &Node, name: &str, src: &str) -> Option<String> {
+    child(node, name).map(|n| text(n, src))
 }
 
 /// Is this node a definition, and what kind?
@@ -349,8 +358,8 @@ fn field(node: Node<'_>, name: &str, src: &str) -> Option<String> {
 /// The tables are written from the grammars rather than from memory — see
 /// `examples/dump.rs`, which prints the named-node skeleton with field names for
 /// one sample per language and is how every kind string below was chosen.
-fn classify(node: Node<'_>, src: &str, lang: Language) -> Option<Def> {
-    let k = node.kind();
+fn classify(node: &Node, src: &str, lang: Language) -> Option<Def> {
+    let k = node.kind.as_str();
     // A leaf definition: it has a name and nothing inside it is worth listing.
     let named = |kind: &'static str, field_name: &str| -> Option<Def> {
         Some(Def {
@@ -417,9 +426,7 @@ fn classify(node: Node<'_>, src: &str, lang: Language) -> Option<Def> {
             "function_declaration" => named("fn", "name"),
             "method_declaration" => {
                 let name = field(node, "name", src)?;
-                let recv = node
-                    .child_by_field_name("receiver")
-                    .and_then(|r| receiver_type(r, src));
+                let recv = child(node, "receiver").and_then(|r| receiver_type(r, src));
                 Some(Def {
                     kind: "method",
                     name,
@@ -433,7 +440,7 @@ fn classify(node: Node<'_>, src: &str, lang: Language) -> Option<Def> {
             }
             "type_spec" => {
                 let name = field(node, "name", src)?;
-                let kind = match node.child_by_field_name("type").map(|t| t.kind()) {
+                let kind = match child(node, "type").map(|t| t.kind.as_str()) {
                     Some("interface_type") => "interface",
                     Some("struct_type") => "struct",
                     _ => "type",
@@ -495,7 +502,7 @@ fn classify(node: Node<'_>, src: &str, lang: Language) -> Option<Def> {
             "pair" => {
                 let key = field(node, "key", src)?;
                 let key = key.trim_matches('"').to_string();
-                let value_kind = node.child_by_field_name("value").map(|v| v.kind());
+                let value_kind = child(node, "value").map(|v| v.kind.as_str());
                 let nested = matches!(value_kind, Some("object") | Some("array"));
                 Some(Def {
                     kind: "key",
@@ -512,35 +519,34 @@ fn classify(node: Node<'_>, src: &str, lang: Language) -> Option<Def> {
 
 /// C's name is buried under a chain of declarators: `int *f(void)` is
 /// `pointer_declarator > function_declarator > identifier`.
-fn declarator_name(node: Node<'_>, src: &str) -> Option<String> {
-    let mut cur = node.child_by_field_name("declarator")?;
+fn declarator_name(node: &Node, src: &str) -> Option<String> {
+    let mut cur = child(node, "declarator")?;
     for _ in 0..16 {
-        match cur.kind() {
+        match cur.kind.as_str() {
             "identifier" | "field_identifier" | "type_identifier" => return Some(text(cur, src)),
-            _ => cur = cur.child_by_field_name("declarator")?,
+            _ => cur = child(cur, "declarator")?,
         }
     }
     None
 }
 
-fn has_function_declarator(node: Node<'_>) -> bool {
-    let mut cur = node.child_by_field_name("declarator");
+fn has_function_declarator(node: &Node) -> bool {
+    let mut cur = child(node, "declarator");
     for _ in 0..16 {
         let Some(c) = cur else { return false };
-        if c.kind() == "function_declarator" {
+        if c.kind == "function_declarator" {
             return true;
         }
-        cur = c.child_by_field_name("declarator");
+        cur = child(c, "declarator");
     }
     false
 }
 
 /// `(e *Editor)` -> `Editor`.
-fn receiver_type(list: Node<'_>, src: &str) -> Option<String> {
-    let mut cursor = list.walk();
-    for child in list.children(&mut cursor) {
-        if child.kind() == "parameter_declaration"
-            && let Some(t) = child.child_by_field_name("type")
+fn receiver_type(list: &Node, src: &str) -> Option<String> {
+    for c in &list.children {
+        if c.kind == "parameter_declaration"
+            && let Some(t) = child(c, "type")
         {
             return Some(text(t, src).trim_start_matches('*').to_string());
         }
@@ -555,14 +561,13 @@ fn receiver_type(list: Node<'_>, src: &str) -> Option<String> {
 /// this workspace — still reads as one.
 const SIGNATURE_CAP: usize = 160;
 
-fn signature(node: Node<'_>, src: &str) -> String {
-    let start = node.start_byte();
-    let end = node
-        .child_by_field_name("body")
-        .or_else(|| node.child_by_field_name("value"))
-        .map(|b| b.start_byte())
+fn signature(node: &Node, src: &str) -> String {
+    let start = node.start;
+    let end = child(node, "body")
+        .or_else(|| child(node, "value"))
+        .map(|b| b.start)
         .filter(|b| *b > start)
-        .unwrap_or_else(|| node.end_byte());
+        .unwrap_or(node.end);
     let raw = src.get(start..end).unwrap_or_default();
     let mut out = String::new();
     let mut space = false;
