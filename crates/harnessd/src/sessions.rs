@@ -1044,6 +1044,15 @@ impl<'a> Sessions<'a> {
         }
         match self.compact(session_id) {
             Ok(report) => {
+                // The same account the operator gets from `/compact`. An automatic
+                // compaction is the one they did NOT ask for, so saying what it did
+                // matters more here, not less.
+                if let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "compacted".into(),
+                        detail: compaction_said(&report),
+                    });
+                }
                 let after = self
                     .open
                     .get(session_id)
@@ -1343,6 +1352,12 @@ impl<'a> Sessions<'a> {
                             detail: said,
                         });
                     }
+                    if let Some(hub) = &hub {
+                        hub.publish(SessionEvent::Warning {
+                            code: "compacted".into(),
+                            detail: compaction_said(&r),
+                        });
+                    }
                     Outcome::Compacted(Box::new(r))
                 }
                 Err(e) => Outcome::Failed(e.to_string()),
@@ -1391,6 +1406,8 @@ impl<'a> Sessions<'a> {
                             summary_turn: r.summary_turn,
                             gained: r.gained,
                             lost: r.lost,
+                            // A re-seat runs the ordinary compaction, which streams.
+                            summary_was_streamed: true,
                         }))
                     }
                     Err(e) => {
@@ -1657,6 +1674,35 @@ impl StoreSessions {
             wiring: Sessions::wiring(cfg),
         }))
     }
+}
+
+/// **What a compaction tells the head.**
+///
+/// The result used to go to the daemon's stderr and nowhere else. On the
+/// ordinary path that was invisible, because the summary turn runs through the
+/// session's own sink and every head watches the text being written. The overrun
+/// paths cannot — they summarise a SCRATCH transcript through a `NullSink` on
+/// purpose — so they streamed nothing, and a `/compact` that folded 1.5M tokens
+/// correctly looked from the head like it had stopped partway. The operator,
+/// 2026-09-20: *"started summarization of the first 1500+ and then scrolled some
+/// s-tasks and that is it, not summary output, nothing"*.
+///
+/// So: always the numbers, and the summary itself exactly when nobody saw it
+/// written. Printing it on the streamed path too would be the same text twice.
+fn compaction_said(r: &crate::harness::CompactReport) -> String {
+    let mut said = format!(
+        "compacted: {} → {} tokens, on transcript {}.",
+        r.fork.was_tokens, r.fork.base_tokens, r.fork.transcript_id
+    );
+    if !r.summary_was_streamed {
+        said.push_str(&format!(
+            " Nothing of the summary turn reached this screen — it ran over a scratch \
+             transcript — so here is what the model now reads in place of everything \
+             before it:\n\n{}",
+            r.summary_turn.summary
+        ));
+    }
+    said
 }
 
 impl SessionSource for StoreSessions {
