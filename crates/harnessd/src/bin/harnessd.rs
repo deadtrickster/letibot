@@ -467,6 +467,11 @@ fn run() -> Result<i32, String> {
                     other => other.parse().map_err(|e| format!("{arg}: {e}"))?,
                 }
             }
+            // How many times a round is taken again when the endpoint fails. `1`
+            // means "do not retry", for an endpoint known not to be there.
+            "--http-retries" => {
+                cfg.http_retries = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
+            }
             // The progress check's tolerance band. `0` turns it off, and the daemon
             // says so at startup — see `Config::disclosures`.
             "--stall-rounds" => {

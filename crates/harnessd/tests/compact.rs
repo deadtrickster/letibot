@@ -41,6 +41,12 @@ const WANTED: Dialect = Dialect::Qwen;
 fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = WANTED;
+    // **This file needs the vocabulary and not the server** — its own module note
+    // says so — so an endpoint that does not answer is the expected state and not
+    // a server worth waiting for. Left at the default, the one test that does
+    // reach for the endpoint walked the whole retry ladder: 1+2+4+8+16+32 seconds,
+    // which is the entire 63.7s this file used to take for 3.5s of CPU.
+    cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
