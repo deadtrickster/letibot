@@ -612,6 +612,33 @@ pub struct App {
     items: Vec<SnapshotItem>,
     hist_lines: Vec<String>,
     hist_upto: usize,
+    /// The first item index represented in `hist_lines`.
+    ///
+    /// `0` for a head that has walked the conversation from its beginning, which is
+    /// every head until it attaches to a session too big to lex. A head that
+    /// attaches to such a session renders its **tail** — the current frame and
+    /// enough above it to scroll — and this is how many rows it did *not* render.
+    /// Scrolling up decreases it; nothing else does.
+    ///
+    /// **Why this exists at all**: the operator's sessions reach 160 MB and
+    /// thousands of turns, and rendering the bottom 40 rows used to require lexing
+    /// every row above them. The frame shows the end of the conversation, so the
+    /// end is what gets rendered first. `tail_cut` is the markdown half of that
+    /// (`crates/tui/src/markdown.rs`); this is the walk's.
+    hist_floor: usize,
+    /// How much transcript this head will walk from the beginning before it renders the
+    /// tail instead. [`SELF_WALK_LIMIT`] unless someone says otherwise.
+    ///
+    /// A field rather than a constant because the path it selects has to be testable:
+    /// `usize::MAX` forces the full walk, so a test can render both ways and compare,
+    /// and a machine with a different idea of "too big" can say so.
+    walk_limit: usize,
+    /// The kind of the **first** row in `hist_lines`.
+    ///
+    /// `hist_class` is the last one, which is all a forward walk needs; a backward
+    /// walk prepends, and the separator it owes the seam is decided by the two kinds
+    /// that meet there. `None` for an empty history.
+    hist_first_class: Option<RowClass>,
     /// Where the walk stood just before it rendered each item: `hist_marks[k]` is
     /// the state at the top of the iteration that drew `items[k]`, so there is one
     /// per rendered row and `hist_marks.len() == hist_upto`.
@@ -1174,6 +1201,9 @@ impl App {
             items: Vec::new(),
             hist_lines: Vec::new(),
             hist_upto: 0,
+            hist_floor: 0,
+            walk_limit: SELF_WALK_LIMIT,
+            hist_first_class: None,
             hist_marks: Vec::new(),
             note_upto: 0,
             hist_width: 0,
@@ -4325,6 +4355,8 @@ impl App {
             self.hist_lines.clear();
             self.hist_marks.clear();
             self.hist_upto = 0;
+            self.hist_floor = 0;
+            self.hist_first_class = None;
             self.note_upto = 0;
             self.hist_class = None;
             // The target table is the walk's own state — the round it is currently
@@ -4335,7 +4367,17 @@ impl App {
         }
         // A row the walk has not reached yet has nothing rendered to throw away,
         // and rewinding to it would rewind past rows that are fine.
+        //
+        // **Unless the head is in tail mode.** A tail walk does not pass the rows it
+        // skipped, so it leaves no marks (`fill_backward`) — and "no mark" here would
+        // otherwise mean "nothing to do", which is how a row that *changed* above the
+        // window would keep being drawn as it was. With no marks to rewind by, the only
+        // correct answer is to throw the history away and render the tail again: the
+        // rows above the floor were never rendered, so there is nothing to be stale.
         let Some(mark) = self.hist_marks.get(k).copied() else {
+            if self.hist_floor > 0 {
+                self.invalidate_history_from(0);
+            }
             return;
         };
         self.hist_lines.truncate(mark.lines);
@@ -4355,18 +4397,7 @@ impl App {
     /// round and a merge is how round 4's `call_0` came to wear round 1's path.
     /// So the scan stops at the first such row rather than accumulating.
     fn retarget_before(&mut self, k: usize) {
-        self.call_targets.clear();
-        for r in self.items[..k].iter().rev() {
-            if let Some(TranscriptItem::Assistant { tool_calls, .. }) = r.item.as_ref() {
-                for c in tool_calls {
-                    self.call_targets.insert(
-                        c.id.clone(),
-                        letibot_sessionlog::display_target(&c.arguments),
-                    );
-                }
-                return;
-            }
-        }
+        self.call_targets = targets_before(&self.items, k);
     }
 
     /// The first row whose rendering a change to row `idx` can reach.
@@ -4929,6 +4960,107 @@ impl App {
         trim_to(&joined, w)
     }
 
+    /// **Render the tail of a conversation instead of all of it.**
+    ///
+    /// The frame shows the *end* of a session, and the end is what this renders first.
+    /// On a session of thousands of turns and 160 MB, walking from row 0 to draw the
+    /// bottom 40 rows lexes every row above them, which is the operator's *"does
+    /// nothing, then ... after a while it renders history"*.
+    ///
+    /// Walks **backward** from the current floor, rendering whole rows, until
+    /// `want` lines are covered or the beginning is reached. Each row is rendered by
+    /// the same [`item_lines`] the forward walk uses, with the same context — by
+    /// *field*, from [`targets_before`] rather than from the forward walk's running
+    /// table, which is the only thing that made direction matter.
+    ///
+    /// Returns how many rows it rendered, for a test to count.
+    fn fill_backward(&mut self, want: usize) -> usize {
+        if self.hist_floor == 0 {
+            return 0;
+        }
+        let cfg = self.cfg.clone();
+        let (think, tool, raw, diff_split) = (self.reasoning, self.tools, self.raw_calls, self.diff_split);
+        let in_flight: std::collections::HashSet<String> = self
+            .turn
+            .as_ref()
+            .map(|t| t.appended.iter().cloned().collect())
+            .unwrap_or_default();
+        // (class, lines) for each row, newest first as they are built.
+        let mut built: Vec<(RowClass, Vec<String>)> = Vec::new();
+        let mut k = self.hist_floor;
+        let mut covered = |built: &[(RowClass, Vec<String>)]| {
+            self.hist_lines.len()
+                + built
+                    .iter()
+                    .map(|(_, l)| l.len() + 1)
+                    .sum::<usize>()
+        };
+        while k > 0 && covered(&built) < want {
+            k -= 1;
+            let targets = targets_before(&self.items, k);
+            let answered = round_results(&self.items, k);
+            let (class, rows) = item_lines(
+                &self.items[k],
+                &ItemCtx {
+                    cfg: &cfg,
+                    think,
+                    tools: tool,
+                    raw,
+                    targets: &targets,
+                    answered: &answered,
+                    drawn_live: in_flight.contains(self.items[k].item_id.as_str()),
+                    elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
+                    edit: self.call_edits.get(&self.items[k].item_id),
+                    decision: self.call_decisions.get(&self.items[k].item_id),
+                    diff_split,
+                },
+            );
+            if !rows.iter().all(|l| l.trim().is_empty()) {
+                built.push((class, rows));
+            }
+        }
+        let rendered = self.hist_floor - k;
+        if !built.is_empty() {
+            // Assemble in forward order, with the separator the forward walk puts
+            // *before* a row whose kind changed.
+            let mut block: Vec<String> = Vec::new();
+            let mut prev: Option<RowClass> = None;
+            for (class, rows) in built.iter().rev() {
+                let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
+                if !block.is_empty() && !pack {
+                    block.push(String::new());
+                }
+                block.extend(rows.iter().cloned());
+                prev = Some(*class);
+            }
+            // And one at the seam: the row this block now precedes is the old head.
+            if !self.hist_lines.is_empty() {
+                let pack = self.hist_first_class == Some(RowClass::Activity)
+                    && built.first().map(|(c, _)| *c) == Some(RowClass::Activity);
+                if !pack {
+                    block.push(String::new());
+                }
+            }
+            let first = built.last().map(|(c, _)| *c);
+            block.append(&mut self.hist_lines);
+            self.hist_lines = block;
+            if let Some(f) = first {
+                self.hist_first_class = Some(f);
+            }
+        }
+        self.hist_floor = k;
+        // Accounted for, so the forward walk has no work until a new row arrives.
+        self.hist_upto = self.hist_upto.max(self.items.len());
+        rendered
+    }
+
+    /// How many transcript rows this head has rendered. `hist_upto` counts every row
+    /// accounted for, and `hist_floor` says how many were deliberately skipped, so the
+    /// difference is what was drawn.
+    fn rendered_rows(&self) -> usize {
+        self.hist_upto.saturating_sub(self.hist_floor)
+    }
+
     /// The visible `room` lines of the body, and nothing else built.
     fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
@@ -4978,6 +5110,24 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
+        // **A conversation too big to walk is rendered from its end.**
+        //
+        // Placed here, before `in_flight` borrows `turn`, because the fill needs the
+        // whole `App` while that borrow is alive.
+        //
+        // The frame shows the bottom of the session, so the bottom is what gets
+        // rendered — see `fill_backward`. The test is the size of the transcript
+        // rather than a time budget: below `SELF_WALK_LIMIT` the whole walk is a couple
+        // of milliseconds and doing it keeps `hist_marks` dense, which is what makes
+        // `invalidate_history_from` incremental. Above it, only the tail is rendered
+        // and marks go unbuilt — correct, and a full rebuild when a row changes.
+        if self.hist_floor == 0
+            && self.hist_lines.is_empty()
+            && transcript_bytes(&self.items) > self.walk_limit
+        {
+            self.hist_floor = self.items.len();
+            self.fill_backward(room + TAIL_SLACK);
+        }
         // The rows the live pane is still drawing. An assistant row in this set
         // does **not** draw its own unsettled calls: the pane below is drawing
         // them, with a spinner and a running clock, and `→ Read foo.rs · no result`
@@ -5009,6 +5159,8 @@ impl App {
                 call_edits,
                 call_decisions,
                 hist_class,
+                hist_first_class,
+                hist_floor,
                 hist_renders,
                 diff_split,
                 ..
@@ -5025,7 +5177,18 @@ impl App {
                     hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
                     *hist_class = Some(RowClass::Other);
                     *note_upto += 1;
-                } else if *hist_upto < items.len() {
+                // `hist_upto` is "every row at or below this index is accounted for".
+                // A tail walk sets it to the row count, so this does nothing until a
+                // *new* row arrives at the end — which is the whole point: the rows
+                // above the floor are deliberately not walked.
+                //
+                // **In tail mode there are no marks.** They are indexed by absolute
+                // row, the walk pushes one per row it passes, and a tail walk does not
+                // pass the rows it skipped — so `invalidate_history_from` finds none
+                // and falls back to a full rebuild. Correct, just not incremental, and
+                // it is the honest trade for not lexing a 160 MB session to draw its
+                // last 40 rows.
+                } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
                     // Where the walk stands before this row, so a later "from row
                     // k on" can come back to exactly here. Recorded for every row,
                     // including one that renders to nothing, because the mark is
@@ -5097,6 +5260,9 @@ impl App {
                         if !hist_lines.is_empty() && !pack {
                             hist_lines.push(String::new());
                         }
+                        if hist_first_class.is_none() {
+                            *hist_first_class = Some(class);
+                        }
                         hist_lines.extend(rows);
                         *hist_class = Some(class);
                     }
@@ -5105,6 +5271,17 @@ impl App {
                     break;
                 }
             }
+        }
+
+        // **Scrolling up back-fills.** The reader has moved above the window, and the
+        // rows up there were deliberately not rendered — so render more, on demand,
+        // rather than having thrown them away. This is the operator's *"then some scroll
+        // up buffer if needed"*: the work happens when the reader looks, not when they
+        // attach.
+        //
+        // Before the borrows below, because it needs the whole `App`.
+        if self.scroll > 0 && self.hist_floor > 0 {
+            self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
         // Disjoint field borrows, so the history can be lent to the frame while the
@@ -8219,6 +8396,75 @@ fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet
             // calls and their results. Neither ends the round.
             _ if it.kind == "assistant" => break,
             _ => {}
+        }
+    }
+    out
+}
+
+/// How much transcript a head will walk from the beginning before it renders the tail
+/// instead.
+///
+/// A judgement, not a measurement: the walk is ~40 ms for 6000 rows, so 2 MB of
+/// transcript is well under a frame's budget and the incremental marks it buys are
+/// worth having. Above it the operator's own sessions live — 160 MB, thousands of turns
+/// — and there the only affordable thing is the end. See `App::fill_backward`.
+const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
+
+/// How many rows above the rendered window to keep, so a frame can be drawn while the
+/// reader is a little way up — the window, plus one screen.
+///
+/// Not a scrollback budget: scrolling further back-fills more (see
+/// `App::fill_backward`). This is only what is kept ready for the frames that need no
+/// new work.
+const TAIL_SLACK: usize = 40;
+
+/// Roughly how many bytes of text the transcript carries.
+///
+/// **An estimate, and it must be cheap** — it runs every frame, so it is a length test
+/// on the strings already in memory rather than a serialisation. `SnapshotItem` keeps
+/// its body as a `TranscriptItem`, so what is asked for here is the text a reader would
+/// see, and a row this cannot measure counts as zero. That is safe in the direction
+/// that matters: an under-estimate walks the conversation, an over-estimate renders only
+/// its tail, and only the second is a behaviour the operator would notice.
+fn transcript_bytes(items: &[SnapshotItem]) -> usize {
+    items
+        .iter()
+        .map(|it| match it.item.as_ref() {
+            Some(TranscriptItem::Assistant { text, .. })
+            | Some(TranscriptItem::Reasoning { text, .. })
+            | Some(TranscriptItem::System { text, .. }) => text.len(),
+            Some(TranscriptItem::User { parts }) => parts
+                .iter()
+                .map(|p| match p {
+                    letibot_transcript::UserPart::Text { text } => text.len(),
+                    letibot_transcript::UserPart::Image { .. }
+                    | letibot_transcript::UserPart::FileRef { .. } => 32,
+                })
+                .sum(),
+            Some(TranscriptItem::ToolResult { payload, .. }) => payload.len(),
+            // A segment mark carries a label and no body; it renders to a line at
+            // most, so it contributes nothing worth counting — and it must not be a
+            // row that escapes the estimate, which a missing arm would make it.
+            Some(TranscriptItem::SegmentMark { label, .. }) => label.len(),
+            None => 0,
+        })
+        .sum()
+}
+
+/// The tool-call targets in force for row `k`: the calls of the nearest assistant row
+/// above it that has a body.
+///
+/// The forward walk builds this as it goes (replacing, not merging, at every assistant
+/// row); this derives it, which is what lets the **backward** walk render a row without
+/// having rendered everything above it first. Same rule, one implementation.
+fn targets_before(items: &[SnapshotItem], k: usize) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for r in items[..k.min(items.len())].iter().rev() {
+        if let Some(TranscriptItem::Assistant { tool_calls, .. }) = r.item.as_ref() {
+            for c in tool_calls {
+                out.insert(c.id.clone(), letibot_sessionlog::display_target(&c.arguments));
+            }
+            return out;
         }
     }
     out
@@ -11929,6 +12175,267 @@ mod tests {
             flat.contains("has said nothing yet"),
             "an empty session after the Hello must say so: {flat:?}"
         );
+    }
+
+    /// **The tail frame is the full walk's frame.**
+    ///
+    /// This is the whole licence for rendering only the end of a conversation, and it
+    /// is asserted against the other implementation rather than against a fixture: the
+    /// same rows, rendered from row 0 and rendered backward from the end, must produce
+    /// the same screen. A fixture would pin today's answer; this pins the agreement.
+    ///
+    /// The forward walk is forced by raising `walk_limit` — see its doc for why that is
+    /// a field.
+    #[test]
+    fn a_tail_frame_equals_the_full_walks_frame() {
+        let mut tail = app();
+        let mut full = app();
+        // Enough to be worth tailing, small enough to run in a test.
+        for i in 0..400u64 {
+            let body = format!(
+                "line {i} of the conversation\n\n```rust\nfn f{i}() {{ let n = {i}; }}\n```\n\nand some prose to wrap, with `code` in it.\n"
+            );
+            for a in [&mut tail, &mut full] {
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 1,
+                    testing::appended(&format!("s.{i}"), "user"),
+                )));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 2,
+                    testing::content(&format!("s.{i}"), &body),
+                )));
+            }
+        }
+        full.walk_limit = usize::MAX;
+
+        // The tail path must actually have been taken, or this asserts nothing.
+        tail.screen(100, 40);
+        assert_eq!(tail.hist_floor, 0, "under the limit the whole thing is walked");
+        tail.walk_limit = 1;
+        tail.hist_floor = 0;
+        tail.hist_lines.clear();
+        tail.hist_first_class = None;
+        tail.hist_upto = 0;
+        tail.hist_marks.clear();
+        let t = tail.screen(100, 40);
+        assert!(
+            tail.hist_floor > 0,
+            "the tail path was not taken, so nothing is being compared"
+        );
+
+        // And the two agree. The *whole* frame, not a slice: a tail that drew the
+        // right rows with the wrong separators would pass a slice test.
+        let f = full.screen(100, 40);
+        assert_eq!(t, f, "the tail frame is not the full walk's frame");
+    }
+
+    /// **The cost is what this exists for**: a tail frame does not render the rows above
+    /// the window.
+    ///
+    /// Counted, not timed — `hist_renders` is the number of rows put through
+    /// `item_lines`, so it is the measurement and not a proxy for one.
+    #[test]
+    fn a_tail_frame_does_not_render_the_whole_conversation() {
+        let mut a = app();
+        let n = 600u64;
+        for i in 0..n {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(
+                    &format!("s.{i}"),
+                    "a line of conversation\n\n```rust\nfn f() {}\n```\n",
+                ),
+            )));
+        }
+        a.walk_limit = 1;
+        let _ = a.screen(100, 40);
+        let rendered = a.hist_renders;
+        assert!(
+            rendered < n,
+            "the tail path rendered {rendered} rows of {n}, so it walked the lot"
+        );
+        // And what it rendered is bounded by the window plus its slack, not by the
+        // conversation.
+        let budget = (40 + TAIL_SLACK + 2) as u64;
+        assert!(
+            rendered <= budget,
+            "rendered {rendered} rows; the window plus slack is {budget}"
+        );
+    }
+
+    /// A frame that has drawn the tail cannot be *wrong* about the rows above it: the
+    /// reader is told they are there.
+    #[test]
+    fn a_tail_frame_says_there_is_more_above() {
+        let mut a = app();
+        for i in 0..400u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), "a line of conversation\n"),
+            )));
+        }
+        a.walk_limit = 1;
+        a.screen(100, 40);
+        assert!(a.hist_floor > 0, "the tail path was not taken");
+        assert!(
+            a.hist_floor < a.items.len(),
+            "nothing was left above the window to be counted"
+        );
+        // The rows above are the ones that were skipped, and the count is what a
+        // scrolled-back banner needs.
+        assert_eq!(
+            a.hist_floor,
+            a.items.len() - a.rendered_rows(),
+            "the floor and the rendered rows must account for every row"
+        );
+    }
+
+    /// **Scrolling up renders more, on demand.**
+    ///
+    /// The operator's *"then some scroll up buffer if needed"*. A tail frame deliberately
+    /// does not render the rows above the window, so scrolling up has to fetch them —
+    /// and it has to be *able* to: the window clamp is computed from what is rendered, so
+    /// without the back-fill there would be nothing above the tail to scroll into.
+    #[test]
+    fn scrolling_up_back_fills() {
+        let mut a = app();
+        for i in 0..400u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), "a line of conversation\n"),
+            )));
+        }
+        a.walk_limit = 1;
+        let _ = a.screen(100, 20);
+        let floor0 = a.hist_floor;
+        let rows0 = a.rendered_rows();
+        assert!(floor0 > 0, "the tail path was not taken");
+
+        // Scroll up: the head must render rows it had skipped, so the floor moves down
+        // and the number of rendered rows grows.
+        a.scroll = 15;
+        let _ = a.screen(100, 20);
+        assert!(
+            a.hist_floor < floor0,
+            "scrolling up did not render anything above the window: floor {} -> {}",
+            floor0,
+            a.hist_floor
+        );
+        assert!(
+            a.rendered_rows() > rows0,
+            "the rendered rows did not grow: {rows0} -> {}",
+            a.rendered_rows()
+        );
+
+        // And it is still bounded by what was asked for, not by the conversation.
+        assert!(
+            a.rendered_rows() <= 15 + 20 + TAIL_SLACK + 4,
+            "scrolling up rendered the whole conversation"
+        );
+
+        // The floor reaches zero when the top is reached, which is the state a
+        // scrolled-to-the-top frame needs to be honest about.
+        a.scroll = 100_000;
+        let _ = a.screen(100, 20);
+        assert_eq!(a.hist_floor, 0, "scrolling to the top never reached the beginning");
+    }
+
+    /// **A change above the window is not left stale.**
+    ///
+    /// A tail walk leaves no `hist_marks` — it does not pass the rows it skips — and
+    /// `invalidate_history_from` used "no mark" to mean "nothing to do". In tail mode
+    /// that would keep drawing a row that had *changed* as it was. The fix is the only
+    /// correct one available without marks: throw the history away and render the tail
+    /// again.
+    #[test]
+    fn a_change_above_the_window_is_not_left_stale() {
+        let mut a = app();
+        for i in 0..400u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), "a line of conversation\n"),
+            )));
+        }
+        a.walk_limit = 1;
+        let _ = a.screen(100, 20);
+        assert!(a.hist_floor > 0, "the tail path was not taken");
+        assert!(a.hist_marks.is_empty(), "a tail walk should leave no marks");
+
+        // A row *above* the floor changes.
+        a.invalidate_history_from(3);
+        assert_eq!(
+            a.hist_floor, 0,
+            "a change above the window left the tail in place, so the changed row would \
+             go on being drawn as it was"
+        );
+    }
+
+    /// **The number R19.1 exists for**: a tail frame against a full walk, on a transcript
+    /// big enough to matter. Ignored because it is slow.
+    #[test]
+    #[ignore]
+    fn a_tail_frame_is_far_cheaper_than_a_full_walk() {
+        // A row shape with real markdown in it, because the lex is the cost.
+        let body = "Here is some prose with `code` and a [link](x) in it, long enough to wrap a line.\n\n\
+                    ```rust\nfn f() { let n = 1; }\n```\n\nMore prose, and a list:\n\n- one\n- two\n\n";
+        for rows in [400usize, 1200] {
+            let mut a = app();
+            for i in 0..rows as u64 {
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 1,
+                    testing::appended(&format!("s.{i}"), "user"),
+                )));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 2,
+                    testing::content(&format!("s.{i}"), body),
+                )));
+            }
+            let bytes = transcript_bytes(&a.items);
+
+            // The full walk.
+            a.walk_limit = usize::MAX;
+            let t = std::time::Instant::now();
+            let full = a.screen(100, 40);
+            let full_ms = t.elapsed().as_secs_f64() * 1e3;
+
+            // And the tail, from a cold history.
+            a.walk_limit = 1;
+            a.hist_floor = 0;
+            a.hist_lines.clear();
+            a.hist_first_class = None;
+            a.hist_upto = 0;
+            a.hist_marks.clear();
+            let t = std::time::Instant::now();
+            let tail = a.screen(100, 40);
+            let tail_ms = t.elapsed().as_secs_f64() * 1e3;
+
+            eprintln!(
+                "{rows:>5} rows, {:.1} MB: full walk {full_ms:>7.1} ms, tail {tail_ms:>6.1} ms \
+                 ({:.1}%), rendered {} rows, floor {}",
+                bytes as f64 / 1e6,
+                tail_ms * 100.0 / full_ms,
+                a.rendered_rows(),
+                a.hist_floor,
+            );
+            assert_eq!(tail, full, "the two frames disagree");
+            assert!(tail_ms < full_ms, "the tail was not the cheaper path");
+        }
     }
 
     /// **How much of an attach is the history walk.** The cold frame over a big
