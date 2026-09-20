@@ -2596,14 +2596,25 @@ impl App {
         }
         // **The `allow-all` confirmation owns the keyboard too**, and for the same
         // reason the password field does: a question this consequential must not be
-        // answered by a keystroke the operator aimed at the composer. Only `y`
-        // confirms. Every other key cancels, rather than only Esc — the fail-closed
-        // direction, and the one that makes a mistyped answer a no.
+        // answered by a keystroke the operator aimed at the composer.
+        //
+        // **`y` and Enter both confirm.** It was `y` alone, on the fail-closed
+        // argument that a mistyped answer should be a no — which is right about
+        // stray keys and wrong about Enter, the key every other card in this file
+        // confirms with (the quit card takes it, the ladder takes it, the pickers
+        // take it). The operator, 2026-09-20: *"i did allow-all and even got to
+        // that giant red warning"* — and the session was still at
+        // `automode-edits` afterwards, because the natural keystroke on a
+        // confirmation silently cancelled it. A card that names two keys and
+        // means one of them is a card that lies.
+        //
+        // Everything else still cancels, Esc included, so a key aimed at the
+        // composer is still a no.
         if self.mode_confirm.is_some() {
             let name = self.mode_confirm.take().unwrap();
             self.redraw = true;
             return match k {
-                Key::Char('y') | Key::Char('Y') => {
+                Key::Char('y') | Key::Char('Y') | Key::Enter => {
                     self.say("allow-all confirmed for this session");
                     Some(Action::Mode {
                         name,
@@ -3704,7 +3715,8 @@ impl App {
         self.mode_confirm.as_ref().map(|_| {
             "allow-all: privilege escalation, deletes outside the project and \
              first contact with a new host all stop asking. On this box that is \
-             this box. It lasts for this session only.  [y] confirm   [esc] cancel"
+             this box. It lasts for this session only, and a daemon restart drops \
+             it.  [y] or [enter] confirm   [esc] or any other key cancels"
                 .into()
         })
     }
@@ -14166,7 +14178,7 @@ mod tests {
         assert_eq!(a.take_mode("allow-all".into()), None, "sent without asking");
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("privilege escalation"), "{screen}");
-        assert!(screen.contains("[y] confirm"), "{screen}");
+        assert!(screen.contains("[y] or [enter] confirm"), "{screen}");
 
         // `y` sends it, with the operator's answer on the frame.
         assert_eq!(
@@ -14179,11 +14191,39 @@ mod tests {
         assert!(a.mode_confirm.is_none(), "the question outlived its answer");
     }
 
-    /// **Any key but `y` is a no**, not just Esc: a question that owns the keyboard
-    /// collects keystrokes aimed at the composer, and those must not be consent.
+    /// **Enter confirms, like every other card in this head.**
+    ///
+    /// It used to cancel, on the fail-closed argument that a mistyped answer
+    /// should be a no. Right about stray keys, wrong about the one key a person
+    /// presses on a confirmation — the operator read the warning, pressed it, and
+    /// the session stayed at `automode-edits` with only a small notice to say so.
+    #[test]
+    fn enter_confirms_the_allow_all_card_like_every_other_card() {
+        for k in [Key::Enter, Key::Char('y'), Key::Char('Y')] {
+            let mut a = App::new(plain_cfg(120));
+            a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+            assert_eq!(a.take_mode("allow-all".into()), None);
+            let named = format!("{k:?}");
+            assert_eq!(
+                a.key(k),
+                Some(Action::Mode { name: "allow-all".into(), consented: true }),
+                "{named} did not confirm"
+            );
+            assert!(a.mode_confirm.is_none(), "{named} left the question up");
+        }
+        // And the card names exactly the keys it takes.
+        let mut a = App::new(plain_cfg(120));
+        a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+        a.take_mode("allow-all".into());
+        let line = a.mode_confirm_line().expect("a question");
+        assert!(line.contains("[y] or [enter] confirm"), "{line}");
+    }
+
+    /// **A stray key is still a no.** The card owns the keyboard, so keystrokes
+    /// aimed at the composer land on it, and those must not be consent.
     #[test]
     fn a_stray_key_cancels_the_allow_all_confirmation() {
-        for k in [Key::Enter, Key::Esc, Key::Char('n'), Key::Char('a')] {
+        for k in [Key::Esc, Key::Char('n'), Key::Char('a')] {
             let mut a = App::new(plain_cfg(120));
             a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
             assert_eq!(a.take_mode("allow-all".into()), None);
