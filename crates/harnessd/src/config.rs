@@ -686,6 +686,31 @@ impl Config {
         Some((scaled.clamp((w / 4) as u128, (w as u128) * 4)) as u64)
     }
 
+    /// **Ledger tokens as the provider would count them**, or `None` if nobody
+    /// has measured the ratio yet.
+    ///
+    /// The inverse of what [`Config::planning_window`] does to the window, and it
+    /// exists because one caller genuinely needs the conversion in this
+    /// direction: a refusal the operator reads has to quote a number they can
+    /// find on their own screen, and the screen shows the PROVIDER's count.
+    ///
+    /// `None` is the load-bearing case. It means "this session has not taken a
+    /// metered turn yet, so the ratio is unmeasured", and a caller must not
+    /// substitute the ledger's own figure for it. On a metered provider the
+    /// ledger always over-counts — reasoning rows are in it and are dropped from
+    /// what is sent — so treating ledger tokens as provider tokens does not fail
+    /// safe, it fails by a measured 49% in the direction of refusing work that
+    /// would have fitted. Measured on the operator's own session, 2026-09-20:
+    /// 991,596 ledger tokens against 671,280 the provider counted, and a
+    /// `/reseat` refused against a window it would have sat inside.
+    pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
+        let (ledger, provider) = self.ledger_scale?;
+        if ledger == 0 || provider == 0 {
+            return None;
+        }
+        Some(((ledger_tokens as u128 * provider as u128) / ledger as u128) as u64)
+    }
+
     pub fn should_compact(&self, resident_tokens: u64) -> bool {
         let Some(w) = self.planning_window() else {
             return false;
@@ -704,8 +729,13 @@ impl Config {
     /// and continue straight into a second wall. Unknown window: no room, for the
     /// same reason `should_compact` says false — an invented number here would
     /// continue turns that cannot fit.
+    /// `resident_tokens` is counted off the LEDGER, like every other caller's,
+    /// so the window it is measured against is [`Config::planning_window`] and
+    /// not the provider's raw number. Reading `context_window` here compared two
+    /// different counts and, on a metered provider where the ledger over-counts,
+    /// closed the gate on turns that had room. See `planning_window`.
     pub fn room_for_next_turn(&self, resident_tokens: u64) -> bool {
-        match self.context_window {
+        match self.planning_window() {
             Some(w) => resident_tokens + self.headroom() < w,
             None => false,
         }
@@ -1865,6 +1895,67 @@ mod tests {
         // The names differ too, so a card naming the applied point cannot read as
         // the confined one.
         assert_ne!(Mode::ALLOW_ALL.name, Mode::ALLOW_ALL_HERE.name);
+    }
+
+    /// **A carry is quoted in the units the operator can check.**
+    ///
+    /// `/reseat` refused on `991596 token(s) in front of a 1000000-token window`
+    /// while the header said 671k, and both numbers were right: 991,596 is
+    /// `s-1789462738453908838#t20`'s ledger sum and 671,280 is what DeepSeek
+    /// counted for the same 2,702 rows. The refusal compared the first against a
+    /// window expressed in the second.
+    ///
+    /// Three claims, and the first is the premise the other two need: the two
+    /// counts really do differ here; the conversion lands on the number the
+    /// header shows; and the converted carry FITS, so the refusal was wrong.
+    #[test]
+    fn a_carry_is_converted_into_the_providers_units_before_it_is_judged() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.context_window = Some(1_000_000);
+        // Unmeasured: there is nothing to convert with, and saying so is the
+        // point — a caller must not substitute the ledger's own figure.
+        assert_eq!(cfg.provider_tokens(991_596), None);
+
+        cfg.ledger_scale = Some((1_000_699, 671_280));
+        let carried = cfg.provider_tokens(991_596).expect("a conversion");
+        assert!(
+            (660_000..680_000).contains(&carried),
+            "the ledger's 991596 is about 665k to the provider, which is what the \
+             operator's header showed; got {carried}"
+        );
+        assert!(
+            carried + cfg.headroom() < 1_000_000,
+            "and it FITS — {carried} plus {} headroom against 1000000. The refusal \
+             the operator saw was the unconverted comparison.",
+            cfg.headroom()
+        );
+        // The unconverted comparison, kept here so the regression is named rather
+        // than merely absent: this is what used to be asked, and it says no.
+        assert!(
+            991_596 + cfg.headroom() >= 1_000_000,
+            "the premise: the LEDGER figure does not fit, which is why the units \
+             mattered"
+        );
+    }
+
+    /// The wall continuation asked the same question with the same mistake.
+    ///
+    /// `room_for_next_turn` is handed `ledger_len`, so its window has to be the
+    /// ledger's too. Reading `context_window` closed the gate on a conversation
+    /// the provider had 330k tokens of room for.
+    #[test]
+    fn room_for_the_next_turn_is_measured_in_ledger_tokens() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.context_window = Some(1_000_000);
+        cfg.ledger_scale = Some((1_000_699, 671_280));
+        assert!(
+            cfg.room_for_next_turn(991_596),
+            "991596 ledger tokens is ~665k to the provider and has room; the raw \
+             window said no"
+        );
+        // And it still says no when there genuinely is none, so the fix is not
+        // "always true".
+        assert!(!cfg.room_for_next_turn(cfg.planning_window().unwrap()));
     }
 
     /// **The window is planned in the units the ledger counts in.**
