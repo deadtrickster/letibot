@@ -1029,17 +1029,21 @@ pub struct App {
     attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
-    /// How many announced rows are still waiting for their body.
+    /// The high-water mark of rows waiting for a body, since it was last zero.
     ///
-    /// One line at the tail is drawn from this and [`App::bodies_peak`] instead of
-    /// one placeholder per row. See `item_lines`.
-    bodies_pending: usize,
-    /// The high-water mark of [`App::bodies_pending`] since it was last zero.
+    /// The denominator of the fork line: a fork announces every row before any
+    /// body follows, so the peak IS the size of the carry and `peak - pending` is
+    /// how much has landed. Reset when the last body arrives, so the next fork
+    /// measures itself and not the one before.
     ///
-    /// The denominator: a fork announces every row first, so the peak is the size
-    /// of the carry and `peak - pending` is how much of it has landed. Reset when
-    /// the last body arrives, so the next fork measures itself and not the one
-    /// before.
+    /// **The numerator is counted, not accumulated.** An incremental counter went
+    /// wrong the first time and went wrong silently: `self.items` is replaced
+    /// wholesale by a snapshot (`App::adopt`), and a fork is exactly when one
+    /// arrives, so the tally and the rows it was supposed to describe came apart
+    /// — every later `record_item` then failed its `position` lookup and
+    /// decremented nothing. The operator saw a bar that never moved: *"so,
+    /// counter wasnt moving - 0 always"*. See [`App::bodies_pending`], which asks
+    /// the rows instead of remembering.
     bodies_peak: usize,
 }
 
@@ -1107,23 +1111,40 @@ fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -
         processed: done as u64,
         time_ms: 0,
     };
-    let cat = cat_frame(now_ms);
+    // **Every field is fixed width and the cat is last.** The operator: *"move cat
+    // to the right most position or thngs jump around"*.
+    //
+    // Two things on this line change width as it runs — the cat, whose frames are
+    // seven and eight columns, and the numerator, which grows from `0` to `2.7k`.
+    // Anything drawn to the RIGHT of either moves when it changes, and a
+    // progress indicator that shuffles sideways reads as a fault rather than as
+    // progress. So the numerator is right-aligned in the width of its own
+    // denominator, which is the widest it can ever be, and the cat goes at the
+    // end where nothing follows it. The bar's own width is fixed by the total,
+    // not by the fraction, so its edge is the only thing that moves — which is
+    // the one thing that is supposed to.
+    let total = progress::thousands(peak as u64);
     let counts = format!(
-        "{} of {} rows",
+        "{:>w$} of {total} rows",
         progress::thousands(done as u64),
-        progress::thousands(peak as u64)
+        w = total.chars().count()
     );
-    // The bar takes what the cat, the counts and the gaps leave. Clamped at both
-    // ends so a narrow terminal degrades to a short bar rather than to arithmetic
-    // that wraps the line into two.
-    let used = width::width(cat) + counts.chars().count() + 4;
+    // The bar takes what the fixed fields and the gaps leave. Clamped at both ends
+    // so a narrow terminal degrades to a short bar rather than to arithmetic that
+    // wraps the line into two.
+    let used = CAT_SLOT + counts.chars().count() + 6;
     let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
     vec![
         String::new(),
         format!(
-            "{cat} {} {}",
+            "  {} {}  {}",
             progress::bar(&p, bar_cols, cfg.palette()),
-            cfg.palette().paint(Role::Faint, &counts)
+            cfg.palette().paint(Role::Faint, &counts),
+            // Padded to the slot, not to the frame: `(=^.^=)` and `(=^.^=)~` are
+            // different widths and centring or trailing each on its own is what
+            // makes the cat slide. Same rule as the pre-attach wait.
+            cfg.palette()
+                .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
         ),
         cfg.palette().paint(
             Role::Faint,
@@ -1364,7 +1385,6 @@ impl App {
             attaching: false,
             attach_started_ms: 0,
             cursor: None,
-            bodies_pending: 0,
             bodies_peak: 0,
         }
     }
@@ -2469,8 +2489,6 @@ impl App {
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
                 }
-                self.bodies_pending += 1;
-                self.bodies_peak = self.bodies_peak.max(self.bodies_pending);
                 self.items.push(SnapshotItem {
                     item_id,
                     kind,
@@ -4411,12 +4429,6 @@ impl App {
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
         };
-        if self.items[idx].item.is_none() {
-            self.bodies_pending = self.bodies_pending.saturating_sub(1);
-            if self.bodies_pending == 0 {
-                self.bodies_peak = 0;
-            }
-        }
         self.items[idx].item = Some(item);
         // The row's rendered form changed, so the history cache from that row
         // on is stale. From that row on, and not from row zero: this is the
@@ -5420,10 +5432,20 @@ impl App {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
+        // **Counted off the rows, every frame.** See `bodies_peak` for why this is
+        // not a tally: `self.items` is replaced wholesale by a snapshot, which is
+        // exactly what a fork delivers, and a tally that survived that described
+        // rows that no longer existed. An `Option` check per row, on the same
+        // order of cost as `transcript_bytes`, which already walks them all.
+        let bodies_pending = self.items.iter().filter(|i| i.item.is_none()).count();
+        if bodies_pending == 0 {
+            self.bodies_peak = 0;
+        } else {
+            self.bodies_peak = self.bodies_peak.max(bodies_pending);
+        }
         // Read before the disjoint borrow below, because the fork line is drawn
         // from the tail and `self` is not whole by then.
-        let (bodies_pending, bodies_peak, now_ms) =
-            (self.bodies_pending, self.bodies_peak, self.now_ms);
+        let (bodies_peak, now_ms) = (self.bodies_peak, self.now_ms);
 
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
@@ -5567,8 +5589,8 @@ impl App {
         //
         // It sits at the tail with the queued prompts because that is where the
         // rows are landing, and it disappears by itself — the last body to arrive
-        // takes `bodies_pending` to zero.
-        if self.bodies_pending > 0 && self.bodies_peak > 0 {
+        // takes the count to zero.
+        if bodies_pending > 0 && bodies_peak > 0 {
             segs.push(Seg::Owned(rebasing_line(
                 bodies_pending,
                 bodies_peak,
@@ -12980,6 +13002,126 @@ mod tests {
         );
     }
 
+    /// **The count is derived from the rows, so a snapshot cannot strand it.**
+    ///
+    /// The first version tallied on the events: `+1` per `TranscriptAppended`,
+    /// `-1` per body. That is wrong in exactly the case it exists for. A fork
+    /// delivers a snapshot, `adopt` replaces `self.items` wholesale, and the tally
+    /// then described rows that were gone — every later `record_item` missed its
+    /// `position` lookup and decremented nothing, so the bar sat at zero for the
+    /// whole carry. The operator: *"so, counter wasnt moving - 0 always"*.
+    ///
+    /// The premise is asserted first and it is the whole test: the snapshot must
+    /// really arrive with bodiless rows in it. Without that this passes on the
+    /// broken version too.
+    #[test]
+    fn a_snapshot_full_of_bodiless_rows_still_counts_bodies_as_they_land() {
+        let hub = letibot_sessionlog::hub::Hub::new("s");
+        let n = 40usize;
+        for i in 0..n {
+            hub.publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
+                item_id: format!("s.{i}"),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            });
+        }
+        let att = hub.attach(
+            "tui",
+            "test",
+            letibot_sessionlog::protocol::Caps::default(),
+            0,
+        );
+        let snap = att.snapshot.expect("a snapshot");
+        assert_eq!(
+            snap.items.iter().filter(|i| i.item.is_none()).count(),
+            n,
+            "the premise: the snapshot carries {n} rows with no body, which is what \
+             a fork delivers"
+        );
+        let mut a = app();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: att.head_id.clone(),
+            dropped: att.dropped,
+            snapshot: Some(Box::new(snap)),
+            resumed_from: att.resumed_from,
+            scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
+        });
+        let first = a.screen(80, 40).join("\n");
+        assert!(
+            first.contains(&format!("of {n} rows")),
+            "the carry is counted from the snapshot, not from events this head \
+             never saw: {first}"
+        );
+
+        // And the bodies move it. This is the assertion the tally failed.
+        for i in 0..10 {
+            a.apply(ServerFrame::Event(env(
+                100 + i as u64,
+                testing::content(&format!("s.{i}"), "a line of conversation"),
+            )));
+        }
+        let moved = a.screen(80, 40).join("\n");
+        assert!(
+            moved.contains(&format!("10 of {n} rows")),
+            "ten bodies landed and the counter moved: {moved}"
+        );
+    }
+
+    /// **Nothing on the line may move sideways except the bar's own edge.**
+    ///
+    /// The operator: *"move cat to the right most position or thngs jump
+    /// around"*. Two fields change width as the carry runs — the cat, whose
+    /// frames are 7 and 8 columns, and the numerator, which grows from `0` to its
+    /// denominator. Either one shifts whatever is drawn to its right, and a
+    /// progress indicator that shuffles reads as a fault.
+    ///
+    /// Rendered width is the assertion, not the byte length: these rows are
+    /// painted, and `width::width` is what skips the escapes.
+    #[test]
+    fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
+        let cfg = RenderConfig {
+            width: 100,
+            ..Default::default()
+        };
+        // **The premise.** Both variable fields have to actually vary across the
+        // sample, or a constant width below proves nothing about either.
+        let ticks: Vec<u64> = (0..8).map(|t| t * 400).collect();
+        let mut frames: Vec<&str> = ticks.iter().map(|t| cat_frame(*t)).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        assert!(
+            frames.len() > 1 && frames.iter().map(|f| f.chars().count()).min()
+                != frames.iter().map(|f| f.chars().count()).max(),
+            "the sampled ticks must hit cat frames of DIFFERENT widths, or this \
+             test says nothing about the cat: {frames:?}"
+        );
+        assert_ne!(
+            progress::thousands(0).chars().count(),
+            progress::thousands(2702).chars().count(),
+            "and the numerator must change width across the run, or it says \
+             nothing about the count either"
+        );
+
+        let mut seen: Vec<usize> = Vec::new();
+        // Across the whole run, and across a full cycle of cat frames.
+        for done in [0usize, 7, 99, 100, 999, 1000, 2702] {
+            for tick in &ticks {
+                let line = rebasing_line(2702 - done, 2702, *tick, &cfg);
+                seen.push(letibot_ui::width::width(&line[1]));
+            }
+        }
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            1,
+            "the line must be one width throughout; got {seen:?}"
+        );
+    }
+
     /// **A fork is one line, however many rows it carries.**
     ///
     /// `/reseat` carries the whole conversation and announces every row before a
@@ -13012,7 +13154,9 @@ mod tests {
             "and not one placeholder among them: {screen}"
         );
         // The bar is fed rows, so it must say how many — nothing has landed yet.
-        assert!(screen.contains(&format!("0 of {n} rows")), "{screen}");
+        // Right-aligned in the denominator's width, which is what stops the cat
+        // beside it sliding as the number grows.
+        assert!(screen.contains(&format!("  0 of {n} rows")), "{screen}");
 
         // Bodies land and the count follows them.
         for i in 0..(n / 2) {
