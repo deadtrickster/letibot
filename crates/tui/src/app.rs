@@ -106,6 +106,9 @@ pub enum Action {
     ListSessions,
     /// Ask for this session's todo list — the pane's bootstrap read.
     ListTodos,
+    /// Ask the daemon for its job table. The head renders the answer; it does
+    /// not decide what is in it.
+    ListJobs,
     /// Make one. The head switches to it when the daemon says which id it minted;
     /// see [`App::apply`]'s `Sessions` arm.
     NewSession(String),
@@ -334,44 +337,6 @@ struct SubagentState {
     role: String,
 }
 
-/// A background job this session started, as the events report it.
-///
-/// The **start** comes off the `bash` call's own finish — a `ToolOutcome::
-/// Backgrounded` names the handle as a field, not as text to parse — and the
-/// command shown is the call's §4.1 display target, joined at draw time through
-/// the call id, because the arguments reach a head with the transcript and not
-/// with the event. The **end** comes off the durable `JobSettled` event the
-/// daemon publishes when the job settles between turns. A row with no
-/// settlement yet is running; that is the whole reason the event exists.
-#[derive(Debug, Clone)]
-struct JobRow {
-    job: String,
-    /// The call that backgrounded it, for the join to the command text. Empty
-    /// when the start is beyond this head's window and only the settlement
-    /// replayed — the row then says the command is unknown rather than guessing.
-    call_id: String,
-    /// How it came to be in the background: `asked`, `promoted`, or
-    /// `promoted by NAME`. Empty on a settlement-only row, for the same reason.
-    how: String,
-    /// **The command, copied when the row is made.**
-    ///
-    /// This used to be joined at draw time out of `self.turn`, and `self.turn` is
-    /// the CURRENT turn — while a background job's whole purpose is to outlive the
-    /// turn that started it. So the moment the turn ended, every settled job's row
-    /// read `(command not in this head's window)`, which the operator saw on a job
-    /// that had finished seconds earlier in the turn they were watching.
-    ///
-    /// Copied at the one moment it is certainly in the window: the backgrounded
-    /// finish, whose call is the call that is finishing. Empty only on a
-    /// settlement-only row, whose start this head genuinely never saw.
-    command: String,
-    /// `JobState::word` once settled — `exited 0`, `killed by job_kill` — and
-    /// empty while running. Deliberately the process's word, never "ok"/"error".
-    state: String,
-    produced: u64,
-    elapsed_ms: u64,
-}
-
 /// What one subagent's Enter opens: its tool output, read out of the subagent's
 /// own scrollback by a `Peek`, shown without moving the head out of the session
 /// it is in. The pane behaves like a terminal — the tail shows by default,
@@ -577,7 +542,16 @@ pub struct App {
     /// Background jobs this session started, folded from the `Backgrounded`
     /// outcome on a tool finish and the durable `JobSettled` event. In the order
     /// they were backgrounded; a settlement folds into its row.
-    jobs: Vec<JobRow>,
+    /// **The daemon's job table**, as it last answered `ListJobs`.
+    ///
+    /// Not built here any more. The head folded `ToolFinished`/`JobSettled` into
+    /// rows of its own and joined the command out of whichever turn it was
+    /// showing, so a job that outlived its turn lost its name — and a second head
+    /// in another language had to reimplement all of it. The operator,
+    /// 2026-09-20: *"regarding jobs, subagents, etc, i expect them to be handled
+    /// by harnessd not the heads"*. A `JobSettled` still folds onto a row for
+    /// liveness; anything it does not recognise waits for the next answer.
+    jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -1406,6 +1380,19 @@ impl App {
             // The bootstrap read for the todos pane. The session named is the one
             // the daemon answered for; a head that has since switched keeps what
             // it has until the pane is opened again, which re-asks.
+            // **The daemon's job table, whole.** Which jobs are listed, what the
+            // command reads as and what the state word is are all its answers —
+            // the head used to fold them out of the event stream and join the
+            // command against whichever turn it happened to be showing, which is
+            // how a job that outlived its turn lost its name.
+            ServerFrame::Jobs { session_id, jobs } => {
+                if session_id == self.session_id {
+                    self.jobs = jobs;
+                    self.jobs_sel = self.jobs_sel.min(self.jobs.len().saturating_sub(1));
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
@@ -1792,20 +1779,16 @@ impl App {
                 produced,
                 elapsed_ms,
             } => {
-                if let Some(row) = self.jobs.iter_mut().find(|j| j.job == job) {
+                // **Folded, never invented.** The daemon owns the table; a
+                // settlement for a job this head has not been told about is not a
+                // row to make up, it is a row that arrives with the next
+                // `ListJobs`. Inventing one is how the pane used to show a job
+                // with no command and no idea how it got there.
+                if let Some(row) = self.jobs.iter_mut().find(|j| j.id == job) {
                     row.state = state;
+                    row.running = false;
                     row.produced = produced;
                     row.elapsed_ms = elapsed_ms;
-                } else {
-                    self.jobs.push(JobRow {
-                        job,
-                        call_id: String::new(),
-                        how: String::new(),
-                        command: String::new(),
-                        state,
-                        produced,
-                        elapsed_ms,
-                    });
                 }
                 self.redraw = true;
                 Disposition::Filtered
@@ -2009,28 +1992,11 @@ impl App {
                 // pane shows starts here: the handle is the outcome's own field,
                 // not a parse of the result text. The command joins at draw time,
                 // through the call's §4.1 target.
-                if let letibot_transcript::ToolOutcome::Backgrounded { handle, how, .. } = &outcome
-                {
-                    // Read now, not at draw time: this call is in the window
-                    // because it is the one finishing.
-                    let command = self
-                        .turn
-                        .as_ref()
-                        .and_then(|t| t.calls.iter().find(|c| c.call_id == call_id))
-                        .map(|c| c.target.clone())
-                        .unwrap_or_default();
-                    self.jobs.retain(|j| j.job != *handle);
-                    self.jobs.push(JobRow {
-                        job: handle.clone(),
-                        call_id: call_id.clone(),
-                        how: how_word(how),
-                        command,
-                        state: String::new(),
-                        produced: 0,
-                        elapsed_ms: 0,
-                    });
-                    self.redraw = true;
-                }
+                // A backgrounded finish used to push a row here, built from the
+                // call this head happened to be holding. The daemon publishes its
+                // table every round now, so the row arrives with the next
+                // `ListJobs` — with a command that is right whichever turn it is
+                // read in.
                 if let Some(t) = self.turn.as_mut()
                     && let Some(c) = open_call(&mut t.calls, &call_id)
                 {
@@ -2682,7 +2648,10 @@ impl App {
                 self.jobs_pane = !self.jobs_pane;
                 self.pane_scroll = 0;
                 self.redraw = true;
-                return None;
+                // Opening it asks the daemon, the way the todos pane does: the
+                // process table is the daemon's and a head that drew its own
+                // version drew a stale one. Later changes arrive as `JobSettled`.
+                return self.jobs_pane.then_some(Action::ListJobs);
             }
             // **Ctrl+O: move the running COMMAND to the background.**
             //
@@ -3250,7 +3219,7 @@ impl App {
                         self.redraw = true;
                         return None;
                     }
-                    let job = self.jobs[self.jobs_sel.min(n - 1)].job.clone();
+                    let job = self.jobs[self.jobs_sel.min(n - 1)].id.clone();
                     // The reply lands on the session log, which the pane is
                     // covering: close it so the operator reads what they asked for.
                     self.jobs_pane = false;
@@ -3977,7 +3946,7 @@ impl App {
                 self.jobs_pane = !self.jobs_pane;
                 self.pane_scroll = 0;
                 self.redraw = true;
-                None
+                self.jobs_pane.then_some(Action::ListJobs)
             }
             "interrupt" | "i" => Some(Action::Interrupt("operator typed /interrupt".into())),
             "compact" => {
@@ -5899,41 +5868,27 @@ impl App {
         }
         let sel = self.jobs_sel.min(self.jobs.len().saturating_sub(1));
         for (i, j) in self.jobs.iter().enumerate() {
-            let (mark, state_colour) = if j.state.is_empty() {
+            // Every field here is the daemon's answer. The head decides colour
+            // and layout and nothing else — no join against the current turn, no
+            // "(command not in this head's window)", because the process table is
+            // not a thing this head reconstructs any more.
+            let (mark, state_colour) = if j.running {
                 ("[~]", sgr::YELLOW)
             } else if j.state.starts_with("exited 0") {
                 ("[x]", sgr::GREEN)
             } else {
                 ("[!]", sgr::RED)
             };
-            // **The command the row remembered**, then the live call, then an
-            // admission. The remembered one is what makes this right across a turn
-            // boundary: a background job outlives its turn by definition, and
-            // `self.turn` is only ever the current one, so joining against it made
-            // every settled job read `(command not in this head's window)` the
-            // moment the turn ended. The live lookup stays as the fallback for a
-            // row that predates the field, and the admission for a settlement whose
-            // start this head never saw — which is the case it was written for.
-            let command = Some(j.command.clone())
-                .filter(|c| !c.is_empty())
-                .or_else(|| {
-                    self.turn
-                        .as_ref()
-                        .and_then(|t| t.calls.iter().find(|c| c.call_id == j.call_id))
-                        .map(|c| c.target.clone())
-                        .filter(|t| !t.is_empty())
-                })
-                .unwrap_or_else(|| "(command not in this head's window)".to_string());
             let picked = i == sel;
             out.push(format!(
                 "{} {} {} {}",
                 if picked { "\u{25b8}" } else { " " },
                 colour(&self.cfg, state_colour, mark),
-                j.job,
-                command
+                j.id,
+                j.command
             ));
-            let tail = if j.state.is_empty() {
-                "running".to_string()
+            let tail = if j.running {
+                format!("running · {} out so far", bytes_human(j.produced))
             } else {
                 format!(
                     "{} · {} out · ran {}.{:01}s",
@@ -5943,12 +5898,7 @@ impl App {
                     (j.elapsed_ms % 1000) / 100,
                 )
             };
-            let how = if j.how.is_empty() {
-                "how: not in this head's window".to_string()
-            } else {
-                j.how.clone()
-            };
-            out.push(dim(&self.cfg, &format!("         {} · {}", how, tail)));
+            out.push(dim(&self.cfg, &format!("         {} · {}", j.how, tail)));
         }
         out.push(String::new());
         out.push(dim(
@@ -15019,6 +14969,82 @@ mod tests {
 
     /// A finished `bash` call that left a job behind: the outcome names the
     /// handle, the way the runtime builds it.
+    /// **A settlement for a job the daemon has not named is not a row.**
+    ///
+    /// The head used to invent one, with an empty command and an empty `how`,
+    /// which is how `(command not in this head's window)` reached the operator's
+    /// screen. The table is the daemon's; an unrecognised settlement waits for
+    /// the next answer rather than being guessed at.
+    #[test]
+    fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
+        let mut a = App::new(plain_cfg(80));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j1", "cargo build", true)],
+        ));
+
+        // One the daemon never mentioned.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::JobSettled {
+                job: "j99".into(),
+                state: "exited 0".into(),
+                produced: 1,
+                elapsed_ms: 1,
+            },
+        )));
+        assert_eq!(a.jobs.len(), 1, "a settlement invented a row");
+
+        // And one it did: folded, so the pane is live between answers.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::JobSettled {
+                job: "j1".into(),
+                state: "killed by job_kill".into(),
+                produced: 4096,
+                elapsed_ms: 2_500,
+            },
+        )));
+        assert!(!a.jobs[0].running);
+        assert_eq!(a.jobs[0].state, "killed by job_kill");
+        assert_eq!(a.jobs[0].produced, 4096);
+        // The command still reads, because it is the daemon's and was never
+        // rebuilt from a turn this head happens to be showing.
+        assert_eq!(a.jobs[0].command, "cargo build");
+    }
+
+    /// The daemon's answer to `ListJobs`, which is the only way a row gets here.
+    fn daemon_job(
+        id: &str,
+        command: &str,
+        running: bool,
+    ) -> letibot_sessionlog::protocol::JobEntry {
+        letibot_sessionlog::protocol::JobEntry {
+            id: id.into(),
+            command: command.into(),
+            how: "asked".into(),
+            state: if running {
+                "running".into()
+            } else {
+                "exited 0".into()
+            },
+            running,
+            produced: 155,
+            elapsed_ms: 14_600,
+        }
+    }
+
+    fn jobs_frame(
+        session_id: &str,
+        jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
+    ) -> ServerFrame {
+        ServerFrame::Jobs {
+            session_id: session_id.into(),
+            jobs,
+        }
+    }
+
     fn backgrounded_finished(handle: &str, call_id: &str) -> SessionEvent {
         SessionEvent::ToolFinished {
             turn_id: "t1".into(),
@@ -15049,121 +15075,31 @@ mod tests {
     }
 
     #[test]
-    fn a_backgrounded_finish_pushes_a_job_row_and_a_settlement_settles_it() {
-        let mut a = App::new(plain_cfg(80));
-        a.apply(ServerFrame::Event(env(
-            1,
-            proposed_bash("c1", "\"cargo test --workspace\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            2,
-            backgrounded_finished("j1", "c1"),
-        )));
-        assert_eq!(a.jobs.len(), 1);
-        assert_eq!(a.jobs[0].job, "j1");
-        assert_eq!(a.jobs[0].call_id, "c1");
-        assert_eq!(a.jobs[0].how, "asked");
-        assert!(
-            a.jobs[0].state.is_empty(),
-            "no settlement yet: it is running"
-        );
-
-        a.apply(ServerFrame::Event(env(
-            3,
-            SessionEvent::JobSettled {
-                job: "j1".into(),
-                state: "exited 0".into(),
-                produced: 512,
-                elapsed_ms: 1_400,
-            },
-        )));
-        assert_eq!(a.jobs.len(), 1, "the settlement folds into the row");
-        assert_eq!(a.jobs[0].state, "exited 0");
-        assert_eq!(a.jobs[0].produced, 512);
-        assert_eq!(a.jobs[0].elapsed_ms, 1_400);
-    }
-
-    #[test]
     fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
         let mut a = App::new(plain_cfg(80));
-        // The command joins through the call row, which lives on the turn: a
-        // backgrounded call is always mid-turn, and the test is honest about it.
-        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(
-            2,
-            proposed_bash("c1", "\"cargo test --workspace\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            3,
-            backgrounded_finished("j1", "c1"),
-        )));
+        a.session_id = "s1".into();
+        // Rows come from the daemon, whole. Nothing is joined here.
+        a.apply(jobs_frame(
+            "s1",
+            vec![
+                daemon_job("j1", "cargo test --workspace", true),
+                daemon_job("j2", "sleep 30", false),
+            ],
+        ));
         let lines = a.jobs_lines(100).join("\n");
-        assert!(lines.contains("j1"), "{lines}");
         assert!(lines.contains("cargo test --workspace"), "{lines}");
-        assert!(lines.contains("running"), "{lines}");
-        assert!(lines.contains("asked"), "{lines}");
-    }
-
-    #[test]
-    fn a_settlement_without_its_start_still_gets_a_row_that_says_what_it_knows() {
-        // A head that attaches late replays the durable settlement but not a
-        // start that scrolled off. The job ran; the row says so, and says what
-        // it does not know rather than inventing it.
-        let mut a = App::new(plain_cfg(80));
-        a.apply(ServerFrame::Event(env(
-            1,
-            SessionEvent::JobSettled {
-                job: "j9".into(),
-                state: "killed by job_kill".into(),
-                produced: 0,
-                elapsed_ms: 40_000,
-            },
-        )));
-        assert_eq!(a.jobs.len(), 1);
-        assert!(a.jobs[0].call_id.is_empty());
-        let lines = a.jobs_lines(100).join("\n");
-        assert!(lines.contains("j9"), "{lines}");
-        assert!(lines.contains("killed by job_kill"), "{lines}");
         assert!(
-            lines.contains("not in this head's window"),
-            "an unknown command says so: {lines}"
+            lines.contains("[~]"),
+            "a running job is marked running: {lines}"
         );
-    }
-
-    /// **A background job's command survives the turn that started it.**
-    ///
-    /// The lookup was against `self.turn`, which is only ever the CURRENT turn,
-    /// while outliving its turn is the whole point of a background job. So every
-    /// settled job read `(command not in this head's window)` as soon as the turn
-    /// ended. The operator, 2026-09-20, on a job that had finished seconds
-    /// earlier: *"▸ [x] j89 (command not in this head's window)"*.
-    #[test]
-    fn a_jobs_command_survives_the_turn_that_started_it() {
-        let mut a = App::new(plain_cfg(100));
-        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(
-            1,
-            proposed_bash("c1", "\"cargo test --workspace\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            2,
-            backgrounded_finished("j1", "c1"),
-        )));
-        let lines = a.jobs_lines(100).join("\n");
         assert!(
-            lines.contains("cargo test"),
-            "while the turn is live: {lines}"
+            lines.contains("[x]"),
+            "a clean exit is marked done: {lines}"
         );
-
-        // The turn ends and the next one begins — the job is still running, and
-        // the call it came from is no longer in `self.turn`.
-        a.apply(ServerFrame::Event(env(3, testing::turn_started("t2"))));
-        let lines = a.jobs_lines(100).join("\n");
         assert!(
-            lines.contains("cargo test"),
-            "the command was forgotten at the turn boundary: {lines}"
+            !lines.contains("not in this head's window"),
+            "the head no longer has a window to be outside of: {lines}"
         );
-        assert!(!lines.contains("not in this head's window"), "{lines}");
     }
 
     /// **A job's output opens a screen; it does not land in the conversation.**
@@ -15245,14 +15181,10 @@ mod tests {
     fn enter_on_a_job_row_reads_its_output() {
         let mut a = App::new(plain_cfg(100));
         a.session_id = "s1".into();
-        a.apply(ServerFrame::Event(env(
-            1,
-            proposed_bash("c1", "\"cargo test --workspace\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            2,
-            backgrounded_finished("j7", "c1"),
-        )));
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j7", "cargo test", false)],
+        ));
         a.key(Key::CtrlQ);
         assert!(a.jobs_pane);
         assert_eq!(
@@ -15270,12 +15202,13 @@ mod tests {
     #[test]
     fn ctrl_q_and_slash_jobs_toggle_the_pane_and_esc_closes_it() {
         let mut a = App::new(plain_cfg(80));
-        assert_eq!(a.key(Key::CtrlQ), None);
+        // Opening asks the daemon for its table; closing asks nothing.
+        assert_eq!(a.key(Key::CtrlQ), Some(Action::ListJobs));
         assert!(a.jobs_pane);
         assert_eq!(a.key(Key::CtrlQ), None);
         assert!(!a.jobs_pane);
 
-        a.command("jobs");
+        assert_eq!(a.command("jobs"), Some(Action::ListJobs));
         assert!(a.jobs_pane);
         a.key(Key::Esc);
         assert!(!a.jobs_pane, "esc closes the pane like the other screens");
@@ -15397,41 +15330,27 @@ mod tests {
     fn enter_on_a_job_row_asks_the_daemon_for_that_jobs_output() {
         let mut a = App::new(plain_cfg(80));
         a.session_id = "s1".into();
-        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(
-            2,
-            proposed_bash("c1", "\"cargo build\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            3,
-            backgrounded_finished("j1", "c1"),
-        )));
-        a.apply(ServerFrame::Event(env(
-            4,
-            proposed_bash("c2", "\"cargo test\""),
-        )));
-        a.apply(ServerFrame::Event(env(
-            5,
-            backgrounded_finished("j2", "c2"),
-        )));
+        a.apply(jobs_frame(
+            "s1",
+            vec![
+                daemon_job("j1", "cargo build", true),
+                daemon_job("j2", "cargo test", true),
+            ],
+        ));
         a.key(Key::CtrlQ);
         assert!(a.jobs_pane);
-
-        // The cursor starts on the first row and the pane says which one it is on.
         assert!(
             a.jobs_lines(100).join("\n").contains("\u{25b8}"),
             "a cursor is drawn"
         );
         a.key(Key::Down);
         assert_eq!(a.jobs_sel, 1);
-
-        match a.key(Key::Enter) {
-            Some(Action::Slash { line }) => assert_eq!(line, "job j2"),
-            other => panic!("{other:?}"),
-        }
-        assert!(
-            !a.jobs_pane,
-            "the reply lands on the session log, so the pane gets out of its way"
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Slash {
+                line: "job j2".into()
+            }),
+            "enter reads the selected job, by the daemon's id"
         );
     }
 
@@ -15447,13 +15366,10 @@ mod tests {
             vec![brief("s", "parent", true)],
             Hub::new("s").snapshot(),
         ));
-        let settled = SessionEvent::JobSettled {
-            job: "j1".into(),
-            state: "exited 0".into(),
-            produced: 512,
-            elapsed_ms: 1_400,
-        };
-        a.apply(ServerFrame::Event(env(1, settled.clone())));
+        a.apply(jobs_frame(
+            "s",
+            vec![daemon_job("j1", "cargo build", false)],
+        ));
         assert_eq!(a.jobs.len(), 1);
         a.jobs_sel = 0;
 
@@ -15465,19 +15381,15 @@ mod tests {
         assert_eq!(a.session_id, "s2");
         assert!(a.jobs.is_empty(), "the other session's jobs came along");
         assert_eq!(a.jobs_sel, 0);
-        a.key(Key::CtrlQ);
+        // And the pane asks the new session's daemon rather than drawing a list
+        // it built for the old one.
+        assert_eq!(a.key(Key::CtrlQ), Some(Action::ListJobs));
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("none."), "{screen}");
         a.key(Key::Esc);
 
-        // Back, and the daemon replays the retained settlement that built the row.
-        a.apply(hello(
-            "s",
-            vec![brief("s", "parent", true)],
-            Hub::new("s").snapshot(),
-        ));
-        a.apply(ServerFrame::Event(env(1, settled)));
-        assert_eq!(a.jobs.len(), 1);
-        assert_eq!(a.jobs[0].job, "j1");
+        // A jobs frame for a session this head is not in is ignored.
+        a.apply(jobs_frame("s", vec![daemon_job("j9", "old", false)]));
+        assert!(a.jobs.is_empty(), "another session's table was folded in");
     }
 }

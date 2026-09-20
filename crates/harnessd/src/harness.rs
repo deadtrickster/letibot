@@ -2461,6 +2461,7 @@ impl<'a> Harness<'a> {
             local_window: None,
         };
         h.publish_settings();
+        h.publish_jobs();
         if h.resumed.is_some() {
             h.republish();
         }
@@ -2952,6 +2953,52 @@ impl<'a> Harness<'a> {
     /// what `/job` printed before this existed.
     fn worth_listing(j: &letibot_tools::exec::JobView) -> bool {
         j.background.is_some() || j.state.is_running()
+    }
+
+    /// **The jobs, as data, for any head that asks.**
+    ///
+    /// The same list `job_lines` prints, before it is prose. Every decision in it
+    /// is the daemon's: which jobs are worth listing (`worth_listing`), what the
+    /// command reads as (`one_line`), what the state word is. A head renders
+    /// these rows; it does not rebuild them out of the event stream, which is how
+    /// a job that outlived its turn used to lose its name and how each head came
+    /// to need its own copy of the rules. The operator, 2026-09-20: *"regarding
+    /// jobs, subagents, etc, i expect them to be handled by harnessd not the
+    /// heads"*.
+    pub fn job_entries(&self) -> Vec<letibot_sessionlog::protocol::JobEntry> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return Vec::new();
+        };
+        host.jobs()
+            .iter()
+            .filter(|j| Self::worth_listing(j))
+            .map(|j| letibot_sessionlog::protocol::JobEntry {
+                id: j.id.0.clone(),
+                command: Self::one_line(&j.command, 120),
+                how: j
+                    .background
+                    .as_ref()
+                    .map(|b| b.phrasing())
+                    .unwrap_or_default(),
+                state: j.state.word(),
+                running: j.state.is_running(),
+                produced: j.produced,
+                elapsed_ms: j
+                    .ran_for
+                    .unwrap_or(j.elapsed)
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            })
+            .collect()
+    }
+
+    /// Push the job table to the registry, where a head's `ListJobs` is answered
+    /// from. Called wherever the table can have changed, for the same reason
+    /// `publish_settings` is: a mailbox nobody refills is a stale answer that
+    /// looks like a current one.
+    pub fn publish_jobs(&self) {
+        self.session_registry
+            .set_jobs(&self.cfg.session_id, self.job_entries());
     }
 
     pub fn job_lines(&self) -> Vec<String> {
@@ -4171,6 +4218,7 @@ impl<'a> Harness<'a> {
                 if !ok.steering_applied.is_empty() {
                     continue;
                 }
+                self.publish_jobs();
                 return Ok(Reply {
                     text,
                     metrics,
@@ -4207,6 +4255,10 @@ impl<'a> Harness<'a> {
             self.session
                 .append_items(&self.engine, &results, &mut sink)?;
             self.reconcile(&mut sink, &results);
+            // A round can have started or ended a job; refill the mailbox now so a
+            // pane opened mid-turn answers with this round's table, not last
+            // round's. Cheap: the list is filtered before it is built.
+            self.publish_jobs();
             self.persist()?;
             // The calls of this round have run; if the model revised its plan,
             // the store and the heads hear about it now, at the round boundary —

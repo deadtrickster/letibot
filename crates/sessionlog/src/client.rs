@@ -196,6 +196,13 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// This session's background jobs, as the daemon's process table has them.
+    /// The head renders what comes back; it does not decide what is in it.
+    pub fn list_jobs(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::ListJobs)?;
+        Ok(())
+    }
+
     /// Ask the daemon to compact this session: one summary turn over the history
     /// as it stands, then the history is replaced by that summary through a
     /// transcript fork. Queued behind a running turn, like a prompt.
