@@ -1049,6 +1049,10 @@ pub struct App {
     attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
+    /// The last counted number of rows waiting for a body, and when it last
+    /// changed. See the stall check in `screen`.
+    bodies_last: usize,
+    bodies_moved_ms: u64,
     /// The high-water mark of rows waiting for a body, since it was last zero.
     ///
     /// The denominator of the fork line: a fork announces every row before any
@@ -1107,6 +1111,15 @@ fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
     let left = (w - taken) / 2;
     format!("{}{pad}", " ".repeat(left))
 }
+
+/// How long the fork line may sit at the same count before it stops claiming to
+/// be progress, in milliseconds.
+///
+/// A fork's bodies arrive in a burst — thousands in well under a second — so
+/// three seconds without movement is not slow, it is stopped. Short enough that a
+/// stuck bar is gone before it is annoying; long enough that a genuine pause
+/// between two bursts does not flicker it away.
+const FORK_STALLED: u64 = 3_000;
 
 /// **One line for a fork in flight**: the cat, the prefill bar, and a count.
 ///
@@ -1436,6 +1449,8 @@ impl App {
             attach_started_ms: 0,
             cursor: None,
             bodies_peak: 0,
+            bodies_last: 0,
+            bodies_moved_ms: 0,
         }
     }
 
@@ -5656,11 +5671,29 @@ impl App {
         // rows that no longer existed. An `Option` check per row, on the same
         // order of cost as `transcript_bytes`, which already walks them all.
         let bodies_pending = self.items.iter().filter(|i| i.item.is_none()).count();
+        // **A bar that has not moved is not progress.**
+        //
+        // A body that never arrives leaves the count stuck, and the line then sits
+        // under a conversation that has carried on — the operator, watching one
+        // read `0 of 2 rows` while the model worked: *"what is amazing - cat
+        // progress bar is still here yet conversation contnues"*. A progress
+        // indicator claims something is in flight, so one that is wrong about that
+        // is worse than the grey placeholders it replaced, which at least named
+        // the rows.
+        //
+        // So it is drawn only while it is MOVING. `bodies_moved_ms` is the last
+        // time the count changed; past `FORK_STALLED` the line goes and the rows
+        // are named instead, once, quietly.
+        if bodies_pending != self.bodies_last {
+            self.bodies_last = bodies_pending;
+            self.bodies_moved_ms = self.now_ms;
+        }
         if bodies_pending == 0 {
             self.bodies_peak = 0;
         } else {
             self.bodies_peak = self.bodies_peak.max(bodies_pending);
         }
+        let stalled = self.now_ms.saturating_sub(self.bodies_moved_ms) >= FORK_STALLED;
         // Read before the disjoint borrow below, because the fork line is drawn
         // from the tail and `self` is not whole by then.
         let (bodies_peak, now_ms) = (self.bodies_peak, self.now_ms);
@@ -5809,12 +5842,24 @@ impl App {
         // rows are landing, and it disappears by itself — the last body to arrive
         // takes the count to zero.
         if bodies_pending > 0 && bodies_peak > 0 {
-            segs.push(Seg::Owned(rebasing_line(
-                bodies_pending,
-                bodies_peak,
-                now_ms,
-                &cfg,
-            )));
+            segs.push(Seg::Owned(if stalled {
+                // The diagnostic the per-row placeholders used to carry, once
+                // instead of once per row. A body that has not come in three
+                // seconds is not coming, and the operator should be told that
+                // rather than shown a bar pretending otherwise.
+                vec![
+                    String::new(),
+                    cfg.palette().paint(
+                        Role::Faint,
+                        &format!(
+                            "  {bodies_pending} row(s) announced and never filled in — \
+                             the daemon said they exist and did not send them"
+                        ),
+                    ),
+                ]
+            } else {
+                rebasing_line(bodies_pending, bodies_peak, now_ms, &cfg)
+            }));
         }
 
         // **The wait, as a walking cat at the centre of the conversation.**
@@ -13699,6 +13744,59 @@ mod tests {
             .find(|(_, n)| matches!(n, Note::Warned(w) if w.detail == "THE-WARNING"))
             .expect("the note");
         assert_eq!(*at, 0, "the snapshot's anchor is kept, not the replay's");
+    }
+
+    /// **A bar that stops moving stops claiming to be progress.**
+    ///
+    /// A body that never arrives leaves the count stuck, and the line then sits
+    /// under a conversation that has carried on: the operator, watching one read
+    /// `0 of 2 rows` while the model worked — *"what is amazing - cat progress bar
+    /// is still here yet conversation contnues"*. A progress indicator asserts
+    /// that something is in flight, so one that is wrong about that is worse than
+    /// the per-row placeholders it replaced, which at least named the rows.
+    ///
+    /// Both halves are asserted, and the first is the premise: while the count is
+    /// MOVING the bar is drawn, so the stall check cannot pass by drawing nothing
+    /// ever.
+    #[test]
+    fn the_fork_line_gives_up_when_the_bodies_stop_arriving() {
+        let mut a = app();
+        a.clock(0);
+        for i in 0..4 {
+            a.apply(ServerFrame::Event(env(
+                i + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+        }
+        let moving = a.screen(80, 20).join("\n");
+        assert!(
+            moving.contains("carrying the conversation"),
+            "the premise: a fresh carry draws the bar: {moving}"
+        );
+
+        // One body lands, so the count moved; the clock moves with it.
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(
+            100,
+            testing::content("s.0", "a row"),
+        )));
+        let still = a.screen(80, 20).join("\n");
+        assert!(
+            still.contains("1 of 4 rows"),
+            "it is still progress while it progresses: {still}"
+        );
+
+        // And now nothing arrives for longer than the patience.
+        a.clock(1_000 + FORK_STALLED + 1);
+        let gone = a.screen(80, 20).join("\n");
+        assert!(
+            !gone.contains("carrying the conversation"),
+            "a stuck bar must go: {gone}"
+        );
+        assert!(
+            gone.contains("3 row(s) announced and never filled in"),
+            "and say what is actually wrong, once: {gone}"
+        );
     }
 
     /// **A fork is one line, however many rows it carries.**
