@@ -684,9 +684,14 @@ fn block_of(node: &Node, src: &str, spans: &[Span]) -> Option<Block> {
         "paragraph" => Some(Block::Paragraph {
             lines: lines_of_node(node, src, spans),
         }),
-        "block_quote" => Some(Block::Quote {
-            lines: lines_of_node(node, src, spans),
-        }),
+        "block_quote" => {
+            let mut lines = Vec::new();
+            subtree_lines(node, src, spans, &mut lines);
+            if lines.is_empty() {
+                lines.push(Vec::new());
+            }
+            Some(Block::Quote { lines })
+        }
         "fenced_code_block" | "indented_code_block" => Some(code_block(node, src)),
         "list" => Some(list_block(node, src, spans)),
         "pipe_table" => Some(table_block(node, src, spans)),
@@ -739,13 +744,79 @@ fn content_ranges(node: &Node) -> Vec<(usize, usize)> {
 /// ends with the newline that starts the second's line. Appending `lines_of` results
 /// would put an empty line there.
 fn lines_of_node(node: &Node, src: &str, spans: &[Span]) -> Vec<Vec<Run>> {
-    lines_of_ranges(src, spans, &content_ranges(node))
+    let mut out = Vec::new();
+    lines_of_ranges(src, spans, &content_ranges(node), &mut out);
+    if out.is_empty() {
+        out.push(Vec::new());
+    }
+    out
 }
 
-/// The lines of a run of ranges, cut at `\n`.
-fn lines_of_ranges(src: &str, spans: &[Span], ranges: &[(usize, usize)]) -> Vec<Vec<Run>> {
-    let mut out: Vec<Vec<Run>> = Vec::new();
-    let mut cur: Vec<Run> = Vec::new();
+/// A block's reader-facing lines, whatever kind of blocks it holds.
+///
+/// [`lines_of_node`] only sees inline content, which is right for a paragraph and
+/// wrong for the containers the grammar lets hold *blocks*: a `block_quote` or a
+/// `list_item` can contain a `fenced_code_block`, a `pipe_table`, a nested list. Asking
+/// one of those for its inline content gets nothing, and the whole subtree — the code
+/// the model wrote — is dropped. Found by rendering `> ```rust …``` `, which came out as
+/// an empty quote.
+///
+/// So the flat model (`Block::Quote` holds run lines, `List::items` holds run lists —
+/// the renderer has one indent level, see §2) is filled by walking the subtree for
+/// everything a reader would see. The cost is that a quoted fence is quote prose rather
+/// than a coloured code box: the model cannot say "this line is code" inside a quote,
+/// and showing the ``` markers instead would be worse.
+fn subtree_lines(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>) {
+    for c in &node.children {
+        match c.kind.as_str() {
+            // Structure and link targets: not text.
+            "block_quote_marker" | "block_continuation" | "list_marker_minus"
+            | "list_marker_plus" | "list_marker_star" | "list_marker_dot"
+            | "list_marker_parenthesis" | "task_list_marker_checked"
+            | "task_list_marker_unchecked" | "fenced_code_block_delimiter" | "info_string"
+            | "link_destination" | "link_title" | "link_label" => {}
+            // Text, with inline styling.
+            "inline" => lines_of_ranges(src, spans, &inline_ranges(c), out),
+            // Raw code: its content, continuation markers cut, as plain lines.
+            "code_fence_content" => {
+                for line in text_without_continuations(c, src).lines() {
+                    out.push(vec![run(line.to_string(), InlineStyle::Plain)]);
+                }
+            }
+            // A nested table: one line per row, cells joined. The flat model has no
+            // columns to give it here.
+            "pipe_table" => {
+                let rows = c
+                    .children
+                    .iter()
+                    .filter(|g| g.kind == "pipe_table_header" || g.kind == "pipe_table_row");
+                for row in rows {
+                    let mut line: Vec<Run> = Vec::new();
+                    for cell in row.children.iter().filter(|g| g.kind == "pipe_table_cell") {
+                        if !line.is_empty() {
+                            push_text(&mut line, " ", InlineStyle::Plain);
+                        }
+                        let (a, b) = trim_range(src, cell.start, cell.end);
+                        push_text(&mut line, &src[a..b], InlineStyle::Plain);
+                    }
+                    if !line.is_empty() {
+                        out.push(line);
+                    }
+                }
+            }
+            _ => subtree_lines(c, src, spans, out),
+        }
+    }
+}
+
+/// The lines of a run of ranges, cut at `\n`, appended to `out`.
+fn lines_of_ranges(
+    src: &str,
+    spans: &[Span],
+    ranges: &[(usize, usize)],
+    out: &mut Vec<Vec<Run>>,
+) {
+    let mut cur: Vec<Run> = out.pop().unwrap_or_default();
     for &(a, b) in ranges {
         for r in runs_of(src, spans, a, b) {
             for (i, piece) in r.text.split('\n').enumerate() {
@@ -758,40 +829,105 @@ fn lines_of_ranges(src: &str, spans: &[Span], ranges: &[(usize, usize)]) -> Vec<
             }
         }
     }
-    if !cur.is_empty() || out.is_empty() {
-        out.push(cur);
+    out.push(cur);
+}
+
+/// One list item's text from its body nodes, folded into the single run list the model
+/// has room for.
+///
+/// `subtree_lines_one` per node rather than one call over the item: the item's children
+/// have already been filtered, so a nested list is not in here, but the fallback that
+/// catches a leaf without children has to apply to each node rather than to the item as
+/// a whole.
+fn item_runs(body: &[Node], src: &str, spans: &[Span]) -> Vec<Run> {
+    let mut lines = Vec::new();
+    for n in body {
+        subtree_lines_one(n, src, spans, &mut lines);
+    }
+    let mut out: Vec<Run> = Vec::new();
+    for (i, line) in lines.into_iter().enumerate() {
+        if i > 0 {
+            push_text(&mut out, " ", InlineStyle::Plain);
+        }
+        for r in line {
+            push_text(&mut out, &r.text, r.style);
+        }
     }
     out
 }
 
+/// [`subtree_lines`] for a single detached node: the node's own contribution, then
+/// each of its children's.
+fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>) {
+    let before = out.len();
+    subtree_lines(node, src, spans, out);
+    // A node with no children of its own contributes its whole text — the case a
+    // detached leaf (a `paragraph` stripped of its `inline`) falls into.
+    if out.len() == before {
+        let text = text_without_continuations(node, src);
+        for line in text.trim_end_matches('\n').lines() {
+            out.push(vec![run(line.to_string(), InlineStyle::Plain)]);
+        }
+    }
+}
+
 fn code_block(node: &Node, src: &str) -> Block {
     let mut lang = String::new();
-    let mut body: Option<&Node> = None;
     let mut fences = 0;
     for c in &node.children {
         match c.kind.as_str() {
             "info_string" => lang = src[c.start..c.end].trim().to_string(),
-            "code_fence_content" => body = Some(c),
             "fenced_code_block_delimiter" => fences += 1,
             _ => {}
         }
     }
-    let lines = body
-        .map(|b| {
-            // The content node's range stops before the closing fence, but its text
-            // ends with the newline that opened that line.
-            src[b.start..b.end]
-                .trim_end_matches('\n')
-                .lines()
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
     // `tree-sitter-md` closes a fence at end of input, the way CommonMark does, so
     // the *missing* closing delimiter is not an error node — it is simply absent.
     // Counting delimiters is what tells the renderer to say "(still writing…)".
     let closed = node.kind == "indented_code_block" || fences >= 2;
-    Block::Code { lang, lines, closed }
+    Block::Code {
+        lang,
+        lines: fence_content_lines(node, src),
+        closed,
+    }
+}
+
+/// The code lines of a fence, with the `block_continuation` markers cut out.
+///
+/// The content node carries them: a fence inside a block quote has content
+/// `"let a = 1;\n> "` — the `> ` that opens the closing line is a child of the
+/// *content*, not of the quote. Left in, the code block's last line would be a bare
+/// `> `.
+fn fence_content_lines(node: &Node, src: &str) -> Vec<String> {
+    let Some(body) = node.children.iter().find(|c| c.kind == "code_fence_content") else {
+        return Vec::new();
+    };
+    // The content's range stops before the closing fence, but its text ends with the
+    // newline that opened that line.
+    text_without_continuations(body, src)
+        .trim_end_matches('\n')
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// A node's text with its `block_continuation` children cut out.
+fn text_without_continuations(node: &Node, src: &str) -> String {
+    let mut out = String::new();
+    let mut cursor = node.start;
+    for c in &node.children {
+        if c.kind != "block_continuation" {
+            continue;
+        }
+        if cursor < c.start {
+            out.push_str(&src[cursor..c.start]);
+        }
+        cursor = cursor.max(c.end);
+    }
+    if cursor < node.end {
+        out.push_str(&src[cursor..node.end]);
+    }
+    out
 }
 
 fn list_block(node: &Node, src: &str, spans: &[Span]) -> Block {
@@ -827,15 +963,22 @@ fn collect_items(
         match c.kind.as_str() {
             "list_item" => {
                 let marker = c.children.iter().find(|g| g.kind.starts_with("list_marker"));
-                let body = marker.map(|m| m.end).unwrap_or(c.start);
-                // Body stops where a nested list begins; that list's own items follow
-                // as siblings.
-                let end = c
+                // Everything in the item except a nested list, which follows as its own
+                // items. `subtree_runs` rather than a byte range: an item can hold a
+                // fenced block, and a byte sweep of the range turned the fence markers
+                // into item text.
+                let rest: Vec<Node> = c
                     .children
                     .iter()
-                    .find(|g| g.kind == "list")
-                    .map(|g| g.start)
-                    .unwrap_or(c.end);
+                    .filter(|g| {
+                        g.kind != "list"
+                            && g.kind != "block_continuation"
+                            && !g.kind.starts_with("list_marker")
+                            && g.kind != "task_list_marker_checked"
+                            && g.kind != "task_list_marker_unchecked"
+                    })
+                    .cloned()
+                    .collect();
                 if *first {
                     *first = false;
                     if let Some(m) = marker {
@@ -854,8 +997,9 @@ fn collect_items(
                         }
                     }
                 }
-                if end > body {
-                    items.push(single_line(src, spans, body, end));
+                let item = item_runs(&rest, src, spans);
+                if !item.is_empty() {
+                    items.push(item);
                 }
                 for g in &c.children {
                     if g.kind == "list" {
@@ -1601,5 +1745,128 @@ tail
         let first = md.stable()[0].title();
         assert_eq!(first, "a paragraph long enough to matter");
         assert!(!md.stable()[0].title().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod nesting {
+    use super::*;
+
+    /// Assert that nothing the model wrote is missing from the projection.
+    ///
+    /// The failure this guards is silent: a block the projection cannot place is simply
+    /// not there, and an empty quote renders as an empty quote — plausible, and a lie
+    /// about what the model said. So the assertion is on the *words*, not on the shape.
+    fn keeps(src: &str, words: &[&str]) {
+        let blocks = lex(src);
+        let mut got = String::new();
+        fn text(blocks: &[Block], out: &mut String) {
+            for b in blocks {
+                match b {
+                    Block::Code { lines, .. } => {
+                        for l in lines {
+                            out.push_str(l);
+                            out.push(' ');
+                        }
+                    }
+                    _ => {
+                        out.push_str(&b.title());
+                        out.push(' ');
+                    }
+                }
+                if let Block::List { items, .. } = b {
+                    for i in items {
+                        out.push_str(&runs_text(i));
+                        out.push(' ');
+                    }
+                }
+                if let Block::Quote { lines } = b {
+                    for l in lines {
+                        out.push_str(&runs_text(l));
+                        out.push(' ');
+                    }
+                }
+                if let Block::Paragraph { lines } = b {
+                    for l in lines {
+                        out.push_str(&runs_text(l));
+                        out.push(' ');
+                    }
+                }
+            }
+        }
+        text(&blocks, &mut got);
+        for w in words {
+            assert!(got.contains(w), "{w:?} was dropped: {got:?} from {blocks:#?}");
+        }
+    }
+
+    /// A fenced block inside a block quote. It rendered as an *empty* quote.
+    ///
+    /// `Block::Quote` holds run lines and `content_ranges` looks for `inline` nodes —
+    /// and a quote holding only a fence has none, so every byte of the model's code
+    /// went on the floor. The projection now walks the subtree for whatever a reader
+    /// would see rather than asking for inline content.
+    #[test]
+    fn a_fence_inside_a_quote_is_not_dropped() {
+        keeps("> ```rust\n> let a = 1;\n> ```\n", &["let a = 1;"]);
+        let b = lex("> ```rust\n> let a = 1;\n> ```\n");
+        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert_eq!(runs_text(&lines[0]), "let a = 1;");
+        // The continuation `> ` is a child of the *content* node, so it must not
+        // reach the code's last line either.
+        assert!(!runs_text(&lines[0]).contains('>'), "{lines:#?}");
+    }
+
+    /// A fenced block inside a list item. Its markers became item text.
+    #[test]
+    fn a_fence_inside_a_list_item_is_not_markers() {
+        let src = "- item\n\n  ```rust\n  let a = 1;\n  ```\n";
+        keeps(src, &["item", "let a = 1;"]);
+        let b = lex(src);
+        let Block::List { items, .. } = &b[0] else { panic!("{b:#?}") };
+        let item = runs_text(&items[0]);
+        assert!(!item.contains("```"), "the fence markers reached the item: {item:?}");
+        assert!(!item.contains("rust"), "the info string reached the item: {item:?}");
+        assert_eq!(item.split_whitespace().collect::<Vec<_>>().join(" "), "item let a = 1;");
+    }
+
+    /// A table inside a quote or an item: rows survive as lines, columns do not.
+    #[test]
+    fn a_table_inside_a_quote_keeps_its_cells() {
+        let src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        keeps(src, &["a b", "1 2"]);
+        let b = lex(src);
+        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        let texts: Vec<String> = lines.iter().map(|l| runs_text(l)).collect();
+        assert!(texts.iter().any(|t| t.contains("1 2")), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains('|')), "{texts:?}");
+    }
+
+    /// A non-markdown fence language is still a code block; the renderer falls back to
+    /// plain for one `StreamingCode` does not know, which is not this module's business.
+    #[test]
+    fn a_fence_in_an_unknown_language_is_still_code() {
+        let b = lex("```brainfuck\n+++\n```\n");
+        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lang, "brainfuck");
+        assert_eq!(lines, &["+++"]);
+        assert!(closed);
+    }
+
+    /// A quote with prose and a fence keeps both, in order.
+    #[test]
+    fn a_quote_with_prose_and_a_fence_keeps_both() {
+        let src = "> There is `redacted` here:\n>\n> ```rust\n> let a = 1;\n> ```\n";
+        keeps(src, &["There is", "redacted", "let a = 1;"]);
+        let b = lex(src);
+        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        let texts: Vec<String> = lines.iter().map(|l| runs_text(l)).collect();
+        assert_eq!(texts[0], "There is redacted here:");
+        assert!(texts.iter().any(|t| t == "let a = 1;"), "{texts:?}");
+        assert!(
+            texts[0] != "let a = 1;" && texts.iter().filter(|t| *t == "let a = 1;").count() == 1,
+            "{texts:?}"
+        );
     }
 }

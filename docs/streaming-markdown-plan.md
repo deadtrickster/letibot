@@ -222,17 +222,44 @@ Exit: `cargo test -p letibot-tui` green at 209, `cargo check --workspace --all-t
 with no new warnings, `cargo build --release` clean. The operator's screen showing
 `**bold**` as bold on a live answer is the one thing a test cannot assert.
 
-### Phase 3 — polish (half a day)
+### Phase 3 — polish — **DONE, and it found a content-loss bug**
 
-1. Edge cases found on screen, fixed where they belong: a wrong node-kind mapping is a
-   letibot fix; a grammar misparse is upstream (`tree-sitter-md`) and reported there, not
-   papered over in either repo. Expected: tables inside lists, a fence whose language
-   `StreamingCode` does not know (falls back to plain, as today), a window cut in the
-   middle of a container the guards did not catch (this one is a *letibot* bug and the
-   guard is the fix).
-2. Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
-   fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +
-   `captures()` for any fence language), and it would want the same window discipline.
+Tested by probing the shapes the plan listed: a fence in an unknown language (fine — the
+renderer falls back to plain, as before), a table after a list (fine), an indented code
+block (fine), and then two that were not.
+
+**A block inside a flat container was being dropped or mangled.** `Block::Quote` holds run
+lines and `List::items` holds run lists — the renderer has one indent level, so nesting is
+flattened by design — but the projection filled them by asking for *inline* content, and a
+`block_quote` or `list_item` can hold a `fenced_code_block`, a `pipe_table`, a nested list.
+Neither of those has an `inline` node, so:
+
+```text
+> ```rust⏎> let a = 1;⏎> ```     →  Quote { lines: [[]] }        the code was gone entirely
+- item⏎⏎  ```rust⏎…              →  item ```rust let a = 1; ```   the markers were item text
+```
+
+The first is the worse bug of the two and the harder to notice: an empty quote renders as
+an empty quote, which looks like a model that said nothing. It is the same class as a card
+naming the wrong file — the head misquoting the model.
+
+Fixed by `subtree_lines`: where the model is flat, walk the subtree for everything a reader
+would see (inline text with its styles, a fence's content with its continuation markers
+cut, a nested table's rows as joined cells) instead of asking for inline content. Also
+`code_fence_content` carries `block_continuation` children — the `> ` that opens a quoted
+fence's closing line is a child of the *content*, not of the quote — so a fence's lines are
+extracted with those cut out too.
+
+The cost of flattening is that a quoted fence is quote prose rather than a coloured code
+box. That is the model's limit, not this fix's: `Block::Quote` cannot say "this line is
+code", and showing the ``` markers instead would be worse. Six tests in `markdown.rs`'s
+`nesting` module assert the *words survive* rather than the shape, because the failure mode
+is silent.
+
+Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
+fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +
+`captures()` for any fence language), and it would want the same window discipline. It is
+also what would let a quoted fence render as code.
 
 ## 4. What does not change
 
