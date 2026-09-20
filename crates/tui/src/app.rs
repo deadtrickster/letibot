@@ -977,9 +977,17 @@ pub struct App {
     /// session. A head that draws before it has that answer must not claim anything
     /// about the session — the empty-transcript banner says *"this session has said
     /// nothing yet"*, which is a different and false thing from *"I have not been
-    /// told yet"*. So this suppresses the banner and leaves the body blank, which is
-    /// the honest frame.
+    /// told yet"*. So this suppresses the banner, and the body becomes the walking
+    /// cat (see [`cat_frame`]), which is what says "working on it" without saying
+    /// anything about the session.
     attaching: bool,
+    /// When the attach began, on the clock `App::clock` is given.
+    ///
+    /// The cat's frame comes from the **elapsed** time rather than from a counter,
+    /// so `screen()` is a pure function of the clock — which is what lets the
+    /// pre-attach wait be driven from anywhere (a loop, a test, a future
+    /// background-thread handshake) without the renderer knowing which.
+    attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
 }
@@ -1006,6 +1014,68 @@ impl Seg<'_> {
             Seg::Owned(v) => &v[i],
         }
     }
+}
+
+/// One row, centred horizontally in `w` columns.
+///
+/// Escape-aware, because the thing being centred may already be painted: `width::width`
+/// skips ANSI sequences, so a coloured cat and a plain one land in the same column.
+/// A plain `chars().count()` is what puts a painted string two columns left of centre,
+/// and the whole point of centring is that the eye finds it in the same place from
+/// frame to frame as the string changes length — which the walking cat does.
+fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
+    let pad = cfg.palette().paint(Role::Faint, &text.to_string());
+    let taken = width::width(&pad);
+    if taken >= w {
+        return pad;
+    }
+    let left = (w - taken) / 2;
+    format!("{}{pad}", " ".repeat(left))
+}
+
+/// The frame of the walking cat, from **elapsed milliseconds**.
+///
+/// Same rule as `letibot_ui::progress::spinner`, and for the same reason: a frame
+/// chosen from a counter is a fact about the render loop rather than about the wait,
+/// and a counter here would also break the property this whole path exists for — the
+/// `screen()` call has to be the same for the same elapsed time, or the frame is not
+/// a function of the clock and the pre-attach draw cannot be driven at all.
+const CAT_FRAMES: [&str; 8] = [
+    // A cat walking right, one leg changing per frame.
+    "(=^.^=)",
+    "(=^.-.=)",
+    "(=^o^=)",
+    "(=^-.-=)",
+    "(=^.^=)~",
+    "(=^.-.=)~",
+    "(=^o^=)~",
+    "(=^-.-=)~",
+];
+
+/// The width of the **slot** the cat walks in: the widest frame.
+///
+/// The frames are not all the same width (`(=^.^=)` against `(=^.^=)~`), and a 7-wide
+/// and an 8-wide thing cannot both sit exactly centred. So the *slot* is what is
+/// centred and the cat sits at its left edge, which makes the cat a fixed thing whose
+/// expression changes rather than something that slides sideways and back as it
+/// walks. Measured rather than written down, so adding a frame cannot silently
+/// widen the slot past what the arithmetic assumes.
+const CAT_SLOT: usize = {
+    let mut w = 0;
+    let mut i = 0;
+    while i < CAT_FRAMES.len() {
+        let n = CAT_FRAMES[i].len();
+        if n > w {
+            w = n;
+        }
+        i += 1;
+    }
+    w
+};
+
+/// The cat's frame at `elapsed_ms`.
+fn cat_frame(elapsed_ms: u64) -> &'static str {
+    CAT_FRAMES[((elapsed_ms / 120) % CAT_FRAMES.len() as u64) as usize]
 }
 
 /// Lines `[start, end)` of the concatenation, and only those.
@@ -1172,6 +1242,7 @@ impl App {
             last_event_at: 0,
             body_len: 0,
             attaching: false,
+            attach_started_ms: 0,
             cursor: None,
         }
     }
@@ -1202,7 +1273,14 @@ impl App {
     /// Called once, by a head that has taken the screen and is about to attach. See
     /// [`Self::attaching`] for what it suppresses and why.
     pub fn begin_attach(&mut self) {
+        self.begin_attach_at(self.now_ms);
+    }
+
+    /// The same, with the clock stated rather than read, for a caller that knows it —
+    /// and for a test, which has no clock.
+    pub fn begin_attach_at(&mut self, now_ms: u64) {
         self.attaching = true;
+        self.attach_started_ms = now_ms;
     }
 
     pub fn session_id(&self) -> &str {
@@ -5126,13 +5204,60 @@ impl App {
             segs.push(Seg::Owned(owned));
         }
 
+        // **The wait, as a walking cat at the centre of the conversation.**
+        //
+        // This is the frame the head draws while it is still asking the daemon —
+        // `HeadClient::attach` blocks on a `Hello` that carries the whole snapshot, so
+        // on a big session there is a real wait with nothing to show. A spinner is
+        // the usual answer and it is the right one *here*: the work is client-side and
+        // the head genuinely cannot say more, because it has been told nothing.
+        //
+        // It is drawn rather than the empty-transcript banner because that banner is
+        // a **claim about the session** ("this session has said nothing yet"), and a
+        // head that has not been answered is in no position to make one. See
+        // `attaching`.
+        //
+        // Dead centre: horizontally by padding to the width, vertically by the same
+        // arithmetic `centred` uses for the panes, so it sits in the middle of
+        // whatever room the walk left rather than two rows under the header.
+        let waiting;
+        if self.attaching {
+            let elapsed = self.now_ms.saturating_sub(self.attach_started_ms);
+            let cat = cat_frame(elapsed);
+            let width = cfg.width;
+            // **Fixed-width cat, centred as a block.** `(^.^=)` and `(^.^=)~` are
+            // different widths, and centring each row on its own makes the cat slide
+            // left and right as it changes expression — which reads as a jitter rather
+            // than a walk. Each frame is padded to the widest one, so the cat is a
+            // fixed thing whose expression changes.
+            let cat_padded = format!("{cat:<CAT_SLOT$}");
+            let mut rows: Vec<String> = vec![String::new(); room / 2];
+            // The cat **alone** on its row, so "centred" is about the cat and nothing
+            // else — a `… attach` suffix beside it makes the row's centre a statement
+            // about the suffix's length too, which is not what a waiting indicator is
+            // for.
+            rows.push(centred_row(&cfg, &cat_padded, width));
+            rows.push(String::new());
+            // A pawprint trail, so a still frame still reads as *going somewhere*.
+            rows.push(centred_row(&cfg, &"· · · · ›".to_string(), width));
+            rows.push(String::new());
+            rows.push(centred_row(
+                &cfg,
+                "asking the daemon for this session",
+                width,
+            ));
+            rows.push(String::new());
+            rows.push(centred_row(&cfg, &progress::duration(elapsed), width));
+            waiting = rows;
+            segs.push(Seg::Borrowed(&waiting));
+        }
+
         // Nothing has happened yet. An empty screen with a status line under it is
         // indistinguishable from a head that attached to the wrong socket.
         //
-        // **Unless the head has not been told yet.** See `attaching`: the daemon's
-        // `Hello` carries the snapshot, so a head that draws during the round trip
-        // knows nothing about the session, and this banner would assert that the
-        // session is empty. A blank body is the truthful frame.
+        // **Unless the head has not been told yet** — that case has the cat above,
+        // and this banner would assert that the session is empty when the truth is
+        // that nobody has reported yet.
         let opening;
         if segs.iter().all(|s| s.len() == 0) && !self.attaching {
             opening = vec![
@@ -11600,6 +11725,88 @@ mod tests {
     /// The bound is deliberately loose (`4n`): a row is legitimately re-rendered
     /// when its own round changes under it, and pinning this to the exact number
     /// would make it a test of the current round shape rather than of the rule.
+    /// The waiting frame, as the operator sees it. Ignored; `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn show_the_attach_frame() {
+        let mut a = app();
+        a.begin_attach_at(0);
+        for t in [0u64, 120, 240, 360] {
+            a.clock(t);
+            eprintln!("--- t = {t} ms");
+            for (i, l) in a.screen(60, 20).iter().enumerate() {
+                if !l.trim().is_empty() {
+                    eprintln!("{i:>2} |{l}|");
+                }
+            }
+        }
+    }
+
+    /// **The waiting frame: a cat dead centre, walking in place.**
+    ///
+    /// Four properties, each of which an obvious implementation gets wrong:
+    ///
+    /// - the cat is **horizontally centred**, measured on the cat's own row, so
+    ///   "centred" is a statement about the cat rather than about whatever else is on
+    ///   the line;
+    /// - it does not **slide**: the frames are different widths, so each is padded to
+    ///   the widest before centring — otherwise the cat jitters sideways as it changes
+    ///   expression, which reads as a drawing bug rather than a walk;
+    /// - it **moves**, from the clock, so the frame is a function of elapsed time and
+    ///   not of a render-loop counter;
+    /// - it is **not at the top** — the middle of the conversation, not the row under
+    ///   the header.
+    #[test]
+    fn the_waiting_frame_is_a_centred_cat_that_walks_in_place() {
+        let mut a = app();
+        a.begin_attach_at(0);
+        a.clock(0);
+        let cat_row = |a: &mut App, cols: usize| -> (usize, String) {
+            let f = a.screen(cols, 24);
+            f.iter()
+                .position(|l| l.contains("(=^"))
+                .map(|i| (i, f[i].clone()))
+                .expect("the cat is on the screen")
+        };
+
+        let (row, first) = cat_row(&mut a, 80);
+        let cat_at = first.find("(=^").expect("the cat");
+        // The **slot**, not the cat: see `CAT_SLOT`. A 7-wide and an 8-wide frame
+        // cannot both be exactly centred, and the choice made here is that the slot is
+        // centred and the cat sits at its left edge.
+        let left = width::width(&first[..cat_at]);
+        let right = 80usize.saturating_sub(left + CAT_SLOT);
+        assert!(
+            left.abs_diff(right) <= 2,
+            "the cat's slot is not centred: {left} left, {right} right in {first:?}"
+        );
+        // Not pinned to the top of the conversation.
+        assert!(row >= 4, "the cat is on row {row}, at the top of the frame");
+
+        // It walks, from the clock.
+        a.clock(120);
+        let (_, later) = cat_row(&mut a, 80);
+        assert_ne!(first.trim(), later.trim(), "the cat did not move at 120 ms");
+
+        // And it walks **in place**: the same left margin at every frame.
+        for t in [0u64, 120, 240, 360, 480, 600, 720, 840] {
+            a.clock(t);
+            let (_, r) = cat_row(&mut a, 80);
+            let at = r.find("(=^").expect("the cat");
+            assert_eq!(
+                at, cat_at,
+                "the cat slid across at {t} ms: {r:?} against the first frame"
+            );
+        }
+
+        // Narrow screens and tiny heights must not panic or lose the chrome.
+        for (w, h) in [(1usize, 6usize), (8, 6), (20, 8), (200, 60)] {
+            a.clock(0);
+            let f = a.screen(w, h);
+            assert_eq!(f.len(), h, "{w}x{h}");
+        }
+    }
+
     /// **The frame drawn before the daemon has answered claims nothing.**
     ///
     /// A head takes the screen and draws before `HeadClient::attach` returns, because

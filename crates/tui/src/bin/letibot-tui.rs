@@ -529,14 +529,18 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     } else {
         Terminal::enter().ok()
     };
-    if let Some(t) = &term {
-        app.begin_attach();
-        let (w, h) = t.size();
-        let frame = app.screen(w, h);
-        t.draw_with_cursor(&frame, app.cursor());
-    }
-
-    let (mut client, hello, reader) = HeadClient::attach(
+    // **The handshake goes to a thread, and the cat walks while it waits.**
+    //
+    // `HeadClient::attach` blocks on a `Hello` that carries the whole snapshot, so on
+    // a big session this is a real wait. Doing it in the foreground is what made the
+    // whole attach invisible until it was over; on a thread, the screen is up
+    // immediately and the wait is *shown*.
+    //
+    // The Attach is sent here rather than on the thread, so a refused attach — the
+    // protocol-skew case the launcher refuses to route around — is known before
+    // anything is drawn, and a head that cannot attach never claims the screen. A
+    // *socket* error is still only discoverable on the connect, so this reports one.
+    let (mut client, mut reader) = HeadClient::start_attach(
         &args.socket,
         &args.session,
         args.since,
@@ -545,7 +549,63 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         Caps::default(),
     )?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let pump_thread = std::thread::spawn(move || pump(reader, tx));
+    let hello_tx = tx.clone();
+    let pump_thread = std::thread::spawn(move || {
+        // The first frame is the `Hello`; hand it over and then keep pumping, so the
+        // channel's first message is the answer the caller is waiting for and the
+        // rest are the ordinary stream.
+        match reader.read::<ServerFrame>() {
+            Ok(h) => {
+                let bye = matches!(h, ServerFrame::Bye { .. });
+                if hello_tx.send(h).is_err() || bye {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+        pump(reader, hello_tx);
+    });
+
+    if let Some(t) = &term {
+        app.begin_attach_at(now_ms());
+        let (w, h) = t.size();
+        let frame = app.screen(w, h);
+        t.draw_with_cursor(&frame, app.cursor());
+    }
+
+    // Wait for the `Hello`. **With a screen, draw the cat as the clock moves**; without
+    // one — the `--no-tty` path — block properly rather than sleeping in 120 ms steps
+    // for a frame nobody will see.
+    let hello: Option<ServerFrame> = match &term {
+        None => rx.recv().ok(),
+        Some(t) => {
+            let mut got = None;
+            loop {
+                match rx.recv_timeout(Duration::from_millis(120)) {
+                    Ok(f) => {
+                        got = Some(f);
+                        break;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        app.clock(now_ms());
+                        let (w, h) = t.size();
+                        let frame = app.screen(w, h);
+                        t.draw_with_cursor(&frame, app.cursor());
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            got
+        }
+    };
+    let Some(hello) = hello else {
+        return Err("the daemon closed the connection before answering".into());
+    };
+    // A refusal arrives as a `Bye`, exactly as `HeadClient::attach` treats it.
+    if let ServerFrame::Bye { reason } = &hello {
+        return Err(ClientError::Refused(reason.clone()).into());
+    }
+    client.seated_by(&hello);
 
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for

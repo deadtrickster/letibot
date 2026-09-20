@@ -105,6 +105,64 @@ impl HeadClient {
         }
     }
 
+    /// Connect and ATTACH **without waiting for the `Hello`**.
+    ///
+    /// [`Self::attach`] blocks on the answer, and that answer **carries the whole
+    /// snapshot** — so on a session of thousands of rows a head spends a real wait
+    /// with nothing on the screen and nothing to say, which is what the walking cat
+    /// exists for. This is the same handshake with the blocking part left to the
+    /// caller: it connects, sends `Attach`, and hands back the reader so the caller
+    /// can drive it (a thread, or its own loop).
+    ///
+    /// The `Hello` arrives on the returned reader like any other frame, so a caller
+    /// that wants the blocking form back writes `reader.read()` — which is all
+    /// [`Self::attach`] does after this.
+    pub fn start_attach(
+        path: impl AsRef<Path>,
+        session_id: &str,
+        since_seq: u64,
+        kind: &str,
+        identity: &str,
+        caps: Caps,
+    ) -> Result<(HeadClient, FrameReader<UnixStream>), ClientError> {
+        let stream = UnixStream::connect(path.as_ref())?;
+        let mut reader = FrameReader::new(stream.try_clone()?);
+        let mut writer = FrameWriter::new(stream);
+        writer.write(&ClientFrame::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: session_id.to_string(),
+            since_seq,
+            kind: kind.to_string(),
+            identity: identity.to_string(),
+            caps,
+        })?;
+        Ok((
+            HeadClient {
+                writer,
+                // The daemon names the head in the `Hello`; until it arrives this
+                // connection has no name, and `seated` is how it learns one.
+                head_id: String::new(),
+                next_request: 0,
+                identity: identity.to_string(),
+            },
+            reader,
+        ))
+    }
+
+    /// Take the head id from a `Hello` this client has read off its own reader.
+    ///
+    /// The pair to [`Self::start_attach`]: that sends the `Attach` and returns, and
+    /// whichever loop reads the `Hello` has to say the name back or every later
+    /// `Ack` is unattributed.
+    pub fn seated_by(&mut self, hello: &ServerFrame) {
+        if let ServerFrame::Hello { head_id, .. } = hello {
+            self.head_id = head_id.clone();
+        }
+    }
+
+    /// Consume a `Hello` from a reader this client started, blocking for it — the
+    /// second half of [`Self::attach`], for a caller that has already read frames
+    /// off the reader and wants to stop doing so by hand.
     pub fn head_id(&self) -> &str {
         &self.head_id
     }
