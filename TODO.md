@@ -534,6 +534,78 @@ to fit a screen.
 
 ---
 
+## R21 — the jobs pane cannot show a job's output, and the reply path is why
+
+The operator, 2026-09-20: *"when i press enter on jobs pane im not shown the job output im brought
+back to the main conversation with /job <id> posted - this is not what i want - when i press enter
+i want to see job output"*. Narrowed by them a moment later: *"entering the running job works fine
+- but finished does /job <id>"*.
+
+**One path serves both, and nothing about running versus finished differs in the code** — so the
+"works fine" on a running job is the reply being one *sentence* (`j12 is still running and has
+written nothing yet`), which reads acceptably as a line in the chat, while a finished job's reply
+is a 16 KB dump that does not. The pane closes in both cases, deliberately.
+
+### What the reply is, and why the pane has to close
+
+`Action::Slash { line: "job j12" }` → `ClientFrame::Slash` → `CommandKind::Slash` (the command
+queue) → `Sessions::slash_parsed` → `Harness::job_output(job, offset, 16 KiB)`, and the answer is
+published as
+
+    SessionEvent::Warning { code: "slash", detail: "…/job j12\n<the output>" }
+
+— `crates/harnessd/src/sessions.rs:1546`. So a slash reply is a **warning on the session log**,
+which is the design (*"a frame per verb would have every head learn every verb"*), and the head
+closes the pane so the operator can read it there.
+
+### The two shortcuts that do not work, both checked
+
+1. **Match the warning in the head and draw it in the pane.** The head does know it asked for
+   `/job j12`, and the reply's first line is that exact string — but the event is still published
+   to the session, so the 16 KB would appear *both* in the pane and in the conversation. Hiding it
+   in this head would make the head's screen disagree with the log every other head sees.
+2. **`ClientFrame::ReadJobOutput` answered on the asking connection.** This is the shape
+   `Peek`/`Settings`/`Jobs` use, and it is what a pane wants — but those all read something the
+   **server** can reach (the hub's view, a registry mailbox), and job output lives in the **exec
+   host**, which is the daemon worker's. The server would have to register a reply channel, queue a
+   command, and block its own read loop on the answer — which stalls that connection's live events
+   for the duration. The `secrets` map is that pattern and it is the only one: a reply channel the
+   worker fills.
+
+### The design that fits, and it needs no protocol change at all
+
+**Publish the window as its own `SessionEvent`**, and let the pane be a view of it:
+
+    SessionEvent::JobOutput { job, from, to, produced, dropped, state, lines, next }
+
+- It is a **slash reply**, so the log is exactly where it belongs by the existing rule — no lie,
+  no suppression, every head sees it.
+- It carries the **offsets beside the text**, which the `Warning` prose cannot: today
+  `Harness::job_output` builds a footer (`[exited 0 — bytes 0..16384 of 40000 produced]`, `more:
+  /job j12 --offset 16384`) that a pane would have to parse. The window type and that method's
+  structured twin were written and are small.
+- The head needs **no new frame and no reply channel**: `CommandKind` + the fan-out already carry
+  it, and the head's `ServerEvent` arm fills a `job_out` pane that mirrors `sub_out`.
+- Paging is `Action::Slash { line: "job j12 --offset N" }` again — the verb already takes it.
+- **No `PROTOCOL_VERSION` bump**: `SessionEvent` is an internally-tagged enum and this is an
+  additive variant, the same way `TranscriptContent` and `JobSettled` were added.
+
+**Where.** `crates/sessionlog/src/event.rs` (the variant), `crates/sessionlog/src/hub.rs`
+(`CommandKind::ReadJobOutput`), `crates/harnessd/src/harness.rs` (`job_output_window`, structured),
+`crates/harnessd/src/sessions.rs` (the dispatch arm publishing it), `crates/tui/src/app.rs`
+(`job_out`, the Enter arm, the render, the event arm), and tests on both sides.
+
+**Done when.** Enter on a job row — running or finished — draws its output in the pane, esc returns
+to the list, `↓` pages when there is more and says so when there is not, and the conversation gains
+nothing the operator did not ask to put there.
+
+**Not started.** The design above is settled and the two shortcuts are ruled out with reasons; the
+implementation is the six files. Left unstarted deliberately at the end of a long session, after
+one half-built feature earlier the same day — a protocol addition begun tired is how a tree ends up
+not compiling.
+
+---
+
 ## R20 — the header names the wrong model, and the diff toggle is undiscoverable
 
 Two reportable things from one message (*"when i start leticode - despite the fact that
