@@ -1706,20 +1706,6 @@ impl App {
                 self.redraw = true;
                 Disposition::Control
             }
-            // **A fetched row window the head did not ask for.**
-            //
-            // `FetchRow` exists and is answered (see `ClientFrame::FetchRow` and the
-            // server's arm), and **this head does not send it yet**. Its paging works over
-            // the rows the snapshot gave it: `ViewBounds` is 2000 rows and 8 MB, and the
-            // head's own paging draws windows of a payload it already holds. What is
-            // missing is the case where the row is *not* held — trimmed by those bounds —
-            // and that needs the head to ask, track the answer, and render a partial body.
-            // Filed in `TODO.md` R19.2 rather than half-built here.
-            //
-            // The arm is explicit rather than a wildcard so that the day the head starts
-            // asking, a frame that arrives unhandled is visible here rather than swallowed
-            // by a `_ =>`.
-            ServerFrame::RowFetched { .. } => Disposition::Control,
             ServerFrame::Peeked {
                 session_id,
                 dropped,

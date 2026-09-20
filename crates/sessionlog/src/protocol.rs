@@ -658,34 +658,6 @@ pub enum ClientFrame {
     /// seat, its acks and its live events are untouched. Lazy by construction:
     /// nothing is read until this is sent, and sending it again is a fresh read.
     Peek { session_id: String },
-    /// **Read a window of one row's body, without moving and without the whole row.**
-    ///
-    /// A tool result is a logical string that wraps to thousands of display lines, and
-    /// the head holds a *window* of one: `ViewBounds` bounds the snapshot by count and by
-    /// bytes, so an old row is not on the head at all, and a row that is can still be
-    /// longer than anything the snapshot would carry. `ClientFrame::Peek` is no help —
-    /// it names a session and returns **all** of it, with no position.
-    ///
-    /// This is positional, which is the difference. `at` is a **byte offset into the row's
-    /// body** and `len` how much to send back; the answer says how long the body is, so a
-    /// head can draw a window and know what is on either side of it without ever holding
-    /// the whole thing. The model is `read`'s own `ranges`, one layer down.
-    ///
-    /// Answered with [`ServerFrame::RowFetched`] on the same stream. The seat, the acks
-    /// and the live events are untouched, exactly as `Peek` leaves them — a read that
-    /// moves you is a switch, and this is not one.
-    FetchRow {
-        session_id: String,
-        item_id: String,
-        /// Byte offset into the body. Clamped to its length rather than refused: a head
-        /// paging towards the end does not know where the end is, and asking past it is
-        /// the ordinary way to find out.
-        at: usize,
-        /// How many bytes to send. **Capped by the daemon**, like `read`'s own windows —
-        /// one request must not be able to return a megabyte because a head asked for
-        /// one.
-        len: usize,
-    },
     /// List the settings this session runs under. Answered with
     /// [`ServerFrame::Settings`]; never moves the connection.
     Settings,
@@ -804,28 +776,6 @@ pub enum ServerFrame {
         session_id: String,
         dropped: u64,
         events: Vec<Envelope>,
-    },
-    /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body.
-    ///
-    /// `total` is the whole body's length, so the head knows **what is on either side of
-    /// the window** without holding it — which is what lets it draw `… +N lines above`
-    /// and `… +M below` honestly. `at` is echoed because the request is clamped rather
-    /// than refused, so where the answer starts is the daemon's decision and not a
-    /// restatement of the request.
-    ///
-    /// `body: None` is the case a head must not confuse with an empty one: the row is not
-    /// in the daemon's view at all (it was trimmed, or belongs to another session), and an
-    /// empty string would read as "the row is empty" rather than "nobody has it".
-    RowFetched {
-        session_id: String,
-        item_id: String,
-        /// Byte offset this window actually starts at.
-        at: usize,
-        /// The window itself, starting on a **character boundary** — a head cannot render
-        /// half a glyph and the daemon is the side that knows the encoding.
-        body: Option<String>,
-        /// The whole body's length in bytes, so a head can say what is on either side.
-        total: usize,
     },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),

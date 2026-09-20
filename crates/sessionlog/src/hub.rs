@@ -524,14 +524,6 @@ impl Hub {
         self.lock().log.session_id().to_string()
     }
 
-    /// One row's body, for a head reading a window of it.
-    ///
-    /// The view's, under the view's lock — see `SessionView::row_body` for why it lends the
-    /// whole thing and the *caller* windows it.
-    pub fn row_body(&self, item_id: &str) -> Option<String> {
-        self.lock().view.row_body(item_id)
-    }
-
     pub fn head_seq(&self) -> u64 {
         self.lock().log.head_seq()
     }

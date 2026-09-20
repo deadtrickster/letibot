@@ -340,32 +340,34 @@ the mouse-reporting bug — now asserts the *new* contract explicitly, including
 gives the arrows back. A view that held them for ever would be the same defect with a new
 cause.
 
-**Still open** — and this is the split, so the next reader knows which half is which:
+**Still open** (the daemon side): fetching a row the snapshot dropped. `ViewBounds`
+bounds the snapshot, so a very old row is not on the head at all, and this paging works
+over what the head holds.
 
-**(a) The daemon half is done.** `ClientFrame::FetchRow` / `ServerFrame::RowFetched` exist,
-and the daemon answers a window of any row it holds: the offset is clamped and rounded to a
-character boundary, the length is capped at `MAX_FETCH_ROW` (64 KB) **by the daemon** rather
-than trusted from the head, the answer carries the body's whole length so a head can say
-what is on either side of the window without holding it, and a row nobody has answers
-`body: None` rather than an empty string. Seven tests in
-`crates/sessionlog/tests/fetch_row.rs`.
+**And a `FetchRow` built for it was removed the same day, because it could not be
+called.** Worth writing down, because the reasoning is the design:
 
-**(b) The head does not ask yet.** `App`'s paging works over the rows the snapshot gave it —
-`ViewBounds` is 2000 rows and 8 MB — so the case this was built for, a row *trimmed* by
-those bounds, is still unreachable on screen. Wiring it wants three things: knowing the row
-is not held (the head has no such flag today), asking and tracking the answer, and rendering
-a partial body from a window. The `ServerFrame::RowFetched` arm in `App::apply` is an
-explicit `Disposition::Control` naming this gap rather than a wildcard, so the day the head
-starts asking, an unhandled frame is visible there.
+- It addressed a row by `item_id`, and **a head can only name ids it received**.
+  `items_dropped` is a **count, not a list**, so the rows the fetch was for are exactly the
+  ones whose names the head never learned.
+- For a row it *did* receive, the snapshot already carries the body — so the fetch would
+  have returned what the asker already held.
 
-**And it is not `Peek`, which an earlier draft of this item said.** `Peek` fetches a whole
-session's scrollback and has **no position**: you name a session, you get all of it. That
-is right for the picker — "what was that session about" is a whole-thing question — and it
-is the wrong shape for this, which is positional ("the display line 3,000 of this 400 KB
-payload, which the head does not have"). The *pattern* worth reusing is that a peek reads
-without moving your seat; the cursor and the window are new, and calling them `Peek` would
-be a name for something with different semantics. So: **`FetchRow`** — name the row, get a
-bounded window of it — with `read`'s own `ranges` as the model one layer down.
+So it could only answer questions whose answers the asker had. It compiled, it had seven
+passing tests over a real socket, and no head could reach it. That is the same defect as
+the unreachable container arms found earlier in R18 by mutation — and it was found this
+time by the operator asking *"so rowfetch is not used"*, which is cheaper than a mutation
+run and worth remembering as a check: **who calls this?**
+
+**What the design needs instead**, in two parts, and neither is small:
+
+1. **Addressing by an ordinal, not an id.** A head knows "I hold rows 5000..7000" and
+   `items_dropped` tells it 5000 came before; "scroll up past the top" then means *fetch
+   row 4999*. `item_id` cannot express that, and the daemon maps ordinal → row internally.
+2. **A store read for anything the view dropped.** `SessionView::trim` `drain`s the rows
+   away — they are not held anywhere in the daemon — so a fetch for a trimmed row has to go
+   to `~/.local/share/letibot/sessions.db`, which is a different path with different
+   ownership from the view.
 
 **Checked before building, 2026-09-20**: across the whole store there are **8 rows over
 64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the

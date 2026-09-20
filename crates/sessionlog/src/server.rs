@@ -147,26 +147,6 @@ pub fn serve(hub: Arc<Hub>, path: impl AsRef<Path>) -> io::Result<ServerHandle> 
     serve_registry(Registry::of(hub), path)
 }
 
-/// The most bytes one `FetchRow` may return, whatever the head asked for.
-///
-/// **The daemon's cap, not the head's request.** A head that sent a large `len` — by a bug,
-/// or by a version that meant something else by it — must not be able to make the daemon
-/// serialise a megabyte onto the wire. The head pages in windows of a screenful, so this is
-/// an order of magnitude above any window it draws and far below a payload.
-pub const MAX_FETCH_ROW: usize = 64 * 1024;
-
-/// The nearest character boundary at or below `at`, for slicing a body.
-///
-/// A byte window can land inside a multi-byte character, and a head cannot render half a
-/// glyph. The daemon is the side that knows the encoding, so it is the side that rounds.
-fn clamp_char(s: &str, at: usize) -> usize {
-    let mut at = at.min(s.len());
-    while at > 0 && !s.is_char_boundary(at) {
-        at -= 1;
-    }
-    at
-}
-
 /// Bind and start accepting for every session in `registry`.
 pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
     let path = path.as_ref().to_path_buf();
@@ -641,56 +621,6 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         writer.lock().unwrap().write(&f)?;
                     }
                 }
-            }
-            Ok(ClientFrame::FetchRow {
-                session_id,
-                item_id,
-                at,
-                len,
-            }) => {
-                // A read, not a move — the same contract `Peek` above keeps, and the
-                // reason both live in this arm of the match rather than in the seat.
-                //
-                // **The window is clamped here, not trusted from the head.** `len` is what
-                // the head *asked* for; one request must not be able to return a megabyte
-                // because a head sent a big number, so the cap is the daemon's. And `at`
-                // is clamped to the body rather than refused, because a head paging
-                // forward does not know where the end is and asking past it is how it
-                // finds out.
-                let (body, total, at) = match registry.resolve(&session_id) {
-                    Some(hub) => match hub.row_body(&item_id) {
-                        Some(full) => {
-                            let total = full.len();
-                            let start = clamp_char(&full, at.min(total));
-                            let want = len.min(MAX_FETCH_ROW);
-                            let end = clamp_char(&full, (start + want).min(total));
-                            (Some(full[start..end].to_string()), total, start)
-                        }
-                        // The row is not in this daemon's view: trimmed by `ViewBounds`,
-                        // or it belongs to a session that never had it. `None` rather
-                        // than an empty string, because "nobody has it" and "it is
-                        // empty" must not look alike.
-                        None => (None, 0, 0),
-                    },
-                    None => {
-                        let f = ServerFrame::Rejected {
-                            client_request_id: format!("fetchrow:{session_id}/{item_id}"),
-                            reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
-                            expected_seq: 0,
-                            actual_seq: seat.hub.head_seq(),
-                        };
-                        writer.lock().unwrap().write(&f)?;
-                        continue;
-                    }
-                };
-                let f = ServerFrame::RowFetched {
-                    session_id,
-                    item_id,
-                    at,
-                    body,
-                    total,
-                };
-                writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::Prompt {
                 client_request_id,
