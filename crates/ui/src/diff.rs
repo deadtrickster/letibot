@@ -60,11 +60,11 @@
 //!   [`word_spans`] and [`SIMILARITY_FLOOR`] are letibot's.
 //! - Their per-hunk-then-whole-file progressive highlight
 //!   (`EditHighlightPhase`, capped at 2 MiB / 50k lines) is **not** ported: it
-//!   needs a worker thread to be worth anything, and its benefit — correct
-//!   scopes for a multi-line string that opens above the hunk — does not arise
-//!   here because [`crate::highlight`] is line-oriented and carries its state
-//!   explicitly. The right integration is to seed a [`crate::highlight::State`]
-//!   from the lines above the hunk; see the design note.
+//!   needs a worker thread to be worth anything. What *is* here is the property
+//!   that motif existed for — a multi-line string that opens above the hunk keeps
+//!   its scope — because [`crate::sidediff`] highlights the **whole excerpt**
+//!   rather than one hunk at a time, so a construct spanning lines sees its own
+//!   context.
 
 use crate::style::{Palette, Role};
 use crate::width::{self, RESET};

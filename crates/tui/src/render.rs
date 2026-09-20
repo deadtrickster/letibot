@@ -22,8 +22,10 @@
 //! title, a count of what was elided, and its last N lines — which is what a reader
 //! of a streaming model actually wants, because the interesting end is the end.
 
-use letibot_ui::highlight::StreamingCode;
+
 use letibot_ui::style::{Painter, Palette, Role};
+
+use rano::syntax::Stream;
 
 use crate::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
 
@@ -165,40 +167,142 @@ impl RenderConfig {
     }
 }
 
-/// A code block's streaming highlighter, and how much of its source it has seen.
+/// A code block's highlighter: rano's tree-sitter parse of the fence, painted with this
+/// head's palette.
 ///
-/// The pair is the whole of §2.5's "do not reintroduce a full re-parse per delta".
-/// `pushed` is a byte offset into `lines.join("\n")`, which grows only at the end
-/// while a fence is open, so the delta handed to the lexer each frame is the new
-/// bytes and nothing else.
-#[derive(Debug)]
+/// # The decision this encodes
+///
+/// A fence grows at its end, a few characters at a time, and the naive thing — re-parse
+/// and repaint the whole block per frame — is the O(N²) `crates/ui`'s old hand-written
+/// lexer was built to avoid. That lexer paid for its incrementality with coverage: ten
+/// languages, and heuristics (`Vec` is a type because it is capitalised) that were wrong
+/// often enough to be a known cost. Rano's `Stream` parses the block with a grammar
+/// instead, which is 28 languages and no guessing.
+///
+/// What it costs is a capture walk per repaint rather than per new line: measured
+/// 2026-09-20 in rano at ~0.1 µs per byte and ~1.1 µs per line, so ~470 µs for a 5.4 KB
+/// Rust block. That is a frame's budget at fence sizes and it is why this is a
+/// `Stream` fed the *delta* rather than a fresh parse — the parse is incremental even
+/// though the walk is not. A fence long enough for the walk to matter would need the
+/// same window discipline `crate::markdown` uses for the conversation.
 struct CodePaint {
-    sc: StreamingCode,
+    /// `None` when the fence named no language, or one rano has no grammar for. The
+    /// block is then drawn plain — a wrong colour is worse than none, because it invites
+    /// the reader to trust it.
+    stream: Option<Stream>,
+    /// The language rano resolved, for the block's title bar.
+    lang: rano::syntax::Lang,
+    painter: Painter,
+    /// The fence's text as it has been seen, and how much of it has been pushed. `src`
+    /// only ever grows at its end while the fence is open, so the delta is the new bytes
+    /// and nothing else.
+    text: String,
     pushed: usize,
+}
+
+// Hand-written for the same reason `markdown::IncrementalMarkdown`'s is: the parse state
+// is a tree-sitter parser and tree, which have no `Debug` worth reading.
+impl std::fmt::Debug for CodePaint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodePaint")
+            .field("lang", &self.lang.name())
+            .field("text_len", &self.text.len())
+            .field("pushed", &self.pushed)
+            .finish()
+    }
 }
 
 impl CodePaint {
     fn new(lang: &str, painter: Painter) -> CodePaint {
+        let resolved = rano::syntax::Lang::from_token(lang);
         CodePaint {
-            sc: StreamingCode::inside(lang, painter),
+            stream: resolved.map(Stream::new),
+            lang: resolved.unwrap_or(rano::syntax::Lang::Rust),
+            painter,
+            text: String::new(),
             pushed: 0,
         }
     }
 
-    /// Hand over whatever is new. A complete line is highlighted exactly once,
-    /// ever; only the incomplete tail is repainted, and that is bounded by the
-    /// line, not by the block.
+    /// Hand over whatever is new.
     fn feed(&mut self, lines: &[String], closed: bool) {
         let mut src = lines.join("\n");
         if closed {
             src.push('\n');
         }
         if src.len() > self.pushed {
-            // `src` only ever grows at its end while the fence is open, so this
-            // is always a character boundary.
-            self.sc.push(&src[self.pushed..]);
+            // `src` only ever grows at its end while the fence is open, so this is
+            // always a character boundary.
+            if let Some(stream) = self.stream.as_mut() {
+                stream.push(&src[self.pushed..]);
+            }
             self.pushed = src.len();
         }
+        self.text = src;
+    }
+
+    /// The fence's lines, painted.
+    ///
+    /// The spans are character ranges, so the line is cut by character and each run is
+    /// painted with the role its capture name maps to. A run with no capture is left
+    /// plain: what is not drawn is the reader's own foreground, which is right for
+    /// punctuation.
+    fn lines(&mut self) -> Vec<String> {
+        // A closed fence's text ends with the newline [`Self::feed`] appended, and a
+        // `split` on that gives a phantom empty row in the box. The rows a *fence* has is
+        // what it was written with.
+        let src = self.text.strip_suffix('\n').unwrap_or(&self.text);
+        let rows: Vec<Vec<char>> = src.split('\n').map(|l| l.chars().collect()).collect();
+        let Some(stream) = self.stream.as_mut() else {
+            return src.split('\n').map(str::to_string).collect();
+        };
+        let spans = stream.spans();
+        // Runs per row, in the order the query found them. A later span may overlap an
+        // earlier one; painting in order is what `Highlighter::classes` does too.
+        let mut out: Vec<String> = Vec::with_capacity(rows.len());
+        for (row, chars) in rows.iter().enumerate() {
+            let mine: Vec<&rano::syntax::Span> = spans.iter().filter(|s| s.row == row).collect();
+            if mine.is_empty() {
+                out.push(chars.iter().collect());
+                continue;
+            }
+            let mut painted = String::new();
+            let mut cursor = 0usize;
+            for s in mine {
+                let (start, end) = (s.start.min(chars.len()), s.end.min(chars.len()));
+                if start < cursor {
+                    // Overlaps a span already drawn; the earlier one won, which keeps the
+                    // ordering rule above from having to know what a name means.
+                    continue;
+                }
+                if cursor < start {
+                    painted.extend(&chars[cursor..start]);
+                }
+                let text: String = chars[start..end].iter().collect();
+                painted.push_str(&self.painter.paint(
+                    letibot_ui::highlight::role_for_capture(&s.name),
+                    &text,
+                ));
+                cursor = end;
+            }
+            painted.extend(&chars[cursor.min(chars.len())..]);
+            out.push(painted);
+        }
+        out
+    }
+
+    /// The grammar that actually coloured the block, for the title bar: `None` when the
+    /// fence named nothing rano knows.
+    fn language(&self) -> Option<rano::syntax::Lang> {
+        self.stream.as_ref().map(|_| self.lang)
+    }
+
+    /// How many times this block has been parsed. The §13.3 instrument, one layer down
+    /// and in the shape the engine has: a frame that draws a settled fence must not
+    /// re-parse it, so this stays at the number of deltas that arrived and does not grow
+    /// with the number of frames.
+    fn parses(&self) -> u64 {
+        self.stream.as_ref().map(|s| s.parse_calls()).unwrap_or(0)
     }
 }
 
@@ -262,15 +366,16 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 }
             };
             paint.feed(lines, *closed);
-            let painted = paint.sc.lines();
+            let painted = paint.lines();
             let mut out = Vec::with_capacity(painted.len() + 2);
-            // The fence's own info string when the highlighter did not recognise
-            // it: naming a language we are not colouring is honest, and inventing
-            // one we are is not.
-            let head = match (paint.sc.language(), lang.is_empty()) {
-                (Some(name), _) => format!("┌─ {name}"),
-                (None, false) => format!("┌─ {lang}"),
-                (None, true) => "┌─ code".to_string(),
+            // The fence's own info string when rano did not recognise it: naming a
+            // language we are not colouring is honest, and inventing one we are is not.
+            // A *recognised* one is named by the grammar that actually ran, so the
+            // header cannot claim TypeScript over a fence that was parsed as TSX.
+            let head = match paint.language() {
+                Some(l) => format!("┌─ {}", l.name()),
+                None if !lang.is_empty() => format!("┌─ {lang}"),
+                None => "┌─ code".to_string(),
             };
             out.push(cfg.c(FRAME, &head));
             for l in painted {
@@ -718,12 +823,16 @@ impl BlockCache {
         self.blocks_rendered
     }
 
-    /// Bytes handed to the syntax lexer over this cache's life, summed over every
-    /// live code block. The §13.3 instrument one layer down from
-    /// `IncrementalMarkdown::bytes_lexed`: a full re-highlight per delta makes it
-    /// quadratic, and nothing else about the screen would look different.
-    pub fn bytes_highlighted(&self) -> u64 {
-        self.codes.values().map(|c| c.sc.bytes_highlighted()).sum()
+    /// Parses performed over this cache's life, summed over every live code block — the
+    /// §13.3 instrument one layer down from `IncrementalMarkdown::bytes_lexed`.
+    ///
+    /// The engine moved under this, so the number did too. The old one counted bytes
+    /// handed to a hand-written lexer, which is the right measure for a lexer that
+    /// re-scans what it is given; rano parses incrementally and its cost here is the
+    /// *number* of parses, since each one re-uses everything the last one built. A frame
+    /// that draws a settled fence must not add to this.
+    pub fn parses(&self) -> u64 {
+        self.codes.values().map(|c| c.parses()).sum()
     }
 }
 
@@ -935,47 +1044,39 @@ mod tests {
         assert!(!plain.contains('\x1b'), "{plain:?}");
     }
 
+    /// §13.3 one layer down: **a frame that draws a settled fence does not re-parse it.**
+    ///
+    /// The reason `BlockCache` keeps a highlighter rather than calling a one-shot painter
+    /// per frame. What changed with rano under it is the number: the old instrument
+    /// counted bytes handed to a hand-written lexer, and this counts parses, because a
+    /// parse here re-uses everything the last one built and the *walk* is the remaining
+    /// cost (measured in rano's `TODO.md` §9).
     #[test]
-    fn a_streamed_code_block_is_highlighted_once_per_line_not_once_per_frame() {
-        // §13.3 one layer down, and the reason `BlockCache` keeps a highlighter
-        // rather than calling a one-shot painter per frame. A full repaint per
-        // delta would make the bytes handed to the lexer quadratic in the block,
-        // and nothing on the screen would look different — which is exactly the
-        // kind of regression an instrument has to exist for.
+    fn a_settled_code_block_is_not_parsed_again_per_frame() {
         let src: String = (0..300)
             .map(|i| format!("    let x{i} = \"value {i}\"; // comment {i}\n"))
             .collect();
         let doc = format!("```rust\n{src}```\n");
         let mut md = IncrementalMarkdown::new();
-        let mut cache = BlockCache::new();
+        md.push(&doc);
         let cfg = RenderConfig {
             width: 100,
             color: true,
             budget: Budget::default(),
             base: None,
         };
-        let mut buf = String::new();
-        let mut frames = 0u64;
-        for ch in doc.chars() {
-            buf.push(ch);
-            if buf.chars().count() >= 16 {
-                md.push(&buf);
-                buf.clear();
-                cache.split(&md, &cfg, 40);
-                frames += 1;
-            }
-        }
-        md.push(&buf);
+        // The first frame parses; the next fifty must not.
+        let mut cache = BlockCache::new();
         cache.split(&md, &cfg, 40);
-
-        // What a repaint-per-frame would cost: the whole block, every frame.
-        let naive = src.len() as u64 * frames;
-        let actual = cache.bytes_highlighted();
-        assert!(
-            actual < naive / 8,
-            "highlighted {actual} bytes over {frames} frames for a {}-byte block; \
-             a full repaint per delta would be {naive}",
-            src.len()
+        let after_first = cache.parses();
+        assert!(after_first >= 1, "the block was never parsed");
+        for _ in 0..50 {
+            cache.split(&md, &cfg, 40);
+        }
+        assert_eq!(
+            cache.parses(),
+            after_first,
+            "a settled block was re-parsed by drawing it"
         );
     }
 
@@ -1435,5 +1536,144 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         assert!(out.contains("┌─ markdown"), "{out:?}");
         assert!(out.contains("```rust"), "the demo was eaten: {out:?}");
         assert!(!out.contains("┌─ rust"), "{out:?}");
+    }
+}
+
+#[cfg(test)]
+mod code_fences_are_coloured_by_rano {
+    use super::*;
+    use crate::markdown::lex;
+
+    fn cfg() -> RenderConfig {
+        RenderConfig { width: 72, color: true, ..RenderConfig::default() }
+    }
+
+    fn painted(fence: &str, body: &str) -> String {
+        let src = format!("```{fence}\n{body}```\n");
+        let b = lex(&src);
+        let Some(Block::Code { .. }) = b.first() else { panic!("not a code block: {b:#?}") };
+        render_block(&b[0], &cfg()).join("\n")
+    }
+
+    /// Drop the SGR sequences, so an assertion can be about the text.
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut it = s.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '\x1b' {
+                for n in it.by_ref() {
+                    if n == 'm' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// **The whole point of R18.1.** These four languages were rendered plain by the
+    /// hand-written lexer — it knew ten, and none of these was among them.
+    #[test]
+    fn languages_the_old_lexer_did_not_know_are_coloured() {
+        for (fence, body, header) in [
+            ("tsx", "const App = () => <div>hi</div>;\n", "tsx"),
+            ("lua", "local function f(x)\n  return x + 1\nend\n", "lua"),
+            ("ruby", "def greet(name)\n  puts \"hi #{name}\"\nend\n", "ruby"),
+            ("diff", "--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n", "diff"),
+            ("clojure", "(defn f [x] (+ x 1))\n", "clojure"),
+            ("sql", "SELECT id FROM t WHERE n > 1;\n", "sql"),
+        ] {
+            let out = painted(fence, body);
+            assert!(out.contains(header), "{fence}: no `{header}` in the header: {out:?}");
+            assert!(
+                out.contains('\x1b'),
+                "{fence} was rendered with no colour at all: {out:?}"
+            );
+            // And the text survives the painting, which is the invariant everything else
+            // rests on.
+            assert!(strip(&out).contains(body.lines().next().unwrap()), "{fence}");
+        }
+    }
+
+    /// The header names the grammar **that ran**, not the fence's spelling — so a fence
+    /// that says `ts` is not claiming to be tsx, and one thing is named once.
+    #[test]
+    fn the_header_names_the_grammar_that_ran() {
+        assert!(painted("rust", "fn main() {}\n").contains("┌─ rust"));
+        assert!(painted("rs", "fn main() {}\n").contains("┌─ rust"), "`rs` is rust");
+        assert!(painted("ts", "const x = 1;\n").contains("┌─ typescript"));
+        assert!(painted("sh", "echo hi\n").contains("┌─ bash"), "`sh` is bash");
+        // A language rano has no grammar for keeps the fence's own word, uncoloured —
+        // naming a language we are not colouring is honest, inventing one is not.
+        let out = painted("brainfuck", "+[->+<]\n");
+        assert!(out.contains("┌─ brainfuck"), "{out:?}");
+        assert!(!out.contains('\x1b') || !out.contains("\x1b[35m"), "invented a grammar");
+        assert_eq!(strip(&out), "┌─ brainfuck\n│ +[->+<]\n└─", "{out:?}");
+    }
+
+    /// A bare fence is `┌─ code`, plain — the rule the operator mistook for broken
+    /// colouring, now that the engine behind it is a grammar rather than a word list.
+    #[test]
+    fn a_bare_fence_is_named_code_and_left_plain() {
+        let out = painted("", "fn main() {}\n");
+        assert!(out.contains("┌─ code"), "{out:?}");
+        assert_eq!(strip(&out), "┌─ code\n│ fn main() {}\n└─", "{out:?}");
+    }
+
+    /// **Structure rather than shape.** These are the cases the hand-written lexer got
+    /// wrong, and each is a fact about the code that was deleted rather than a guess:
+    /// its quote set included `'`, its type test was `word.starts_with(uppercase)`, and
+    /// its function test was "a `(` follows the word".
+    #[test]
+    fn what_the_heuristics_got_wrong_is_right_now() {
+        // **A Rust lifetime opened a string literal.** `'` was in the quote set, so
+        // `fn f<'a>(x: &'a str)` painted everything from the first apostrophe to the
+        // next as one green string — the whole signature, mangled. The grammar knows a
+        // lifetime from a character literal, and `str` is a type.
+        let out = painted("rust", "fn f<'a>(x: &'a str) -> &'a str { x }\n");
+        assert!(
+            out.contains("\x1b[36ma\x1b[0m"),
+            "the lifetime is not a type: {out:?}"
+        );
+        assert!(
+            out.contains("\x1b[36mstr\x1b[0m"),
+            "`str` is not a type: {out:?}"
+        );
+        assert!(
+            !out.contains("\x1b[32m"),
+            "something was painted as a string in a signature with none: {out:?}"
+        );
+
+        // **A capitalised Go variable is not a type.** The old lexer's first letter was
+        // the whole test; Go's grammar says identifier.
+        let out = painted("go", "func f() {\n\tX := 1\n\t_ = X\n}\n");
+        assert!(!out.contains("\x1b[36m"), "`X` was called a type: {out:?}");
+
+        // **A macro is a function though only `!` follows it.** The old lexer looked for
+        // `(` immediately after the word, found `!(`, and left the name plain.
+        let out = painted("rust", "println!(\"hi\");\n");
+        assert!(out.contains("\x1b[34m"), "`println!` is not a function: {out:?}");
+
+        // **A Python decorator is a function.** Not in the old lexer's model at all.
+        let out = painted("python", "@decorator\ndef f():\n    pass\n");
+        assert!(out.contains("\x1b[34m@decorator"), "not a function: {out:?}");
+    }
+
+    /// A block comment **closing** lines later is a comment, which the old lexer needed a
+    /// carried `State` for and the grammar simply knows.
+    #[test]
+    fn a_construct_spanning_lines_keeps_its_colour() {
+        let out = painted("rust", "/* one\ntwo\nthree */\nlet x = 1;\n");
+        let lines: Vec<&str> = out.lines().collect();
+        for (i, l) in lines.iter().enumerate().take(5) {
+            assert!(l.contains('\x1b'), "line {i} lost its colour: {l:?}");
+        }
+        // And a multi-line string, which the old lexer's own header admitted it could not
+        // do for Rust.
+        let out = painted("rust", "let s = r#\"one\ntwo\";\n");
+        assert!(strip(&out).contains("one"), "{out:?}");
+        assert!(strip(&out).contains("two"), "{out:?}");
     }
 }

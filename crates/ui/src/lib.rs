@@ -35,7 +35,7 @@
 //! | module | what it owns |
 //! |---|---|
 //! | [`width`] | columns, grapheme clusters, escape-aware wrap and truncate |
-//! | [`highlight`] | streaming-safe syntax colouring for fenced code |
+//! | [`highlight`] | rano capture names → this crate's syntax roles |
 //! | [`diff`] | line diff, intra-line word diff, unified rendering |
 //! | [`sidediff`] | the two-panel before/after view of a file edit |
 //! | [`progress`] | the prefill bar, which needs data neither upstream has |

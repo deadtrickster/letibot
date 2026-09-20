@@ -47,6 +47,7 @@
 //! beyond a string.
 
 use crate::diff::{hunks, diff_lines, DiffConfig, Hunk, Row};
+use crate::highlight::role_for_capture;
 use crate::style::{Palette, Painter, Role};
 use crate::width;
 
@@ -411,28 +412,6 @@ fn flush(run: &mut Role, run_buf: &mut String, out: &mut String, p: Palette) {
     if !run_buf.is_empty() {
         out.push_str(&p.paint(*run, run_buf));
         run_buf.clear();
-    }
-}
-
-/// rano's capture names onto this crate's six syntax roles.
-///
-/// The dotted fallback mirrors rano's own `theme`: a name the table does not
-/// list falls back to its prefix (`type.builtin` → `type`), and only a name
-/// with no known prefix at all (`variable`, `punctuation.bracket`) renders
-/// plain — which is honest, because those are the tokens a reader does not
-/// need coloured.
-fn role_for_capture(name: &str) -> Role {
-    match name {
-        "comment" => Role::Comment,
-        "string" | "escape" => Role::StringLit,
-        "number" | "constant" | "property" => Role::NumberLit,
-        "type" | "constructor" | "label" => Role::TypeName,
-        "keyword" | "include" | "preproc" | "variable.builtin" => Role::Keyword,
-        "function" => Role::FuncName,
-        _ => match name.split_once('.') {
-            Some((prefix, _)) => role_for_capture(prefix),
-            None => Role::Plain,
-        },
     }
 }
 
