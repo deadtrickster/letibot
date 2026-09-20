@@ -74,6 +74,26 @@ pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
+/// **How many sequences this server decodes at once**, from `/props`.
+///
+/// llama.cpp's slots are its batching unit: N slots means N sequences are
+/// decoded in the same batch, each with its own KV cache, so N concurrent
+/// requests are cheaper together than one after another. A caller that
+/// serialises to "protect the cache" has the relationship backwards — the caches
+/// are per slot and do not evict one another.
+///
+/// `None` when the endpoint does not say, which is every metered provider and
+/// any server too old to report it. The caller picks its own bound then, rather
+/// than assuming a number off a server that never claimed one.
+pub fn served_slots(endpoint: &Endpoint) -> Option<usize> {
+    let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
+    let at = body.find("\"total_slots\"")?;
+    let rest = &body[at + "\"total_slots\"".len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok().filter(|n| *n > 0)
+}
+
 /// Refuse, loudly and by name, unless the server is serving `want`.
 ///
 /// `want` is matched as a **substring** of the reported path, because the alias is

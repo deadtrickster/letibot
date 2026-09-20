@@ -103,6 +103,10 @@ const UTTERANCE_CHARS: usize = 600;
 /// self-referential. The caller keeps this on the stack and hands out a reference,
 /// which is a two-line inconvenience against a `Box::leak` that lies about
 /// lifetimes.
+/// Every field is an `Arc`, so a clone is a handful of refcount bumps — which
+/// is what lets a second head (the HTTP one) hold the same vocabulary and dialect
+/// without loading either again.
+#[derive(Clone)]
 pub struct Parts {
     pub vocab: std::sync::Arc<Vocab>,
     pub wiring: std::sync::Arc<Wiring>,

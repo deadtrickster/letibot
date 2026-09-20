@@ -697,3 +697,93 @@ fn consenting_to_allow_all_admits_a_shell_command_unasked() {
         "the move must say it stands on the confirmation: {said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The custom base prompt, and what a compaction does with it.
+
+/// **`--system` reaches the rendered prefix**, so a daemon started with the
+/// operator's own base prompt is speaking it.
+#[test]
+fn a_custom_system_prompt_is_what_the_session_opens_under() {
+    let short = "You judge.";
+    let long = "You judge. ".repeat(200);
+
+    let open_with = |system: &str| -> usize {
+        let mut cfg = config(Seat::Orchestrator);
+        cfg.system = system.to_string();
+        cfg.session_id = format!("sysprompt-{}", system.len());
+        let p = parts(&cfg);
+        let hub = Hub::new(&cfg.session_id);
+        let h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
+            .expect("the session opens");
+        h.ledger_len()
+    };
+
+    let a = open_with(short);
+    let b = open_with(&long);
+    assert!(
+        b > a + 100,
+        "a longer --system must render into a longer prefix: {a} vs {b}"
+    );
+}
+
+/// **A compaction forks onto the prefix, so the base prompt comes back in front
+/// of the summary.**
+///
+/// The operator, asking for a daemon with a custom base prompt: *"This also
+/// means that when we compact we must prepend our base prompt to the summary
+/// produced by the model."* It already does — `fork_to_summary` opens the new
+/// transcript under this session's own `StablePrefix` — and this is that, pinned,
+/// without needing a model: the fork is given a summary and asked to build the
+/// new base from it.
+#[test]
+fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
+    let system = "SYSTEM-MARKER: you are the guard. ".repeat(40);
+    let dir = std::env::temp_dir().join(format!("letibot-fork-prefix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let store = dir.join("s.db");
+
+    let mut cfg = config(Seat::Orchestrator);
+    cfg.system = system.clone();
+    cfg.store = Some(store.clone());
+    cfg.session_id = "fork-prefix".into();
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
+        .expect("the session opens");
+
+    let prefix_tokens = h.ledger_len();
+    assert!(prefix_tokens > 100, "the marker prompt should be sizeable");
+
+    let outcome = letibot_turn::CompactionOutcome {
+        turn_id: "t#summary".into(),
+        summary: "decided: nothing. open: nothing.".into(),
+        tool_calls: 0,
+        truncated: false,
+        cached_tokens: 0,
+        reusable: 0,
+        generated_tokens: 0,
+    };
+    let fork = h
+        .fork_to_summary(&outcome, None, None, &[])
+        .expect("the fork");
+
+    // The new base is the prefix PLUS the summary — not the summary alone. If
+    // the base prompt had been dropped the base would be a couple of dozen
+    // tokens; it is the prefix again, with the summary after it.
+    assert!(
+        fork.base_tokens > prefix_tokens,
+        "the base lost the prompt: base {} vs prefix {prefix_tokens}",
+        fork.base_tokens
+    );
+    // And the summary really is in there, as the first item of the new
+    // transcript, after the prefix the ledger already carries.
+    let first = h.items().first().expect("the new base has an item");
+    match first {
+        letibot_transcript::TranscriptItem::System { text, .. } => {
+            assert!(text.contains("decided: nothing"), "{text}");
+        }
+        other => panic!("the first item is not the summary: {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
