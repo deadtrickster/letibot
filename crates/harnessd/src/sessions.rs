@@ -1026,14 +1026,19 @@ impl<'a> Sessions<'a> {
         // knows. `self.base` was answering for every session at once, so a
         // session on a metered provider was judged by the daemon's unmeasured
         // numbers. See `Config::ledger_scale`.
+        let scale = self.open.get(session_id).and_then(|h| h.config().ledger_scale);
         let (resident, window, headroom, due) = match self.open.get(session_id) {
             Some(h) => {
                 let r = h.ledger_len() as u64;
                 let c = h.config();
+                // **Shown in the operator's units**, not the ledger's; see
+                // `Config::shown_tokens`. The DECISION is still made on the ledger
+                // figure (`should_compact` below), because that is what the
+                // planning arithmetic is in — only the telling converts.
                 (
-                    r,
-                    c.planning_window().unwrap_or(0),
-                    c.headroom(),
+                    c.shown_tokens(r),
+                    c.shown_tokens(c.planning_window().unwrap_or(0)),
+                    c.shown_tokens(c.headroom()),
                     c.should_compact(r),
                 )
             }
@@ -1073,7 +1078,7 @@ impl<'a> Sessions<'a> {
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "compacted".into(),
-                        detail: compaction_said(&report),
+                        detail: compaction_said(&report, scale),
                     });
                 }
                 let after = self
@@ -1121,6 +1126,12 @@ impl<'a> Sessions<'a> {
                     } else {
                         ""
                     };
+                    // `after` comes off the report in ledger tokens, like
+                    // `resident`; both are converted so the pair can be compared.
+                    let after = self
+                        .harness_of(session_id)
+                        .map(|h| h.config().shown_tokens(after))
+                        .unwrap_or(after);
                     eprintln!("  compacted: {after} tokens resident now, was {resident}.{cut}");
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
@@ -1384,7 +1395,10 @@ impl<'a> Sessions<'a> {
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "compacted".into(),
-                            detail: compaction_said(&r),
+                            detail: compaction_said(
+                                &r,
+                                self.harness_of(session_id).and_then(|h| h.config().ledger_scale),
+                            ),
                         });
                     }
                     Outcome::Compacted(Box::new(r))
@@ -1817,7 +1831,17 @@ impl StoreSessions {
 ///
 /// So: always the numbers, and the summary itself exactly when nobody saw it
 /// written. Printing it on the streamed path too would be the same text twice.
-fn compaction_said(r: &crate::harness::CompactReport) -> String {
+/// `scale` is the session's `ledger_scale` — **the session's, not the daemon's**.
+/// `Sessions::base` is the command line, where it is always `None`, so reading it
+/// there would convert nothing and quietly print the ledger's figures again.
+fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>) -> String {
+    let shown = |ledger: usize| -> u64 {
+        let n = ledger as u64;
+        match scale {
+            Some((l, p)) if l > 0 && p > 0 => ((n as u128 * p as u128) / l as u128) as u64,
+            _ => n,
+        }
+    };
     // **An empty summary is a re-ingest**, which is the same signal
     // `fork_to_summary` reads to decide what note to write. Nothing was
     // summarised, so "compacted" would be a lie and `was → base` would be one
@@ -1826,12 +1850,18 @@ fn compaction_said(r: &crate::harness::CompactReport) -> String {
         return format!(
             "re-seated: {} tokens of conversation carried onto the new prompt as they are, \
              on transcript {}. Nothing was summarised and nothing was dropped.",
-            r.fork.base_tokens, r.fork.transcript_id
+            shown(r.fork.base_tokens),
+            r.fork.transcript_id
         );
     }
+    // In the units the operator's header shows; see `Config::shown_tokens`. This
+    // line said `1352917 → 11353` beside a header reading 900k, and the operator
+    // read the first number as a lie rather than as the other unit.
     let mut said = format!(
         "compacted: {} → {} tokens, on transcript {}.",
-        r.fork.was_tokens, r.fork.base_tokens, r.fork.transcript_id
+        shown(r.fork.was_tokens),
+        shown(r.fork.base_tokens),
+        r.fork.transcript_id
     );
     if !r.summary_was_streamed {
         said.push_str(&format!(

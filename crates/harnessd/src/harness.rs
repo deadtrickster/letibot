@@ -4298,11 +4298,32 @@ impl<'a> Harness<'a> {
             {
                 let resident = self.session.ledger.len() as u64;
                 if resident + self.cfg.headroom() >= window {
+                    // In the units the operator's header shows; see
+                    // `Config::shown_tokens`. The ledger's own figures are named
+                    // once at the end rather than per number, because three
+                    // conversions in one sentence is not a sentence.
+                    let (r, w, h) = (
+                        self.cfg.shown_tokens(resident),
+                        self.cfg.shown_tokens(window),
+                        self.cfg.shown_tokens(self.cfg.headroom()),
+                    );
+                    let also = if self.cfg.tokens_are_converted() {
+                        format!(
+                            " (counted as the provider counts them; this box's own \
+                             ledger says {resident} of {window}, and it over-counts \
+                             because it holds the reasoning the provider is not sent)"
+                        )
+                    } else {
+                        String::new()
+                    };
                     self.hub.publish(SessionEvent::Warning {
                         code: "context_wall".into(),
                         detail: format!(
-                            "stopping this turn after {round} round(s): {resident} of                              {window} tokens are resident and the next round needs                              {} free. Everything so far is committed, and the session compacts before the next turn — this is the wall, not a failure of the work.",
-                            self.cfg.headroom()
+                            "stopping this turn after {round} round(s): {r} of {w} \
+                             tokens are resident and the next round needs {h} free{also}. \
+                             Everything so far is committed, and the session compacts \
+                             before the next turn — this is the wall, not a failure of \
+                             the work."
                         ),
                     });
                     eprintln!(

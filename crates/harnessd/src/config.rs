@@ -734,6 +734,31 @@ impl Config {
     /// would have fitted. Measured on the operator's own session, 2026-09-20:
     /// 991,596 ledger tokens against 671,280 the provider counted, and a
     /// `/reseat` refused against a window it would have sat inside.
+    /// **A ledger count, in the units the operator's header shows.**
+    ///
+    /// Every number the harness plans with is counted off the ledger, and on a
+    /// metered provider that is not what the header says: the ledger holds the
+    /// reasoning rows a messages provider is never sent, so it over-counts. The
+    /// operator, reading a context-wall notice that said `1350750 of 1440006`
+    /// beside a header reading 900k: *"1.35 is a lie - that top was shown as
+    /// 900+"*. It was not a lie, it was the other unit — which is the same thing
+    /// from where they were sitting.
+    ///
+    /// So a message a person reads converts first. Falls back to the ledger's own
+    /// figure where there is nothing to convert with, which is honest: that IS
+    /// the number in that case, because a local endpoint counts with the
+    /// vocabulary the ledger uses.
+    pub fn shown_tokens(&self, ledger_tokens: u64) -> u64 {
+        self.provider_tokens(ledger_tokens).unwrap_or(ledger_tokens)
+    }
+
+    /// True when [`Config::shown_tokens`] is saying something different from the
+    /// ledger, so a message can name the other number once rather than per figure.
+    pub fn tokens_are_converted(&self) -> bool {
+        self.provider_tokens(1_000_000)
+            .is_some_and(|v| v != 1_000_000)
+    }
+
     pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
         let (ledger, provider) = self.ledger_scale?;
         if ledger == 0 || provider == 0 {
