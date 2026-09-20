@@ -1029,6 +1029,18 @@ pub struct App {
     attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
+    /// How many announced rows are still waiting for their body.
+    ///
+    /// One line at the tail is drawn from this and [`App::bodies_peak`] instead of
+    /// one placeholder per row. See `item_lines`.
+    bodies_pending: usize,
+    /// The high-water mark of [`App::bodies_pending`] since it was last zero.
+    ///
+    /// The denominator: a fork announces every row first, so the peak is the size
+    /// of the carry and `peak - pending` is how much of it has landed. Reset when
+    /// the last body arrives, so the next fork measures itself and not the one
+    /// before.
+    bodies_peak: usize,
 }
 
 /// A run of body lines: history is **borrowed** from the head's own buffer, the
@@ -1070,6 +1082,54 @@ fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
     }
     let left = (w - taken) / 2;
     format!("{}{pad}", " ".repeat(left))
+}
+
+/// **One line for a fork in flight**: the cat, the prefill bar, and a count.
+///
+/// Everything here is borrowed rather than invented, which was the instruction —
+/// *"we have this cat animation for progress and we have prefill progress bar for
+/// local models. reuse that instead of spanning me with grayness"*. [`cat_frame`]
+/// is the walking cat the pre-attach wait draws and [`progress::bar`] is the
+/// three-valued bar the local prefill draws. A carry has no cache to show, so
+/// `cache` is zero and the bar reads as two-valued: same glyphs, same widths.
+///
+/// The numerator is `peak - pending`. A fork announces every carried row before a
+/// single body follows, so the peak IS the size of the carry, and what has not
+/// arrived is what is left to do.
+///
+/// A free function, not a method: by the time the tail is assembled, `screen` has
+/// already borrowed `self` mutably for the history cache.
+fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
+    let done = peak.saturating_sub(pending);
+    let p = progress::Prefill {
+        total: peak as u64,
+        cache: 0,
+        processed: done as u64,
+        time_ms: 0,
+    };
+    let cat = cat_frame(now_ms);
+    let counts = format!(
+        "{} of {} rows",
+        progress::thousands(done as u64),
+        progress::thousands(peak as u64)
+    );
+    // The bar takes what the cat, the counts and the gaps leave. Clamped at both
+    // ends so a narrow terminal degrades to a short bar rather than to arithmetic
+    // that wraps the line into two.
+    let used = width::width(cat) + counts.chars().count() + 4;
+    let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
+    vec![
+        String::new(),
+        format!(
+            "{cat} {} {}",
+            progress::bar(&p, bar_cols, cfg.palette()),
+            cfg.palette().paint(Role::Faint, &counts)
+        ),
+        cfg.palette().paint(
+            Role::Faint,
+            &"  carrying the conversation onto the new prompt".to_string(),
+        ),
+    ]
 }
 
 /// The frame of the walking cat, from **elapsed milliseconds**.
@@ -1304,6 +1364,8 @@ impl App {
             attaching: false,
             attach_started_ms: 0,
             cursor: None,
+            bodies_pending: 0,
+            bodies_peak: 0,
         }
     }
 
@@ -2407,6 +2469,8 @@ impl App {
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
                 }
+                self.bodies_pending += 1;
+                self.bodies_peak = self.bodies_peak.max(self.bodies_pending);
                 self.items.push(SnapshotItem {
                     item_id,
                     kind,
@@ -4347,6 +4411,12 @@ impl App {
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
         };
+        if self.items[idx].item.is_none() {
+            self.bodies_pending = self.bodies_pending.saturating_sub(1);
+            if self.bodies_pending == 0 {
+                self.bodies_peak = 0;
+            }
+        }
         self.items[idx].item = Some(item);
         // The row's rendered form changed, so the history cache from that row
         // on is stale. From that row on, and not from row zero: this is the
@@ -5350,6 +5420,11 @@ impl App {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
+        // Read before the disjoint borrow below, because the fork line is drawn
+        // from the tail and `self` is not whole by then.
+        let (bodies_pending, bodies_peak, now_ms) =
+            (self.bodies_pending, self.bodies_peak, self.now_ms);
+
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
@@ -5477,6 +5552,29 @@ impl App {
                 owned.extend(queued_lines(q, &cfg));
             }
             segs.push(Seg::Owned(owned));
+        }
+
+        // **A fork in flight, as one line rather than thousands.**
+        //
+        // `/reseat` and `/compact` announce every carried row before any body
+        // follows. Drawn one-per-row that is a screen of `[kind — waiting for the
+        // body of s-…]`; the operator's word for it was *"insane amount of
+        // grainess"*, and their instruction was to reuse what already exists —
+        // *"we have this cat animation for progress and we have prefill progress
+        // bar for local models"*. So: the same cat, and `progress::bar`, which is
+        // the same three-valued bar the prefill draws, fed with rows instead of
+        // tokens.
+        //
+        // It sits at the tail with the queued prompts because that is where the
+        // rows are landing, and it disappears by itself — the last body to arrive
+        // takes `bodies_pending` to zero.
+        if self.bodies_pending > 0 && self.bodies_peak > 0 {
+            segs.push(Seg::Owned(rebasing_line(
+                bodies_pending,
+                bodies_peak,
+                now_ms,
+                &cfg,
+            )));
         }
 
         // **The wait, as a walking cat at the centre of the conversation.**
@@ -8839,16 +8937,22 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
     } = *ctx;
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
-        // The event arrived and the body has not — which, since the body now
-        // travels on the log too, is a real in-flight state and no longer a
-        // permanent one. It says so.
-        return (
-            RowClass::Other,
-            vec![dim(
-                cfg,
-                &format!("[{} — waiting for the body of {}]", it.kind, it.item_id),
-            )],
-        );
+        // **The announcement arrived and the body has not — so draw nothing.**
+        //
+        // This used to render `[kind — waiting for the body of s-…]`, one line per
+        // row, which was tolerable when the state lasted a frame in the middle of a
+        // turn. A fork made it intolerable: `/reseat` carries the whole conversation
+        // across and publishes an announcement for every item before a single body
+        // follows, so the operator got thousands of them at once — *"i again so
+        // insane amount of grainess with s- and whatever tool lines"*.
+        //
+        // A row with no body is not information, and a screen full of identical
+        // placeholders is not a diagnostic — it is noise with the shape of one. What
+        // IS worth saying is how far along the carry is, and that is one line at the
+        // tail with the cat and the bar the prefill already uses; see
+        // `App::rebasing_line`. Both callers drop a render with no lines, so
+        // returning none is how a row says "not yet".
+        return (RowClass::Other, Vec::new());
     };
     match item {
         TranscriptItem::System { text, origin } => {
@@ -12844,13 +12948,24 @@ mod tests {
     }
 
     #[test]
-    fn the_body_of_a_row_arrives_and_replaces_the_placeholder() {
+    fn the_body_of_a_row_arrives_and_replaces_the_progress_line() {
         // Fault one, end to end through the head: announce, then fill.
+        //
+        // What an announced-but-empty row shows changed. It used to be one
+        // `[kind — waiting for the body of s-…]` per row, which a fork turns into
+        // thousands at once; it is now one progress line for however many are
+        // outstanding. Both halves are still asserted: something says work is in
+        // flight, and the row itself renders once its body lands.
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "user"))));
+        let waiting = a.screen(80, 12).join("\n");
         assert!(
-            a.screen(80, 12).join("\n").contains("waiting for the body"),
-            "an announced row with no body says so"
+            waiting.contains("carrying the conversation"),
+            "an announced row with no body is counted, not drawn: {waiting}"
+        );
+        assert!(
+            !waiting.contains("waiting for the body"),
+            "and never as a per-row placeholder: {waiting}"
         );
         a.apply(ServerFrame::Event(env(
             2,
@@ -12859,6 +12974,71 @@ mod tests {
         let screen = a.screen(80, 12).join("\n");
         assert!(screen.contains("the operator's own prompt"), "{screen}");
         assert!(!screen.contains("waiting for the body"), "{screen}");
+        assert!(
+            !screen.contains("carrying the conversation"),
+            "the line goes when the last body lands: {screen}"
+        );
+    }
+
+    /// **A fork is one line, however many rows it carries.**
+    ///
+    /// `/reseat` carries the whole conversation and announces every row before a
+    /// single body follows. Drawn one-per-row that is a screen of identical
+    /// placeholders — the operator: *"i again so insane amount of grainess with s-
+    /// and whatever tool lines"* — and the instruction was to reuse what exists:
+    /// *"we have this cat animation for progress and we have prefill progress bar
+    /// for local models"*.
+    ///
+    /// The count is the assertion that matters. A test that only looked for the
+    /// word "carrying" would pass on a screen that also had 200 grey rows under it.
+    #[test]
+    fn a_fork_announces_two_hundred_rows_and_draws_one_progress_line() {
+        let mut a = app();
+        let n = 200;
+        for i in 0..n {
+            a.apply(ServerFrame::Event(env(
+                i + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+        }
+        let screen = a.screen(80, 40).join("\n");
+        assert_eq!(
+            screen.matches("carrying the conversation").count(),
+            1,
+            "exactly one line for the whole carry: {screen}"
+        );
+        assert!(
+            !screen.contains("waiting for the body"),
+            "and not one placeholder among them: {screen}"
+        );
+        // The bar is fed rows, so it must say how many — nothing has landed yet.
+        assert!(screen.contains(&format!("0 of {n} rows")), "{screen}");
+
+        // Bodies land and the count follows them.
+        for i in 0..(n / 2) {
+            a.apply(ServerFrame::Event(env(
+                n + i + 1,
+                testing::content(&format!("s.{i}"), "a line of conversation"),
+            )));
+        }
+        let half = a.screen(80, 40).join("\n");
+        assert!(
+            half.contains(&format!("{} of {n} rows", n / 2)),
+            "the numerator is what has arrived: {half}"
+        );
+
+        // And the last one takes the line away entirely.
+        for i in (n / 2)..n {
+            a.apply(ServerFrame::Event(env(
+                2 * n + i + 1,
+                testing::content(&format!("s.{i}"), "a line of conversation"),
+            )));
+        }
+        let done = a.screen(80, 40).join("\n");
+        assert!(
+            !done.contains("carrying the conversation"),
+            "nothing is outstanding, so nothing is drawn: {done}"
+        );
     }
 
     #[test]
