@@ -418,6 +418,16 @@ pub enum ClientFrame {
     ReseatSession {
         client_request_id: String,
         expected_seq: u64,
+        /// **Carry the conversation across instead of summarising it.**
+        ///
+        /// A re-seat exists to change message zero, and paying for that with a
+        /// summary turn is right when the point is to shrink and pure loss when
+        /// it is not. `true` forks onto the new prompt with every item verbatim;
+        /// the next turn then pays a cold prefill of the whole history, which is
+        /// the trade. `#[serde(default)]`, so an older head asks for the
+        /// summarising kind it has always asked for.
+        #[serde(default)]
+        verbatim: bool,
     },
     /// Move this session's project to a named point (`allow-all`, `writes-allowed`,
     /// an opencode name…). The daemon persists it in the mode store, so it applies

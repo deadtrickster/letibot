@@ -275,11 +275,13 @@ impl HeadClient {
 
     /// Ask the daemon to rebuild this conversation's prompt from the tools it seats
     /// now, forking onto it. Queued like a compaction, because it is one.
-    pub fn reseat(&mut self, expected_seq: u64) -> Result<String, ClientError> {
+    /// `verbatim` carries the conversation across instead of summarising it.
+    pub fn reseat(&mut self, expected_seq: u64, verbatim: bool) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::ReseatSession {
             client_request_id: client_request_id.clone(),
             expected_seq,
+            verbatim,
         })?;
         Ok(client_request_id)
     }

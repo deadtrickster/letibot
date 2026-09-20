@@ -1386,9 +1386,20 @@ impl<'a> Sessions<'a> {
             // runs through the same door and reports through the same one. What it
             // adds is the sentence naming which tools the model can call now that
             // it could not before — the reason anybody types this.
-            CommandKind::Reseat => {
+            CommandKind::Reseat { verbatim } => {
+                // Two ways to change message zero, and the difference is what
+                // happens to everything under it: `reseat` pays a summary turn,
+                // `reingest` carries the conversation across and pays a cold
+                // prefill instead.
+                let verbatim = *verbatim;
                 let out = match self.harness(session_id) {
-                    Ok(h) => h.reseat(),
+                    Ok(h) => {
+                        if verbatim {
+                            h.reingest()
+                        } else {
+                            h.reseat()
+                        }
+                    }
                     Err(e) => Err(e),
                 };
                 match out {

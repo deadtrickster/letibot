@@ -99,7 +99,11 @@ pub enum CommandKind {
     /// The tool schemas live in the stable prefix and a session's is fixed when it
     /// is created, so a conversation opened without a shell can never call one
     /// however its daemon is later seated. This is the only thing that changes it.
-    Reseat,
+    Reseat {
+        /// Carry every item across instead of summarising. See
+        /// `ClientFrame::ReseatSession`.
+        verbatim: bool,
+    },
     Interrupt {
         reason: String,
     },
@@ -228,7 +232,7 @@ impl CommandKind {
         match self {
             CommandKind::Prompt { .. } => "prompt",
             CommandKind::Compact => "compact",
-            CommandKind::Reseat => "reseat",
+            CommandKind::Reseat { .. } => "reseat",
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
@@ -895,8 +899,15 @@ impl Hub {
                 (CommandKind::Compact, false) => crate::protocol::NOTE_COMPACT_QUEUED.into(),
                 // Queued like a compaction, and stale-tolerant for the same reason:
                 // a head that asked while the screen moved still meant it.
-                (CommandKind::Reseat, true) => format!("{REJECT_STALE_SEQ}: queued anyway"),
-                (CommandKind::Reseat, false) => "re-seat queued".into(),
+                (CommandKind::Reseat { .. }, true) => {
+                    format!("{REJECT_STALE_SEQ}: queued anyway")
+                }
+                (CommandKind::Reseat { verbatim }, false) => if *verbatim {
+                    "re-seat queued — carrying the conversation across, not summarising it"
+                } else {
+                    "re-seat queued"
+                }
+                .into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
                 (CommandKind::Promote, _) => "background requested".into(),

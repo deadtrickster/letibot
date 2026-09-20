@@ -133,7 +133,10 @@ pub enum Action {
     Compact,
     /// Rebuild this conversation's prompt from the tools seated now, forking onto
     /// it. The only thing that changes a live session's tool list.
-    Reseat,
+    Reseat {
+        /// Carry the conversation across instead of summarising it.
+        verbatim: bool,
+    },
     /// Move this session's project to a named point, persisted by the daemon.
     /// See `D13`.
     /// `consented` is the operator's answer to the unconfined-`allow-all`
@@ -1139,7 +1142,14 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("jobs", "open or close the background-jobs pane"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
-    ("reseat", "rebuild the prompt from the tools seated now"),
+    (
+        "reseat",
+        "rebuild the prompt from the tools seated now (summarises)",
+    ),
+    (
+        "reseat keep",
+        "the same, carrying the conversation across instead of summarising",
+    ),
     ("interrupt", "stop the running turn"),
     ("quit", "leave the head"),
 ];
@@ -4099,13 +4109,24 @@ impl App {
             // from what is seated now. Same refusal as `/compact` for the same
             // reason — it acts on the session this head is in, never one you are
             // only looking at.
-            "reseat" => {
+            // `/reseat` summarises; `/reseat keep` carries the conversation
+            // across. Both change message zero — the difference is what happens
+            // to everything under it, and it is the operator's to choose.
+            "reseat" | "reseat keep" | "reseat verbatim" => {
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                self.say("re-seating: summarising, then rebuilding the prompt…");
-                Some(Action::Reseat)
+                let verbatim = cmd != "reseat";
+                if verbatim {
+                    self.say(
+                        "re-seating: carrying the conversation across as it is. The next \
+                         turn re-sends all of it once.",
+                    );
+                } else {
+                    self.say("re-seating: summarising, then rebuilding the prompt…");
+                }
+                Some(Action::Reseat { verbatim })
             }
             other => {
                 // The daemon's verbs. The head does not know them and does not
