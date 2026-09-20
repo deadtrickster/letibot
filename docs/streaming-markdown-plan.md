@@ -128,14 +128,26 @@ extra bounded parse per settle.
 
 ### The two passes
 
-- **Primary**: `Stream::new(Lang::Markdown)` over the window. Block model by walking
-  `root()`, same mapping as today's lexer read off a tree: `atx_heading`/`setext_heading`
-  → `Heading`, `fenced_code_block` → `Code` (`lang` from the `info_string` child; `closed`
-  from whether the closing delimiter node is present — *not* from an error node, see §1),
-  `list` → `List` (written number from the marker), `block_quote` → `Quote`, `pipe_table`
-  → `Table`, `thematic_break` → `Rule`, `paragraph` → `Paragraph`. The blocks are **not**
-  `root`'s direct children: the grammar wraps the document in `document` and in a `section`
-  per heading, so the walk descends through those containers.
+- **Primary**: a parse of the window with the block grammar. Block model by walking the
+  tree, same mapping as today's lexer read off a tree: `atx_heading`/`setext_heading`
+  → `Heading`, `list` → `List` (written number from the marker), `block_quote` → `Quote`,
+  `pipe_table` → `Table`, `thematic_break` → `Rule`, `paragraph` → `Paragraph`. The blocks
+  are **not** `root`'s direct children: the grammar wraps the document in `document` and in
+  a `section` per heading, so the walk descends through those containers.
+
+  **Fenced code blocks are not in that parse at all.** The grammar's closing delimiter is
+  not line-anchored — `"abc ```"` closes a block opened with ``` , with the delimiter node
+  `" ```"` at bytes 7..11 — and the damage is not local: a block closed early leaves the
+  parser in the wrong state, so the blocks after it are wrong too and there is nothing to
+  repair one at a time. So `fences_in` finds the fences **in the text**, where CommonMark's
+  rule is four lines long (a line of its own, only the same run, at least as long as the
+  opening one, container prefix stripped: a fence in a quote is written `"> ```rust"`), and
+  before the parse each fence's bytes are blanked to spaces with newlines kept. Length and
+  every newline are preserved, so the tree's offsets still address the real text and the
+  block structure *around* the fences is unchanged — a fence was a separator, and blank
+  lines are the same separator. The fences are then merged back in by offset, and a
+  container whose only content was a fence is dropped rather than rendering as an empty
+  quote beside the code box that took its content.
 - **Secondary**: `Stream::new(Lang::MarkdownInline)`, **one parse per range**, each over
   that range's text alone. A range holding no character that can start a construct
   (`` ` `` `*` `_` `~` `[` `<` `\` `!`) is skipped without parsing, which is most
@@ -299,25 +311,48 @@ documents at six chunk sizes, plus the byte-at-a-time case. The property is the 
 safety argument for the window, and the corpus has to keep the shapes that break it —
 fences in fences, loose lists, quotes holding fences, tables, rules.
 
-**Then "code blocks still broken" turned out to be the inline pass, not the guards.** The
-next report (2026-09-20, *"first rust block is perfect, second absolutely not"*) was a code
-span spanning ten blocks, and it is item 1 of the secondary pass above. Three things about
-it are worth keeping:
+**Then "code blocks still broken" turned out to be the inline pass, not the guards.** That
+report (2026-09-20, *"first rust block is perfect, second absolutely not"*) was a code span
+spanning ten blocks — item 1 of the secondary pass above. What it says about the method is
+worth keeping:
 
 - **The bug was in the path the operator was looking at and not the one I was testing.**
   Every test asserted `stream(...) == lex(...)` — but the *stream* was right and the
-  *one-shot* was wrong, so only a document long enough to hold two ``` in one parse could
-  show it, and every fixture was a few lines. The fixture is now a real 3.4 KB message, the
-  exact bytes from the session store, kept at `crates/tui/tests/fixtures/streamed-message.md`
-  and asserted at both the model level (`markdown.rs`) and on the rendered screen
-  (`render.rs`), because that is where the operator saw it.
+  *one-shot* was wrong, so only a document long enough to hold two delimiters in one parse
+  could show it, and every fixture was a few lines.
 - **The fix made the renderer cheaper.** One parse per range, with ranges holding no syntax
   characters skipped, replaced one parse of the whole window: `letibot-tui`'s suite went
   from 26 s to 5.6 s on the same tests.
-- **It is the class of bug the failing-criterion policy is for.** rano's ignored
-  measurement, this, and the three guard bugs are all "the number looked fine at the size I
-  tested". Each is now pinned with the input that broke it rather than with a rule derived
-  from it.
+- The message itself became the first fixture (`streamed-message.md`), because the shape
+  that broke it is a shape and its length was part of it.
+
+**Then "awful" was the fences, and the grammar is where it went wrong.** The last report
+(2026-09-20, *"that first rust block was perfect but second was a code block with ```rust
+<code> ``` inside"*, then *"awful"*) was not about the renderer at all:
+
+- **`tree-sitter-md`'s closing fence is not line-anchored.** For `"abc ```"` the delimiter
+  node is `" ```"` at bytes 7..11, so a fence whose content ends a line in backticks closes
+  there. The damage is not local — the parser's *state* is wrong from that point — so a
+  message that drew box art containing ``` lost two art lines to a paragraph and had its
+  whole tail rendered inside one unclosed code box. That is exactly what the operator's
+  screen showed, and it is the grammar's README taken literally: *"not recommended to use
+  this parser where correctness is important"*.
+- The fix is `fences_in` + `mask` (see the primary pass above): fences are found in the
+  text and blanked out before the parse, with length and newlines preserved so every offset
+  still addresses the real text. It costs one thing — a fence inside a quote or a list item
+  is now a **code box of its own** rather than quote prose — which is better than what it
+  replaced, and it is what the tests assert.
+- The message became the second fixture, `box-art-message.md`.
+
+Two things the whole sequence says about the method, both worth keeping:
+
+- **Every one of these was invisible at the size I tested and obvious at the size the
+  operator was using.** Six bugs across four rounds, and the fixtures that catch them are
+  real messages from the store rather than documents written to be small.
+- **`fence_spans` was the wrong idea, and it took two rounds to see it.** Reading fences off
+  the tree looks right until a test asks whether the tree's idea of a fence is the text's.
+  It is not, for the closing delimiter — and every other reader of the tree inherited that.
+  The rule the code now follows is the text's, with the tree doing only what it is good at.
 
 Code blocks stay on `StreamingCode` for this workstream. Real grammar highlighting for
 fenced code via rano is a separate, later decision — now a *generic* one (`Stream` +

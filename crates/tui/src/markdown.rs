@@ -232,14 +232,6 @@ pub struct IncrementalMarkdown {
     stable: Vec<Block>,
     tail: Vec<Block>,
     max_unfrozen: usize,
-    /// The block stream, holding `raw[window_start..]`. Dropped and re-seated
-    /// whenever the window moves, which is what keeps the settled text out of the
-    /// parser's input.
-    block: Option<Stream>,
-    /// The window offset `block` was seated at, and how many bytes of `raw` it has
-    /// been shown. Both must match for an incremental `push` to be valid.
-    block_start: usize,
-    block_len: usize,
     bytes_lexed: u64,
     lex_calls: u64,
 }
@@ -317,26 +309,24 @@ impl IncrementalMarkdown {
         self.raw.len() - self.window_start
     }
 
-    /// Bring the streams up to date with `raw`, then settle what has completed.
+    /// Bring the parse up to date with `raw`, then settle what has completed.
     ///
-    /// Three signals, and all three are needed.
+    /// Two signals, and both are needed.
     ///
-    /// The **tree** says where the blocks are. The **text guards** ([`cut_point`]) say
-    /// which `\n\n` boundaries are safe, because the tree alone is not enough: `1. a\n\n2`
-    /// parses as a list and a paragraph and then becomes one loose list. And the tree's
-    /// own block list says where a cut is **not** allowed at all, because the guards are
-    /// not enough either: they count fences by lines that *start* with ```, and a fence
-    /// may contain such a line. See [`open_fence_start`] — that is how the operator's
-    /// code block came apart.
+    /// The **text guards** ([`cut_point`]) say which `\n\n` boundaries are safe, because
+    /// the tree alone is not enough: `1. a\n\n2` parses as a list and a paragraph and then
+    /// becomes one loose list. And the **fences** say where a cut is not allowed at all,
+    /// because the guards are not enough either: they count fences by lines that *start*
+    /// with ```, and a fence may contain such a line. See [`fences_in`] — that is how the
+    /// operator's code block came apart.
     ///
     /// Settling **re-parses the prefix on its own** rather than taking the leading blocks
-    /// out of the window's tree. It is one extra parse of a window bounded by the cap,
-    /// and it buys the property outright: the guard says
+    /// out of the window's parse. It is one extra parse of a window bounded by the cap, and
+    /// it buys the property outright: the guard says
     /// `parse(win[..cut]) ++ parse(win[cut..]) == parse(win)`, so the prefix's blocks are
     /// the right blocks by construction.
     fn refresh(&mut self) {
         for _ in 0..MAX_SETTLE_ROUNDS {
-            self.feed_window();
             let win = self.raw[self.window_start..].to_string();
             let (blocks, fences) = self.project();
             let Some(cut) = cut_point(&win, self.max_unfrozen, &fences) else {
@@ -346,68 +336,80 @@ impl IncrementalMarkdown {
             let prefix = parse_standalone(&win[..cut], &mut self.bytes_lexed, &mut self.lex_calls);
             self.stable.extend(prefix);
             self.window_start += cut;
-            // Round again: the stream is now seated on a smaller window, and there is
-            // usually nothing more to do because what is left is one trailing block.
+            // Round again: the window is now smaller, and there is usually nothing more to
+            // do because what is left is one trailing block.
         }
         // Unreachable for any real input: each round moves `window_start` forward.
-        // Rendering the window as-is is the safe thing to do with a stream that
-        // somehow kept producing work.
+        // Rendering the window as-is is the safe thing to do with a parse that somehow
+        // kept producing work.
         self.tail = self.project().0;
-    }
-
-    /// Make the block stream hold `raw[window_start..]`, incrementally where the
-    /// window has not moved.
-    fn feed_window(&mut self) {
-        let seated = self.block.is_some() && self.block_start == self.window_start;
-        if seated && self.block_len <= self.raw.len() {
-            if self.block_len == self.raw.len() {
-                return;
-            }
-            let delta = self.raw[self.block_len..].to_string();
-            self.bytes_lexed += delta.len() as u64;
-            self.lex_calls += 1;
-            self.block.as_mut().unwrap().push(&delta);
-            self.block_len = self.raw.len();
-            return;
-        }
-        // The window moved (or this is the first push): a fresh stream over it. The
-        // settled text is not in this string, which is the whole design.
-        let win = self.raw[self.window_start..].to_string();
-        let mut stream = Stream::new(Lang::Markdown);
-        stream.push(&win);
-        self.bytes_lexed += win.len() as u64;
-        self.lex_calls += 1;
-        self.block = Some(stream);
-        self.block_start = self.window_start;
-        self.block_len = self.raw.len();
     }
 
     /// The window's blocks, and the byte ranges a cut may not land inside.
     fn project(&mut self) -> (Vec<Block>, Vec<(usize, usize)>) {
-        let Some(root) = self.block.as_ref().and_then(Stream::root) else {
-            return (Vec::new(), Vec::new());
-        };
-        let src = self.block.as_ref().map(|s| s.src().to_string()).unwrap_or_default();
-        let spans = inline_spans(&src, &root, &mut self.bytes_lexed, &mut self.lex_calls);
-        let fences = fence_spans(&root, src.len());
-        (blocks_of(&root, &src, &spans), fences)
+        let src = self.raw[self.window_start..].to_string();
+        let fences = fences_in(&src);
+        let (blocks, spans) = parse_blocks(&src, &fences, &mut self.bytes_lexed, &mut self.lex_calls);
+        let _ = spans;
+        (blocks, fence_spans(&src))
     }
+}
+
+/// The blocks of `src`, given the fences already found in it.
+fn parse_blocks(
+    src: &str,
+    fences: &[Fence],
+    bytes_lexed: &mut u64,
+    lex_calls: &mut u64,
+) -> (Vec<Block>, Vec<Span>) {
+    let text = mask(src, fences);
+    *bytes_lexed += text.len() as u64;
+    *lex_calls += 1;
+    let mut stream = Stream::new(Lang::Markdown);
+    stream.push(&text);
+    let Some(root) = stream.root() else {
+        return (Vec::new(), Vec::new());
+    };
+    let spans = inline_spans(src, &root, bytes_lexed, lex_calls);
+    (blocks_of(&root, src, &spans, fences), spans)
 }
 
 /// Parse a standalone span of markdown into blocks, both passes.
 ///
-/// Used for a window prefix cut at a text boundary, and by [`lex`]. A fresh pair of
-/// streams: no state survives, which is right for text that is being settled once.
+/// Used for a window prefix cut at a text boundary, and by [`lex`].
 fn parse_standalone(src: &str, bytes_lexed: &mut u64, lex_calls: &mut u64) -> Vec<Block> {
-    let mut block = Stream::new(Lang::Markdown);
-    block.push(src);
-    *bytes_lexed += src.len() as u64;
-    *lex_calls += 1;
-    let Some(root) = block.root() else {
-        return Vec::new();
-    };
-    let spans = inline_spans(src, &root, bytes_lexed, lex_calls);
-    blocks_of(&root, src, &spans)
+    let fences = fences_in(src);
+    parse_blocks(src, &fences, bytes_lexed, lex_calls).0
+}
+
+/// `src` with every fence blanked out, byte for byte.
+///
+/// `tree-sitter-md` gets the *extent* of a fence wrong when its closing delimiter is not
+/// alone on its line (see [`fences_in`]), and the damage is not local: a block closed
+/// early leaves the parser in the wrong state, so the blocks after it are wrong too and
+/// there is no repairing them one at a time. The way out is to keep fences away from the
+/// grammar altogether. Each fence's bytes become spaces, newlines kept, which leaves the
+/// block structure *around* them exactly as it was — a fence was a separator, and blank
+/// lines are the same separator — and costs nothing in offsets, because the length is
+/// unchanged and every newline is where it was. So a node the grammar reports at byte `n`
+/// corresponds to byte `n` of the real text.
+///
+/// Replacing bytes of a multi-byte character with spaces is safe: the result is ASCII
+/// there, and no newline moved.
+fn mask(src: &str, fences: &[Fence]) -> String {
+    if fences.is_empty() {
+        return src.to_string();
+    }
+    let mut bytes = src.as_bytes().to_vec();
+    for f in fences {
+        let end = f.end.min(bytes.len());
+        for b in &mut bytes[f.open.min(end)..end] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| src.to_string())
 }
 
 /// Lex a self-contained span of markdown into blocks.
@@ -674,25 +676,148 @@ fn code_span_inner(node: &Node) -> Option<(usize, usize)> {
 // The block pass
 // ---------------------------------------------------------------------------
 
-/// Map the window's tree children to blocks.
+/// A fenced code block found in the text.
+#[derive(Debug, Clone)]
+struct Fence {
+    /// Offset of the opening line's start — the whole line is the fence's, prefix and all.
+    open: usize,
+    /// The container syntax the opening line carries — `"> "` in a quote, an item's indent
+    /// in a list, `""` at the top level. Every line of the block repeats it.
+    prefix: String,
+    /// Offset of the body: just after the opening line's newline.
+    body: usize,
+    /// Offset of the closing line's start, or the end of the text when there is none.
+    close: usize,
+    /// Offset just after the closing line.
+    end: usize,
+    /// The info string, trimmed.
+    lang: String,
+    /// Whether a closing fence was found.
+    closed: bool,
+}
+
+/// Every fenced code block in `src`, in order.
 ///
-/// The block grammar wraps the document in containers — `document`, and a `section`
-/// per heading — so the blocks are the leaves of that chain, not `root`'s direct
-/// children. Walking through them is what makes the flat block list the renderer
-/// wants, and it is why a heading's section does not become one giant block.
-fn blocks_of(root: &Node, src: &str, spans: &[Span]) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    collect_blocks(root, src, spans, &mut blocks);
-    blocks
+/// **This is not read off the tree, and that is the point.** `tree-sitter-md` accepts a
+/// run of backticks anywhere on a line as a closing fence: for `"abc ```"` the delimiter
+/// node is `" ```"` at bytes 7..11, so the block closes there and the rest of the code is
+/// parsed as prose. CommonMark requires the closing fence to be a line of its own, and
+/// the grammar's README says it is built for syntax highlighting rather than correctness —
+/// so the extent of a fence is computed here, from the text, where the rule is four lines
+/// long.
+///
+/// Found on the operator's screen (2026-09-20, *"awful"*): a message that drew box art
+/// containing ``` was cut in half at an art line ending in backticks, the remainder of
+/// the code became a paragraph, and the message's own prose ended up inside an unclosed
+/// code box.
+fn fences_in(src: &str) -> Vec<Fence> {
+    let mut out = Vec::new();
+    let mut off = 0;
+    while off < src.len() {
+        let line_end = match src[off..].find('\n') {
+            Some(i) => off + i,
+            None => src.len(),
+        };
+        let (prefix, marker) = split_container(&src[off..line_end]);
+        if let Some(&ch @ (b'`' | b'~')) = marker.as_bytes().first() {
+            let n = marker.bytes().take_while(|b| *b == ch).count();
+            if n >= 3 {
+                let lang = marker[n..].trim().to_string();
+                let body = (line_end + 1).min(src.len());
+                let (close, end, closed) = match closing_fence(src, body, prefix, ch, n) {
+                    Some((start, after)) => (start, after, true),
+                    None => (src.len(), src.len(), false),
+                };
+                out.push(Fence {
+                    open: off,
+                    prefix: prefix.to_string(),
+                    body,
+                    close,
+                    end,
+                    lang,
+                    closed,
+                });
+                off = end.max(line_end + 1);
+                continue;
+            }
+        }
+        off = line_end + 1;
+    }
+    out
 }
 
-/// Containers the block grammar wraps blocks in. They carry no text of their own.
-fn is_container(kind: &str) -> bool {
-    matches!(kind, "document" | "section")
+/// Split a line into the container syntax it carries and what follows: `("> ", "```rust")`
+/// for a fence inside a quote, `("  ", "```")` for an indented one, `("", "text")` for a
+/// plain line.
+///
+/// The prefix is what a continuation line repeats, so it is what [`closing_fence`] has to
+/// strip to recognise a closing delimiter, and what [`fence_lines`] has to strip to get at
+/// the code. Quote markers are part of it: a fence in a quote is written `"> ```rust"`, and
+/// a scan that only skipped whitespace would miss every one of them.
+fn split_container(line: &str) -> (&str, &str) {
+    let mut cut = 0;
+    loop {
+        let rest = &line[cut..];
+        let ws = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        cut += ws;
+        if line[cut..].starts_with('>') {
+            cut += 1;
+        } else {
+            break;
+        }
+    }
+    (&line[..cut], &line[cut..])
 }
 
-/// The byte ranges a cut may not land inside: one per fence in the tree, from its opening
-/// delimiter to its closing one — or to the end of the window when it has none.
+/// The closing fence of a block opened with `n` of `ch`: `(its line's start, offset just
+/// after it)`.
+///
+/// The prefix the opening line carries — `"> "` in a quote, an item's indent in a list —
+/// is stripped before each line is tested, because CommonMark's continuation rule puts it
+/// on every line of the block and a closing fence inside a quote is written `"> ```"`.
+fn closing_fence(src: &str, from: usize, prefix: &str, ch: u8, n: usize) -> Option<(usize, usize)> {
+    let mut off = from;
+    while off < src.len() {
+        let line_end = match src[off..].find('\n') {
+            Some(i) => off + i,
+            None => src.len(),
+        };
+        let (_, marker) = split_container(&src[off..line_end]);
+        let marker = if let Some(m) = marker.strip_prefix(prefix.trim_start()) {
+            m
+        } else {
+            marker
+        };
+        let t = marker.trim();
+        if t.len() >= n && t.bytes().all(|b| b == ch) {
+            return Some((off, (line_end + 1).min(src.len())));
+        }
+        off = line_end + 1;
+    }
+    None
+}
+
+/// A fence's code lines, with the opening line's own prefix stripped from each line.
+///
+/// The prefix is the *block's* — `"> "` for a quoted fence, an item's indent for one in a
+/// list — not whatever each line happens to start with. They are the same in every
+/// well-formed case, and a code line that legitimately begins with `"> "` inside a
+/// top-level fence must keep it.
+fn fence_lines(src: &str, f: &Fence) -> Vec<String> {
+    let body = &src[f.body..f.close];
+    let mut lines: Vec<String> = body
+        .split('\n')
+        .map(|l| l.strip_prefix(f.prefix.as_str()).unwrap_or(l).to_string())
+        .collect();
+    // `"a\n"` splits to `["a", ""]`; the empty tail is the newline, not a line.
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// The byte ranges a cut may not land inside: one per fence, from its opening delimiter to
+/// its closing one — or to the end of the window when it has none.
 ///
 /// **Both ends are allowed and the middle is not.** A cut at `start` leaves the fence
 /// entirely in the window, which is right; a cut at `end` leaves it entirely in the
@@ -701,38 +826,13 @@ fn is_container(kind: &str) -> bool {
 /// half that keeps neither delimiter is not code at all — it parses as a paragraph. That
 /// is not a spelling mistake a reader shrugs at; it is the model's code shown as prose.
 ///
-/// An unclosed fence runs to the end of the input in CommonMark, so its range reaches
-/// `win_len`: nothing at or after it may settle, which is what keeps a settle out of an
-/// open code block. Found the hard way (2026-09-20, "code blocks still broken"): the text
-/// guards count fences by lines that *start* with ```, a fence may contain such a line,
-/// and the count then inverts — so the guard called a really-open fence closed and cut
-/// inside it.
-fn fence_spans(root: &Node, win_len: usize) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    fn walk(n: &Node, win_len: usize, out: &mut Vec<(usize, usize)>) {
-        if n.kind == "fenced_code_block" {
-            let delims: Vec<&Node> = n
-                .children
-                .iter()
-                .filter(|c| c.kind == "fenced_code_block_delimiter")
-                .collect();
-            let end = if delims.len() < 2 {
-                win_len
-            } else {
-                delims[delims.len() - 1].end
-            };
-            if end > n.start {
-                out.push((n.start, end));
-            }
-            // Not descending: a fence's body is raw text, and a ``` inside it is content.
-            return;
-        }
-        for c in &n.children {
-            walk(c, win_len, out);
-        }
-    }
-    walk(root, win_len, &mut out);
-    out
+/// An unclosed fence runs to the end of the input, so its range reaches the end of the
+/// window: nothing at or after it may settle. That is what keeps a settle out of an open
+/// code block, and it is why these come from [`fences_in`] rather than from the tree —
+/// the guards and the block model have to agree about where the fences are, and only one
+/// of them can be right.
+fn fence_spans(src: &str) -> Vec<(usize, usize)> {
+    fences_in(src).iter().map(|f| (f.open, f.end)).collect()
 }
 
 /// Is `at` inside a fence rather than at one of its ends?
@@ -740,22 +840,102 @@ fn inside_a_fence(fences: &[(usize, usize)], at: usize) -> bool {
     fences.iter().any(|&(s, e)| at > s && at < e)
 }
 
-fn collect_blocks(node: &Node, src: &str, spans: &[Span], blocks: &mut Vec<Block>) {
+/// The fence that opens at `at`, if any.
+fn fence_at(fences: &[Fence], at: usize) -> Option<&Fence> {
+    fences.iter().find(|f| f.open == at)
+}
+
+/// Map the parsed tree's block children to blocks, with the fences in their place.
+///
+/// The block grammar wraps the document in containers — `document`, and a `section` per
+/// heading — so the blocks are the leaves of that chain, not `root`'s direct children.
+/// Walking through them is what makes the flat block list the renderer wants, and it is
+/// why a heading's section does not become one giant block.
+///
+/// The fences are **not** in that tree at all: [`mask`] blanked them out before the parse,
+/// because the grammar cannot be trusted with a closing delimiter that is not alone on its
+/// line. So the two lists are merged by offset, which is what keeps a message's blocks in
+/// the order the model wrote them.
+fn blocks_of(root: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Vec<Block> {
+    let mut tree: Vec<(usize, Block)> = Vec::new();
+    collect_blocks(root, src, spans, fences, &mut tree);
+    let mut out = Vec::new();
+    let mut it = tree.into_iter().peekable();
+    for f in fences {
+        while it.peek().is_some_and(|(start, _)| *start < f.open) {
+            out.push(it.next().unwrap().1);
+        }
+        out.push(Block::Code {
+            lang: f.lang.clone(),
+            lines: fence_lines(src, f),
+            closed: f.closed,
+        });
+    }
+    out.extend(it.map(|(_, b)| b));
+    out
+}
+
+/// Containers the block grammar wraps blocks in. They carry no text of their own.
+fn is_container(kind: &str) -> bool {
+    matches!(kind, "document" | "section")
+}
+
+fn collect_blocks(
+    node: &Node,
+    src: &str,
+    spans: &[Span],
+    fences: &[Fence],
+    blocks: &mut Vec<(usize, Block)>,
+) {
     for c in &node.children {
         if !c.named {
             continue;
         }
         if is_container(&c.kind) {
-            collect_blocks(c, src, spans, blocks);
+            collect_blocks(c, src, spans, fences, blocks);
             continue;
         }
-        if let Some(block) = block_of(c, src, spans) {
-            blocks.push(block);
+        // A block reported *inside* a fence is an artefact of the grammar having glued
+        // itself back together around one; the fence is emitted from the scan.
+        if fences.iter().any(|f| c.start >= f.open && c.start < f.end) {
+            continue;
+        }
+        // A container whose only content was a fence. `> ```rust … ``` ` is read by the
+        // grammar as a quote that holds nothing once the fence is masked away — an empty
+        // rail sitting beside the code box that took its content. Dropped, which is what
+        // keeps the code on the screen without a stray marker above it.
+        if fences.iter().any(|f| f.open >= c.start && f.open < c.end)
+            && only_holds_a_fence(&src[c.start..c.end.min(src.len())])
+        {
+            continue;
+        }
+        if let Some(block) = block_of(c, src, spans, fences) {
+            blocks.push((c.start, block));
         }
     }
 }
 
-fn block_of(node: &Node, src: &str, spans: &[Span]) -> Option<Block> {
+/// Is a fence the only thing in `text`, container markers aside?
+///
+/// A fence's own lines do not count — they are about to become a code block of their own —
+/// and a line's container syntax (`"> "`, `"- "`, an item's indent) is not content either.
+/// Everything else is: one word of prose and the container belongs on the screen.
+fn only_holds_a_fence(text: &str) -> bool {
+    let mut in_fence = false;
+    for line in text.split('\n') {
+        let (_, marker) = split_container(line);
+        if marker.starts_with("```") || marker.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && !marker.trim().is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+fn block_of(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Option<Block> {
     match node.kind.as_str() {
         "atx_heading" | "setext_heading" => {
             let level = heading_level(node);
@@ -770,14 +950,14 @@ fn block_of(node: &Node, src: &str, spans: &[Span]) -> Option<Block> {
         }),
         "block_quote" => {
             let mut lines = Vec::new();
-            subtree_lines(node, src, spans, &mut lines);
+            subtree_lines(node, src, spans, fences, &mut lines);
             if lines.is_empty() {
                 lines.push(Vec::new());
             }
             Some(Block::Quote { lines })
         }
-        "fenced_code_block" | "indented_code_block" => Some(code_block(node, src)),
-        "list" => Some(list_block(node, src, spans)),
+        "fenced_code_block" | "indented_code_block" => Some(code_block(node, src, fences)),
+        "list" => Some(list_block(node, src, spans, fences)),
         "pipe_table" => Some(table_block(node, src, spans)),
         "thematic_break" => Some(Block::Rule),
         // Raw HTML and anything the grammar grew that this projection does not know:
@@ -850,7 +1030,7 @@ fn lines_of_node(node: &Node, src: &str, spans: &[Span]) -> Vec<Vec<Run>> {
 /// everything a reader would see. The cost is that a quoted fence is quote prose rather
 /// than a coloured code box: the model cannot say "this line is code" inside a quote,
 /// and showing the ``` markers instead would be worse.
-fn subtree_lines(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>) {
+fn subtree_lines(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: &mut Vec<Vec<Run>>) {
     for c in &node.children {
         match c.kind.as_str() {
             // Structure and link targets: not text.
@@ -861,6 +1041,23 @@ fn subtree_lines(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>
             | "link_destination" | "link_title" | "link_label" => {}
             // Text, with inline styling.
             "inline" => lines_of_ranges(src, spans, &inline_ranges(c), out),
+            // A fence: its extent from the text, for the reason [`fences_in`] gives. A
+            // fence inside a quote or an item is the case the grammar gets wrong most
+            // often, because a quoted closing delimiter has `"> "` in front of it.
+            "fenced_code_block" => match fence_at(fences, c.start) {
+                Some(f) => {
+                    for line in fence_lines(src, f) {
+                        out.push(vec![run(line, InlineStyle::Plain)]);
+                    }
+                }
+                // Not recognised as a fence at its own start: show its content as the
+                // tree read it rather than dropping the block.
+                None => {
+                    for line in text_without_continuations(c, src).lines() {
+                        out.push(vec![run(line.to_string(), InlineStyle::Plain)]);
+                    }
+                }
+            },
             // Raw code: its content, continuation markers cut, as plain lines.
             "code_fence_content" => {
                 for line in text_without_continuations(c, src).lines() {
@@ -888,7 +1085,7 @@ fn subtree_lines(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>
                     }
                 }
             }
-            _ => subtree_lines(c, src, spans, out),
+            _ => subtree_lines(c, src, spans, fences, out),
         }
     }
 }
@@ -923,10 +1120,10 @@ fn lines_of_ranges(
 /// have already been filtered, so a nested list is not in here, but the fallback that
 /// catches a leaf without children has to apply to each node rather than to the item as
 /// a whole.
-fn item_runs(body: &[Node], src: &str, spans: &[Span]) -> Vec<Run> {
+fn item_runs(body: &[Node], src: &str, spans: &[Span], fences: &[Fence]) -> Vec<Run> {
     let mut lines = Vec::new();
     for n in body {
-        subtree_lines_one(n, src, spans, &mut lines);
+        subtree_lines_one(n, src, spans, fences, &mut lines);
     }
     let mut out: Vec<Run> = Vec::new();
     for (i, line) in lines.into_iter().enumerate() {
@@ -942,9 +1139,9 @@ fn item_runs(body: &[Node], src: &str, spans: &[Span]) -> Vec<Run> {
 
 /// [`subtree_lines`] for a single detached node: the node's own contribution, then
 /// each of its children's.
-fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<Run>>) {
+fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: &mut Vec<Vec<Run>>) {
     let before = out.len();
-    subtree_lines(node, src, spans, out);
+    subtree_lines(node, src, spans, fences, out);
     // A node with no children of its own contributes its whole text — the case a
     // detached leaf (a `paragraph` stripped of its `inline`) falls into.
     if out.len() == before {
@@ -955,20 +1152,33 @@ fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], out: &mut Vec<Vec<R
     }
 }
 
-fn code_block(node: &Node, src: &str) -> Block {
+/// A code block from the tree, used when its start is not a fence [`fences_in`] found.
+///
+/// The text is authoritative for every fence that [`fences_in`] sees, so reaching here
+/// means the node starts somewhere other than a fence's opening delimiter — an indented
+/// code block, or a fence whose opening line the grammar placed differently. Reading it
+/// off the tree is the fallback rather than the rule.
+fn code_block(node: &Node, src: &str, fences: &[Fence]) -> Block {
+    if let Some(f) = fence_at(fences, node.start) {
+        return Block::Code {
+            lang: f.lang.clone(),
+            lines: fence_lines(src, f),
+            closed: f.closed,
+        };
+    }
     let mut lang = String::new();
-    let mut fences = 0;
+    let mut delims = 0;
     for c in &node.children {
         match c.kind.as_str() {
             "info_string" => lang = src[c.start..c.end].trim().to_string(),
-            "fenced_code_block_delimiter" => fences += 1,
+            "fenced_code_block_delimiter" => delims += 1,
             _ => {}
         }
     }
-    // `tree-sitter-md` closes a fence at end of input, the way CommonMark does, so
-    // the *missing* closing delimiter is not an error node — it is simply absent.
-    // Counting delimiters is what tells the renderer to say "(still writing…)".
-    let closed = node.kind == "indented_code_block" || fences >= 2;
+    // `tree-sitter-md` closes a fence at end of input, the way CommonMark does, so the
+    // *missing* closing delimiter is not an error node — it is simply absent. Counting
+    // delimiters is what tells the renderer to say "(still writing…)".
+    let closed = node.kind == "indented_code_block" || delims >= 2;
     Block::Code {
         lang,
         lines: fence_content_lines(node, src),
@@ -1014,12 +1224,12 @@ fn text_without_continuations(node: &Node, src: &str) -> String {
     out
 }
 
-fn list_block(node: &Node, src: &str, spans: &[Span]) -> Block {
+fn list_block(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Block {
     let mut items = Vec::new();
     let mut ordered = false;
     let mut start = 1;
     let mut first = true;
-    collect_items(node, src, spans, &mut items, &mut ordered, &mut start, &mut first);
+    collect_items(node, src, spans, fences, &mut items, &mut ordered, &mut start, &mut first);
     Block::List {
         ordered,
         start,
@@ -1038,6 +1248,7 @@ fn collect_items(
     node: &Node,
     src: &str,
     spans: &[Span],
+    fences: &[Fence],
     items: &mut Vec<Vec<Run>>,
     ordered: &mut bool,
     start: &mut usize,
@@ -1081,17 +1292,17 @@ fn collect_items(
                         }
                     }
                 }
-                let item = item_runs(&rest, src, spans);
+                let item = item_runs(&rest, src, spans, fences);
                 if !item.is_empty() {
                     items.push(item);
                 }
                 for g in &c.children {
                     if g.kind == "list" {
-                        collect_items(g, src, spans, items, ordered, start, first);
+                        collect_items(g, src, spans, fences, items, ordered, start, first);
                     }
                 }
             }
-            "list" => collect_items(c, src, spans, items, ordered, start, first),
+            "list" => collect_items(c, src, spans, fences, items, ordered, start, first),
             _ => {}
         }
     }
@@ -1908,35 +2119,44 @@ mod nesting {
         }
     }
 
-    /// A fenced block inside a block quote. It rendered as an *empty* quote.
+    /// A fenced block inside a block quote is a **code box of its own**.
     ///
-    /// `Block::Quote` holds run lines and `content_ranges` looks for `inline` nodes —
-    /// and a quote holding only a fence has none, so every byte of the model's code
-    /// went on the floor. The projection now walks the subtree for whatever a reader
-    /// would see rather than asking for inline content.
+    /// It used to be dropped outright — `Block::Quote` holds run lines and the quote had
+    /// no inline content, so every byte of the model's code went on the floor as an empty
+    /// quote. Then it was quote prose. Now the fence scan finds it (a quoted fence is
+    /// written `"> ```rust"`, which a scan that only skipped whitespace would miss), the
+    /// masked quote has nothing left in it and is dropped, and the code is a code box with
+    /// the markers consumed and the `"> "` stripped from each line.
     #[test]
     fn a_fence_inside_a_quote_is_not_dropped() {
-        keeps("> ```rust\n> let a = 1;\n> ```\n", &["let a = 1;"]);
-        let b = lex("> ```rust\n> let a = 1;\n> ```\n");
-        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
-        assert_eq!(lines.len(), 1, "{lines:#?}");
-        assert_eq!(runs_text(&lines[0]), "let a = 1;");
-        // The continuation `> ` is a child of the *content* node, so it must not
-        // reach the code's last line either.
-        assert!(!runs_text(&lines[0]).contains('>'), "{lines:#?}");
+        let src = "> ```rust\n> let a = 1;\n> ```\n";
+        keeps(src, &["let a = 1;"]);
+        let b = lex(src);
+        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lang, "rust");
+        assert_eq!(lines, &["let a = 1;"]);
+        assert!(*closed);
+        assert!(!lines.iter().any(|l| l.contains('>')), "{lines:?}");
+        // No empty quote left behind.
+        assert_eq!(b.len(), 1, "{b:#?}");
     }
 
-    /// A fenced block inside a list item. Its markers became item text.
+    /// A fenced block inside a list item is a code box beside the item, not item text.
+    ///
+    /// The item keeps the prose that was written in it, and the code keeps its own lines,
+    /// its language and its markers-consumed body — rather than one line of item text with
+    /// ``` and "rust" in the middle of it.
     #[test]
     fn a_fence_inside_a_list_item_is_not_markers() {
         let src = "- item\n\n  ```rust\n  let a = 1;\n  ```\n";
         keeps(src, &["item", "let a = 1;"]);
         let b = lex(src);
-        let Block::List { items, .. } = &b[0] else { panic!("{b:#?}") };
+        let Some(Block::List { items, .. }) = b.first() else { panic!("{b:#?}") };
         let item = runs_text(&items[0]);
-        assert!(!item.contains("```"), "the fence markers reached the item: {item:?}");
-        assert!(!item.contains("rust"), "the info string reached the item: {item:?}");
-        assert_eq!(item.split_whitespace().collect::<Vec<_>>().join(" "), "item let a = 1;");
+        assert_eq!(item, "item", "the item is the item's own prose");
+        let Some(Block::Code { lang, lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        assert_eq!(lang, "rust");
+        assert_eq!(lines, &["let a = 1;"], "the item's indent is not part of the code");
     }
 
     /// A table inside a quote or an item: rows survive as lines, columns do not.
@@ -2004,14 +2224,15 @@ mod nesting {
         let src = "> There is `redacted` here:\n>\n> ```rust\n> let a = 1;\n> ```\n";
         keeps(src, &["There is", "redacted", "let a = 1;"]);
         let b = lex(src);
-        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        // The quote keeps its prose ...
+        let Some(Block::Quote { lines }) = b.first() else { panic!("{b:#?}") };
         let texts: Vec<String> = lines.iter().map(|l| runs_text(l)).collect();
-        assert_eq!(texts[0], "There is redacted here:");
-        assert!(texts.iter().any(|t| t == "let a = 1;"), "{texts:?}");
-        assert!(
-            texts[0] != "let a = 1;" && texts.iter().filter(|t| *t == "let a = 1;").count() == 1,
-            "{texts:?}"
-        );
+        assert_eq!(texts, &["There is redacted here:"], "{texts:?}");
+        // ... and the code is the next block, as code.
+        let Some(Block::Code { lang, lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        assert_eq!(lang, "rust");
+        assert_eq!(lines, &["let a = 1;"]);
+        assert_eq!(b.len(), 2, "{b:#?}");
     }
 }
 
@@ -2167,7 +2388,7 @@ mod streaming_matches_one_parse {
 #[cfg(test)]
 mod inline_ranges_are_not_one_document {
     use super::*;
-    use crate::markdown::tests::{blocks, stream};
+    use crate::markdown::tests::stream;
 
     /// A real message, 3.4 KB with ten blocks, captured from the operator's screen when it
     /// rendered as eleven blocks of code.
@@ -2221,7 +2442,12 @@ mod inline_ranges_are_not_one_document {
         // The blocks as written: 10 numbered items, the fences and lists among them, and
         // the two closing paragraphs. Counted rather than shape-matched because a block
         // that goes *missing* is the other failure this projection has had.
-        assert_eq!(blocks.len(), 22, "{blocks:#?}");
+        // Counted rather than shape-matched because a block that goes *missing* is the
+        // other failure this projection has had. 24 is what this message is: 10 numbered
+        // paragraphs, the fences among them (three of them inside a quote or an item, which
+        // are code boxes of their own here), the lists, the table, and the two closing
+        // paragraphs.
+        assert_eq!(blocks.len(), 24, "{blocks:#?}");
 
         // And the property that catches the next one of these: the one-shot parse and the
         // byte-at-a-time stream are the same document and must agree.
@@ -2280,6 +2506,141 @@ mod inline_ranges_are_not_one_document {
         assert!(spans(2).iter().any(|(s, t)| *s == InlineStyle::Code && t == "b"));
         for chunk in [1, 5, 4096] {
             let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
+            assert_eq!(a, b, "chunk {chunk}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod a_fence_ends_only_at_a_line_of_its_own {
+    use super::*;
+
+    /// **The grammar's closing fence is not line-anchored.** `"abc ```"` closes a block
+    /// opened with ``` — the delimiter node is `" ```"` at bytes 7..11 — so a fence whose
+    /// content ends a line with backticks is cut in half there, and because the damage is
+    /// the parser's *state*, everything after it is wrong too.
+    ///
+    /// On the operator's screen (2026-09-20, *"awful"*) a message that drew box art
+    /// containing ``` lost two lines of the art to a paragraph, and the rest of the message
+    /// — headings, lists, prose — rendered inside one unclosed code box.
+    ///
+    /// The rule the code now follows is `fences_in`'s, from the text: a closing fence is a
+    /// line of its own, made only of the same run, at least as long as the opening one, and
+    /// carrying the block's container prefix if it has one.
+    #[test]
+    fn a_line_that_merely_ends_in_backticks_is_content() {
+        for (src, want) in [
+            ("```\nabc ```\ndef\n```\n", vec!["abc ```", "def"]),
+            ("```\nfoo │ ```\nbar\n```\n", vec!["foo │ ```", "bar"]),
+            ("```\nbar                      ```\nend\n```\n", vec!["bar                      ```", "end"]),
+        ] {
+            let b = lex(src);
+            assert_eq!(b.len(), 1, "{src:?} gave {b:#?}");
+            let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+            assert!(closed, "{src:?}");
+            assert_eq!(lines, &want, "{src:?}");
+        }
+    }
+
+    /// The box art that broke it, line for line. Six lines in, six lines out.
+    #[test]
+    fn the_box_art_that_broke_it_keeps_all_six_lines() {
+        let src = "```\n┌─ rust                              ┌─ code\n│ fn main() {                        │ \
+                   ```rust\n│     let xs: Vec<u32> = (0..5)…     │ let a = 1;\n│     println!(\"{xs:?}\");            │ \
+                   ```\n│ }                                  └─\n└─\n```\n";
+        let b = lex(src);
+        assert_eq!(b.len(), 1, "{b:#?}");
+        let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+        assert!(closed);
+        assert_eq!(lines.len(), 6, "{lines:#?}");
+        assert!(lines[0].contains("┌─ rust"), "{lines:?}");
+        assert!(lines[3].contains("```"), "the art's own backticks survive: {lines:?}");
+        assert_eq!(lines[5], "└─");
+    }
+
+    /// Four backticks quote three: the inner fence is **content**, markers and all.
+    #[test]
+    fn a_longer_fence_can_quote_a_shorter_one() {
+        let b = lex("````\n```rust\nlet a = 1;\n```\n````\n");
+        assert_eq!(b.len(), 1, "{b:#?}");
+        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lang, "", "the info string is the outer fence's, and it has none");
+        assert_eq!(lines, &["```rust", "let a = 1;", "```"]);
+        assert!(closed);
+    }
+
+    /// A fence inside a quote closes on a line with the quote's own prefix.
+    #[test]
+    fn a_quoted_fence_closes_on_a_prefixed_line() {
+        let src = "> ```rust\n> let a = 1;\n> ```\n\nafter\n";
+        let b = lex(src);
+        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lines, &["let a = 1;"]);
+        // The prose after it is prose, not part of the code.
+        assert_eq!(b.len(), 2, "{b:#?}");
+        assert!(matches!(b[1], Block::Paragraph { .. }), "{b:#?}");
+    }
+
+    /// The message the operator saw, as bytes: every block in it survives, and it parses
+    /// the same one-shot and streamed.
+    #[test]
+    fn the_box_art_message_parses_whole() {
+        const REAL: &str = include_str!("../tests/fixtures/box-art-message.md");
+        let b = lex(REAL);
+        // The art is one block with all six of its lines — found rather than indexed,
+        // because the index is not what the test is about.
+        let art = b
+            .iter()
+            .find_map(|x| match x {
+                Block::Code { lines, .. } if lines.iter().any(|l| l.starts_with("┌─ rust")) => {
+                    Some(lines)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the art is not a code block: {b:#?}"));
+        assert_eq!(art.len(), 6, "{art:#?}");
+        assert_eq!(art[5], "└─", "{art:#?}");
+        // The four-backtick fence that quotes a fence is its own block, markers kept.
+        let quoted = b
+            .iter()
+            .find_map(|x| match x {
+                Block::Code { lines, .. } if lines.first().is_some_and(|l| l.starts_with("```rust")) => {
+                    Some(lines)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the quoting fence is not a code block: {b:#?}"));
+        assert_eq!(quoted.as_slice(), &["```rust", "let a = 1;", "```"]);
+        // Nothing is unclosed: a fence left open at the end of this message would mean the
+        // tail had been swallowed, which is exactly what was on the screen.
+        for block in &b {
+            if let Block::Code { closed, lines, .. } = block {
+                assert!(*closed, "an open fence swallowed the message: {lines:?}");
+            }
+        }
+        // And nothing the model wrote is missing.
+        let all: String = b
+            .iter()
+            .map(|x| match x {
+                Block::Code { lines, .. } => lines.join("\n"),
+                other => other.title(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for word in [
+            "the current build draws",
+            "That second box is the message",
+            "Four backticks is markdown for",
+            "a nested code box",
+            "Everything else from the earlier reports",
+        ] {
+            assert!(all.contains(word), "{word:?} is missing");
+        }
+        for chunk in [1, 7, 64, 4096] {
+            let a = crate::markdown::tests::stream(REAL, chunk)
+                .blocks()
+                .cloned()
+                .collect::<Vec<_>>();
             assert_eq!(a, b, "chunk {chunk}");
         }
     }
