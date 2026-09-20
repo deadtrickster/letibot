@@ -2920,11 +2920,62 @@ impl<'a> Harness<'a> {
     /// The jobs this session has started, one line each, for `/job` with no
     /// argument. The pane draws the same facts; this is for reading them without
     /// leaving the composer, and for finding an id to pass to `/job ID`.
+    /// **One row, one line.** A command's text is whatever the model wrote, and a
+    /// heredoc carries newlines inside it: `cd … && python3 - <<'PY'\ns = open("…`.
+    /// Truncating that to 60 *characters* keeps the newline, so a row meant to be one
+    /// line became two, and a listing of many of them became unreadable — the second
+    /// half of what the operator saw on 2026-09-20.
+    ///
+    /// Every run of whitespace becomes one space before the cut, so the width the
+    /// caller asks for is the width it gets. The ellipsis is added only when
+    /// something was actually removed, so a short command is not decorated with a
+    /// promise of more.
+    fn one_line(command: &str, width: usize) -> String {
+        let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.chars().count() <= width {
+            return flat;
+        }
+        let cut: String = flat.chars().take(width).collect();
+        format!("{cut}…")
+    }
+
+    /// **Which of the host's jobs a person would act on.**
+    ///
+    /// Every command runs in a job scope, so `ProcessHost::jobs()` is the whole
+    /// session's process history. The two kinds worth a row are the ones
+    /// somebody can still do something about: a job that was put in the
+    /// background — `background` is `Some` exactly then, by its own doc — and
+    /// anything still running, which is what ctrl-o moves and what an operator
+    /// might want to interrupt, whether or not it was ever backgrounded.
+    ///
+    /// A finished foreground `grep` is neither, and three hundred of them are
+    /// what `/job` printed before this existed.
+    fn worth_listing(j: &letibot_tools::exec::JobView) -> bool {
+        j.background.is_some() || j.state.is_running()
+    }
+
     pub fn job_lines(&self) -> Vec<String> {
         let Some(host) = self.runtime.backend.processes() else {
             return vec!["this session has no process host, so it has no jobs".into()];
         };
-        let jobs = host.jobs();
+        let all = host.jobs();
+        // **The background ones, and whatever is still running.**
+        //
+        // `host.jobs()` is every process this session ever spawned — the host
+        // gives each one a job id and a scope, which is how a turn-scoped reap
+        // finds them. That is right for the host and wrong for this listing: the
+        // operator ran `/job` after a turn and got **three hundred lines** of
+        // finished `grep`, `cat` and `sed` calls, one per command the model had
+        // run all session. Their words, 2026-09-20: *"some fuckery with jobs"*,
+        // *"hundreds of lines"*.
+        //
+        // `background: Option<Backgrounding>` is the field that already draws
+        // this distinction — its own doc says "or `None` if it never was" — and
+        // a still-running job is kept whether or not anybody backgrounded it,
+        // because that is the one ctrl-o moves and the one worth interrupting.
+        // The empty-case sentence below has always said this listing is about
+        // background jobs; now it is.
+        let jobs: Vec<_> = all.iter().filter(|j| Self::worth_listing(j)).collect();
         if jobs.is_empty() {
             return vec!["no jobs. The model backgrounds a command with bash's `background: true`; ctrl-o moves the running one.".into()];
         }
@@ -2936,10 +2987,20 @@ impl<'a> Harness<'a> {
                 j.id.0,
                 j.state.word(),
                 j.produced,
-                j.command.chars().take(60).collect::<String>()
+                Self::one_line(&j.command, 60)
             ));
         }
         out.push(String::new());
+        // The ones left out are counted, not hidden: a filtered listing that does
+        // not say it filtered is a listing the reader draws wrong conclusions from.
+        let hidden = all.len() - jobs.len();
+        if hidden > 0 {
+            out.push(format!(
+                "{hidden} finished foreground command(s) not shown — every command runs \
+                 in a job scope, and only the backgrounded and the still-running are \
+                 jobs anybody acts on."
+            ));
+        }
         out.push("`/job ID` reads what one wrote.".into());
         out
     }
@@ -5202,6 +5263,91 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 mod tests {
     use super::*;
     use letibot_tools::authorise::TrailProvenance;
+
+    /// **A finished foreground command is not a job anybody acts on.**
+    ///
+    /// The operator ran `/job` after a turn and got hundreds of lines — one per
+    /// `grep`, `cat` and `sed` the model had run all session — because the host
+    /// gives every command a job id and the listing showed all of them. Measured
+    /// in their own store the same day: of 1,210 tool results in that session,
+    /// exactly **2** were `backgrounded`.
+    #[test]
+    fn only_background_and_still_running_jobs_are_listed() {
+        use letibot_tools::exec::{JobId, JobState, JobView};
+        use letibot_tools::exec::{ScopeId, ScopeKind};
+        let scope = || ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+        };
+        let job = |background, state| JobView {
+            id: JobId("j1".into()),
+            command: "grep -n x y".into(),
+            scope: scope(),
+            owner: scope(),
+            cwd: "/".into(),
+            pid: 1,
+            background,
+            state,
+            elapsed: std::time::Duration::from_secs(1),
+            ran_for: Some(std::time::Duration::from_secs(1)),
+            produced: 91,
+            since_last_output: None,
+        };
+
+        // The case that flooded the screen: finished, never backgrounded.
+        assert!(!Harness::worth_listing(&job(
+            None,
+            JobState::Exited { code: 0 }
+        )));
+        // A failure is still not a job — the tool result already carried it.
+        assert!(!Harness::worth_listing(&job(
+            None,
+            JobState::Exited { code: 1 }
+        )));
+        // Still running, never backgrounded: ctrl-o moves this one, so it stays.
+        assert!(Harness::worth_listing(&job(None, JobState::Running)));
+        // Backgrounded, however it got there, finished or not.
+        for how in [
+            letibot_transcript::Backgrounding::Asked,
+            letibot_transcript::Backgrounding::Promoted,
+        ] {
+            assert!(Harness::worth_listing(&job(
+                Some(how.clone()),
+                JobState::Running
+            )));
+            assert!(Harness::worth_listing(&job(
+                Some(how),
+                JobState::Exited { code: 0 }
+            )));
+        }
+    }
+
+    /// **A row is one line, whatever the model wrote.**
+    ///
+    /// A heredoc carries newlines inside the command text, and the listing cut it
+    /// to 60 *characters* — keeping the newline, so one row drew as two and a
+    /// screen of them was unreadable. The operator, 2026-09-20, looking at it:
+    /// *"some fuckery with jobs"*.
+    #[test]
+    fn a_job_row_is_one_line_however_many_the_command_had() {
+        let heredoc = "cd /home/dead/Projects/leticl && python3 - <<'PY'\ns = open(\"x\")\nPY";
+        let line = Harness::one_line(heredoc, 60);
+        assert!(!line.contains('\n'), "a row that draws as two: {line:?}");
+        // 60 characters plus the ellipsis that says something was cut.
+        assert_eq!(line.chars().count(), 61, "{line:?}");
+        assert!(line.ends_with('…'), "{line:?}");
+        assert!(
+            line.starts_with("cd /home/dead/Projects/leticl && python3"),
+            "{line:?}"
+        );
+
+        // A short command is left exactly as it is — no ellipsis promising more.
+        assert_eq!(Harness::one_line("git status", 60), "git status");
+        // Internal runs of whitespace collapse, so the width asked for is the
+        // width drawn.
+        assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
+    }
 
     fn user(text: &str) -> TranscriptItem {
         TranscriptItem::User {
