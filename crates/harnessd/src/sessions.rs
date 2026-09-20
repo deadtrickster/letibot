@@ -372,7 +372,10 @@ impl<'a> Sessions<'a> {
             // once cost them two questions.
             Slash::DefaultModel(want) => crate::slash::default_model(want.as_deref(), None),
             Slash::Tools => match self.open.get(session_id) {
-                Some(h) => SlashReply { lines: h.tools_lines(), ok: true },
+                Some(h) => SlashReply {
+                    lines: h.tools_lines(),
+                    ok: true,
+                },
                 None => SlashReply {
                     lines: vec![format!("session {session_id} is not open")],
                     ok: false,
@@ -386,12 +389,18 @@ impl<'a> Sessions<'a> {
                     };
                 };
                 match job {
-                    None => SlashReply { lines: h.job_lines(), ok: true },
+                    None => SlashReply {
+                        lines: h.job_lines(),
+                        ok: true,
+                    },
                     // 16 KiB: enough that a build log's tail is one read, and the
                     // reply names the next offset when it is not.
                     Some(j) => match h.job_output(&j, offset, 16 * 1024) {
                         Ok(lines) => SlashReply { lines, ok: true },
-                        Err(e) => SlashReply { lines: vec![e], ok: false },
+                        Err(e) => SlashReply {
+                            lines: vec![e],
+                            ok: false,
+                        },
                     },
                 }
             }
@@ -871,7 +880,10 @@ impl<'a> Sessions<'a> {
             // contradiction, and the operator should be told which of the two
             // numbers disagreed rather than left to infer it from a silence — the
             // wall's own message says a compaction was attempted.
-            if wall && !attempted && let Some(hub) = &hub {
+            if wall
+                && !attempted
+                && let Some(hub) = &hub
+            {
                 hub.publish(SessionEvent::Warning {
                     code: "auto_compact_skipped".into(),
                     detail: format!(
@@ -949,7 +961,7 @@ impl<'a> Sessions<'a> {
             None => {
                 return Err(HarnessError::Setup(
                     "the session closed before the continuation could run".into(),
-                ))
+                ));
             }
         };
         self.publish_title(session_id);
@@ -1362,10 +1374,7 @@ impl<'a> Sessions<'a> {
                                 ));
                             }
                             if !lost.is_empty() {
-                                said.push_str(&format!(
-                                    ". It has lost: {}",
-                                    lost.join(", ")
-                                ));
+                                said.push_str(&format!(". It has lost: {}", lost.join(", ")));
                             }
                             said.push_str(
                                 ". The server's cache for the new prompt is cold, so the \
@@ -1477,7 +1486,7 @@ impl<'a> Sessions<'a> {
                     Outcome::Failed(format!("/{line} was refused"))
                 }
             }
-            CommandKind::Mode { name } => {
+            CommandKind::Mode { name, consented } => {
                 let mode = match letibot_tools::mode::Mode::parse(name) {
                     Ok(m) => m,
                     Err(e) => {
@@ -1499,7 +1508,39 @@ impl<'a> Sessions<'a> {
                     };
                     harness.workspace().to_path_buf()
                 };
-                if let Err(e) = self.parts.mode_store.write().unwrap().set(&workspace, mode) {
+                // **A consented `allow-all` is never written to the row.**
+                //
+                // The row is what every LATER session in this project opens at, and
+                // `allow-all` needs a confinement that a bare host cannot supply. So
+                // writing it here is writing a point that refuses at every future
+                // open — which is exactly what happened in leticl on 2026-09-20: the
+                // session move failed the prerequisite, the row was written anyway,
+                // and from then on every subagent died at open with *"a confinement
+                // for exec"*. The operator saw *"subagents dont work"*.
+                //
+                // Consent is a thing a person gave once, in front of one session,
+                // and `Harness::set_mode_consented` keeps it there. Persisting it
+                // would be replaying their answer at every later start, for a
+                // boundary claim nobody re-made.
+                let persist =
+                    !(*consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name);
+                if !persist && let Some(hub) = &hub {
+                    hub.publish(SessionEvent::Warning {
+                        code: "mode_session_only".into(),
+                        detail: format!(
+                            "`allow-all` is this session's, not {}'s: nothing confines \
+                             this box, so the point stands on the confirmation you just \
+                             gave and is not written to the project store. A new session \
+                             here starts where it did before, and asks again.",
+                            workspace.display()
+                        ),
+                    });
+                }
+                if let Err(e) = (if persist {
+                    self.parts.mode_store.write().unwrap().set(&workspace, mode)
+                } else {
+                    Ok(())
+                }) {
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "mode_unpersisted".into(),
@@ -1527,7 +1568,11 @@ impl<'a> Sessions<'a> {
                 // carry the point this one cannot (a `coder` with no shell cannot go
                 // to `allow-all`; a daemon started with `--bash` can).
                 let moved = match self.open.get_mut(session_id) {
-                    Some(h) => h.set_mode(mode),
+                    // The operator's answer travels with the command, and only
+                    // this call reads it: the project row above is written from
+                    // the NAME, which stays `allow-all` and stays refused for the
+                    // next daemon. Consent is for the session in front of them.
+                    Some(h) => h.set_mode_consented(mode, *consented),
                     None => Err("this session has no harness open".into()),
                 };
                 if let Some(hub) = &hub {

@@ -113,6 +113,10 @@ pub enum CommandKind {
     /// everything else; unlike a prompt it does not start a turn. See `D13`.
     Mode {
         name: String,
+        /// Carried from the frame: the operator confirmed an unconfined `allow-all`.
+        /// Not defaulted here — a queued command is built in this process and every
+        /// construction site should have to say which it means.
+        consented: bool,
     },
     /// A slash command for the daemon: `flowy …`, `models …`.
     Slash {
@@ -899,7 +903,14 @@ impl Hub {
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
                 }
-                (CommandKind::Mode { name }, _) => format!("mode `{name}` requested"),
+                (CommandKind::Mode { name, consented }, _) => format!(
+                    "mode `{name}` requested{}",
+                    if *consented {
+                        " — with the operator's confirmation that this box is the boundary"
+                    } else {
+                        ""
+                    }
+                ),
                 (CommandKind::Slash { line }, _) => format!("/{line}"),
             };
 
@@ -1049,8 +1060,9 @@ impl Hub {
         else {
             return false;
         };
-        g.commands
-            .retain(|c| !(c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. })));
+        g.commands.retain(|c| {
+            !(c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. }))
+        });
         true
     }
 
@@ -1260,7 +1272,9 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None, note: None },
+                    pattern: None,
+                    note: None,
+                },
             },
         );
         assert!(matches!(
@@ -1329,7 +1343,9 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None, note: None },
+                    pattern: None,
+                    note: None,
+                },
             },
         );
         assert!(
@@ -1402,7 +1418,9 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None, note: None },
+                    pattern: None,
+                    note: None,
+                },
             },
         );
         assert!(matches!(f, ServerFrame::Accepted { .. }), "{f:?}");
@@ -1449,7 +1467,9 @@ mod tests {
                 req_id: "r1".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None, note: None },
+                    pattern: None,
+                    note: None,
+                },
             },
         );
         let cmd = hub.try_command().expect("queued as before");
@@ -1489,7 +1509,9 @@ mod tests {
                 req_id: "r2".into(),
                 reply: Reply::Permission {
                     option_id: "allow".into(),
-                    pattern: None, note: None },
+                    pattern: None,
+                    note: None,
+                },
             },
         );
         assert!(
