@@ -99,6 +99,51 @@ pub enum TranscriptItem {
     },
 }
 
+impl TranscriptItem {
+    /// Roughly how many bytes of text this row carries — the measure a **size bound**
+    /// needs.
+    ///
+    /// Counts the strings a reader would see and ignores structure, ids and enums: it is
+    /// a bound's input, not a serialisation, and it has to be cheap enough to call per
+    /// row per append. A row whose text this cannot reach (`None` bodies, a mark) counts
+    /// as zero, which is safe because it errs toward keeping the row.
+    ///
+    /// **One definition, and it is here rather than on either side of the wire.** The
+    /// daemon bounds its view by this and the head decides whether a transcript is too
+    /// big to walk by this, and two copies of "what counts as size" would drift into two
+    /// different answers to one question.
+    pub fn bytes(&self) -> usize {
+        let parts = |parts: &[UserPart]| -> usize {
+            parts
+                .iter()
+                .map(|p| match p {
+                    UserPart::Text { text } => text.len(),
+                    // An image or a file reference is a pointer, not a body: the
+                    // payload is elsewhere and counting it here would bound the wrong
+                    // thing.
+                    UserPart::Image { .. } | UserPart::FileRef { .. } => 32,
+                })
+                .sum()
+        };
+        match self {
+            TranscriptItem::System { text, .. }
+            | TranscriptItem::Reasoning { text, .. }
+            | TranscriptItem::Assistant { text, .. } => text.len(),
+            TranscriptItem::User { parts: p } => parts(p),
+            TranscriptItem::ToolResult { payload, edit, .. } => {
+                // The excerpt is what makes a `read` or an `edit` row large, and it is
+                // carried to the head, so it counts.
+                payload.len()
+                    + edit
+                        .as_ref()
+                        .map(|e| e.before.len() + e.after.len())
+                        .unwrap_or(0)
+            }
+            TranscriptItem::SegmentMark { label, .. } => label.len(),
+        }
+    }
+}
+
 /// The before/after of a file-editing call, bounded to what differs — the raw
 /// material of the two-panel diff a head draws.
 ///

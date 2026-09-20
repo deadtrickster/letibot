@@ -307,6 +307,18 @@ pub struct Warned {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewBounds {
     pub items: usize,
+    /// How many bytes of row text the view will hold before it drops the oldest.
+    ///
+    /// **`items` alone bounds a count, and rows are not the same size.** The operator's
+    /// sessions reach 160 MB across thousands of turns, and one `read` row can be 418 KB
+    /// — so 2,000 rows of those is most of a gigabyte, cloned for every attaching head
+    /// and sent over the socket. Measured 2026-09-20: eight rows over 64 KB in one store,
+    /// the largest 418 KB.
+    ///
+    /// This is the first half of R19 in `letibot`'s TODO — the head renders only the tail
+    /// of a conversation (R19.1), and a window needs something bounded to be a window
+    /// over. A head is told what was dropped through `items_dropped` either way.
+    pub item_bytes: usize,
     pub settled_decisions: usize,
     pub warnings: usize,
 }
@@ -315,6 +327,11 @@ impl Default for ViewBounds {
     fn default() -> Self {
         ViewBounds {
             items: 2_000,
+            // An order of magnitude above any session this box has today (the largest is
+            // ~24 MB in the store, of which the snapshot carries a fraction), and far
+            // below the 160 MB the operator reports elsewhere. Chosen so that a normal
+            // session is untouched and a pathological one is bounded.
+            item_bytes: 8 * 1024 * 1024,
             // A decision is a fact about the tool call it gated, and a head renders
             // it on that call's card — including a card that has settled into the
             // transcript, which is where most of the session's history lives. A
@@ -607,11 +624,7 @@ impl SessionView {
                     ts: env.ts,
                     item: None,
                 });
-                let over = self.items.len().saturating_sub(self.bounds.items);
-                if over > 0 {
-                    self.items.drain(..over);
-                    self.items_dropped += over as u64;
-                }
+                self.trim();
                 // Which rows this turn produced. A head cannot work this out from
                 // the snapshot — the rows and the turn are separate lists — and it
                 // is the fact that decides whether the live pane is still the only
@@ -714,6 +727,39 @@ impl SessionView {
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         if let Some(row) = self.items.iter_mut().find(|r| r.item_id == item_id) {
             row.item = Some(item);
+            // **The body can blow the byte bound on its own.** Rows are announced before
+            // they are filled, so a row that arrives empty and lands 418 KB later is over
+            // the bound the moment it lands — and trimming only when a *new* row is
+            // announced would leave the snapshot oversized for as long as no new row came.
+            self.trim();
+        }
+    }
+
+    /// Drop the oldest rows until the view is inside both bounds, counting what went.
+    ///
+    /// A method rather than inline at the one place a row is pushed, because there are
+    /// two places it can go over: a row announced (a count) and a body landing (bytes).
+    ///
+    /// **The newest row is kept whatever size it is.** A view with nothing in it cannot
+    /// be scrolled or read, the row just added is the one the reader is watching, and a
+    /// bound that emptied the transcript to satisfy itself would be the bound breaking
+    /// the thing it exists to protect.
+    fn trim(&mut self) {
+        let over = self.items.len().saturating_sub(self.bounds.items);
+        if over > 0 {
+            self.items.drain(..over);
+            self.items_dropped += over as u64;
+        }
+        let bytes_of = |r: &SnapshotItem| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0);
+        let mut total: usize = self.items.iter().map(bytes_of).sum();
+        let mut drop = 0usize;
+        while total > self.bounds.item_bytes && self.items.len() - drop > 1 {
+            total -= bytes_of(&self.items[drop]);
+            drop += 1;
+        }
+        if drop > 0 {
+            self.items.drain(..drop);
+            self.items_dropped += drop as u64;
         }
     }
 
@@ -763,6 +809,124 @@ mod tests {
             v.apply(e);
         }
         v
+    }
+
+    /// **The byte bound, because a count bound is not a size bound.**
+    ///
+    /// Rows are not the same size, so 2,000 of them can be a few megabytes or most of a
+    /// gigabyte — and the snapshot is cloned and sent for every attaching head.
+    #[test]
+    fn a_view_drops_the_oldest_rows_to_stay_inside_its_byte_bound() {
+        let bounds = ViewBounds {
+            items: 1_000,
+            item_bytes: 4_000,
+            ..ViewBounds::default()
+        };
+        let mut v = SessionView::new("s", bounds);
+        // Twenty 1 KB rows: over the byte bound, well under the count bound.
+        for i in 0..20 {
+            let id = format!("i{i}");
+            // Announce, then fill — the real order, and it is what `trim` has to cope
+            // with: the count is checked at the announcement and the bytes at the fill.
+            v.items.push(SnapshotItem {
+                item_id: id.clone(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+                ts: 0,
+                item: None,
+            });
+            v.record_item(
+                &id,
+                TranscriptItem::Assistant {
+                    text: "x".repeat(1_000),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        let bytes: usize = v.items.iter().map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0)).sum();
+        assert!(
+            bytes <= 4_000,
+            "the view held {bytes} bytes against a 4,000 bound"
+        );
+        assert!(
+            v.items.len() < 20,
+            "nothing was dropped, so the bound did nothing"
+        );
+        // And the drop is counted, which is what a head discloses.
+        assert!(v.items_dropped > 0, "the dropped rows were not counted");
+    }
+
+    /// A row bigger than the whole bound is **kept**, because a view with nothing in it
+    /// cannot be read or scrolled — and a bound that emptied the transcript would break
+    /// the thing it exists to protect.
+    #[test]
+    fn the_newest_row_is_kept_however_big_it_is() {
+        let bounds = ViewBounds {
+            items: 1_000,
+            item_bytes: 100,
+            ..ViewBounds::default()
+        };
+        let mut v = SessionView::new("s", bounds);
+        v.items.push(SnapshotItem {
+            item_id: "big".into(),
+            kind: "tool_result".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: None,
+        });
+        v.record_item(
+            "big",
+            TranscriptItem::ToolResult {
+                call_id: "c".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "y".repeat(10_000),
+                edit: None,
+            },
+        );
+        assert_eq!(v.items.len(), 1, "the only row was dropped to satisfy the bound");
+        assert!(v.items[0].item.is_some(), "and its body was kept");
+    }
+
+    /// **A body landing can blow the bound on its own.** A row is announced before it is
+    /// filled, so a row that arrives empty and lands hundreds of kilobytes later is over
+    /// the bound the moment it lands — and trimming only when a new row is *announced*
+    /// would leave the snapshot oversized until the next one arrived.
+    #[test]
+    fn a_body_landing_trims_without_waiting_for_another_row() {
+        let bounds = ViewBounds {
+            items: 1_000,
+            item_bytes: 2_000,
+            ..ViewBounds::default()
+        };
+        let mut v = SessionView::new("s", bounds);
+        for i in 0..3 {
+            v.items.push(SnapshotItem {
+                item_id: format!("i{i}"),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+                ts: 0,
+                item: None,
+            });
+        }
+        // The bodies land, and the last one is large.
+        for (i, n) in [(0, 500), (1, 500), (2, 5_000)] {
+            v.record_item(
+                &format!("i{i}"),
+                TranscriptItem::Assistant {
+                    text: "z".repeat(n),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        let bytes: usize = v.items.iter().map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0)).sum();
+        assert!(
+            bytes <= 2_000 + 5_000,
+            "a landing body did not trim: {bytes} bytes held"
+        );
+        assert!(v.items_dropped > 0, "the drop was not counted");
     }
 
     #[test]

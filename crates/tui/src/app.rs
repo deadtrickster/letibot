@@ -8420,34 +8420,18 @@ const TAIL_SLACK: usize = 40;
 
 /// Roughly how many bytes of text the transcript carries.
 ///
-/// **An estimate, and it must be cheap** — it runs every frame, so it is a length test
-/// on the strings already in memory rather than a serialisation. `SnapshotItem` keeps
-/// its body as a `TranscriptItem`, so what is asked for here is the text a reader would
-/// see, and a row this cannot measure counts as zero. That is safe in the direction
-/// that matters: an under-estimate walks the conversation, an over-estimate renders only
-/// its tail, and only the second is a behaviour the operator would notice.
+/// **A sum of `TranscriptItem::bytes`, which is the one definition** — the daemon bounds
+/// its view by the same function, and two copies of "what counts as size" would drift
+/// into two answers to one question.
+///
+/// Cheap on purpose: it runs every frame, so it is a length test over strings already in
+/// memory. A row with no body yet counts as zero, which errs toward walking the
+/// conversation — the safe direction, since the other one only changes how the frame is
+/// produced and this one still produces it correctly.
 fn transcript_bytes(items: &[SnapshotItem]) -> usize {
     items
         .iter()
-        .map(|it| match it.item.as_ref() {
-            Some(TranscriptItem::Assistant { text, .. })
-            | Some(TranscriptItem::Reasoning { text, .. })
-            | Some(TranscriptItem::System { text, .. }) => text.len(),
-            Some(TranscriptItem::User { parts }) => parts
-                .iter()
-                .map(|p| match p {
-                    letibot_transcript::UserPart::Text { text } => text.len(),
-                    letibot_transcript::UserPart::Image { .. }
-                    | letibot_transcript::UserPart::FileRef { .. } => 32,
-                })
-                .sum(),
-            Some(TranscriptItem::ToolResult { payload, .. }) => payload.len(),
-            // A segment mark carries a label and no body; it renders to a line at
-            // most, so it contributes nothing worth counting — and it must not be a
-            // row that escapes the estimate, which a missing arm would make it.
-            Some(TranscriptItem::SegmentMark { label, .. }) => label.len(),
-            None => 0,
-        })
+        .map(|it| it.item.as_ref().map(|i| i.bytes()).unwrap_or(0))
         .sum()
 }
 

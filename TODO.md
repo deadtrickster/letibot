@@ -312,7 +312,21 @@ absolute row; a tail walk wants a floor and an "N lines above" count instead.
 frame over 6000 rows is 41 ms and every frame after is 0.06 ms. So this is not
 "the walk is slow" — it is that a 160 MB session's *lex* is, and a tail avoids it.
 
-### R19.2 — a row is a logical string; the head holds a viewport
+### R19.2 — a row is a logical string; the head holds a viewport — **measured, and it is not the next thing**
+
+**Checked before building, 2026-09-20**: across the whole store there are **8 rows over
+64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the
+markdown lex at all, because a tool result is drawn as payload text with its own bound.
+The largest *markdown* rows are a 42 KB assistant answer and an 86 KB reasoning block.
+At ~450 ns/byte those are ~19 ms and ~39 ms, once each.
+
+So a single huge row is **not** where a 160 MB session's cost lives — it is thousands of
+ordinary rows, which R19.1 now renders only the tail of. The stage below stays worth
+doing for its own sake (an unfolded row is unreachable past the fold today: `render_bounded`
+draws a tail and an elision count, and nothing fetches the rest), but it is a *fidelity*
+fix rather than the performance one, and the number that said otherwise was never taken.
+
+### R19.2 (detail) — a row is a logical string; the head holds a viewport
 
 The operator's framing, and it is the correct one: a 418 KB tool result is a **logical**
 string that wraps to thousands of **display** lines, of which 40 are on screen. Wrapping
@@ -328,17 +342,29 @@ new mechanism.
 solve a display problem, which is the editor mistake. A `read` of a large file, a build
 log: the bytes are the truth and the screen shows 40 lines of them.
 
-### R19.3 — bound the snapshot in bytes
+### R19.3 — bound the snapshot in bytes — **DONE 2026-09-20**
 
-`ViewBounds::items: 2_000` bounds a **count**, and the operator has sessions of **160 MB
-and thousands of turns** where one row may be 418 KB — so the daemon's snapshot can be
-most of a gigabyte, cloned per attach and sent over the socket. Add `item_bytes` (order
-8 MB) alongside the count. `items_dropped` already reports the trim, so a head can say
-"N rows above" honestly.
+`ViewBounds::items: 2_000` bounded a **count**, and the operator has sessions of **160 MB
+and thousands of turns** where one row may be 418 KB — so the daemon's snapshot could be
+most of a gigabyte, cloned per attach and sent over the socket.
 
-This is the first half of the viewport rather than an optimisation: without it there is
-nothing for R19.1's window to be a window *over*. On its own it just drops old rows and
-still ships the fat one, which is why it is last despite being the smallest.
+Done: `ViewBounds::item_bytes` (default 8 MB) beside the count, and one `trim()` that
+both bounds run through. Three things the implementation needed that a one-liner would
+have missed:
+
+- **Two places can go over, not one.** A row is *announced* before it is filled, so the
+  count is checked at the announcement and the **bytes at the fill** — a row that arrives
+  empty and lands 418 KB later blows the bound the moment it lands, and trimming only on
+  the next announcement would leave the snapshot oversized until one came.
+- **The newest row is kept whatever its size.** A view with nothing in it cannot be read
+  or scrolled, and a bound that emptied the transcript would break the thing it exists to
+  protect.
+- **`TranscriptItem::bytes` is the one definition** of "how big is this row", in
+  `letibot-transcript` where both sides can see it — the daemon bounds by it and the head
+  decides whether a transcript is too big to walk by it. The head had its own copy before
+  this, which is exactly the drift the shared one prevents.
+
+`items_dropped` reports the trim, so a head can say "N rows above" honestly.
 
 **Done when.** Attaching to a 160 MB session draws the current frame at the same cost as
 attaching to a 1 MB one; scroll-up extends it without a full lex; an unfolded 418 KB row
