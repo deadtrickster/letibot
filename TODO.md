@@ -281,6 +281,116 @@ the engine.
 
 ---
 
+## R19 — stream backwards: the head holds a window, not a buffer — **given 2026-09-20**
+
+> so in a way we are looking back right, instead of looking in the future, interesting
+> challenge for treesitter
+
+> render chrome asap, then render the very current frame of text, then some scroll up
+> buffer if needed — mind the bounds of blocks, etc
+
+The implementation of R18.4's design, which is the operator's and was written down there
+only after a first pass around it. Three stages, in order, and the first is head-side
+only with no protocol change.
+
+### R19.1 — wire `tail_cut` into the walk
+
+`crates/tui/src/markdown.rs::tail_cut(src, min_bytes)` is committed and tested
+(`815200e`, `ad0a10a`) and has **no caller**. `lex(tail)[1..]` is the document's own
+blocks — exact below a possibly-ragged first block that goes off the top — and a 4 KB
+tail of 152 KB measures **3.0%** of the whole's cost.
+
+`App::body_window` still lexes every row in full from row 0, then slices the bottom
+`room` rows out of `segs`. The change: render the **tail** of the conversation, from the
+end, until the window is covered — the current frame first. `retarget_before(k)` already
+scans backward for the per-row call context, and the other per-row inputs (`edit`,
+`decision`, `elapsed_ms`, `answered`) are maps keyed by item id, so nothing about them
+depends on direction. The one fiddly part is `hist_marks`, which is dense and indexed by
+absolute row; a tail walk wants a floor and an "N lines above" count instead.
+
+**Measured, and it rules out one wrong idea**: the forward walk is *not* the cost. A cold
+frame over 6000 rows is 41 ms and every frame after is 0.06 ms. So this is not
+"the walk is slow" — it is that a 160 MB session's *lex* is, and a tail avoids it.
+
+### R19.2 — a row is a logical string; the head holds a viewport
+
+The operator's framing, and it is the correct one: a 418 KB tool result is a **logical**
+string that wraps to thousands of **display** lines, of which 40 are on screen. Wrapping
+exists (61 call sites); **paging** does not, so an unfolded row is unreachable past the
+fold.
+
+So the fix is the editor's, not a cap: the daemon owns the buffer, the head holds the
+window, and a row is fetched when it is unfolded. `Peek` already fetches a stored
+conversation for the session picker — this needs a row-shaped form of it rather than a
+new mechanism.
+
+**Not the fix**: capping a row's payload at the source. That cuts a logical string to
+solve a display problem, which is the editor mistake. A `read` of a large file, a build
+log: the bytes are the truth and the screen shows 40 lines of them.
+
+### R19.3 — bound the snapshot in bytes
+
+`ViewBounds::items: 2_000` bounds a **count**, and the operator has sessions of **160 MB
+and thousands of turns** where one row may be 418 KB — so the daemon's snapshot can be
+most of a gigabyte, cloned per attach and sent over the socket. Add `item_bytes` (order
+8 MB) alongside the count. `items_dropped` already reports the trim, so a head can say
+"N rows above" honestly.
+
+This is the first half of the viewport rather than an optimisation: without it there is
+nothing for R19.1's window to be a window *over*. On its own it just drops old rows and
+still ships the fat one, which is why it is last despite being the smallest.
+
+**Done when.** Attaching to a 160 MB session draws the current frame at the same cost as
+attaching to a 1 MB one; scroll-up extends it without a full lex; an unfolded 418 KB row
+is reachable rather than truncated; and `eval` stays out of it — no logical string is cut
+to fit a screen.
+
+---
+
+## R20 — the header names the wrong model, and the diff toggle is undiscoverable
+
+Two reportable things from one message (*"when i start leticode - despite the fact that
+the model is you - deepseek, it still shows qwen. also how to switch diff style?"*).
+
+### R20.1 — the header says `qwen-3.8-27b` while the turns go to deepseek
+
+**Confirmed on this box**: the daemon's live disclosure says *"turns go to deepseek
+(deepseek-flash)"* and the head's header row reads `qwen-3.8-27b`.
+
+What is known, read rather than guessed:
+
+- The header prefers the **`model` settings row** and falls back to `wiring.model` from
+  `Hello` (`header_model`, `App::header_row`). So a provider-shaped row would show
+  `deepseek/deepseek-flash`.
+- That row is built from `Config::settings` — `Some(pc)` gives `deepseek/deepseek-flash`,
+  `None` gives `local (qwen-3.8-27b)`.
+- `SessionLog`'s registry stores those rows **per session** (`Entry::settings`, filled by
+  `set_settings`) and the server answers a head's `Settings` from that store, so a stale
+  store is a stale header.
+- `/models` does republish after building the provider, with a comment about this exact
+  bug. So the runtime-switch path is handled.
+
+**The decisive cheap check, and it splits the bug in two**: open `/config` and read the
+model row. If it says `local (qwen-3.8-27b)`, the daemon's stored rows are stale and the
+bug is `publish_settings` ordering at startup. If it says `deepseek/deepseek-flash` while
+the header says `qwen`, the head is not reading the row it has. Take that reading before
+changing anything.
+
+**Where.** `crates/harnessd/src/harness.rs:2487` (the startup publish) against
+`:2439` where the provider is built; `crates/harnessd/src/config.rs:905-920` (the row);
+`crates/tui/src/app.rs`'s header model selection.
+
+### R20.2 — `how to switch diff style?` — the answer is nowhere on the screen
+
+It is **`/config`, first row (`diff view`), Enter** — split ↔ unified. But `/diff` was
+deliberately removed (*"one place to change a setting, not two"*) and **nothing in
+`/help` or the hint bar says where it went**. The operator asking is the evidence.
+
+**Where.** `crates/tui/src/app.rs:7540`'s `help_lines` table, and the composer's hint
+bar. One line, and it is the kind that stops being asked.
+
+---
+
 ## R12 — the firecode backend for subagents, and the cookbook — **SETTLED 2026-09-14 (claude-lab2x1)**
 
 Done: `crates/tools/src/firecode.rs` + the harness placement; live test
