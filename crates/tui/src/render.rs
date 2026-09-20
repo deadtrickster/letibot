@@ -1401,17 +1401,39 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         // The frame is still drawn, so a bare block is visibly a code block.
         assert!(out.contains("┌─ ") && out.contains("└─"), "{out:?}");
 
-        // A four-backtick block holding a three-backtick fence is the outer fence's, so it
-        // is bare, and the inner ```rust is content rather than a nested box.
+        // A four-backtick block holding a three-backtick fence. **This is the case where
+        // the fence's own length is the author's signal**, and the two cases want opposite
+        // renderings:
+        //
+        //   ```rust … ```          "here is some Rust"            -> a rust box
+        //   ```` … ```rust … ``` … ````   "here is how to write a     -> the lines as text,
+        //                                   markdown rust block"         markers and all
+        //
+        // The second is what a model writes when it is teaching, and the backticks are the
+        // content, not a marker — swallowing them would hide the only thing it was trying
+        // to show. So this asserts the demonstration is *visible*: all three lines, the
+        // inner fence's backticks among them.
         let quoted = lex("````\n```rust\nlet a = 1;\n```\n````\n");
         assert_eq!(quoted.len(), 1, "{quoted:#?}");
         let out = render_block(&quoted[0], &cfg()).join("\n");
         assert!(out.contains("┌─ code"), "{out:?}");
         assert!(!out.contains("┌─ rust"), "the inner fence was interpreted: {out:?}");
-        let text = out.lines().map(|l| l.trim_start_matches(['\u{1b}', '[', '2', 'm', '0'])).count();
-        assert!(text >= 3, "{out:?}");
-        // And no box was drawn inside the box.
+        // Not one byte of the demonstration was eaten.
+        for line in ["```rust", "let a = 1;", "```"] {
+            assert!(out.contains(line), "{line:?} is missing from {out:?}");
+        }
+        // No box inside the box: one frame, not two.
         assert_eq!(out.matches("┌─ ").count(), 1, "{out:?}");
         assert_eq!(out.matches("└─").count(), 1, "{out:?}");
+
+        // The outer fence can name the language being demonstrated, and then the *label*
+        // says so even though the body is plain — `StreamingCode` knows nothing called
+        // markdown, and inventing a highlighter would colour the demonstration as prose.
+        let teaching = lex("````markdown\n```rust\nlet a = 1;\n```\n````\n");
+        assert_eq!(teaching.len(), 1, "{teaching:#?}");
+        let out = render_block(&teaching[0], &cfg()).join("\n");
+        assert!(out.contains("┌─ markdown"), "{out:?}");
+        assert!(out.contains("```rust"), "the demo was eaten: {out:?}");
+        assert!(!out.contains("┌─ rust"), "{out:?}");
     }
 }
