@@ -1049,17 +1049,21 @@ pub struct App {
     attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
-    /// How many announced rows are still waiting for their body.
+    /// The high-water mark of rows waiting for a body, since it was last zero.
     ///
-    /// One line at the tail is drawn from this and [`App::bodies_peak`] instead of
-    /// one placeholder per row. See `item_lines`.
-    bodies_pending: usize,
-    /// The high-water mark of [`App::bodies_pending`] since it was last zero.
+    /// The denominator of the fork line: a fork announces every row before any
+    /// body follows, so the peak IS the size of the carry and `peak - pending` is
+    /// how much has landed. Reset when the last body arrives, so the next fork
+    /// measures itself and not the one before.
     ///
-    /// The denominator: a fork announces every row first, so the peak is the size
-    /// of the carry and `peak - pending` is how much of it has landed. Reset when
-    /// the last body arrives, so the next fork measures itself and not the one
-    /// before.
+    /// **The numerator is counted, not accumulated.** An incremental counter went
+    /// wrong the first time and went wrong silently: `self.items` is replaced
+    /// wholesale by a snapshot (`App::adopt`), and a fork is exactly when one
+    /// arrives, so the tally and the rows it was supposed to describe came apart
+    /// — every later `record_item` then failed its `position` lookup and
+    /// decremented nothing. The operator saw a bar that never moved: *"so,
+    /// counter wasnt moving - 0 always"*. See [`App::bodies_pending`], which asks
+    /// the rows instead of remembering.
     bodies_peak: usize,
 }
 
@@ -1127,23 +1131,40 @@ fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -
         processed: done as u64,
         time_ms: 0,
     };
-    let cat = cat_frame(now_ms);
+    // **Every field is fixed width and the cat is last.** The operator: *"move cat
+    // to the right most position or thngs jump around"*.
+    //
+    // Two things on this line change width as it runs — the cat, whose frames are
+    // seven and eight columns, and the numerator, which grows from `0` to `2.7k`.
+    // Anything drawn to the RIGHT of either moves when it changes, and a
+    // progress indicator that shuffles sideways reads as a fault rather than as
+    // progress. So the numerator is right-aligned in the width of its own
+    // denominator, which is the widest it can ever be, and the cat goes at the
+    // end where nothing follows it. The bar's own width is fixed by the total,
+    // not by the fraction, so its edge is the only thing that moves — which is
+    // the one thing that is supposed to.
+    let total = progress::thousands(peak as u64);
     let counts = format!(
-        "{} of {} rows",
+        "{:>w$} of {total} rows",
         progress::thousands(done as u64),
-        progress::thousands(peak as u64)
+        w = total.chars().count()
     );
-    // The bar takes what the cat, the counts and the gaps leave. Clamped at both
-    // ends so a narrow terminal degrades to a short bar rather than to arithmetic
-    // that wraps the line into two.
-    let used = width::width(cat) + counts.chars().count() + 4;
+    // The bar takes what the fixed fields and the gaps leave. Clamped at both ends
+    // so a narrow terminal degrades to a short bar rather than to arithmetic that
+    // wraps the line into two.
+    let used = CAT_SLOT + counts.chars().count() + 6;
     let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
     vec![
         String::new(),
         format!(
-            "{cat} {} {}",
+            "  {} {}  {}",
             progress::bar(&p, bar_cols, cfg.palette()),
-            cfg.palette().paint(Role::Faint, &counts)
+            cfg.palette().paint(Role::Faint, &counts),
+            // Padded to the slot, not to the frame: `(=^.^=)` and `(=^.^=)~` are
+            // different widths and centring or trailing each on its own is what
+            // makes the cat slide. Same rule as the pre-attach wait.
+            cfg.palette()
+                .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
         ),
         cfg.palette().paint(
             Role::Faint,
@@ -1159,16 +1180,45 @@ fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -
 /// and a counter here would also break the property this whole path exists for — the
 /// `screen()` call has to be the same for the same elapsed time, or the frame is not
 /// a function of the clock and the pre-attach draw cannot be driven at all.
+/// **Every frame is the same width, and the face is in the same columns in all of
+/// them.** Only what is *meant* to change changes.
+///
+/// The first set was not: `(=^.^=)` is seven columns and `(=^.-.=)` is eight,
+/// with a `~` on half of them, so the widths ran 7, 8, 7, 8, 8, 9, 8, 9. Padding
+/// each frame to the widest fixed the block's LEFT edge, which is where the
+/// previous attempt stopped — but the face inside the block still grew and shrank
+/// by a column, so the thing the eye actually tracks kept moving. The operator,
+/// having watched it: *"why dont you fix cats center during animation"*.
+///
+/// So the layout is fixed by construction rather than by padding afterwards:
+///
+/// ```text
+///   col  0 1 2 3 4 5 6 7
+///        ( = ^ X ^ = )  T
+///              ^        ^
+///              |        the tail, ~ or blank
+///              the expression, the one glyph that carries the animation
+/// ```
+///
+/// The expression sits at column 3, which is the face's own centre, so it changes
+/// **in place**; the ears and cheeks never move; the tail flicks in a column of
+/// its own past the face. `cat_frames_are_one_width_with_the_face_in_one_place`
+/// asserts all of that, because it is the kind of thing a later edit breaks by
+/// adding one nice-looking frame.
+///
+/// ASCII only, deliberately: `CAT_SLOT` measures with `str::len` and the centring
+/// arithmetic is in columns, and those are the same number only while every glyph
+/// is one byte and one column.
 const CAT_FRAMES: [&str; 8] = [
-    // A cat walking right, one leg changing per frame.
-    "(=^.^=)",
-    "(=^.-.=)",
-    "(=^o^=)",
-    "(=^-.-=)",
+    // A cat blinking, with its tail flicking behind it.
+    "(=^.^=) ",
+    "(=^-^=) ",
+    "(=^o^=) ",
+    "(=^-^=) ",
     "(=^.^=)~",
-    "(=^.-.=)~",
+    "(=^-^=)~",
     "(=^o^=)~",
-    "(=^-.-=)~",
+    "(=^-^=)~",
 ];
 
 /// When the waiting frame starts naming the way out, in milliseconds.
@@ -1182,12 +1232,11 @@ const ATTACH_IMPATIENT: u64 = 2_000;
 
 /// The width of the **slot** the cat walks in: the widest frame.
 ///
-/// The frames are not all the same width (`(=^.^=)` against `(=^.^=)~`), and a 7-wide
-/// and an 8-wide thing cannot both sit exactly centred. So the *slot* is what is
-/// centred and the cat sits at its left edge, which makes the cat a fixed thing whose
-/// expression changes rather than something that slides sideways and back as it
-/// walks. Measured rather than written down, so adding a frame cannot silently
-/// widen the slot past what the arithmetic assumes.
+/// Every frame is now that width — see [`CAT_FRAMES`], where a constant width is
+/// the point and not a coincidence — so the padding this feeds is a no-op and is
+/// kept as the guard rather than the fix. Measured rather than written down, so a
+/// frame added in a hurry widens the slot instead of silently overflowing the
+/// arithmetic that assumes it.
 const CAT_SLOT: usize = {
     let mut w = 0;
     let mut i = 0;
@@ -1386,7 +1435,6 @@ impl App {
             attaching: false,
             attach_started_ms: 0,
             cursor: None,
-            bodies_pending: 0,
             bodies_peak: 0,
         }
     }
@@ -2505,8 +2553,6 @@ impl App {
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
                 }
-                self.bodies_pending += 1;
-                self.bodies_peak = self.bodies_peak.max(self.bodies_pending);
                 self.items.push(SnapshotItem {
                     item_id,
                     kind,
@@ -4510,12 +4556,6 @@ impl App {
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             return;
         };
-        if self.items[idx].item.is_none() {
-            self.bodies_pending = self.bodies_pending.saturating_sub(1);
-            if self.bodies_pending == 0 {
-                self.bodies_peak = 0;
-            }
-        }
         self.items[idx].item = Some(item);
         // The row's rendered form changed, so the history cache from that row
         // on is stale. From that row on, and not from row zero: this is the
@@ -5550,10 +5590,20 @@ impl App {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
+        // **Counted off the rows, every frame.** See `bodies_peak` for why this is
+        // not a tally: `self.items` is replaced wholesale by a snapshot, which is
+        // exactly what a fork delivers, and a tally that survived that described
+        // rows that no longer existed. An `Option` check per row, on the same
+        // order of cost as `transcript_bytes`, which already walks them all.
+        let bodies_pending = self.items.iter().filter(|i| i.item.is_none()).count();
+        if bodies_pending == 0 {
+            self.bodies_peak = 0;
+        } else {
+            self.bodies_peak = self.bodies_peak.max(bodies_pending);
+        }
         // Read before the disjoint borrow below, because the fork line is drawn
         // from the tail and `self` is not whole by then.
-        let (bodies_pending, bodies_peak, now_ms) =
-            (self.bodies_pending, self.bodies_peak, self.now_ms);
+        let (bodies_peak, now_ms) = (self.bodies_peak, self.now_ms);
 
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
@@ -5697,8 +5747,8 @@ impl App {
         //
         // It sits at the tail with the queued prompts because that is where the
         // rows are landing, and it disappears by itself — the last body to arrive
-        // takes `bodies_pending` to zero.
-        if self.bodies_pending > 0 && self.bodies_peak > 0 {
+        // takes the count to zero.
+        if bodies_pending > 0 && bodies_peak > 0 {
             segs.push(Seg::Owned(rebasing_line(
                 bodies_pending,
                 bodies_peak,
@@ -12661,6 +12711,48 @@ mod tests {
         }
     }
 
+    /// **The cat's centre does not move while it animates.**
+    ///
+    /// The operator, watching it: *"why dont you fix cats center during
+    /// animation"*. Padding the frames to a common slot fixed the block's left
+    /// edge and left the face inside it growing and shrinking — `(=^.^=)` is
+    /// seven columns, `(=^.-.=)` is eight — so the thing the eye tracks still
+    /// moved half a column every frame.
+    ///
+    /// Four claims, and the first two are what "centre" means here: one width for
+    /// every frame, the face's fixed glyphs in the same columns in every frame,
+    /// the expression at the face's own centre, and the tail outside the face
+    /// where it cannot push it. The last claim is that the animation still
+    /// animates — a single frame repeated eight times would satisfy everything
+    /// above.
+    #[test]
+    fn cat_frames_are_one_width_with_the_face_in_one_place() {
+        let w = CAT_FRAMES[0].len();
+        for f in CAT_FRAMES {
+            assert!(
+                f.is_ascii(),
+                "the slot is measured in bytes and centred in columns, which is \
+                 one number only for ASCII: {f:?}"
+            );
+            assert_eq!(f.len(), w, "every frame is one width: {f:?}");
+            assert_eq!(&f[0..3], "(=^", "the left of the face never moves: {f:?}");
+            assert_eq!(&f[4..7], "^=)", "nor the right: {f:?}");
+        }
+        // The expression is at the face's centre, so it changes IN PLACE rather
+        // than by pushing one side of the face outward.
+        assert_eq!(3, (w - 1) / 2, "column 3 is the middle of a {w}-wide slot");
+        // And the tail is past the face, where flicking it cannot move anything.
+        assert!(CAT_FRAMES.iter().any(|f| f.ends_with('~')));
+        assert!(CAT_FRAMES.iter().any(|f| f.ends_with(' ')));
+        // It still animates: without this, one frame eight times passes.
+        let expressions: std::collections::HashSet<&str> =
+            CAT_FRAMES.iter().map(|f| &f[3..4]).collect();
+        assert!(
+            expressions.len() >= 2,
+            "the expression has to change: {expressions:?}"
+        );
+    }
+
     /// **The waiting frame: a cat dead centre, walking in place.**
     ///
     /// Four properties, each of which an obvious implementation gets wrong:
@@ -13290,6 +13382,132 @@ mod tests {
         );
     }
 
+    /// **The count is derived from the rows, so a snapshot cannot strand it.**
+    ///
+    /// The first version tallied on the events: `+1` per `TranscriptAppended`,
+    /// `-1` per body. That is wrong in exactly the case it exists for. A fork
+    /// delivers a snapshot, `adopt` replaces `self.items` wholesale, and the tally
+    /// then described rows that were gone — every later `record_item` missed its
+    /// `position` lookup and decremented nothing, so the bar sat at zero for the
+    /// whole carry. The operator: *"so, counter wasnt moving - 0 always"*.
+    ///
+    /// The premise is asserted first and it is the whole test: the snapshot must
+    /// really arrive with bodiless rows in it. Without that this passes on the
+    /// broken version too.
+    #[test]
+    fn a_snapshot_full_of_bodiless_rows_still_counts_bodies_as_they_land() {
+        let hub = letibot_sessionlog::hub::Hub::new("s");
+        let n = 40usize;
+        for i in 0..n {
+            hub.publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
+                item_id: format!("s.{i}"),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            });
+        }
+        let att = hub.attach(
+            "tui",
+            "test",
+            letibot_sessionlog::protocol::Caps::default(),
+            0,
+        );
+        let snap = att.snapshot.expect("a snapshot");
+        assert_eq!(
+            snap.items.iter().filter(|i| i.item.is_none()).count(),
+            n,
+            "the premise: the snapshot carries {n} rows with no body, which is what \
+             a fork delivers"
+        );
+        let mut a = app();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: att.head_id.clone(),
+            dropped: att.dropped,
+            snapshot: Some(Box::new(snap)),
+            resumed_from: att.resumed_from,
+            scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
+        });
+        let first = a.screen(80, 40).join("\n");
+        assert!(
+            first.contains(&format!("of {n} rows")),
+            "the carry is counted from the snapshot, not from events this head \
+             never saw: {first}"
+        );
+
+        // And the bodies move it. This is the assertion the tally failed.
+        for i in 0..10 {
+            a.apply(ServerFrame::Event(env(
+                100 + i as u64,
+                testing::content(&format!("s.{i}"), "a line of conversation"),
+            )));
+        }
+        let moved = a.screen(80, 40).join("\n");
+        assert!(
+            moved.contains(&format!("10 of {n} rows")),
+            "ten bodies landed and the counter moved: {moved}"
+        );
+    }
+
+    /// **Nothing on the line may move sideways except the bar's own edge.**
+    ///
+    /// The operator: *"move cat to the right most position or thngs jump
+    /// around"*. Two fields change width as the carry runs — the cat, whose
+    /// frames are 7 and 8 columns, and the numerator, which grows from `0` to its
+    /// denominator. Either one shifts whatever is drawn to its right, and a
+    /// progress indicator that shuffles reads as a fault.
+    ///
+    /// Rendered width is the assertion, not the byte length: these rows are
+    /// painted, and `width::width` is what skips the escapes.
+    #[test]
+    fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
+        let cfg = RenderConfig {
+            width: 100,
+            ..Default::default()
+        };
+        // **The premise**: something on this line has to actually change across
+        // the sample, or a constant width below proves nothing at all.
+        //
+        // The cat is no longer one of those things — every frame is one width now,
+        // which `cat_frames_are_one_width_with_the_face_in_one_place` is what
+        // guarantees, and this test leans on it rather than re-proving it. What is
+        // asserted here is that the sample really does walk the animation, and
+        // that the NUMERATOR changes width, which is the variable field this line
+        // has to hold still around.
+        let ticks: Vec<u64> = (0..8).map(|t| t * 400).collect();
+        let mut frames: Vec<&str> = ticks.iter().map(|t| cat_frame(*t)).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        assert!(
+            frames.len() > 1,
+            "the sampled ticks must hit more than one cat frame, or the line is \
+             never redrawn in this test: {frames:?}"
+        );
+        assert_ne!(
+            progress::thousands(0).chars().count(),
+            progress::thousands(2702).chars().count(),
+            "and the numerator must change width across the run, or the layout \
+             below says nothing about the count either"
+        );
+
+        let mut seen: Vec<usize> = Vec::new();
+        // Across the whole run, and across a full cycle of cat frames.
+        for done in [0usize, 7, 99, 100, 999, 1000, 2702] {
+            for tick in &ticks {
+                let line = rebasing_line(2702 - done, 2702, *tick, &cfg);
+                seen.push(letibot_ui::width::width(&line[1]));
+            }
+        }
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            1,
+            "the line must be one width throughout; got {seen:?}"
+        );
+    }
+
     /// **A fork is one line, however many rows it carries.**
     ///
     /// `/reseat` carries the whole conversation and announces every row before a
@@ -13322,7 +13540,9 @@ mod tests {
             "and not one placeholder among them: {screen}"
         );
         // The bar is fed rows, so it must say how many — nothing has landed yet.
-        assert!(screen.contains(&format!("0 of {n} rows")), "{screen}");
+        // Right-aligned in the denominator's width, which is what stops the cat
+        // beside it sliding as the number grows.
+        assert!(screen.contains(&format!("  0 of {n} rows")), "{screen}");
 
         // Bodies land and the count follows them.
         for i in 0..(n / 2) {
