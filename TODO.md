@@ -173,6 +173,53 @@ a test cannot assert is a live answer; `crates/ui/src/highlight.rs` holds no lex
 is in rano's `TODO.md` §9; 2026-09-20's markdown fixtures pass, since they are the record of
 what the grammar gets wrong.
 
+### R18.4 — attaching to a big session takes seconds, and it is the markdown parse
+
+**Reported 2026-09-20**, after the migration shipped: *"startup time skyrocketed.
+literally seconds"*, and then *"I do `leticode --continue` and it just does nothing, then
+chrome appears with empty conversation history and then after a while it renders
+history"*.
+
+**Measured**, release, on this workspace's own stored transcripts:
+
+| | |
+|---|---|
+| markdown block grammar | 133 ns/byte (555 KB → 74 ms) |
+| markdown inline grammar | 250 ns/byte (450 KB → 133 ms) |
+| Rust, for scale | ~3 ns/byte |
+| a stored session | **4.1 MB and 5.9 MB** (`s-…838#t18`, `s-…813#t11`) |
+| so one attach | **1.6-2.7 s** of lexing, which is the "after a while" |
+
+Both markdown grammars run external scanners and that is the constant; tree-sitter is
+not the problem. A row is lexed once (the walk is monotonic — see
+`rendering_the_history_does_not_grow_with_the_session_either`), so this is one linear
+pass, not a repeat.
+
+**Fixed (`5884ddf`, rano)**: the query cache. `Query::new` is 8.7-10.2 ms and was paid
+per *code fence* and per *diff excerpt*; it is compiled once per process per language
+now. This session alone holds 132 fenced messages, so that was ~1.2 s of pure query
+compilation per attach — our bug, and it is gone.
+
+**Open**: the remaining ~1.6-2.7 s is the parse, and every lever is consumer-side.
+Three, smallest to largest:
+
+1. **Lex less of each row.** `budget.body_lines` already bounds the *render* to 40
+   lines per block, but the lex produces every line first — so a 5000-line message is
+   fully parsed to draw a head and a tail. The inline pass (half the cost) could run
+   lazily per line at render time, which would cap it at what is drawn. Bounded work,
+   and it changes the `Block` model: runs are computed on demand rather than at lex.
+2. **Cache the rendered history.** Key it on (session, item id, width, colour) and a
+   `--continue` of an unchanged session skips the parse entirely. The strongest fix for
+   the reported flow, and it is a disk format plus an invalidation rule.
+3. **Paint chrome first, fill history over frames.** The walk's marks are cumulative
+   (`HistMark { lines, note_upto, class }`), so a partial body has to agree with where
+   the view is anchored — the one to do last, because it touches the thing that makes
+   scrollback correct.
+
+**Not a fix**: making the grammars cheaper. Both external scanners are upstream, and the
+markdown half costing ~20x the Rust half per byte is a fact about those scanners rather
+than about rano.
+
 **The one piece left, and it is rano's.** The capture walk is O(text) per repaint. A code
 fence is a frame's budget at fence sizes — measured, and why this shipped — but an editor
 repainting a 200 KB file per keystroke is not, and that is exactly the consumer rano's
