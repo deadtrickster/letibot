@@ -319,6 +319,17 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::ListJobs) => {
+                // Answered here and now, off the registry, rather than queued as a
+                // command: `/job` went through the command queue and so arrived
+                // after the turn it was asked during. A pane that opens must answer
+                // while it is open.
+                let f = ServerFrame::Jobs {
+                    session_id: seat.hub.session_id().to_string(),
+                    jobs: registry.jobs(&seat.hub.session_id()),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::ListTodos) => {
                 // The bootstrap read: the snapshot carries items, not events, so
                 // a head attaching fresh has nothing to replay. From here the

@@ -134,6 +134,9 @@ pub fn tick(
             }
             Action::Resync => client.request_resync()?,
             Action::ListSessions => client.list_sessions()?,
+            Action::ListJobs => {
+                client.list_jobs()?;
+            }
             Action::ListTodos => {
                 client.list_todos()?;
             }

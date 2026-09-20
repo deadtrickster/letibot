@@ -251,9 +251,7 @@ pub struct SessionBrief {
 ///
 /// Empty strings for a daemon whose owner supplied none, never a plausible
 /// default: a guessed endpoint on a screen is a guess somebody later quotes.
-#[derive(
-    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionWiring {
     pub model: String,
     pub dialect: String,
@@ -339,6 +337,7 @@ pub trait SessionSource: Send + Sync {
 }
 
 struct Entry {
+    jobs: Vec<crate::protocol::JobEntry>,
     hub: Arc<Hub>,
     title: String,
     created_ms: u64,
@@ -447,6 +446,7 @@ impl Registry {
             g.entries.push((
                 id,
                 Entry {
+                    jobs: Vec::new(),
                     hub,
                     title: String::new(),
                     created_ms: now_ms(),
@@ -507,6 +507,7 @@ impl Registry {
         g.entries.push((
             id.clone(),
             Entry {
+                jobs: Vec::new(),
                 hub: hub.clone(),
                 title: title.into(),
                 created_ms: now_ms(),
@@ -564,6 +565,7 @@ impl Registry {
         g.entries.push((
             id,
             Entry {
+                jobs: Vec::new(),
                 hub,
                 title: title.into(),
                 created_ms: now_ms(),
@@ -662,6 +664,29 @@ impl Registry {
         if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
             e.settings = rows;
         }
+    }
+
+    /// **The jobs a session's harness last published.**
+    ///
+    /// A mailbox rather than a live read, for the same reason `settings` is one:
+    /// the process table belongs to the harness and the harness belongs to the
+    /// daemon's own thread, while this is answered on a head's connection. The
+    /// harness refills it whenever the table changes, so the snapshot a pane
+    /// opens on is the daemon's answer and not the head's reconstruction.
+    pub fn set_jobs(&self, session_id: &str, jobs: Vec<crate::protocol::JobEntry>) {
+        let mut g = self.lock();
+        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+            e.jobs = jobs;
+        }
+    }
+
+    pub fn jobs(&self, session_id: &str) -> Vec<crate::protocol::JobEntry> {
+        let g = self.lock();
+        g.entries
+            .iter()
+            .find(|(k, _)| k == session_id)
+            .map(|(_, e)| e.jobs.clone())
+            .unwrap_or_default()
     }
 
     /// What a session's harness last published. Empty for a session whose
@@ -845,7 +870,12 @@ impl Registry {
     /// Close every session and the bell. Every head wakes with `Bye`, every worker
     /// falls out of `next_command`.
     pub fn close(&self) {
-        let hubs: Vec<Arc<Hub>> = self.lock().entries.iter().map(|(_, e)| e.hub.clone()).collect();
+        let hubs: Vec<Arc<Hub>> = self
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, e)| e.hub.clone())
+            .collect();
         for h in hubs {
             h.close();
         }
@@ -886,11 +916,19 @@ mod tests {
         assert!(matches!(r.next_work(), Some(Work::Open(id)) if id == "s-parent"));
 
         let hub = r.new_hub("s-parent-sub-1");
-        assert!(r.resolve("s-parent-sub-1").is_none(), "listed before it was open");
+        assert!(
+            r.resolve("s-parent-sub-1").is_none(),
+            "listed before it was open"
+        );
         assert_eq!(r.list().len(), 1);
 
-        r.adopt(hub.clone(), "find the bug", SessionWiring::default(), Some("s-parent".into()))
-            .unwrap();
+        r.adopt(
+            hub.clone(),
+            "find the bug",
+            SessionWiring::default(),
+            Some("s-parent".into()),
+        )
+        .unwrap();
         let brief = r.brief("s-parent-sub-1").expect("adopted");
         assert_eq!(brief.parent_session_id.as_deref(), Some("s-parent"));
         assert!(Arc::ptr_eq(&r.resolve("s-parent-sub-1").unwrap(), &hub));
@@ -900,8 +938,10 @@ mod tests {
         // closing it: a drained, closed bell answers None at once, and a ring
         // for the child would come out first.
         r.bell().close();
-        assert!(r.next_work().is_none(), "adopting rang the worker to open it again");
-
+        assert!(
+            r.next_work().is_none(),
+            "adopting rang the worker to open it again"
+        );
     }
 
     #[test]
@@ -970,10 +1010,20 @@ mod tests {
         // for two heads on one session.
         let (id1, c1) = r.next_command().unwrap();
         assert_eq!(id1, "s-b");
-        assert_eq!(c1.kind, CommandKind::Prompt { text: "for b".into() });
+        assert_eq!(
+            c1.kind,
+            CommandKind::Prompt {
+                text: "for b".into()
+            }
+        );
         let (id2, c2) = r.next_command().unwrap();
         assert_eq!(id2, "s-a");
-        assert_eq!(c2.kind, CommandKind::Prompt { text: "for a".into() });
+        assert_eq!(
+            c2.kind,
+            CommandKind::Prompt {
+                text: "for a".into()
+            }
+        );
     }
 
     #[test]
@@ -995,9 +1045,7 @@ mod tests {
             &hb.head_id,
             "c2",
             0,
-            CommandKind::Prompt {
-                text: "bob".into(),
-            },
+            CommandKind::Prompt { text: "bob".into() },
         );
         a.submit(
             &ha.head_id,
@@ -1028,7 +1076,10 @@ mod tests {
         // at a step boundary, and the ring is still outstanding.
         let r = reg();
         let a = r.create("s-a", "", SessionWiring::default()).unwrap();
-        assert!(matches!(r.next_work(), Some(Work::Open(_))), "create rings an open");
+        assert!(
+            matches!(r.next_work(), Some(Work::Open(_))),
+            "create rings an open"
+        );
         let h = a.attach("tui", "alice", Caps::default(), 0);
         a.submit(
             &h.head_id,
@@ -1059,7 +1110,9 @@ mod tests {
     #[test]
     fn a_list_says_which_session_is_busy_and_which_is_idle() {
         let r = reg();
-        let a = r.create("s-a", "the cache question", SessionWiring::default()).unwrap();
+        let a = r
+            .create("s-a", "the cache question", SessionWiring::default())
+            .unwrap();
         r.create("s-b", "", SessionWiring::default()).unwrap();
         a.publish(testing::turn_started("t1"));
         let rows = r.list();
@@ -1109,10 +1162,20 @@ mod tests {
     fn a_wake_is_served_after_every_queued_command() {
         let r = reg();
         let a = r.create("s-a", "", SessionWiring::default()).unwrap();
-        assert!(matches!(r.next_work(), Some(Work::Open(_))), "create rings an open");
+        assert!(
+            matches!(r.next_work(), Some(Work::Open(_))),
+            "create rings an open"
+        );
         let h = a.attach("tui", "dead", Caps::default(), 0);
         r.bell().ring_wake("s-a");
-        a.submit(&h.head_id, "c1", 0, CommandKind::Prompt { text: "hello".into() });
+        a.submit(
+            &h.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "hello".into(),
+            },
+        );
 
         match r.next_work() {
             Some(Work::Command(id, cmd)) => {
@@ -1149,7 +1212,12 @@ mod tests {
         let b = r.create("s-b", "", SessionWiring::default()).unwrap();
         assert_eq!(r.default_id(), "s-a");
         let hb = b.attach("tui", "bob", Caps::default(), 0);
-        b.submit(&hb.head_id, "c1", 0, CommandKind::Prompt { text: "x".into() });
+        b.submit(
+            &hb.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt { text: "x".into() },
+        );
         r.next_command().unwrap();
         assert_eq!(r.default_id(), "s-b");
         let _ = a;

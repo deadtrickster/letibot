@@ -207,7 +207,7 @@ use crate::view::Snapshot;
 /// second terminal and `letibot --stop`. The head now asks which, and the
 /// answer that stops the daemon travels over the protocol rather than a head
 /// reaching around it to signal a pid.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +282,35 @@ impl Default for Caps {
             features: Vec::new(),
         }
     }
+}
+
+/// **One background job, as the DAEMON sees it.**
+///
+/// The head used to build this itself, folding `ToolFinished`/`JobSettled` events
+/// into rows and joining the command text out of the turn it happened to be
+/// showing — so a job that outlived its turn lost its name, and every head had to
+/// reimplement which jobs are worth listing and how a command is shortened. The
+/// operator, 2026-09-20: *"regarding jobs, subagents, etc, i expect them to be
+/// handled by harnessd not the heads"*.
+///
+/// So the daemon decides all of it — which jobs are listed, what the command
+/// reads as, what the state word is — and a head renders what it is given. A
+/// second head in another language gets the same answers for free.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobEntry {
+    /// `j12`, the handle `job_output` and `/job ID` take.
+    pub id: String,
+    /// One line, already shortened by the daemon. Never empty: the daemon has the
+    /// process table, so there is no "not in this head's window" case here.
+    pub command: String,
+    /// `asked`, `promoted`, `promoted by NAME`.
+    pub how: String,
+    /// The process's own word — `exited 0`, `killed by job_kill`, `running`.
+    /// Deliberately not "ok"/"error": a non-zero exit is the command's answer.
+    pub state: String,
+    pub running: bool,
+    pub produced: u64,
+    pub elapsed_ms: u64,
 }
 
 /// Head → daemon.
@@ -533,6 +562,14 @@ pub enum ClientFrame {
     /// carries transcript items, not events, so a head attaching fresh has no
     /// `TodosUpdated` to replay; from then on the events carry every change.
     ListTodos,
+    /// This session's background jobs, from the daemon's process table.
+    ///
+    /// Read-only and unserialised like [`ClientFrame::ListTodos`], and for the
+    /// same reason: a list is a question, not an act. Deliberately **not** a
+    /// `Slash` — those ride the command queue and are answered between turns, so
+    /// `/job` during a long turn arrived after it finished. A pane that opens
+    /// must answer now. Added at `PROTOCOL_VERSION` 21.
+    ListJobs,
     /// Make a new session in this daemon.
     ///
     /// It does **not** switch to it — the head does that with [`ClientFrame::Switch`]
@@ -716,6 +753,12 @@ pub enum ServerFrame {
     /// for folding into the head's state.
     /// The answer to [`ClientFrame::Settings`].
     Settings { rows: Vec<SettingRow> },
+    /// The answer to [`ClientFrame::ListJobs`]: the whole list as of now. Later
+    /// changes arrive as [`crate::SessionEvent::JobSettled`], the way todos work.
+    Jobs {
+        session_id: String,
+        jobs: Vec<JobEntry>,
+    },
     Peeked {
         session_id: String,
         dropped: u64,
