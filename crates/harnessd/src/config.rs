@@ -469,6 +469,24 @@ pub struct Config {
     /// [`Config::disclosures`], which says exactly that when both are zero. One
     /// off is a choice; both off is a different setting and reads as one.
     pub max_tool_rounds: usize,
+    /// **How many times a round is RE-attempted when the model endpoint fails**,
+    /// after the first try. `0` is none. See `harness::MAX_HTTP_RETRIES`, which is
+    /// the default: six, doubling from a second, about a minute of waiting.
+    ///
+    /// Retries and not attempts, because the first version of this field was
+    /// called `http_attempts` and `1` still retried once — the guard reads
+    /// `attempt >= budget` with `attempt` starting at zero. A field whose name
+    /// says one thing and whose arithmetic says another is a bug waiting for
+    /// somebody to set it to what the name promises; its own test caught it.
+    ///
+    /// Configurable because the right answer depends on something the daemon
+    /// cannot see — whether the endpoint is a server that might be reloading or
+    /// one that is simply not there. A caller that already knows sets `1` and is
+    /// told at once. Measured, 2026-09-20: `compact.rs` spent 63.7 seconds of wall
+    /// clock on 3.5 seconds of CPU, all of it one test waiting out this ladder
+    /// against a port its own comment called "a dead port, so the attempt fails
+    /// fast".
+    pub http_retries: u32,
     /// **How many consecutive rounds may produce nothing new before the turn stops.**
     ///
     /// A round counts as producing nothing new when none of its calls returned `Ok`
@@ -871,6 +889,7 @@ impl Config {
             // Unbounded: see the field. `stall_rounds` is the stop that measures
             // progress, and a round count never could.
             max_tool_rounds: 0,
+            http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
         }
     }

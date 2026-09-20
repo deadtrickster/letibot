@@ -4344,7 +4344,7 @@ impl<'a> Harness<'a> {
                     attempt = 0;
                     break attempted;
                 };
-                let Some(wait) = http_retry_after(&e, attempt) else {
+                let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
                     break Err(TurnFailure::Http(e));
                 };
                 attempt += 1;
@@ -4352,11 +4352,12 @@ impl<'a> Harness<'a> {
                     code: "model_endpoint_retry".into(),
                     detail: format!(
                         "the model server at {} did not answer: {e}. Taking this round \
-                         again in {:.0}s (attempt {attempt} of {MAX_HTTP_ATTEMPTS}). \
+                         again in {:.0}s (attempt {attempt} of {}). \
                          Nothing was recorded, so the retry sends exactly the bytes this \
                          one did.",
                         self.cfg.endpoint.authority(),
                         wait.as_secs_f64(),
+                        self.cfg.http_retries,
                     ),
                 });
                 if !self.sleep_unless_closed(wait) {
@@ -4941,7 +4942,14 @@ fn round_backstop(configured: usize) -> usize {
 /// exists for (llama.cpp reloading a six-shard GGUF after `--sleep-idle-seconds`,
 /// which answers `503 Loading model` for as long as it takes) and short enough
 /// that an endpoint which is genuinely gone is reported rather than waited on.
-const MAX_HTTP_ATTEMPTS: u32 = 6;
+///
+/// **The default for [`Config::http_retries`], which is what the code reads.**
+/// A caller that already KNOWS the endpoint is not there — a test pointed at a
+/// dead port — sets it to 0 and is told so at once, instead of sitting out a
+/// minute of waiting for a server it never wanted. That minute was real: seven
+/// tests in `compact.rs` took 63.7 seconds of wall clock for 3.5 seconds of CPU,
+/// and the whole difference was one of them walking this ladder.
+pub const MAX_HTTP_RETRIES: u32 = 6;
 
 /// **Is this failure worth taking the round again, and how long to wait first?**
 ///
@@ -4975,8 +4983,12 @@ const MAX_HTTP_ATTEMPTS: u32 = 6;
 /// A turn is safe to take again because an HTTP failure commits NOTHING:
 /// `stream_turn` posts before it accumulates, so the prompt is rebuilt from the
 /// same ledger and the retry sends the same bytes.
-fn http_retry_after(e: &letibot_turn::HttpError, attempt: u32) -> Option<std::time::Duration> {
-    if attempt >= MAX_HTTP_ATTEMPTS {
+fn http_retry_after(
+    e: &letibot_turn::HttpError,
+    attempt: u32,
+    attempts: u32,
+) -> Option<std::time::Duration> {
+    if attempt >= attempts {
         return None;
     }
     let worth_it = match e {
@@ -6283,7 +6295,7 @@ mod endpoint_retry {
     //! operator, 2026-09-17: *"implement exponential backoff and auto turn
     //! restart for when model http endpoint doesnt answer or answers with error
     //! codes except unauthenticated"*.
-    use super::{MAX_HTTP_ATTEMPTS, http_retry_after};
+    use super::{MAX_HTTP_RETRIES, http_retry_after};
     use letibot_turn::HttpError;
 
     fn status(code: u16) -> HttpError {
@@ -6298,10 +6310,10 @@ mod endpoint_retry {
     /// buries the real cause under six notices.
     #[test]
     fn a_credential_the_server_refuses_is_not_retried() {
-        assert!(http_retry_after(&status(401), 0).is_none());
-        assert!(http_retry_after(&status(403), 0).is_none());
+        assert!(http_retry_after(&status(401), 0, MAX_HTTP_RETRIES).is_none());
+        assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
         // And not on a later attempt either — it is the code, not the streak.
-        assert!(http_retry_after(&status(401), 3).is_none());
+        assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
     }
 
     /// The case this exists for: llama.cpp reloading a six-shard GGUF after
@@ -6311,7 +6323,7 @@ mod endpoint_retry {
     fn a_server_that_is_coming_back_up_is_waited_out() {
         for code in [500, 502, 503, 504, 429] {
             assert!(
-                http_retry_after(&status(code), 0).is_some(),
+                http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_some(),
                 "{code} should be waited out"
             );
         }
@@ -6323,20 +6335,59 @@ mod endpoint_retry {
                     std::io::ErrorKind::ConnectionRefused,
                     "no"
                 )),
-                0
+                0,
+                MAX_HTTP_RETRIES
             )
             .is_some()
         );
-        assert!(http_retry_after(&HttpError::Malformed("truncated".into()), 0).is_some());
+        assert!(http_retry_after(&HttpError::Malformed("truncated".into()), 0, MAX_HTTP_RETRIES).is_some());
+    }
+
+    /// **The budget is the caller's, and `1` means do not retry.**
+    ///
+    /// The ladder is right for a server that might be reloading and wrong for one
+    /// that is not there, and only the caller knows which. Measured, 2026-09-20:
+    /// `compact.rs` took 63.7 seconds of wall clock for 3.5 seconds of CPU — one
+    /// test walking 1+2+4+8+16+32 against a port its own comment called *"a dead
+    /// port, so the attempt fails fast"*. With the budget at 1 the same file takes
+    /// 1.65 seconds.
+    ///
+    /// The premise is asserted first: the SAME error at the same attempt is still
+    /// retryable under the default. Without that this passes on a build that
+    /// stopped retrying altogether.
+    #[test]
+    fn one_attempt_means_no_retry_and_the_default_still_retries() {
+        let refused = || {
+            HttpError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "no",
+            ))
+        };
+        assert!(
+            http_retry_after(&refused(), 0, MAX_HTTP_RETRIES).is_some(),
+            "the premise: a refused connection is retryable under the default"
+        );
+        assert!(
+            http_retry_after(&refused(), 0, 0).is_none(),
+            "zero retries means the first failure is the answer"
+        );
+        // And a budget in between is honoured as itself, so this is a number and
+        // not a boolean wearing one. The off-by-one here is the whole reason the
+        // field is named for RETRIES: `1` used to be called one attempt and still
+        // retried once.
+        assert!(http_retry_after(&refused(), 0, 1).is_some(), "one retry is one");
+        assert!(http_retry_after(&refused(), 1, 1).is_none(), "and only one");
+        assert!(http_retry_after(&refused(), 2, 3).is_some());
+        assert!(http_retry_after(&refused(), 3, 3).is_none());
     }
 
     /// Doubling from a second, and a hard stop — so an endpoint that is
     /// genuinely gone is REPORTED rather than waited on forever.
     #[test]
     fn the_wait_doubles_and_the_attempts_run_out() {
-        let secs: Vec<u64> = (0..MAX_HTTP_ATTEMPTS)
+        let secs: Vec<u64> = (0..MAX_HTTP_RETRIES)
             .map(|a| {
-                http_retry_after(&status(503), a)
+                http_retry_after(&status(503), a, MAX_HTTP_RETRIES)
                     .expect("retryable")
                     .as_secs()
             })
@@ -6344,7 +6395,7 @@ mod endpoint_retry {
         assert_eq!(secs, vec![1, 2, 4, 8, 16, 32]);
         assert_eq!(secs.iter().sum::<u64>(), 63, "about a minute in total");
         assert!(
-            http_retry_after(&status(503), MAX_HTTP_ATTEMPTS).is_none(),
+            http_retry_after(&status(503), MAX_HTTP_RETRIES, MAX_HTTP_RETRIES).is_none(),
             "the cap is a cap"
         );
     }
@@ -6367,16 +6418,16 @@ mod endpoint_retry {
     #[test]
     fn a_four_hundred_is_not_retried_and_a_five_hundred_still_is() {
         assert!(
-            http_retry_after(&status(400), 0).is_none(),
+            http_retry_after(&status(400), 0, MAX_HTTP_RETRIES).is_none(),
             "the bytes are the problem, so sending them again cannot help"
         );
         for code in [404, 413, 422] {
-            assert!(http_retry_after(&status(code), 0).is_none(), "{code}");
+            assert!(http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_none(), "{code}");
         }
         // The two 4xx that are about timing rather than content: 408 is the server
         // saying it waited too long, 429 is it saying not yet.
-        assert!(http_retry_after(&status(408), 0).is_some());
-        assert!(http_retry_after(&status(429), 0).is_some());
+        assert!(http_retry_after(&status(408), 0, MAX_HTTP_RETRIES).is_some());
+        assert!(http_retry_after(&status(429), 0, MAX_HTTP_RETRIES).is_some());
         // And the one deterministic failure still waited on, stated rather than
         // hidden: llama.cpp reports the context wall as a 500, and a 5xx is not
         // something a client can tell apart from a server restarting.
@@ -6386,7 +6437,8 @@ mod endpoint_retry {
                     code: 500,
                     body: "Context size has been exceeded".into()
                 },
-                0
+                0,
+                MAX_HTTP_RETRIES
             )
             .is_some(),
             "the context wall, which the mid-turn check exists to prevent reaching"
