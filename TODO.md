@@ -312,7 +312,37 @@ absolute row; a tail walk wants a floor and an "N lines above" count instead.
 frame over 6000 rows is 41 ms and every frame after is 0.06 ms. So this is not
 "the walk is slow" — it is that a 160 MB session's *lex* is, and a tail avoids it.
 
-### R19.2 — a row is a logical string; the head holds a viewport — **measured, and it is not the next thing**
+### R19.2 — a row is a logical string; the head holds a viewport — **DONE 2026-09-20 (the paging half)**
+
+**Done**: a payload past its first screenful is now reachable. `ctrl-t` opens the fold
+*and* a view on the newest payload row; `↑`/`↓` page inside it; the seam says which key
+does what (`… +N lines · ↓ pages down · esc closes`, and `… end of output` at the end);
+`esc` closes the view and gives the arrows back to the transcript.
+
+**The bug was that `ctrl-t` revealed nothing.** It raised the *budget* — how many rows a
+card may draw — and there was **no offset**. So a 418 KB payload drew its head, said
+`… +N lines · ctrl-t`, and the chord showed you none of them. The rest was unreachable.
+
+Three things this needed, each found by a test rather than reasoned out:
+
+- **The view is keyed on the item id, not the call id.** The first version keyed it on
+  the call id, which `item_lines` does not hold — so the view was silently closed and the
+  seam went on saying `ctrl-t pages` while `ctrl-t` had been pressed.
+- **A page move must invalidate the history buffer.** `hist_lines` is a cache of rendered
+  rows and a page offset changes what one of them renders to, so `redraw` alone
+  re-drew the old lines: the page said 10 and the screen said line 0.
+- **`Up` at the top is a no-op, not a bug.** A test asserting "the arrows page" with `Up`
+  was wrong, not the code.
+
+**A contract that changed, and it is a real one**: while the view is open the arrows page
+it rather than scrolling the transcript. `scroll_still_works_after_ctrl_t` — written for
+the mouse-reporting bug — now asserts the *new* contract explicitly, including that `esc`
+gives the arrows back. A view that held them for ever would be the same defect with a new
+cause.
+
+**Still open below** (the daemon side): fetching a row the snapshot dropped. `ViewBounds`
+bounds the snapshot, so a very old row is not on the head at all, and this paging works
+over what the head holds. That needs the row-shaped `Peek`.
 
 **Checked before building, 2026-09-20**: across the whole store there are **8 rows over
 64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the

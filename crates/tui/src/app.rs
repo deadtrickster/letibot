@@ -896,6 +896,26 @@ pub struct App {
     /// cursor off screen — recorded at draw time rather than derived, because
     /// the header's height depends on how many todos the model has written.
     repo_first_row: usize,
+    /// **How far into an unfolded row's payload the reader has paged.**
+    ///
+    /// A tool result is a *logical* string — a `read` of a large file, a build log — that
+    /// wraps to thousands of display lines of which the window shows a few dozen. The
+    /// fold drew its first lines and reported the rest as `… +N lines · ctrl-t`, and
+    /// **ctrl-t revealed nothing further**: it changed which rows were allowed to be long
+    /// (`tools.is_open()`), not how much of one row was drawn. So the rest of a 418 KB
+    /// payload was unreachable. The operator, 2026-09-20: *"a row is a typical editor
+    /// problem of logical strings vs display"*.
+    ///
+    /// This is the window into that string. It counts **wrapped display lines** from the
+    /// head of the payload, because that is what the reader is scrolling through, and it
+    /// is clamped against the payload's own length at draw time.
+    payload_page: usize,
+    /// The key that asked, so the arrows page **only the row whose view is open**.
+    ///
+    /// Without it, Up/Down inside an open payload would move the transcript, or every
+    /// open row at once — and there can be several open rows on one screen. The panel
+    /// says `▸ paging <subject>` so the reader can see which one the arrows are on.
+    payload_sel: Option<String>,
     /// **What this conversation has cost, in micro-USD**, summed over the turns
     /// this head has seen finish.
     ///
@@ -1353,6 +1373,8 @@ impl App {
             pane_len: 0,
             pane_room: 0,
             repo_first_row: 0,
+            payload_page: 0,
+            payload_sel: None,
             spent_micros: 0,
             spent_seen: false,
             stats: false,
@@ -2806,6 +2828,25 @@ impl App {
             }
             Key::CtrlT => {
                 self.tools = self.tools.flip();
+                // **Opening the fold also opens a payload view**, on the newest row that
+                // has one — because the fold alone was the bug: it raised the *budget*
+                // (which rows may be long) without giving any row an *offset*, so a
+                // payload past its first screenful stayed unreachable and the seam said
+                // `… +N lines` to a key that revealed none of them.
+                //
+                // The newest, because that is the one a reader is looking at: rows are
+                // appended at the bottom and the fold is a global switch.
+                if self.tools.is_open() {
+                    if let Some(id) = self.newest_payload_row() {
+                        self.payload_sel = Some(id);
+                        self.payload_page = 0;
+                    }
+                } else {
+                    // Closing the fold closes the view with it: a page offset into a
+                    // payload that is no longer drawn is a cursor in a closed file.
+                    self.payload_sel = None;
+                    self.payload_page = 0;
+                }
                 self.refold();
                 return None;
             }
@@ -3117,12 +3158,56 @@ impl App {
             self.redraw = true;
             return None;
         }
-        // Esc while parked in the scrollback means "follow the stream again",
+        // **Esc while parked in the scrollback means "follow the stream again"**,
         // which is what the scrollback banner says it means. Only then does Esc
         // start arming an interrupt.
         if matches!(k, Key::Esc) && self.scroll > 0 {
             self.scroll = 0;
             return None;
+        }
+
+        // **An open payload view owns the arrows and Esc**, and it sits here — ahead of
+        // the transcript's own scrolling — for the same reason the pane arm above does:
+        // the reader has said which row they are reading, and Up/Down must move *inside*
+        // it rather than moving the conversation underneath. Ahead of the decision
+        // ladder too, because a payload view is opened deliberately and a permission
+        // that arrives while it is open should not steal the arrows from under it.
+        //
+        // Esc closes the view rather than arming an interrupt, and the panel says so
+        // (`esc closes`), which is the same bargain the subagent-output pane makes.
+        if self.payload_sel.is_some() {
+            /// How far one press pages. The same unit the transcript scrolls by.
+            const BY: usize = 10;
+            match k {
+                Key::Esc => {
+                    self.payload_sel = None;
+                    self.payload_page = 0;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Up | Key::PageUp => {
+                    self.payload_page = self.payload_page.saturating_sub(BY);
+                    // **The history buffer is a cache of the rendered rows**, and a page
+                    // offset changes what one of those rows renders to — so `redraw`
+                    // alone re-draws the *old* lines. Found by the test: the page moved
+                    // to 10 and the screen still showed line 0. `refold` invalidates for
+                    // the same reason.
+                    self.invalidate_history();
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down | Key::PageDown => {
+                    // Not clamped here: the drawn length is a function of the fold, the
+                    // width and the payload, and the key handler knows none of them. The
+                    // draw clamps against what it actually has, which is the only place
+                    // that knows.
+                    self.payload_page = self.payload_page.saturating_add(BY);
+                    self.invalidate_history();
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
         }
 
         // **An open decision owns Up/Down and a bare Enter.**
@@ -5149,6 +5234,10 @@ impl App {
                     edit: self.call_edits.get(&self.items[k].item_id),
                     decision: self.call_decisions.get(&self.items[k].item_id),
                     diff_split,
+                    payload_view: self
+                        .payload_sel
+                        .as_deref()
+                        .map(|id| (id, self.payload_page)),
                 },
             );
             if !rows.iter().all(|l| l.trim().is_empty()) {
@@ -5195,6 +5284,24 @@ impl App {
     /// difference is what was drawn.
     fn rendered_rows(&self) -> usize {
         self.hist_upto.saturating_sub(self.hist_floor)
+    }
+
+    /// The newest transcript row that has a payload to page: a tool result with more
+    /// than a line or two of text.
+    ///
+    /// "Newest" because that is the one the reader is looking at — rows are appended at
+    /// the bottom, and `ctrl-t` is one switch for all of them. Returning `None` leaves
+    /// the fold open with no view, which is right for a session whose last result is one
+    /// line long: there is nothing to page and nothing should be claimed.
+    fn newest_payload_row(&self) -> Option<String> {
+        self.items.iter().rev().find_map(|it| {
+            match it.item.as_ref() {
+                Some(TranscriptItem::ToolResult { payload, .. }) if payload.lines().count() > 2 => {
+                    Some(it.item_id.clone())
+                }
+                _ => None,
+            }
+        })
     }
 
     /// The visible `room` lines of the body, and nothing else built.
@@ -5299,6 +5406,8 @@ impl App {
                 hist_floor,
                 hist_renders,
                 diff_split,
+                payload_sel,
+                payload_page,
                 ..
             } = self;
             let diff_split = *diff_split;
@@ -5378,6 +5487,13 @@ impl App {
                             edit: call_edits.get(&items[*hist_upto].item_id),
                             decision: call_decisions.get(&items[*hist_upto].item_id),
                             diff_split,
+                            // Rebuilt per row inside the walk, so it cannot be hoisted
+                            // out of this borrow — it reads two fields the walk is
+                            // holding.
+                            payload_view: payload_sel
+                                .as_deref()
+                                .filter(|id| !id.is_empty())
+                                .map(|id| (id, *payload_page)),
                         },
                     );
                     // A row that rendered nothing gets no separator either. An
@@ -8792,6 +8908,15 @@ struct ItemCtx<'a> {
     decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
+    /// How far into a row's payload the reader has paged, and which row that is.
+    ///
+    /// A pair because "the view is open" and "how far down it is" have to agree about
+    /// *which* row — several payloads can be unfolded on one screen, and a bare offset
+    /// would page all of them together. Keyed on the **item id**, which is what
+    /// `item_lines` holds; keying it on the call id is a mismatch that leaves the view
+    /// silently closed, and it was: the first version did exactly that and the test
+    /// caught it (the seam said `ctrl-t pages` while `ctrl-t` had been pressed).
+    payload_view: Option<(&'a str, usize)>,
 }
 
 /// The decision a settled call was gated by, in the dim register: the approval is
@@ -8934,6 +9059,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         answered,
         drawn_live,
         elapsed_ms,
+        payload_view,
     } = *ctx;
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
@@ -9379,27 +9505,68 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 }
                 return (RowClass::Activity, step_in(out, ind));
             }
-            let limit = if tools.is_open() || (bad && why.is_none()) {
+            // **The payload's own window, which is what makes the rest of it
+            // reachable.**
+            //
+            // Under the fold this card may draw two rows; opened, the body budget. Either
+            // way it was drawn from the **head** — so for a 418 KB log the fold reported
+            // `… +N lines` and the chord revealed nothing, because opening the fold
+            // changed the *budget*, not the *offset*. There was no offset.
+            //
+            // So a row whose view is open draws a window into its payload and the arrows
+            // page it. `payload_view` carries *which* row, because several payloads can
+            // be unfolded on one screen and a bare offset would page all of them.
+            let window = payload_view.is_some_and(|(id, _)| id == it.item_id.as_str());
+            let total = lines.len();
+            let shown_rows = if window && tools.is_open() {
+                cfg.budget.body_lines.max(2)
+            } else if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
             } else {
                 2
             };
-            if lines.len() > limit && limit >= 2 {
-                out.extend(
-                    lines[..limit - 1]
-                        .iter()
-                        .map(|l| dim(cfg, &format!("  {l}"))),
-                );
-                // grok-build's `execute.rs:549` form: `… +{n} lines`, and it is a
-                // separator row rather than a sentence — it is not content, it is
-                // the seam where content was taken out. The chord goes here, where
-                // there is something for it to do.
+            let page = match payload_view {
+                Some((_, p)) if window => p.min(total.saturating_sub(1)),
+                _ => 0,
+            };
+            // One row is spent on the seam when there is more payload, on either side.
+            let above = page > 0;
+            let body = shown_rows
+                .saturating_sub(1)
+                .saturating_sub(usize::from(above))
+                .max(1);
+            let end = (page + body).min(total);
+            let below = end < total;
+            if above {
                 out.push(p.paint(
                     Role::Faint,
-                    &format!("  … +{} lines · ctrl-t", lines.len() - (limit - 1)),
+                    &format!("  ↑ {page} more lines above · ↑ scrolls up"),
                 ));
+            }
+            out.extend(
+                lines[page..end]
+                    .iter()
+                    .map(|l| dim(cfg, &format!("  {l}"))),
+            );
+            if below {
+                let hidden = total - end;
+                // grok-build's `execute.rs:549` form, kept: the seam where content was
+                // taken out, not a sentence. **And it says which key now does what** —
+                // the chord opens the view, the arrows move inside it, and a row that
+                // named only the chord was the row that could not be read past its head.
+                out.push(p.paint(
+                    Role::Faint,
+                    &if window {
+                        format!("  … +{hidden} lines · ↓ pages down · esc closes")
+                    } else {
+                        format!("  … +{hidden} lines · ctrl-t pages")
+                    },
+                ));
+            } else if window {
+                // The end of the payload: say so, so "no more" is not confused with
+                // "the arrow stopped working".
+                out.push(p.paint(Role::Faint, "  … end of output · esc closes"));
             } else {
-                out.extend(lines.iter().map(|l| dim(cfg, &format!("  {l}"))));
                 // The payload was short enough to show whole, but the REASON was
                 // cut — so the affordance has to be here, or the rest of it would
                 // be hidden behind a chord nothing on the row mentions.
@@ -12374,19 +12541,43 @@ mod tests {
         let before = a.scroll;
         assert!(before > 0, "scroll did not move at all to begin with");
 
-        // Expand tools.
+        // Expand tools. **This also opens a payload view** (see `payload_sel`), so the
+        // arrows now page the newest payload rather than moving the transcript — which
+        // is the intended contract and is asserted below rather than assumed.
         a.key(Key::CtrlT);
         a.screen(80, 24);
+        assert!(a.payload_sel.is_some(), "ctrl-t did not open a payload view");
 
-        // And scroll again.
         let at_refold = a.scroll;
+        for _ in 0..5 {
+            a.key(Key::Down);
+            a.screen(80, 24);
+        }
+        assert_eq!(
+            a.scroll, at_refold,
+            "the transcript moved while a payload view held the arrows"
+        );
+        assert!(
+            a.payload_page > 0,
+            "the arrows did not page the payload: {}",
+            a.payload_page
+        );
+
+        // **Esc gives the arrows back**, and that is what this test is for: the
+        // original bug was that expanding tools cost the ability to scroll at all.
+        // A view that held the arrows for ever would be the same defect with a new
+        // cause, so the escape hatch is part of the contract.
+        a.key(Key::Esc);
+        a.screen(80, 24);
+        assert_eq!(a.payload_sel, None, "esc did not close the payload view");
+        let freed = a.scroll;
         for _ in 0..5 {
             a.key(Key::Up);
             a.screen(80, 24);
         }
         assert!(
-            a.scroll > at_refold,
-            "scroll is stuck after ctrl-t: {at_refold} -> {}, body_len {}",
+            a.scroll > freed,
+            "scroll is stuck after ctrl-t: {freed} -> {}, body_len {}",
             a.scroll,
             a.body_len
         );
@@ -12614,6 +12805,111 @@ mod tests {
             "a long wait must say something is wrong: {late:?}"
         );
         assert!(late.contains("ctrl-c"), "and how to get out: {late:?}");
+    }
+
+    /// A tool result row whose body has landed, the way the daemon delivers one: an
+    /// announcement, then its content. A local helper rather than a `testing::` one
+    /// because the fixture's own `result` is inside another test function.
+    fn a_result_row(a: &mut App, seq: u64, id: &str, payload: &str) {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::proposed_on("t1", "c1", "bash", "cargo test"),
+        )));
+        a.apply(ServerFrame::Event(env(seq + 1, testing::appended(id, "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            seq + 2,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: payload.into(),
+                    edit: None,
+                }),
+            },
+        )));
+    }
+
+    /// **A row's payload is reachable past its first screenful.**
+    ///
+    /// The operator's framing: a tool result is a **logical** string that wraps to
+    /// thousands of display lines, of which the window shows a few dozen. The fold drew
+    /// the head and reported the rest as `… +N lines · ctrl-t`, and `ctrl-t` revealed
+    /// none of them — it raised the *budget* (which rows may be long), never the
+    /// *offset*. So the rest of a 418 KB payload could not be read at all.
+    ///
+    /// This asserts what makes it reachable: the view opens on `ctrl-t`, the arrows move
+    /// the window, the end is reachable, and the seam says which key does what.
+    ///
+    /// A **tall** screen on purpose: the card draws up to the body budget when it is
+    /// open, so on a 30-row terminal only the block's own tail is on screen and "did the
+    /// head move" is unanswerable. Sixty rows fits the whole block and the chrome under
+    /// it, which is what makes the assertions below about the *payload* rather than about
+    /// which part of it the terminal happened to show.
+    #[test]
+    fn a_long_payload_can_be_paged_to_its_end() {
+        let mut a = app();
+        // A payload of 200 numbered lines, so "which part is on screen" is decidable.
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a_result_row(&mut a, 2, "i1", &body);
+
+        // Folded: the head, a count, and the chord that is supposed to reveal the rest.
+        let folded = a.screen(100, 60).join("\n");
+        assert!(folded.contains("line 0"), "{folded:?}");
+        assert!(folded.contains("ctrl-t pages"), "{folded:?}");
+
+        // Ctrl-T opens the fold *and* a view on the newest payload row.
+        a.key(Key::CtrlT);
+        assert!(a.payload_sel.is_some(), "ctrl-t opened no view");
+        let head = a.screen(100, 60).join("\n");
+        assert!(head.contains("line 0"), "the head is what is drawn: {head:?}");
+        assert!(head.contains("pages down"), "{head:?}");
+
+        // Down pages: the window moves off the head, and the seam above says so.
+        a.key(Key::Down);
+        let paged = a.screen(100, 60).join("\n");
+        assert!(
+            !paged.contains("line 0\n"),
+            "the window did not move: {paged:?}"
+        );
+        assert!(
+            paged.contains("more lines above"),
+            "the seam above says there is more: {paged:?}"
+        );
+
+        // Up goes back, and enough Down reaches the end rather than running off it.
+        a.key(Key::Up);
+        let back = a.screen(100, 60).join("\n");
+        assert!(back.contains("line 0"), "up did not come back: {back:?}");
+        for _ in 0..60 {
+            a.key(Key::Down);
+        }
+        let end = a.screen(100, 60).join("\n");
+        assert!(
+            end.contains("end of output"),
+            "the end must be reachable and said so: {end:?}"
+        );
+
+        // And Esc closes the view, leaving the fold open.
+        a.key(Key::Esc);
+        assert_eq!(a.payload_sel, None, "esc did not close the view");
+        assert!(a.tools.is_open(), "esc closed the fold as well");
+    }
+
+    /// A payload that fits needs no view, and claiming one would be a lie: the seam
+    /// would offer a page with nothing behind it.
+    #[test]
+    fn a_short_payload_opens_no_view() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a_result_row(&mut a, 2, "i1", "one line\n");
+        a.key(Key::CtrlT);
+        assert_eq!(
+            a.payload_sel, None,
+            "a one-line result has nothing to page, so a view on it is a claim"
+        );
     }
 
     /// **The tail frame is the full walk's frame.**
