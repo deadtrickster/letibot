@@ -1138,9 +1138,21 @@ const FORK_STALLED: u64 = 3_000;
 /// already borrowed `self` mutably for the history cache.
 fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
     let done = peak.saturating_sub(pending);
+    // **Landed rows go in as `cache`, not as `processed`, and the colour is the
+    // reason.** The bar paints `processed` with `Role::Pending` — yellow — and
+    // `cache` with `Role::Success`. For a prefill that is exactly right: yellow
+    // means being computed now, and costing you. Here nothing is being computed
+    // and nothing is being spent; every filled cell is a row that has safely
+    // arrived, which is what this bar's own vocabulary calls cache. The operator,
+    // on the first version: *"that one is yellow"*.
+    //
+    // `cache` is clamped to the moving edge inside `bar`, so passing the same
+    // number twice paints the whole landed span green and leaves the rest faint.
+    // The cost is the sub-cell edge, which is rounded to a whole cell for the
+    // cache boundary — worth it to stop a carry reading as an expense.
     let p = progress::Prefill {
         total: peak as u64,
-        cache: 0,
+        cache: done as u64,
         processed: done as u64,
         time_ms: 0,
     };
@@ -13744,6 +13756,36 @@ mod tests {
             .find(|(_, n)| matches!(n, Note::Warned(w) if w.detail == "THE-WARNING"))
             .expect("the note");
         assert_eq!(*at, 0, "the snapshot's anchor is kept, not the replay's");
+    }
+
+    /// **A carried row is done, not pending, and the colour has to say so.**
+    ///
+    /// `progress::bar` paints `processed` with `Role::Pending` and `cache` with
+    /// `Role::Success`. That split is the prefill's, where yellow means being
+    /// computed now and costing you. A row carry spends nothing — a filled cell
+    /// is a row that has arrived — so yellow was the wrong register: *"that one
+    /// is yellow"*.
+    ///
+    /// Asserted on the glyphs rather than on escapes, because `Palette::None` is
+    /// the replay and CI case and the split survives it: `bar` uses a different
+    /// GLYPH per band for exactly that reason. `█` is the settled band, `▓` the
+    /// pending one.
+    #[test]
+    fn landed_rows_paint_as_settled_and_not_as_pending() {
+        let cfg = RenderConfig {
+            width: 100,
+            ..Default::default()
+        };
+        let line = rebasing_line(1, 4, 0, &cfg).join("");
+        assert!(
+            line.contains('█'),
+            "three landed rows are settled: {line:?}"
+        );
+        assert!(
+            !line.contains('▓'),
+            "and none of them is still being worked on: {line:?}"
+        );
+        assert!(line.contains('░'), "the one outstanding is not filled at all");
     }
 
     /// **A bar that stops moving stops claiming to be progress.**
