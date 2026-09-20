@@ -1363,3 +1363,55 @@ done
         out
     }
 }
+
+
+
+#[cfg(test)]
+mod a_fence_is_coloured_only_if_it_names_a_language {
+    use super::*;
+    use crate::markdown::lex;
+
+    fn cfg() -> RenderConfig {
+        RenderConfig { width: 60, color: true, ..RenderConfig::default() }
+    }
+
+    /// The language in the info string is what gets coloured, and nothing else is.
+    ///
+    /// A fence that names no language renders `┌─ code` and its body plain, because there
+    /// is nothing to colour with: `StreamingCode` needs a language, and guessing one from
+    /// the shape of the text is the kind of invention a head should not do. The operator
+    /// read that as "colourisation is gone" (2026-09-20) while looking at a message whose
+    /// illustrative fences were bare; this test is here so the next reader can tell the
+    /// difference between a plain block and a broken painter in one line.
+    ///
+    /// The *content* being a fence does not make it a fence: inside a four-backtick block
+    /// the line ```rust is the bytes a model wrote about a fence.
+    #[test]
+    fn a_fence_with_a_language_is_coloured_and_one_without_is_not() {
+        let named = lex("```rust\nfn main() {}\n```\n");
+        let out = render_block(&named[0], &cfg()).join("\n");
+        assert!(out.contains("┌─ rust"), "{out:?}");
+        assert!(out.contains(sgr::MAGENTA), "the keyword is not coloured: {out:?}");
+
+        let bare = lex("```\nfn main() {}\n```\n");
+        let out = render_block(&bare[0], &cfg()).join("\n");
+        assert!(out.contains("┌─ code"), "{out:?}");
+        assert!(!out.contains(sgr::MAGENTA), "invented a language: {out:?}");
+        assert!(!out.contains(sgr::GREEN), "invented a language: {out:?}");
+        // The frame is still drawn, so a bare block is visibly a code block.
+        assert!(out.contains("┌─ ") && out.contains("└─"), "{out:?}");
+
+        // A four-backtick block holding a three-backtick fence is the outer fence's, so it
+        // is bare, and the inner ```rust is content rather than a nested box.
+        let quoted = lex("````\n```rust\nlet a = 1;\n```\n````\n");
+        assert_eq!(quoted.len(), 1, "{quoted:#?}");
+        let out = render_block(&quoted[0], &cfg()).join("\n");
+        assert!(out.contains("┌─ code"), "{out:?}");
+        assert!(!out.contains("┌─ rust"), "the inner fence was interpreted: {out:?}");
+        let text = out.lines().map(|l| l.trim_start_matches(['\u{1b}', '[', '2', 'm', '0'])).count();
+        assert!(text >= 3, "{out:?}");
+        // And no box was drawn inside the box.
+        assert_eq!(out.matches("┌─ ").count(), 1, "{out:?}");
+        assert_eq!(out.matches("└─").count(), 1, "{out:?}");
+    }
+}
