@@ -97,9 +97,32 @@ impl Tool for Edit {
                     "path": {"type": "string", "description": "File to change, relative to the session root."},
                     "old_string": {"type": "string", "description": "The exact text to replace."},
                     "new_string": {"type": "string", "description": "What to put in its place. Empty deletes the text."},
-                    "replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one."}
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one."},
+                    "edits": {
+                        "type": "array",
+                        "description":
+                            "Several changes to ONE file, applied in order and all-or-nothing: \
+                             if any step does not resolve, nothing is written. Use this instead \
+                             of one `edit` per change, and instead of a shell heredoc. Each item \
+                             is either a replacement — `old_string` with `new_string`, and \
+                             optional `replace_all` — or an insertion: `insert_before` or \
+                             `insert_after` naming an anchor that occurs exactly once, with \
+                             `new_string` as the text to put there. An insertion does not \
+                             repeat the anchor.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string"},
+                                "insert_before": {"type": "string"},
+                                "insert_after": {"type": "string"},
+                                "new_string": {"type": "string"},
+                                "replace_all": {"type": "boolean"}
+                            },
+                            "required": ["new_string"]
+                        }
+                    }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path"]
             }),
             // Clause 4: declared, once, in the schema. `Access::Write` is what
             // §11.3's policy keys on and it does not depend on the arguments — an
@@ -117,6 +140,15 @@ impl Tool for Edit {
                 "call `edit` again with `path`, `old_string` and `new_string`.",
             );
         };
+        // **Several changes to one file, in one call.** The reason this exists is
+        // measured rather than assumed: a model that wants four non-adjacent
+        // changes to one file has, until now, had to make four calls — four round
+        // trips and four gate decisions — or reach for a shell heredoc, which is
+        // what both this session's model and the operator's own agent kept doing.
+        // A tool that cannot say what somebody means is a tool they route around.
+        if args.get("edits").is_some() {
+            return batch(ctx, path, args);
+        }
         let (Some(old), Some(new)) = (
             args.get("old_string").and_then(|v| v.as_str()),
             args.get("new_string").and_then(|v| v.as_str()),
@@ -196,6 +228,195 @@ impl Tool for Edit {
     }
 }
 
+/// One step of a batch: a replacement, or an insertion at an anchor.
+enum Step {
+    Replace {
+        old: String,
+        new: String,
+        all: bool,
+    },
+    /// `before` is `true` for `insert_before`. The anchor is kept; only the new
+    /// text is added, so nothing has to repeat it.
+    Insert {
+        anchor: String,
+        new: String,
+        before: bool,
+    },
+}
+
+/// **Several edits to one file, applied in order, all or nothing.**
+///
+/// Each step is resolved against the text as the steps before it left it —
+/// which is what makes a sequence expressible at all, and is why the failure
+/// message names the step's index rather than a line number in the original.
+///
+/// Nothing is written until every step has resolved. A batch that fails leaves
+/// the file exactly as it was, because the alternative — half a change, on disk,
+/// reported as an error — is the state no caller can recover from.
+fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
+    let Some(list) = args.get("edits").and_then(|v| v.as_array()) else {
+        return Invocation::failed(
+            "`edits` is not an array",
+            "`edits` is a list of steps; each is `old_string`+`new_string`, or \
+             `insert_before`/`insert_after`+`new_string`.",
+        );
+    };
+    if list.is_empty() {
+        return Invocation::failed(
+            "`edits` is empty",
+            "give at least one step, or call `edit` with `old_string` and `new_string`.",
+        );
+    }
+    let mut steps: Vec<Step> = Vec::with_capacity(list.len());
+    for (i, e) in list.iter().enumerate() {
+        let n = i + 1;
+        let Some(new) = e.get("new_string").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                format!("step {n} has no `new_string`"),
+                "every step needs `new_string`, even an insertion. Nothing was written.",
+            );
+        };
+        let before = e.get("insert_before").and_then(|v| v.as_str());
+        let after = e.get("insert_after").and_then(|v| v.as_str());
+        let old = e.get("old_string").and_then(|v| v.as_str());
+        steps.push(match (old, before, after) {
+            (Some(o), None, None) if !o.is_empty() => Step::Replace {
+                old: o.to_string(),
+                new: new.to_string(),
+                all: e
+                    .get("replace_all")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            },
+            (None, Some(a), None) if !a.is_empty() => Step::Insert {
+                anchor: a.to_string(),
+                new: new.to_string(),
+                before: true,
+            },
+            (None, None, Some(a)) if !a.is_empty() => Step::Insert {
+                anchor: a.to_string(),
+                new: new.to_string(),
+                before: false,
+            },
+            _ => {
+                return Invocation::failed(
+                    format!("step {n} does not say what to change"),
+                    "a step is EITHER `old_string` (non-empty) with `new_string`, OR one \
+                     of `insert_before`/`insert_after` (non-empty) with `new_string`. \
+                     Naming more than one of them, or none, is ambiguous and nothing \
+                     was written.",
+                );
+            }
+        });
+    }
+
+    let bytes = match ctx.backend.read(path) {
+        Ok(b) => b,
+        Err(BackendError::NotFound(_)) => return missing_file(ctx, path),
+        Err(e) => return Invocation::failed(e.to_string(), String::new()),
+    };
+    let file = FileText::of(&bytes);
+    if file.lossy {
+        return Invocation::failed(
+            format!("`{path}` is not valid UTF-8"),
+            "editing it as text would replace its undecodable bytes with U+FFFD. \
+             Nothing was written.",
+        );
+    }
+
+    let mut text = file.lf.clone();
+    let mut replacements = 0usize;
+    let mut first_at: Option<usize> = None;
+    for (i, step) in steps.iter().enumerate() {
+        let n = i + 1;
+        let (needle, all) = match step {
+            Step::Replace { old, all, .. } => (old.as_str(), *all),
+            Step::Insert { anchor, .. } => (anchor.as_str(), false),
+        };
+        let hits = occurrences(&text, needle);
+        match hits.len() {
+            0 => {
+                return Invocation::failed(
+                    format!("step {n} of {} found no match", steps.len()),
+                    format!(
+                        "nothing in `{path}` matches that text, as the {} step(s) before it \
+                         left the file. Nothing was written.\n\nlooked for:\n{}",
+                        i,
+                        excerpt(needle)
+                    ),
+                );
+            }
+            k if k > 1 && !all => {
+                return Invocation::failed(
+                    format!("step {n} of {} matches {k} places", steps.len()),
+                    format!(
+                        "a step must name one place unless `replace_all` is set. Nothing \
+                         was written.\n\nlooked for:\n{}",
+                        excerpt(needle)
+                    ),
+                );
+            }
+            _ => {}
+        }
+        first_at.get_or_insert(hits[0]);
+        let mut out = String::with_capacity(text.len() + 64);
+        let mut from = 0usize;
+        for &at in &hits {
+            out.push_str(&text[from..at]);
+            match step {
+                Step::Replace { new, .. } => out.push_str(new),
+                Step::Insert {
+                    anchor,
+                    new,
+                    before,
+                } => {
+                    if *before {
+                        out.push_str(new);
+                        out.push_str(anchor);
+                    } else {
+                        out.push_str(anchor);
+                        out.push_str(new);
+                    }
+                }
+            }
+            from = at + needle.len();
+            replacements += 1;
+        }
+        out.push_str(&text[from..]);
+        text = out;
+    }
+
+    if text == file.lf {
+        return Invocation::failed(
+            "the batch changed nothing",
+            format!(
+                "`{path}` is already exactly what those {} step(s) would make it. \
+                     Nothing was written.",
+                steps.len()
+            ),
+        );
+    }
+    write_out(
+        ctx,
+        path,
+        &file,
+        text,
+        replacements,
+        first_at.unwrap_or(0),
+        None,
+    )
+}
+
+/// A short, bounded quote of what a step looked for, for a failure message.
+fn excerpt(needle: &str) -> String {
+    let one: String = needle.lines().take(3).collect::<Vec<_>>().join("\n");
+    if one.chars().count() > 240 {
+        format!("{}…", one.chars().take(240).collect::<String>())
+    } else {
+        one
+    }
+}
+
 /// The write, and everything that has to be true at the moment it happens.
 fn apply(
     ctx: &mut InvokeCtx<'_>,
@@ -218,6 +439,35 @@ fn apply(
     }
     after.push_str(&file.lf[from..]);
 
+    let extra = if hits.len() > 1 {
+        let rest: Vec<String> = hits[1..]
+            .iter()
+            .map(|h| file.line_of(*h).to_string())
+            .collect();
+        Some(format!(
+            "\nthe other replacement(s) were at line(s) {} of the file as it was\n",
+            rest.join(", ")
+        ))
+    } else {
+        None
+    };
+    write_out(ctx, path, file, after, hits.len(), hits[0], extra)
+}
+
+/// **The write, the record and the edit card** — the one place any of the three
+/// happen, so a second caller cannot drift from the first.
+///
+/// `first_at` is a byte offset into the file AS IT WAS, used only to decide
+/// which lines to show; `replacements` is how many places the caller changed.
+fn write_out(
+    ctx: &mut InvokeCtx<'_>,
+    path: &str,
+    file: &FileText,
+    after: String,
+    replacements: usize,
+    first_at: usize,
+    extra: Option<String>,
+) -> Invocation {
     let out = file.restore(&after);
     if let Err(e) = ctx.backend.write(path, out.as_bytes()) {
         return write_failed(ctx, path, e);
@@ -230,27 +480,18 @@ fn apply(
 
     let span = changed_span(&file.lf, &after);
     let lines: Vec<&str> = display_lines(&after);
-    let first_line = file.line_of(hits[0]);
-    let shown_from = first_line.saturating_sub(CONTEXT).max(1);
+    let shown_from = file.line_of(first_at).saturating_sub(CONTEXT).max(1);
     let shown_to = (span.last_after + CONTEXT).min(lines.len());
 
     let mut body = format!(
-        "{path}: {} replacement(s). {}\n\n",
-        hits.len(),
+        "{path}: {replacements} replacement(s). {}\n\n",
         span.describe()
     );
     for i in shown_from..=shown_to {
         body.push_str(&format!("{i:>6}| {}\n", lines[i - 1]));
     }
-    if hits.len() > 1 {
-        let rest: Vec<String> = hits[1..]
-            .iter()
-            .map(|h| file.line_of(*h).to_string())
-            .collect();
-        body.push_str(&format!(
-            "\nthe other replacement(s) were at line(s) {} of the file as it was\n",
-            rest.join(", ")
-        ));
+    if let Some(x) = extra {
+        body.push_str(&x);
     }
 
     let mut inv = Invocation::ok(body);
@@ -267,7 +508,7 @@ fn apply(
         created: false,
         before_digest: crate::spill::content_hash(file.lf.as_bytes()),
         after_digest: crate::spill::content_hash(after.as_bytes()),
-        replacements: hits.len(),
+        replacements,
         changed: span,
     });
     inv
@@ -481,9 +722,6 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
     )
 }
 
-
-
-
 /// Lines containing the most distinctive token of `first`.
 ///
 /// grok-build's `build_nearest_match_hint` takes *"the longest
@@ -549,7 +787,7 @@ mod tests {
     /// refusal for an infinite loop of small ones.
     /// The fast path is untouched: an ordinary file still comes back whole, which
     /// is what makes the common retry one call instead of two.
-   use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
+    use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]
     fn an_edit_replaces_exactly_and_hands_the_head_both_sides() {
@@ -580,7 +818,10 @@ mod tests {
             r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
         );
         assert!(r.is_grounded(), "{}", r.render());
-        assert!(h.read_file("src/lib.rs").contains("parse_argv"), "it landed");
+        assert!(
+            h.read_file("src/lib.rs").contains("parse_argv"),
+            "it landed"
+        );
 
         // And a file somebody else rewrote under this session still edits, so
         // long as the target is there exactly once — the bytes it lands on are
@@ -796,5 +1037,89 @@ mod tests {
             r#"{"path":"README.md","old_string":"letibot","new_string":"letibot"}"#,
         );
         assert!(r.render().contains("identical"), "{}", r.render());
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use crate::testing::writable_harness;
+
+    /// **Four changes to one file, in one call.** This is the capability whose
+    /// absence sent models to shell heredocs: four non-adjacent edits were four
+    /// round trips and four gate decisions, so `python3 - <<'PY'` was simply the
+    /// cheaper way to say it. Measured across this session, in both the
+    /// operator's agent and the one writing this.
+    #[test]
+    fn a_batch_applies_every_step_in_order_and_reports_one_edit() {
+        let mut h = writable_harness();
+        h.call("read", r#"{"path":"src/lib.rs"}"#);
+        let before = h.read_file("src/lib.rs");
+        assert!(before.contains("pub fn parse_args"));
+
+        let r = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","edits":[
+                 {"old_string":"pub fn parse_args","new_string":"pub fn parse_argv"},
+                 {"insert_before":"pub fn parse_argv","new_string":"/// doc line\n"}
+               ]}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let after = h.read_file("src/lib.rs");
+        assert!(after.contains("pub fn parse_argv"), "{after}");
+        assert!(
+            after.contains("/// doc line\npub fn parse_argv"),
+            "the insertion did not land before the anchor, and did not repeat it: {after}"
+        );
+        // One card for the whole batch, with both sides of the file.
+        let e = r.edit.as_ref().expect("the head is handed both sides");
+        assert_eq!(e.replacements, 2);
+        assert!(e.before.contains("pub fn parse_args"));
+        assert!(e.after.contains("/// doc line"));
+    }
+
+    /// **All or nothing.** A batch whose third step does not resolve must leave
+    /// the file exactly as it was: half a change on disk, reported as an error,
+    /// is the state no caller can recover from.
+    #[test]
+    fn a_batch_that_fails_partway_writes_nothing() {
+        let mut h = writable_harness();
+        h.call("read", r#"{"path":"src/lib.rs"}"#);
+        let before = h.read_file("src/lib.rs");
+
+        let r = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","edits":[
+                 {"old_string":"pub fn parse_args","new_string":"pub fn parse_argv"},
+                 {"old_string":"this text is nowhere in the file","new_string":"x"}
+               ]}"#,
+        );
+        assert!(!r.is_grounded(), "a missing step must fail: {}", r.render());
+        let msg = r.render();
+        assert!(msg.contains("step 2"), "the failing step is named: {msg}");
+        assert!(msg.contains("Nothing was written"), "{msg}");
+        assert_eq!(
+            h.read_file("src/lib.rs"),
+            before,
+            "the first step was written despite the batch failing"
+        );
+    }
+
+    /// A step that names neither a replacement nor an insertion — or both — is
+    /// ambiguous, and an ambiguous edit is refused rather than guessed at.
+    #[test]
+    fn a_step_must_say_exactly_what_it_changes() {
+        let mut h = writable_harness();
+        h.call("read", r#"{"path":"src/lib.rs"}"#);
+        let before = h.read_file("src/lib.rs");
+
+        for bad in [
+            r#"{"path":"src/lib.rs","edits":[{"new_string":"x"}]}"#,
+            r#"{"path":"src/lib.rs","edits":[{"old_string":"a","insert_after":"b","new_string":"x"}]}"#,
+            r#"{"path":"src/lib.rs","edits":[]}"#,
+        ] {
+            let r = h.call("edit", bad);
+            assert!(!r.is_grounded(), "{bad} was accepted: {}", r.render());
+            assert_eq!(h.read_file("src/lib.rs"), before, "{bad} changed the file");
+        }
     }
 }
