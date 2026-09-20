@@ -3572,7 +3572,8 @@ impl<'a> Harness<'a> {
             })
             .collect();
         let prefix_tokens = self.session.ledger.prefix_len() as u64;
-        let window = self.cfg.context_window.unwrap_or(u64::MAX);
+        // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
+        let window = self.cfg.planning_window().unwrap_or(u64::MAX);
 
         match plan_overrun(&per_item, prefix_tokens, window) {
             // The ordinary path, and the one that runs almost always.
@@ -3870,6 +3871,20 @@ impl<'a> Harness<'a> {
         self.persisted = 0;
         self.reconcile(&mut sink, &body);
         self.persist()?;
+        // **The stored context size is about the OLD conversation.** It is the
+        // last prompt the provider measured, and that prompt no longer exists:
+        // this fork replaced the history with a summary. Only a turn can put a
+        // real number here, so until one runs there is no number — the operator
+        // restarted a session that had just compacted 1.5M tokens down and the
+        // header still read `1.05m`, because nothing between a compaction and
+        // the next turn ever wrote to this row.
+        //
+        // Cleared rather than estimated. The count this row holds is the
+        // provider's own, and dividing the new base by a measured ratio would put
+        // a derived number where every other reader expects a measured one.
+        if let Some(store) = &self.store {
+            let _ = store.set_context(&self.cfg.session_id, None, None);
+        }
         Ok(ForkReport {
             transcript_id: new_id,
             parent_id: old_id,
@@ -4050,7 +4065,7 @@ impl<'a> Harness<'a> {
             // first run of this check.
             if round > 0
                 && !self.compacting
-                && let Some(window) = self.cfg.context_window
+                && let Some(window) = self.cfg.planning_window()
                 && self.cfg.auto_compact
             {
                 let resident = self.session.ledger.len() as u64;
@@ -4210,6 +4225,16 @@ impl<'a> Harness<'a> {
             // attaches to a rebuilt view has no turn state to read it from.
             // Per round, the same way the heads' own `TurnFinished` updates theirs,
             // so the row and the screen agree at every point a round has landed.
+            // **And what that prompt cost in each side's tokens.**
+            //
+            // The ledger and the provider count different things — reasoning is in
+            // one and dropped from the other — so this is the only honest way to
+            // convert between them, and it is a measurement rather than a
+            // constant. See `Config::ledger_scale`.
+            if self.provider.is_some() && ok.metrics.prompt_tokens > 0 {
+                self.cfg.ledger_scale =
+                    Some((self.session.ledger.len() as u64, ok.metrics.prompt_tokens));
+            }
             self.persist_context(&ok.metrics)?;
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
