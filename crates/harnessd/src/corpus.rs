@@ -75,6 +75,18 @@ impl StoreCorpus {
 }
 
 impl CorpusSink for StoreCorpus {
+    /// From the table, so a resumed session's gate carries on numbering where the
+    /// last daemon stopped. Unreadable store, or a session with no rows yet, is
+    /// `0` — the same answer a fresh session gives, and the honest one when
+    /// nothing can be read.
+    fn decisions_recorded(&self, session_id: &str) -> u64 {
+        self.store
+            .lock()
+            .ok()
+            .and_then(|s| s.max_adjudication_seq(session_id).ok())
+            .unwrap_or(0)
+    }
+
     fn decided(&self, row: &CorpusRow) {
         // The trail is stored as JSON rather than as `AuthorisationTrail::render`'s
         // prose: the prose is what the *model* was shown and is already in `shown`,
@@ -125,11 +137,15 @@ impl CorpusSink for StoreCorpus {
             asked: row.asked,
         };
 
+        // **Written, not merely attempted.** `record_adjudication` is
+        // `INSERT OR IGNORE`, so a key that is already there answers `Ok(0)`;
+        // reading only `is_ok()` counted that as kept and is how a whole
+        // session's corpus went missing without `lost` ever moving.
         let ok = self
             .store
             .lock()
             .ok()
-            .map(|s| s.record_adjudication(&rec).is_ok())
+            .and_then(|s| s.record_adjudication(&rec).ok())
             .unwrap_or(false);
         if !ok {
             self.lost.fetch_add(1, Ordering::Relaxed);
@@ -155,7 +171,10 @@ impl CorpusSink for StoreCorpus {
             .store
             .lock()
             .ok()
-            .and_then(|s| s.record_operator_ruling(request_id, what.as_str(), note).ok())
+            .and_then(|s| {
+                s.record_operator_ruling(request_id, what.as_str(), note)
+                    .ok()
+            })
             .unwrap_or(false);
         if !found {
             self.orphan_rulings.fetch_add(1, Ordering::Relaxed);
@@ -232,7 +251,10 @@ mod shape_cache_tests {
             .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
 
             let args = serde_json::json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
-            assert!(matches!(g.admit(&call(&args, workspace)), GateDecision::Admit));
+            assert!(matches!(
+                g.admit(&call(&args, workspace)),
+                GateDecision::Admit
+            ));
             asked.load(std::sync::atomic::Ordering::Relaxed)
         };
         assert_eq!(asked_first, 1, "the first time must ask");
@@ -242,7 +264,11 @@ mod shape_cache_tests {
             let s = Store::open(&path).expect("reopen");
             s.approved_shapes(workspace).expect("shapes")
         };
-        assert_eq!(warm.len(), 1, "the approval did not reach the store: {warm:?}");
+        assert_eq!(
+            warm.len(),
+            1,
+            "the approval did not reach the store: {warm:?}"
+        );
 
         // Session two: a different pattern, count and file — one shape.
         let asked_second = {
@@ -265,7 +291,10 @@ mod shape_cache_tests {
             assert_eq!(g.seed_shapes(warm), 1);
 
             let args = serde_json::json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
-            assert!(matches!(g.admit(&call(&args, workspace)), GateDecision::Admit));
+            assert!(matches!(
+                g.admit(&call(&args, workspace)),
+                GateDecision::Admit
+            ));
             asked.load(std::sync::atomic::Ordering::Relaxed)
         };
         assert_eq!(
@@ -299,6 +328,8 @@ mod shape_cache_tests {
             turn_id: "t#1",
             call_id: "c1",
             workspace,
-            target_exists: None, scripts: &[] }
+            target_exists: None,
+            scripts: &[],
+        }
     }
 }
