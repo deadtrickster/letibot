@@ -3466,8 +3466,20 @@ impl App {
             // transcript; see the note above.
             Reaction::Idle => {
                 match k {
-                    Key::Up => self.scroll = (self.scroll + 1).min(self.body_len),
-                    Key::Down => self.scroll = self.scroll.saturating_sub(1),
+                    // `redraw` here is not "rebuild the frame" — the loop rebuilds
+                    // one every pass. It is "throw the glass away", and without it
+                    // a scroll repaints only the rows whose TEXT differs, which for
+                    // a window that slid by one line over similar rows can be
+                    // almost none of them. Every other state change in this file
+                    // sets it; these two did not.
+                    Key::Up => {
+                        self.scroll = (self.scroll + 1).min(self.body_len);
+                        self.redraw = true;
+                    }
+                    Key::Down => {
+                        self.scroll = self.scroll.saturating_sub(1);
+                        self.redraw = true;
+                    }
                     _ => {}
                 }
                 None
@@ -4979,7 +4991,8 @@ impl App {
             return 0;
         }
         let cfg = self.cfg.clone();
-        let (think, tool, raw, diff_split) = (self.reasoning, self.tools, self.raw_calls, self.diff_split);
+        let (think, tool, raw, diff_split) =
+            (self.reasoning, self.tools, self.raw_calls, self.diff_split);
         let in_flight: std::collections::HashSet<String> = self
             .turn
             .as_ref()
@@ -4989,11 +5002,7 @@ impl App {
         let mut built: Vec<(RowClass, Vec<String>)> = Vec::new();
         let mut k = self.hist_floor;
         let mut covered = |built: &[(RowClass, Vec<String>)]| {
-            self.hist_lines.len()
-                + built
-                    .iter()
-                    .map(|(_, l)| l.len() + 1)
-                    .sum::<usize>()
+            self.hist_lines.len() + built.iter().map(|(_, l)| l.len() + 1).sum::<usize>()
         };
         while k > 0 && covered(&built) < want {
             k -= 1;
@@ -8451,7 +8460,10 @@ fn targets_before(items: &[SnapshotItem], k: usize) -> std::collections::HashMap
     for r in items[..k.min(items.len())].iter().rev() {
         if let Some(TranscriptItem::Assistant { tool_calls, .. }) = r.item.as_ref() {
             for c in tool_calls {
-                out.insert(c.id.clone(), letibot_sessionlog::display_target(&c.arguments));
+                out.insert(
+                    c.id.clone(),
+                    letibot_sessionlog::display_target(&c.arguments),
+                );
             }
             return out;
         }
@@ -8894,7 +8906,33 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // screen it is a line of noise in the middle of the two lines a folded
             // row has, and the operator reads a random hex string where the result
             // should be.
-            let lines: Vec<&str> = payload.lines().filter(|l| !is_envelope(l)).collect();
+            // **And the bytes are the command's, not this terminal's.**
+            //
+            // A payload is whatever a tool wrote, escape sequences included, and
+            // rendering it straight puts those on the wire to the operator's
+            // terminal. Measured in their store, 2026-09-20: 44 `tool_result`
+            // rows carry an escape and **20 carry a mode string** — `?1002`,
+            // `?1006`, `?1049`, `?2004` — which are mouse tracking, the alternate
+            // screen and bracketed paste.
+            //
+            // That is the bug they reported as *"when i expand tools with Ct
+            // scroll stops working, even after collapsing back. i have to switch
+            // byobu windows back and forth"*, and their own guess at it — *"maybe
+            // it is different escapes?"* — was right. Ctrl+T renders payloads that
+            // were folded away; one of them turns mouse reporting off; the wheel
+            // stops scrolling; folding back does not put the mode back because the
+            // terminal has already been told; and switching windows fixes it
+            // because tmux re-asserts its modes on focus.
+            //
+            // Sanitised here rather than in the store: the record is what the tool
+            // wrote and must stay that. A space rather than a deletion, because
+            // the wrapper about to measure these lines counts columns.
+            let flat: Vec<String> = payload.lines().map(without_control).collect();
+            let lines: Vec<&str> = flat
+                .iter()
+                .map(String::as_str)
+                .filter(|l| !is_envelope(l))
+                .collect();
             let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
             let mark = if tools.is_open() { "▾" } else { "▸" };
             // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-t`, not
@@ -11998,6 +12036,144 @@ mod tests {
         );
     }
 
+    /// **A tool's output cannot reconfigure the operator's terminal.**
+    ///
+    /// A payload is whatever the command wrote. Rendering it straight put its
+    /// escapes on the wire — and in the operator's own store, 2026-09-20, 44
+    /// `tool_result` rows carry an escape and 20 carry a MODE string: `?1002`
+    /// and `?1006` are mouse reporting, `?1049` the alternate screen, `?2004`
+    /// bracketed paste.
+    ///
+    /// Turning mouse reporting off is why *"when i expand tools with Ct scroll
+    /// stops working"*: ctrl-t renders payloads that were folded away, one of
+    /// them disables the wheel, and folding back cannot undo what the terminal
+    /// was already told. Switching byobu windows fixes it because tmux
+    /// re-asserts its modes on focus.
+    #[test]
+    fn an_expanded_tool_payload_cannot_turn_the_mouse_off() {
+        let mut a = app();
+        a.tools = Fold::Open;
+        let esc = '\u{1b}';
+        // Exactly the shapes found in the store: a mode reset, a cursor move and
+        // an SGR colour.
+        let payload =
+            format!("before{esc}[?1002l{esc}[?1006l\n{esc}[1;1Hmoved\n{esc}[0;90mdim\nafter");
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("i1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "i1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload,
+                    edit: None,
+                }),
+            },
+        )));
+        let screen = a.screen(100, 30).join("\n");
+        // **The ESC is what makes a sequence a command.** `[?1002l` as literal
+        // text is four harmless characters; it is `ESC` in front of it that the
+        // terminal acts on. So this asserts the pairing, not the substring —
+        // and deliberately not "no ESC anywhere", because the head's own colour
+        // is made of them.
+        for bad in ["[?1002", "[?1006", "[?1049", "[?2004", "[1;1H"] {
+            let seq = format!("{esc}{bad}");
+            assert!(
+                !screen.contains(&seq),
+                "a payload's `ESC{bad}` reached the terminal: {screen:?}"
+            );
+        }
+        // And the text itself survives, which is the point of showing it at all.
+        assert!(screen.contains("before"), "{screen}");
+        assert!(screen.contains("moved"), "{screen}");
+        assert!(screen.contains("after"), "{screen}");
+    }
+
+    /// **Folding tools must not cost the ability to scroll.**
+    ///
+    /// The operator: *"when i expand tools with Ct scroll stops working, even
+    /// after collapsing back. i have to switch byobu windows back and forth"* —
+    /// a window switch is a resize, which forces the frame this was waiting for.
+    #[test]
+    fn scroll_still_works_after_ctrl_t() {
+        let mut a = app();
+        // The tail walk is what this is about — `walk_limit = 1` is how the other
+        // tail tests in this file get into it without building a megabyte.
+        a.walk_limit = 1;
+        // Tool results, because ctrl-t is what expands THEM: a fixture of plain
+        // user rows folds to the same thing either way and cannot show this.
+        let payload: String = (0..30).map(|n| format!("output line {n}\n")).collect();
+        for i in 0..400u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                SessionEvent::TranscriptContent {
+                    item_id: format!("s.{i}"),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("c{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: payload.clone(),
+                        edit: None,
+                    }),
+                },
+            )));
+        }
+        a.screen(80, 24);
+        // The bug is about the TAIL walk, so the fixture has to be in it.
+        assert!(
+            a.hist_floor > 0,
+            "this fixture never enters tail mode, so it cannot show the bug"
+        );
+
+        // Scrolling works to begin with.
+        for _ in 0..5 {
+            a.key(Key::Up);
+            a.screen(80, 24);
+        }
+        let before = a.scroll;
+        assert!(before > 0, "scroll did not move at all to begin with");
+
+        // Expand tools.
+        a.key(Key::CtrlT);
+        a.screen(80, 24);
+
+        // And scroll again.
+        let at_refold = a.scroll;
+        for _ in 0..5 {
+            a.key(Key::Up);
+            a.screen(80, 24);
+        }
+        assert!(
+            a.scroll > at_refold,
+            "scroll is stuck after ctrl-t: {at_refold} -> {}, body_len {}",
+            a.scroll,
+            a.body_len
+        );
+
+        // Collapse back, and it still scrolls.
+        a.key(Key::CtrlT);
+        a.screen(80, 24);
+        let at_collapse = a.scroll;
+        for _ in 0..5 {
+            a.key(Key::Up);
+            a.screen(80, 24);
+        }
+        assert!(
+            a.scroll > at_collapse,
+            "scroll is stuck after collapsing back: {at_collapse} -> {}",
+            a.scroll
+        );
+    }
+
     #[test]
     fn the_body_a_frame_builds_does_not_grow_with_the_session() {
         // §13.3, at the renderer rather than at the lexer. The old shape cloned the
@@ -12199,7 +12375,10 @@ mod tests {
 
         // The tail path must actually have been taken, or this asserts nothing.
         tail.screen(100, 40);
-        assert_eq!(tail.hist_floor, 0, "under the limit the whole thing is walked");
+        assert_eq!(
+            tail.hist_floor, 0,
+            "under the limit the whole thing is walked"
+        );
         tail.walk_limit = 1;
         tail.hist_floor = 0;
         tail.hist_lines.clear();
@@ -12338,7 +12517,10 @@ mod tests {
         // scrolled-to-the-top frame needs to be honest about.
         a.scroll = 100_000;
         let _ = a.screen(100, 20);
-        assert_eq!(a.hist_floor, 0, "scrolling to the top never reached the beginning");
+        assert_eq!(
+            a.hist_floor, 0,
+            "scrolling to the top never reached the beginning"
+        );
     }
 
     /// **A change above the window is not left stale.**
