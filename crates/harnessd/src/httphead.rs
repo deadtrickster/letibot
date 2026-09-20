@@ -30,6 +30,22 @@
 //! this daemon run a command, because there is no command to run. The turn is a
 //! prompt and its answer.
 //!
+//! # Concurrency is the server's, not this head's
+//!
+//! llama.cpp's slots ARE its batching unit: N slots means N sequences decoded in
+//! the same batch, each with its own KV cache. This head first served one
+//! request at a time, on the reasoning that concurrent turns would "queue at the
+//! server and thrash the prefix cache" — which has the relationship backwards,
+//! and the operator said so in four words: *"four slots means batching"*. The
+//! caches are per slot and do not evict one another, so four callers together
+//! are cheaper than four callers in a row.
+//!
+//! So: a thread per connection, bounded by what the endpoint says it can decode
+//! at once (`/props`'s `total_slots`), because past that the requests queue
+//! inside the server where this head can neither see them nor time them out.
+//! A server that does not say gets [`DEFAULT_PERMITS`], which is a bound rather
+//! than a guess about hardware.
+//!
 //! # The prefix is the point
 //!
 //! `engine.open` renders the prefix once per request, and the SERVER keeps its
@@ -53,6 +69,47 @@ use crate::harness::{Parts, engine_for};
 /// whole to then refuse it is how a listener becomes a memory bug.
 const MAX_BODY: usize = 1 << 20;
 
+/// In-flight requests when the endpoint does not report its slot count. One is
+/// wrong (it wastes a batching server) and a large number is wrong (it queues
+/// inside a server that cannot say how deep its queue is); four is llama.cpp's
+/// own default `-np`.
+const DEFAULT_PERMITS: usize = 4;
+
+/// A counting semaphore. `std` has none, and a channel of permits would make a
+/// dropped handler leak one — a guard that returns its permit on the way out,
+/// panic included, cannot.
+struct Permits {
+    free: std::sync::Mutex<usize>,
+    woken: std::sync::Condvar,
+}
+
+impl Permits {
+    fn new(n: usize) -> Self {
+        Permits {
+            free: std::sync::Mutex::new(n.max(1)),
+            woken: std::sync::Condvar::new(),
+        }
+    }
+
+    fn take(self: &std::sync::Arc<Self>) -> Permit {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        while *free == 0 {
+            free = self.woken.wait(free).unwrap_or_else(|e| e.into_inner());
+        }
+        *free -= 1;
+        Permit(std::sync::Arc::clone(self))
+    }
+}
+
+struct Permit(std::sync::Arc<Permits>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        *self.0.free.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        self.0.woken.notify_one();
+    }
+}
+
 /// One message as the OpenAI shape carries it.
 #[derive(Debug)]
 struct Msg {
@@ -61,11 +118,6 @@ struct Msg {
 }
 
 /// Run the listener until the process ends.
-///
-/// Sequential on purpose: one connection at a time, one turn at a time. The
-/// endpoint this fronts is a single model with a handful of slots, and a head
-/// that accepted twenty concurrent turns would queue them there instead — with
-/// the prefix cache thrashing between them, which is the one thing this is for.
 pub fn serve(listener: TcpListener, parts: Parts, cfg: Config) {
     let prefix = StablePrefix {
         system: cfg.system.clone(),
@@ -74,31 +126,55 @@ pub fn serve(listener: TcpListener, parts: Parts, cfg: Config) {
         // the bulk of a prefix, which is what this exists to keep small and warm.
         tools_json: Vec::new(),
     };
-    let mut engine = match engine_for(&parts, &cfg) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("  http head: cannot build an engine: {e}");
-            return;
-        }
-    };
+    // What the endpoint says it decodes at once. Asked here, once, rather than
+    // assumed: a metered provider reports nothing and a bare llama-server
+    // reports its `-np`.
+    let reported = letibot_turn::serving::served_slots(&cfg.endpoint);
+    let n = reported.unwrap_or(DEFAULT_PERMITS);
+    let permits = std::sync::Arc::new(Permits::new(n));
     eprintln!(
-        "  http head on {} — POST /v1/chat/completions, model `{}`, {} byte(s) of system prompt",
+        "  http head on {} — POST /v1/chat/completions, model `{}`, {} byte(s) of system prompt, \
+         {n} at a time ({})",
         listener
             .local_addr()
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "?".into()),
         cfg.model,
-        cfg.system.len()
+        cfg.system.len(),
+        match reported {
+            Some(_) => "the endpoint's slot count",
+            None => "the endpoint did not say; this build's default",
+        }
     );
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        if let Err(e) = handle(&mut stream, &mut engine, &prefix) {
-            // A broken pipe is a client that went away mid-answer and is not an
-            // event; anything else is worth a line, because this listener has no
-            // other way to say it.
-            if e.kind() != std::io::ErrorKind::BrokenPipe {
-                eprintln!("  http head: {e}");
-            }
+        // Taken on the ACCEPT thread, so a caller past the bound waits in the
+        // kernel's backlog rather than in a thread of its own. Threads that exist
+        // to block are the shape this avoids.
+        let permit = permits.take();
+        let (parts, cfg, prefix) = (parts.clone(), cfg.clone(), prefix.clone());
+        let spawned = std::thread::Builder::new()
+            .name("http-turn".into())
+            .spawn(move || {
+                // One engine per request. It borrows the vocabulary out of this
+                // thread's own `Parts` clone — an `Arc` bump, not a second load —
+                // which is what lets the turns actually run side by side.
+                let mut engine = match engine_for(&parts, &cfg) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        let _ = respond(&mut stream, 502, &err_json(&format!("engine: {e}")));
+                        return;
+                    }
+                };
+                if let Err(e) = handle(&mut stream, &mut engine, &prefix)
+                    && e.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    eprintln!("  http head: {e}");
+                }
+                drop(permit);
+            });
+        if spawned.is_err() {
+            eprintln!("  http head: could not spawn a thread for a request");
         }
     }
 }
@@ -287,6 +363,48 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The bound is a bound, and a permit comes back however the handler ends.**
+    ///
+    /// A channel of permits leaks one when a handler panics; a guard cannot.
+    #[test]
+    fn permits_bound_the_in_flight_requests_and_return_themselves() {
+        let p = std::sync::Arc::new(Permits::new(2));
+        let a = p.take();
+        let b = p.take();
+        assert_eq!(*p.free.lock().unwrap(), 0, "both permits are out");
+
+        // A third caller blocks until one comes back.
+        let p2 = std::sync::Arc::clone(&p);
+        let waiter = std::thread::spawn(move || {
+            let _c = p2.take();
+            true
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiter.is_finished(), "the bound did not hold");
+
+        drop(a);
+        assert!(waiter.join().expect("the waiter"), "a returned permit woke it");
+        drop(b);
+        assert_eq!(*p.free.lock().unwrap(), 2, "every permit came back");
+    }
+
+    /// A panicking handler must not eat a permit for the life of the process.
+    #[test]
+    fn a_panicking_handler_returns_its_permit() {
+        let p = std::sync::Arc::new(Permits::new(1));
+        let p2 = std::sync::Arc::clone(&p);
+        let _ = std::thread::spawn(move || {
+            let _permit = p2.take();
+            panic!("the turn blew up");
+        })
+        .join();
+        assert_eq!(
+            *p.free.lock().unwrap_or_else(|e| e.into_inner()),
+            1,
+            "the permit was lost with the thread"
+        );
+    }
 
     #[test]
     fn a_body_becomes_messages_in_order_and_a_content_array_is_flattened() {
