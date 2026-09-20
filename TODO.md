@@ -340,9 +340,32 @@ the mouse-reporting bug — now asserts the *new* contract explicitly, including
 gives the arrows back. A view that held them for ever would be the same defect with a new
 cause.
 
-**Still open below** (the daemon side): fetching a row the snapshot dropped. `ViewBounds`
-bounds the snapshot, so a very old row is not on the head at all, and this paging works
-over what the head holds. That needs the row-shaped `Peek`.
+**Still open** — and this is the split, so the next reader knows which half is which:
+
+**(a) The daemon half is done.** `ClientFrame::FetchRow` / `ServerFrame::RowFetched` exist,
+and the daemon answers a window of any row it holds: the offset is clamped and rounded to a
+character boundary, the length is capped at `MAX_FETCH_ROW` (64 KB) **by the daemon** rather
+than trusted from the head, the answer carries the body's whole length so a head can say
+what is on either side of the window without holding it, and a row nobody has answers
+`body: None` rather than an empty string. Seven tests in
+`crates/sessionlog/tests/fetch_row.rs`.
+
+**(b) The head does not ask yet.** `App`'s paging works over the rows the snapshot gave it —
+`ViewBounds` is 2000 rows and 8 MB — so the case this was built for, a row *trimmed* by
+those bounds, is still unreachable on screen. Wiring it wants three things: knowing the row
+is not held (the head has no such flag today), asking and tracking the answer, and rendering
+a partial body from a window. The `ServerFrame::RowFetched` arm in `App::apply` is an
+explicit `Disposition::Control` naming this gap rather than a wildcard, so the day the head
+starts asking, an unhandled frame is visible there.
+
+**And it is not `Peek`, which an earlier draft of this item said.** `Peek` fetches a whole
+session's scrollback and has **no position**: you name a session, you get all of it. That
+is right for the picker — "what was that session about" is a whole-thing question — and it
+is the wrong shape for this, which is positional ("the display line 3,000 of this 400 KB
+payload, which the head does not have"). The *pattern* worth reusing is that a peek reads
+without moving your seat; the cursor and the window are new, and calling them `Peek` would
+be a name for something with different semantics. So: **`FetchRow`** — name the row, get a
+bounded window of it — with `read`'s own `ranges` as the model one layer down.
 
 **Checked before building, 2026-09-20**: across the whole store there are **8 rows over
 64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the

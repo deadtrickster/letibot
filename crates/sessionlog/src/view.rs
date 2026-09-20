@@ -719,6 +719,41 @@ impl SessionView {
             .find(|c| c.call_id == call_id)
     }
 
+    /// **One row's body, whole**, for a head reading a window of it.
+    ///
+    /// `None` when the row is not in this view — trimmed by [`ViewBounds`], or never seen.
+    /// That distinction is the caller's to make: `FetchRow` answers `body: None` for it,
+    /// because an empty body and a body nobody has must not look alike.
+    ///
+    /// The whole thing is returned rather than a window because the *windowing* belongs to
+    /// whoever answers the frame — that is where the cap and the character-boundary
+    /// arithmetic live, and a second implementation here would be a second answer to the
+    /// same question.
+    pub fn row_body(&self, item_id: &str) -> Option<String> {
+        let row = self.items.iter().find(|r| r.item_id == item_id)?;
+        let item = row.item.as_ref()?;
+        Some(match item {
+            TranscriptItem::ToolResult { payload, .. } => payload.clone(),
+            // The other variants' "body" is their text. A row a head can page is a tool
+            // result in practice, but the accessor is not the place to decide that: a
+            // head asking for a long answer's bytes gets them rather than a silence it
+            // would have to interpret.
+            TranscriptItem::Assistant { text, .. }
+            | TranscriptItem::Reasoning { text, .. }
+            | TranscriptItem::System { text, .. } => text.clone(),
+            TranscriptItem::User { parts } => parts
+                .iter()
+                .filter_map(|p| match p {
+                    letibot_transcript::UserPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            // A segment mark renders to nothing, so it has no body to page.
+            TranscriptItem::SegmentMark { .. } => String::new(),
+        })
+    }
+
     /// Attach content to an already-appended transcript row.
     ///
     /// See the module note: §4.5's `TranscriptAppended` has no content field, so

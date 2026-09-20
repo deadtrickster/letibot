@@ -91,6 +91,15 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::Jobs { session_id, jobs } => {
             format!("Jobs({session_id}, {} entries)", jobs.len())
         }
+        ServerFrame::RowFetched {
+            item_id,
+            body,
+            total,
+            ..
+        } => format!(
+            "RowFetched({item_id}, {} of {total})",
+            body.as_ref().map(|b| b.len()).unwrap_or(0)
+        ),
         ServerFrame::Peeked {
             session_id,
             events,
