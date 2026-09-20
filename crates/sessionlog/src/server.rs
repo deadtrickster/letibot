@@ -894,8 +894,38 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // A head going away is the normal case and says nothing.
             Err(WireError::Eof) => break Ok(()),
-            Err(e) => break Err(e),
+            // **Anything else is said before the connection goes.**
+            //
+            // This read `break Err(e)` and hung up in silence, which is how a
+            // version skew presented: the head sent a frame this daemon had never
+            // heard of, the deserialize failed here, the socket closed, and the
+            // head exited with `the daemon closed the connection` — true, useless,
+            // and identical to a crash. Measured 2026-09-20: `ReadJobOutput` from
+            // a new head to a daemon started twenty-eight minutes before it landed
+            // killed the head on every Enter, with nothing on either screen naming
+            // a version.
+            //
+            // §17-S6's rule is already written down for the ATTACH check a few
+            // hundred lines up — *"a silent version skew looks like a bug in the
+            // other half, forever"* — and it is no less true after ATTACH than
+            // during it. A frame this daemon cannot read is almost always a head
+            // from the future, so the reason says both numbers and what to do.
+            // Best effort: the socket may already be gone, which is why the write
+            // is not `?`.
+            Err(e) => {
+                let reason = format!(
+                    "this connection sent a frame this daemon could not read ({e}). \
+                     This daemon speaks protocol {PROTOCOL_VERSION}; a head built \
+                     against a newer one will do this on the first frame the two do \
+                     not share. Restart the daemon so both halves are the same build.",
+                );
+                if let Ok(mut w) = writer.lock() {
+                    let _ = w.write(&ServerFrame::Bye { reason });
+                }
+                break Err(e);
+            }
         }
     };
 

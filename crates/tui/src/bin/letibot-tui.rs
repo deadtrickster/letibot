@@ -698,6 +698,12 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     let _ = client.detach();
     drop(client);
     let _ = pump_thread.join();
+    // **After the terminal is back**, because this is the one message that must
+    // outlive the screen: the alternate screen has been torn down by now, so a
+    // reason said into the transcript is gone and the head looks like it crashed.
+    if let Some(reason) = app.farewell() {
+        eprintln!("letibot: the daemon ended this head — {reason}");
+    }
     Ok(())
 }
 
