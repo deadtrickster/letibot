@@ -30,7 +30,16 @@ struct Hit {
     path: String,
     line_no: usize,
     line: String,
+    /// `(line_no, text)` for the lines around the match, empty when `context` is
+    /// 0. Captured during the scan because that is the only place the file's
+    /// text is in hand; rendering re-reads nothing.
+    region: Vec<(usize, String)>,
 }
+
+/// A ceiling on `context`, so one match cannot return a file. Twenty lines
+/// either side is more than enough to see what a match sits in, which is the
+/// question this answers.
+const MAX_CONTEXT: usize = 20;
 
 /// One rung of the ladder: a pattern, a scope, and what to call it if it works.
 struct Attempt {
@@ -57,7 +66,8 @@ impl Tool for Grep {
                     "path": {"type": "string", "description": "Directory to search under. Defaults to the session root."},
                     "glob": {"type": "string", "description": "Only read files whose path matches this glob."},
                     "case_insensitive": {"type": "boolean"},
-                    "max_matches": {"type": "integer"}
+                    "max_matches": {"type": "integer"},
+                    "context": {"type": "integer", "description": "Lines of surrounding file to show around each match, like `grep -C`. 0 (the default) lists matches only. With it set, this is ONE call instead of a grep followed by a read: use it whenever you want to see what a match sits in."}
                 },
                 "required": ["pattern"]
             }),
@@ -88,6 +98,18 @@ impl Tool for Grep {
             .filter(|n| *n > 0)
             .map(|n| n as usize)
             .unwrap_or(ctx.limits.max_matches);
+        // **Find and see, in one call.** Without this, `grep` names a line and a
+        // second call has to go and read around it — which is why a model with a
+        // shell reaches for `grep -n` piped into `sed -n 'A,Bp'` instead: not
+        // because the tools cannot do it, but because the shell does it in one
+        // round trip and this did it in two. At `automode` a round trip is also a
+        // gate decision, so the second call is not only latency.
+        let context = args
+            .get("context")
+            .and_then(|v| v.as_i64())
+            .filter(|n| *n > 0)
+            .map(|n| (n as usize).min(MAX_CONTEXT))
+            .unwrap_or(0);
 
         // A `path` naming a FILE searched NOTHING and said so as if it were a fact
         // about the tree. `walk` starts by listing its root; `list` on a file errors,
@@ -160,7 +182,14 @@ impl Tool for Grep {
         let mut parseable: Vec<&'static str> = Vec::new();
 
         for attempt in &ladder {
-            let scan = search(ctx, &attempt.pattern, &attempt.scope, file_glob, max);
+            let scan = search(
+                ctx,
+                &attempt.pattern,
+                &attempt.scope,
+                file_glob,
+                max,
+                context,
+            );
             files_scanned = files_scanned.max(scan.scanned);
             if attempt.scope == scope {
                 unopened = unopened_note(scan.skipped_large, scan.unreached);
@@ -425,6 +454,7 @@ fn search(
     scope: &str,
     file_glob: Option<&str>,
     max: usize,
+    context: usize,
 ) -> Scan {
     // `scope` may name a single file; `walk` would list it, fail, and return
     // nothing. See the `single_file` note above.
@@ -491,11 +521,28 @@ fn search(
         // matcher was replaced.
         let remaining = max - hits.len();
         let path = e.path.clone();
+        // Only when asked: collecting a file's lines is cheap but not free, and
+        // the common call passes no context at all.
+        let file_lines: Vec<&str> = if context > 0 {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
         let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
+            let region = if context > 0 {
+                let first = line_no.saturating_sub(context).max(1);
+                let last = (line_no + context).min(file_lines.len());
+                (first..=last)
+                    .map(|n| (n, file_lines[n - 1].to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             hits.push(Hit {
                 path: path.clone(),
                 line_no,
                 line: line.to_string(),
+                region,
             });
         });
         if truncated {
@@ -548,8 +595,34 @@ fn unopened_note(scan_skipped: usize, scan_unreached: usize) -> Option<String> {
 
 fn render_hits(hits: &[Hit], scope: &str) -> String {
     let mut out = format!("{} match(es) under `{scope}`:\n", hits.len());
+    if hits.iter().all(|h| h.region.is_empty()) {
+        for h in hits {
+            out.push_str(&format!("{}:{}: {}\n", h.path, h.line_no, clip(&h.line)));
+        }
+        return out;
+    }
+    // **With context, the answer is regions rather than lines.** Numbered, so a
+    // location can be cited and an edit can be made from it without a second
+    // look — which is the whole reason `sed -n 'A,Bp'` was being reached for.
+    //
+    // Overlapping regions are printed once. Two matches three lines apart with
+    // `context: 5` are one block, not two blocks quoting each other, and `--`
+    // marks a real gap so nobody reads two blocks as contiguous.
+    let mut last: Option<(&str, usize)> = None;
     for h in hits {
-        out.push_str(&format!("{}:{}: {}\n", h.path, h.line_no, clip(&h.line)));
+        for (n, text) in &h.region {
+            match last {
+                Some((p, prev)) if p == h.path && *n <= prev => continue,
+                Some((p, prev)) if p == h.path && *n > prev + 1 => out.push_str("--\n"),
+                Some((p, _)) if p != h.path => out.push_str("--\n"),
+                _ => {}
+            }
+            // The match itself is marked, so a region does not have to be counted
+            // through to find what was asked about.
+            let mark = if *n == h.line_no { ':' } else { '-' };
+            out.push_str(&format!("{}:{n}{mark} {}\n", h.path, clip(text)));
+            last = Some((&h.path, *n));
+        }
     }
     out
 }
@@ -885,5 +958,57 @@ mod tests {
             notes.contains("big_candidate.rs") || notes.contains("1 file(s)"),
             "{notes}"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use crate::testing::writable_harness;
+
+    /// **Find and see, in one call.** Without `context`, `grep` names a line and
+    /// a second call has to read around it — which is the `grep -n` into `sed -n
+    /// 'A,Bp'` loop, done with tools. The operator: *"so it does grep, gets line
+    /// numbers for matches and does sed for surroundings? but we have grep tool
+    /// and read tool"* — both exist, and the shell won on round trips.
+    #[test]
+    fn context_returns_the_region_around_a_match_with_line_numbers() {
+        let mut h = writable_harness();
+        let plain = h.call("grep", r#"{"pattern":"parse_args","path":"src/lib.rs"}"#);
+        let plain = plain.render();
+        assert!(plain.contains("parse_args"), "{plain}");
+
+        let with = h.call(
+            "grep",
+            r#"{"pattern":"parse_args","path":"src/lib.rs","context":2}"#,
+        );
+        let with = with.render();
+        // The match is still there, and now so is what surrounds it — numbered,
+        // so the next call can be an `edit` rather than another look.
+        assert!(with.contains("parse_args"), "{with}");
+        assert!(
+            with.lines().count() > plain.lines().count(),
+            "context returned no more than a bare match:\n{with}"
+        );
+        // Every body line carries its own number, which is exactly what `sed`
+        // does not give.
+        let numbered = with.lines().filter(|l| l.contains("src/lib.rs:")).count();
+        assert!(
+            numbered >= 2,
+            "the region is not numbered per line:\n{with}"
+        );
+    }
+
+    /// The ceiling is real: one match cannot return a file.
+    #[test]
+    fn context_is_capped() {
+        let mut h = writable_harness();
+        let r = h
+            .call(
+                "grep",
+                r#"{"pattern":"parse_args","path":"src/lib.rs","context":100000}"#,
+            )
+            .render();
+        assert!(r.contains("parse_args"), "{r}");
+        assert!(r.lines().count() < 200, "a match returned the world:\n{r}");
     }
 }
