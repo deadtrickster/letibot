@@ -970,6 +970,16 @@ pub struct App {
     call_decisions: std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
+    /// True between taking the screen and the daemon's `Hello` arriving.
+    ///
+    /// The `Hello` **carries the whole snapshot**, so `HeadClient::attach` is a round
+    /// trip that can take a fifth of a second on a busy daemon and longer on a big
+    /// session. A head that draws before it has that answer must not claim anything
+    /// about the session — the empty-transcript banner says *"this session has said
+    /// nothing yet"*, which is a different and false thing from *"I have not been
+    /// told yet"*. So this suppresses the banner and leaves the body blank, which is
+    /// the honest frame.
+    attaching: bool,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
 }
@@ -1161,6 +1171,7 @@ impl App {
             now_ms: 0,
             last_event_at: 0,
             body_len: 0,
+            attaching: false,
             cursor: None,
         }
     }
@@ -1183,6 +1194,15 @@ impl App {
 
     pub fn head_id(&self) -> &str {
         &self.head_id
+    }
+
+    /// Tell the head it is about to ask the daemon, so the frames it draws in the
+    /// meantime tell the truth.
+    ///
+    /// Called once, by a head that has taken the screen and is about to attach. See
+    /// [`Self::attaching`] for what it suppresses and why.
+    pub fn begin_attach(&mut self) {
+        self.attaching = true;
     }
 
     pub fn session_id(&self) -> &str {
@@ -1273,6 +1293,9 @@ impl App {
                 ..
             } => {
                 let moved = !self.session_id.is_empty() && self.session_id != session_id;
+                // The daemon has answered, so whatever the head drew while it was
+                // asking is about to be replaced by the truth. See `attaching`.
+                self.attaching = false;
                 // **Ask for the settings on attach.** The daemon answers
                 // `ClientFrame::Settings` and never sends the rows unprompted, so
                 // a head that had not opened `/mode` or `/config` had none — and
@@ -5105,8 +5128,13 @@ impl App {
 
         // Nothing has happened yet. An empty screen with a status line under it is
         // indistinguishable from a head that attached to the wrong socket.
+        //
+        // **Unless the head has not been told yet.** See `attaching`: the daemon's
+        // `Hello` carries the snapshot, so a head that draws during the round trip
+        // knows nothing about the session, and this banner would assert that the
+        // session is empty. A blank body is the truthful frame.
         let opening;
-        if segs.iter().all(|s| s.len() == 0) {
+        if segs.iter().all(|s| s.len() == 0) && !self.attaching {
             opening = vec![
                 colour(&cfg, sgr::BOLD, "letibot"),
                 String::new(),
@@ -11572,6 +11600,98 @@ mod tests {
     /// The bound is deliberately loose (`4n`): a row is legitimately re-rendered
     /// when its own round changes under it, and pinning this to the exact number
     /// would make it a test of the current round shape rather than of the rule.
+    /// **The frame drawn before the daemon has answered claims nothing.**
+    ///
+    /// A head takes the screen and draws before `HeadClient::attach` returns, because
+    /// that round trip carries the whole snapshot and can be a fifth of a second on a
+    /// busy daemon. What it draws must not be the empty-transcript banner: "this
+    /// session has said nothing yet" is false when the truth is "nobody has told this
+    /// head yet", and a head that asserts it on attach to a full session is lying on
+    /// its first frame.
+    #[test]
+    fn the_frame_before_the_attach_claims_nothing_about_the_session() {
+        let mut a = app();
+        a.begin_attach();
+        let frame = a.screen(80, 24);
+        let flat = frame.join("\n");
+        assert!(
+            !flat.contains("has said nothing yet"),
+            "the pre-attach frame asserts the session is empty: {flat:?}"
+        );
+        assert!(
+            !flat.contains("letibot\n"),
+            "the pre-attach frame draws the empty-session banner anyway"
+        );
+        // The chrome is there, which is the whole point of drawing early: the
+        // composer's hint bar is the row that says the program is alive.
+        assert!(flat.contains("ctrl+c exit"), "no chrome at all: {flat:?}");
+        assert_eq!(frame.len(), 24);
+
+        // And once the daemon has answered, a genuinely empty session *does* say so.
+        a.apply(hello(
+            "s",
+            Vec::new(),
+            Snapshot {
+                session_id: "s".into(),
+                seq: 0,
+                dropped: 0,
+                items_dropped: 0,
+                items: Vec::new(),
+                turn: None,
+                open_decisions: Vec::new(),
+                settled_decisions: Vec::new(),
+                warnings: Vec::new(),
+                heads: Vec::new(),
+            },
+        ));
+        let frame = a.screen(80, 24);
+        let flat = frame.join("\n");
+        assert_eq!(a.attaching, false, "the Hello did not clear it");
+        assert!(
+            flat.contains("has said nothing yet"),
+            "an empty session after the Hello must say so: {flat:?}"
+        );
+    }
+
+    /// **How much of an attach is the history walk.** The cold frame over a big
+    /// session is the number the operator waited for; the warm frames are the steady
+    /// state. Ignored because timing is not an assertion.
+    #[test]
+    #[ignore]
+    fn a_big_attach_costs_the_walk() {
+        for n in [500usize, 2000, 6000] {
+            let mut a = app();
+            for i in 0..n {
+                a.apply(ServerFrame::Event(env(
+                    (i * 2 + 1) as u64,
+                    testing::appended(&format!("s.{i}"), "user"),
+                )));
+                let body = format!(
+                    "a line of conversation {i}\n\n```rust\nfn f() {{ let n = {i}; }}\n```\n\nsome prose with `code` and a [link](x) in it, long enough to wrap a couple of times.\n"
+                );
+                a.apply(ServerFrame::Event(env(
+                    (i * 2 + 2) as u64,
+                    testing::content(&format!("s.{i}"), &body),
+                )));
+            }
+            let t = std::time::Instant::now();
+            let first = a.screen(100, 40);
+            let cold = t.elapsed();
+            let t = std::time::Instant::now();
+            for _ in 0..20 {
+                let _ = a.screen(100, 40);
+            }
+            let warm = t.elapsed() / 20;
+            eprintln!(
+                "{n} rows: first frame {:>8.1} ms, later frames {:>6.2} ms ({} lines)",
+                cold.as_secs_f64() * 1e3,
+                warm.as_secs_f64() * 1e3,
+                first.len()
+            );
+            assert!(first.len() <= 40);
+        }
+    }
+
     #[test]
     fn rendering_the_history_does_not_grow_with_the_session_either() {
         let mut a = app();

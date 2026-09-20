@@ -433,6 +433,41 @@ fn ask_sessions(
 }
 
 fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = App::new(cfg);
+    app.load_prefs();
+
+    // **Take the screen and draw chrome before the round trip.**
+    //
+    // `HeadClient::attach` blocks until the daemon's `Hello` arrives, and the `Hello`
+    // carries the **whole snapshot** — so the head used to spend the entire attach
+    // accumulating a transcript it could not yet draw, on a terminal it had not yet
+    // taken over, leaving the operator's previous screen up for the duration. Measured
+    // on this workspace's own daemon: 0.17 s of attach and 0.08 s of first frame, of
+    // which the 0.01 s the process takes to start is the only part that was ever
+    // visible as *letibot*.
+    //
+    // What a head knows before it asks is its own composer, its key bindings and its
+    // layout, and drawing those is the difference between "it started" and "it did
+    // nothing". The body is left blank rather than showing the empty-transcript
+    // banner, which would be claiming the session has said nothing when the truth is
+    // that nobody has told this head yet — `App::begin_attach` is that distinction.
+    //
+    // The terminal is entered before the attach, so a failed attach has to leave the
+    // screen as it found it: `Terminal`'s `Drop` restores the termios and leaves the
+    // alternate screen, and it does so *before* printing its own reports, so the error
+    // from a refused attach lands on a terminal that is already restored.
+    let term = if args.no_tty {
+        None
+    } else {
+        Terminal::enter().ok()
+    };
+    if let Some(t) = &term {
+        app.begin_attach();
+        let (w, h) = t.size();
+        let frame = app.screen(w, h);
+        t.draw_with_cursor(&frame, app.cursor());
+    }
+
     let (mut client, hello, reader) = HeadClient::attach(
         &args.socket,
         &args.session,
@@ -444,8 +479,6 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     let (tx, rx) = std::sync::mpsc::channel();
     let pump_thread = std::thread::spawn(move || pump(reader, tx));
 
-    let mut app = App::new(cfg);
-    app.load_prefs();
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for
     // something else — a resume of a session that is already live is then a switch
@@ -457,11 +490,6 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         app.request_new_session(title);
     }
 
-    let term = if args.no_tty {
-        None
-    } else {
-        Terminal::enter().ok()
-    };
     match term {
         None => {
             // One frame to stdout. Useful in a pipeline and in CI, and it is what

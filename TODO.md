@@ -200,8 +200,30 @@ per *code fence* and per *diff excerpt*; it is compiled once per process per lan
 now. This session alone holds 132 fenced messages, so that was ~1.2 s of pure query
 compilation per attach — our bug, and it is gone.
 
-**Open**: the remaining ~1.6-2.7 s is the parse, and every lever is consumer-side.
-Three, smallest to largest:
+**Chrome first (done 2026-09-20).** The head used to draw its first frame *after*
+the whole attach — and `HeadClient::attach` blocks on the daemon's `Hello`, which
+**carries the snapshot**. So on a big session the operator's previous screen stayed
+up for the entire round trip and then the transcript appeared at once, which is
+exactly the reported *"does nothing, then chrome appears with empty conversation
+history and then after a while it renders history"*.
+
+Measured on this daemon: 0.01 s of process start, 0.17 s of attach (the `Hello`,
+snapshot included), 0.08 s of first frame. Only the first of those was ever visible
+as *letibot*.
+
+Now the terminal is taken over and a frame is drawn **before** the attach, so the
+composer and the hint bar are on screen in the time the process takes to start, and
+the history fills in when the daemon answers. The frame drawn in the meantime must
+not lie: the empty-transcript banner says *"this session has said nothing yet"*,
+which is false when the truth is *"nobody has told this head yet"*, so `App` carries
+an `attaching` flag that suppresses it — `the_frame_before_the_attach_claims_nothing_about_the_session`.
+
+`Terminal`'s `Drop` restores the termios and leaves the alternate screen, and it does
+so before printing its own reports, so entering the screen before a refused attach
+still lands the error on a restored terminal.
+
+**Still open**: what remains of an attach is the parse, and every lever is
+consumer-side. Three, smallest to largest:
 
 1. **Lex less of each row.** `budget.body_lines` already bounds the *render* to 40
    lines per block, but the lex produces every line first — so a 5000-line message is
