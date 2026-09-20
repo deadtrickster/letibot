@@ -1854,6 +1854,42 @@ mod nesting {
         assert!(closed);
     }
 
+    /// A fence closes at the *next* fence, even when the author meant that one to be
+    /// nested — so the text after it is not code, and a later fence is still open.
+    ///
+    /// This is CommonMark's rule (a fence of N backticks is closed by a line of M ≥ N
+    /// backticks and nothing else), and it is why a message that quotes a fence inside a
+    /// fence renders as one long open code block with `(still writing…)` at the bottom:
+    /// the parser is right and the message was not able to say what it meant. Written up
+    /// because it looked like a renderer bug on the operator's screen (2026-09-20) when
+    /// it is a writer's mistake, and the fix is to open with four backticks.
+    #[test]
+    fn a_fence_cannot_quote_itself() {
+        let b = lex("```\nalpha\n```\nbeta\n```\n");
+        let kinds: Vec<&str> = b
+            .iter()
+            .map(|x| match x {
+                Block::Code { .. } => "code",
+                _ => "text",
+            })
+            .collect();
+        assert_eq!(kinds, ["code", "text", "code"], "{b:#?}");
+        // The first closed at the inner fence, so `beta` is prose…
+        let Block::Code { lines, closed, .. } = &b[0] else { panic!("{b:#?}") };
+        assert_eq!(lines, &["alpha"]);
+        assert!(*closed);
+        // …and the trailing fence is the one still open, which is what the footer says.
+        let Some(Block::Code { closed, lines, .. }) = b.last() else { panic!("{b:#?}") };
+        assert!(!*closed);
+        assert!(lines.is_empty());
+        // Four backticks is how to quote three: then the inner fence is content.
+        let b = lex("````\nalpha\n```\n````\n");
+        assert_eq!(b.len(), 1, "{b:#?}");
+        let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+        assert_eq!(lines, &["alpha", "```"]);
+        assert!(closed);
+    }
+
     /// A quote with prose and a fence keeps both, in order.
     #[test]
     fn a_quote_with_prose_and_a_fence_keeps_both() {
