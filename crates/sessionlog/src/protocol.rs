@@ -178,6 +178,28 @@ use crate::view::Snapshot;
 /// whole read. Lazy by construction: nothing is read until the head asks, and
 /// asking again is a fresh read.
 ///
+/// # 22: the jobs pane reads a job's output without leaving the session
+///
+/// [`ClientFrame::ReadJobOutput`] is a new client frame and
+/// [`crate::SessionEvent::JobOutput`] is a new event, so a version-21 daemon would
+/// fail to parse the first and a version-21 head would fail to parse the second —
+/// the version-4 argument, in both directions at once, and the same ATTACH-time
+/// refusal covers it.
+///
+/// **This section is late, and that is the point of it.** Both landed at version
+/// 21 with the constant left at 21, so ATTACH agreed and the mismatch surfaced
+/// where it always does without a bump: mid-session, as a deserialization failure
+/// that ends the connection. Measured 2026-09-20 on the operator's `stroppy-pfn`
+/// session — a daemon started at 21:45 from the 21:17 binary, a head built after
+/// `ReadJobOutput` landed, and Enter on a job row killed the head every time with
+/// no message. *"when i went to job with enter in pfn project leticode just
+/// exited"*.
+///
+/// The number is the only compatibility check there is. Adding a frame and moving
+/// the number are two separate acts by the same person, and nothing used to check
+/// they happened together — see `every_frame_is_accounted_for_at_this_version`,
+/// which is a compile error rather than an assertion for exactly that reason.
+///
 /// # 17: a head can list the settings its session runs under
 ///
 /// [`ClientFrame::Settings`] is a new client frame — the version-4 argument
@@ -207,7 +229,7 @@ use crate::view::Snapshot;
 /// second terminal and `letibot --stop`. The head now asks which, and the
 /// answer that stops the daemon travels over the protocol rather than a head
 /// reaching around it to signal a pid.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -914,6 +936,111 @@ pub const REJECT_NOT_IN_STORE: &str = "no such session in the store";
 mod tests {
     use super::*;
     use crate::view::{SessionView, ViewBounds};
+
+    /// **A signpost at the version, where the compiler does not put one.**
+    ///
+    /// `PROTOCOL_VERSION` is the only compatibility check the two halves have, and
+    /// on 2026-09-20 three frames landed at version 21 without it moving —
+    /// `ListJobs`/`Jobs`, `ReseatSession.summarise`, and `ReadJobOutput`/`JobOutput`,
+    /// which is the one that cost an afternoon: ATTACH agreed, and the skew
+    /// surfaced mid-session as a deserialization failure that hung the connection
+    /// up in silence.
+    ///
+    /// **The compiler already catches the variant.** Measured, by adding one to
+    /// each enum: a new `ClientFrame` fails `server.rs`'s read loop, and a new
+    /// `SessionEvent` fails four matches across the view and the head. So "nothing
+    /// noticed" was never true — what is true is that every one of those errors
+    /// points at a HANDLER, the author writes the handler because they must, and
+    /// the version never comes up. The check existed and pointed at the wrong
+    /// decision.
+    ///
+    /// This one points at the right one, and it is a match rather than a count so
+    /// that it names WHICH frame is new. Same device `mode.rs` uses for `Boundary`:
+    /// *"written as 'not `Operator`' rather than as a two-arm match so that adding
+    /// a third boundary later is a compile error here, where the decision
+    /// belongs."*
+    ///
+    /// Both directions, because the skew runs both ways: a client frame kills the
+    /// DAEMON's read, an event kills the HEAD's. `JobOutput` was the second kind.
+    ///
+    /// **If you are here because this stopped compiling:** you added a frame or an
+    /// event. Bump `PROTOCOL_VERSION`, add a `# N:` section to the history above
+    /// saying which half would fail to parse it, then add the arm.
+    #[test]
+    fn every_frame_is_accounted_for_at_this_version() {
+        fn client(f: &ClientFrame) {
+            match f {
+                ClientFrame::Ack { .. }
+                | ClientFrame::Answer { .. }
+                | ClientFrame::AnswerQuestion { .. }
+                | ClientFrame::Askpass { .. }
+                | ClientFrame::Attach { .. }
+                | ClientFrame::CompactSession { .. }
+                | ClientFrame::Detach { .. }
+                | ClientFrame::FetchRow { .. }
+                | ClientFrame::Interrupt { .. }
+                | ClientFrame::ListJobs { .. }
+                | ClientFrame::ListSessions { .. }
+                | ClientFrame::ListTodos { .. }
+                | ClientFrame::Mode { .. }
+                | ClientFrame::NewSession { .. }
+                | ClientFrame::Peek { .. }
+                | ClientFrame::Promote { .. }
+                | ClientFrame::Prompt { .. }
+                | ClientFrame::ReadJobOutput { .. }
+                | ClientFrame::RenameSession { .. }
+                | ClientFrame::ReseatSession { .. }
+                | ClientFrame::ResumeSession { .. }
+                | ClientFrame::Resync { .. }
+                | ClientFrame::Screen { .. }
+                | ClientFrame::Secret { .. }
+                | ClientFrame::Settings { .. }
+                | ClientFrame::Slash { .. }
+                | ClientFrame::Stop { .. }
+                | ClientFrame::Switch { .. }
+                | ClientFrame::WithdrawPrompts { .. } => {}
+            }
+        }
+        fn event(e: &crate::SessionEvent) {
+            match e {
+                crate::SessionEvent::CommandIssued { .. }
+                | crate::SessionEvent::DecisionAnswered { .. }
+                | crate::SessionEvent::DecisionRequested { .. }
+                | crate::SessionEvent::Delta { .. }
+                | crate::SessionEvent::DenialRaised { .. }
+                | crate::SessionEvent::Explain { .. }
+                | crate::SessionEvent::HeadAttached { .. }
+                | crate::SessionEvent::HeadDetached { .. }
+                | crate::SessionEvent::JobOutput { .. }
+                | crate::SessionEvent::JobSettled { .. }
+                | crate::SessionEvent::PromptProgress { .. }
+                | crate::SessionEvent::ScreenRequested { .. }
+                | crate::SessionEvent::SecretRequested { .. }
+                | crate::SessionEvent::SecretSettled { .. }
+                | crate::SessionEvent::SessionRenamed { .. }
+                | crate::SessionEvent::Subagent { .. }
+                | crate::SessionEvent::TodosUpdated { .. }
+                | crate::SessionEvent::TokensGenerated { .. }
+                | crate::SessionEvent::ToolCallProposed { .. }
+                | crate::SessionEvent::ToolFinished { .. }
+                | crate::SessionEvent::ToolProgress { .. }
+                | crate::SessionEvent::ToolStarted { .. }
+                | crate::SessionEvent::TranscriptAppended { .. }
+                | crate::SessionEvent::TranscriptContent { .. }
+                | crate::SessionEvent::TurnFailed { .. }
+                | crate::SessionEvent::TurnFinished { .. }
+                | crate::SessionEvent::TurnInterrupted { .. }
+                | crate::SessionEvent::TurnStarted { .. }
+                | crate::SessionEvent::Warning { .. } => {}
+            }
+        }
+        let _ = client;
+        let _ = event;
+        assert_eq!(
+            PROTOCOL_VERSION, 22,
+            "the match above was last reconciled with the frame list at 22"
+        );
+    }
 
     /// **A re-seat that does not say keeps the conversation.**
     ///

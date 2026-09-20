@@ -1110,6 +1110,9 @@ pub struct App {
     /// changed. See the stall check in `screen`.
     bodies_last: usize,
     bodies_moved_ms: u64,
+    /// The daemon's reason for ending this head, kept past the screen. See
+    /// [`App::farewell`].
+    bye: Option<String>,
     /// The high-water mark of rows waiting for a body, since it was last zero.
     ///
     /// The denominator of the fork line: a fork announces every row before any
@@ -1521,6 +1524,7 @@ impl App {
             bodies_peak: 0,
             bodies_last: 0,
             bodies_moved_ms: 0,
+            bye: None,
         }
     }
 
@@ -1538,6 +1542,18 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    /// **Why the daemon ended this, for after the screen is given back.**
+    ///
+    /// `Some` only when a [`ServerFrame::Bye`] arrived — an ordinary quit has
+    /// nothing to say. The caller prints it once the terminal is restored, because
+    /// anything said into the transcript goes down with the alternate screen and
+    /// the operator is left with a head that exited for no stated reason. That is
+    /// what a protocol skew looked like on 2026-09-20: *"when i went to job with
+    /// enter in pfn project leticode just exited"*.
+    pub fn farewell(&self) -> Option<&str> {
+        self.bye.as_deref()
     }
 
     pub fn head_id(&self) -> &str {
@@ -1884,7 +1900,13 @@ impl App {
                 Disposition::Control
             }
             ServerFrame::Bye { reason } => {
+                // Into the transcript, AND kept for after the terminal is restored.
+                // A `Bye` is the last thing this head will draw, and the frame it is
+                // drawn into is about to be torn down with the alternate screen — so
+                // on the path that matters most, a version skew, the operator saw a
+                // head vanish and nothing else. See `App::farewell`.
                 self.say(&format!("daemon: {reason}"));
+                self.bye = Some(reason.clone());
                 self.quit = true;
                 Disposition::Control
             }
