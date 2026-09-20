@@ -6,7 +6,7 @@
 //!          [--vocab GGUF] [--system TEXT] [--system-file FILE]
 //!          [--effort low|medium|high|xhigh]
 //!          [--spill-inline BYTES] [--spill-dir DIR]
-//!          [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME]
+//!          [--max-tool-rounds N|off] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
 //!          [--slash VERB ...]         a head's slash verb, in order with --prompt:
 //!                                     `--prompt hi --slash "models deepseek" --prompt again`
@@ -73,7 +73,7 @@ fn usage() -> String {
      \x20        [--vocab GGUF] [--system TEXT|--system-file FILE]\n\
      \x20        [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...] [--slash VERB ...]\n\
+     \x20        [--max-tool-rounds N|off] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...] [--slash VERB ...]\n\
      \n\
      what this session may do — every one of these is off unless you pass it:\n\
      \x20 --role NAME               orchestrator (default, read-only) | planner |\n\
@@ -457,8 +457,15 @@ fn run() -> Result<i32, String> {
             // deepseek"`, `--slash compact`, `--slash tools`. Written without the
             // leading `/`, like the wire carries them.
             "--slash" => steps.push(Step::Slash(next()?)),
+            // The round backstop, which is unbounded by default. `off`, `none`
+            // and `0` all say so, because somebody turning a limit off types the
+            // word before they think to type the number.
             "--max-tool-rounds" => {
-                cfg.max_tool_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
+                let v = next()?;
+                cfg.max_tool_rounds = match v.as_str() {
+                    "off" | "none" | "unlimited" | "infinity" | "inf" => 0,
+                    other => other.parse().map_err(|e| format!("{arg}: {e}"))?,
+                }
             }
             // The progress check's tolerance band. `0` turns it off, and the daemon
             // says so at startup — see `Config::disclosures`.

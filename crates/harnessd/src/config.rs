@@ -455,6 +455,19 @@ pub struct Config {
     /// is dozens of rounds and the old value was inside that range. What is left for
     /// this number to catch is a turn that keeps producing genuinely new results
     /// forever, which is a different failure and wants a different sentence.
+    ///
+    /// **`0` is unbounded, and it is the default.** The operator: *"make 200 tool
+    /// calls limit configurable and set it to infinity"*. The argument for it is
+    /// the one this field's own history already makes — a round count measures
+    /// effort and cannot tell a model that is working from one that is stuck, so
+    /// as a stop it was only ever wrong in one direction, and 200 is a number
+    /// nobody derived. `stall_rounds` is the guard that reads progress, and it is
+    /// the one that should be doing this job.
+    ///
+    /// What follows, and is disclosed rather than hidden: with this off AND
+    /// `stall_rounds` off, **nothing ends a turn but the model** — see
+    /// [`Config::disclosures`], which says exactly that when both are zero. One
+    /// off is a choice; both off is a different setting and reads as one.
     pub max_tool_rounds: usize,
     /// **How many consecutive rounds may produce nothing new before the turn stops.**
     ///
@@ -855,7 +868,9 @@ impl Config {
             spill_storage: SpillStorage::Memory,
             // Far out on purpose: the progress detector is the stop, and this is the
             // thing that catches a turn which never stops making new results.
-            max_tool_rounds: 200,
+            // Unbounded: see the field. `stall_rounds` is the stop that measures
+            // progress, and a round count never could.
+            max_tool_rounds: 0,
             stall_rounds: 5,
         }
     }
@@ -1171,7 +1186,10 @@ impl Config {
         ));
         out.push(row(
             "max-tool-rounds",
-            self.max_tool_rounds.to_string(),
+            match self.max_tool_rounds {
+                0 => "unlimited".into(),
+                n => n.to_string(),
+            },
             "",
             "",
         ));
@@ -1261,26 +1279,41 @@ impl Config {
         // **The stop condition, said out loud.** A turn that can only be stopped by a
         // round count is the state that cut two working sessions, and an operator who
         // does not know which of the two guards is armed cannot read a stop.
-        if self.stall_rounds == 0 {
-            out.push(Disclosure::off(
+        let backstop = match self.max_tool_rounds {
+            0 => "unlimited".to_string(),
+            n => format!("{n} rounds"),
+        };
+        match (self.stall_rounds, self.max_tool_rounds) {
+            // **Both off: nothing but the model ends a turn.** Not a refusal — the
+            // operator asked for the backstop to come off and the progress check is
+            // theirs to arm — but it is a different setting from either one alone
+            // and has to read as one.
+            (0, 0) => out.push(Disclosure::off(
+                "progress check",
+                "NOTHING STOPS A TURN",
+                "no progress check and no round backstop: a turn ends when the model \
+                 stops calling tools, when it meets the context wall, or when you \
+                 interrupt it — and nothing else. A turn that loops forever will loop \
+                 forever. Pass --stall-rounds N to arm the check that reads progress, \
+                 or --max-tool-rounds N for a count of effort.",
+            )),
+            (0, _) => out.push(Disclosure::off(
                 "progress check",
                 "OFF",
                 &format!(
                     "nothing measures whether a turn is getting anywhere; the only \
-                     stop is the {}-round backstop, which counts effort rather than \
-                     progress. Pass --stall-rounds N.",
-                    self.max_tool_rounds
+                     stop is the {backstop} backstop, which counts effort rather than \
+                     progress. Pass --stall-rounds N."
                 ),
-            ));
-        } else {
-            out.push(Disclosure::on(
+            )),
+            _ => out.push(Disclosure::on(
                 "progress check",
                 format!(
                     "stops after {} consecutive rounds producing nothing new; the \
-                     round backstop is {}",
-                    self.stall_rounds, self.max_tool_rounds
+                     round backstop is {backstop}",
+                    self.stall_rounds
                 ),
-            ));
+            )),
         }
         if self.store.is_none() {
             out.push(Disclosure::off(
@@ -2181,10 +2214,15 @@ mod tests {
     ///
     /// The defect this replaced: `max_tool_rounds: 12` was the only thing that could
     /// end a runaway turn, so it also ended two working ones. What is asserted is the
-    /// *relationship* — a progress check is armed, and the count sits far enough out
-    /// that a real investigation of a codebase does not reach it — rather than either
-    /// number, because a test pinning 200 would have to be edited to change it and
-    /// would then be pinning nothing.
+    /// *relationship* — a progress check is armed, and the round count is not a
+    /// thing a real investigation can run into — rather than either number, because
+    /// a test pinning the number would have to be edited to change it and would then
+    /// be pinning nothing.
+    ///
+    /// The count is now `0`, unbounded, at the operator's word: *"make 200 tool
+    /// calls limit configurable and set it to infinity"*. The relationship is
+    /// unchanged and so is this test's point — a count of rounds measures effort,
+    /// and the guard that reads progress is the one that has to be armed.
     #[test]
     fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
         let c = Config::for_this_box("/tmp");
@@ -2193,9 +2231,9 @@ mod tests {
             "a session with no progress check is the defect"
         );
         assert!(
-            c.max_tool_rounds >= 100,
-            "a real investigation is dozens of rounds; {} is inside that range and \
-             would cut one",
+            c.max_tool_rounds == 0 || c.max_tool_rounds >= 100,
+            "a real investigation is dozens of rounds, so the backstop is either \
+             unbounded or far outside that range; {} is inside it and would cut one",
             c.max_tool_rounds
         );
         let d = c
@@ -2207,12 +2245,74 @@ mod tests {
         assert!(d.to_string().contains(&c.stall_rounds.to_string()));
     }
 
+    /// **Both guards off is its own state, and says so.**
+    ///
+    /// The round backstop is unbounded by default now, so the progress check is
+    /// the only thing measuring anything. Turning that off as well leaves nothing
+    /// between a looping turn and forever — not a refusal, because the operator
+    /// asked for the backstop off and the check is theirs to arm, but it must not
+    /// read as either one alone. A disclosure that said "the only stop is the
+    /// 0-round backstop" would be worse than silence: it names a guard that is
+    /// not there.
+    #[test]
+    fn both_guards_off_is_disclosed_as_its_own_state() {
+        let mut c = Config::for_this_box("/tmp");
+        assert_eq!(c.max_tool_rounds, 0, "the premise: unbounded by default");
+        c.stall_rounds = 0;
+        let line = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "progress check")
+            .expect("especially when there is nothing left")
+            .to_string();
+        assert!(
+            line.contains("NOTHING STOPS A TURN"),
+            "it has to read as its own state: {line}"
+        );
+        assert!(
+            !line.contains("0-round"),
+            "and must never name a backstop that is not armed: {line}"
+        );
+        // Both ways back are named, because either one alone re-arms something.
+        assert!(line.contains("--stall-rounds"), "{line}");
+        assert!(line.contains("--max-tool-rounds"), "{line}");
+    }
+
+    /// The settings row says `unlimited`, not `0`. An operator reading a table of
+    /// numbers reads `0` as "zero rounds allowed", which is the opposite.
+    #[test]
+    fn an_unbounded_backstop_reads_as_unlimited_not_as_zero() {
+        let c = Config::for_this_box("/tmp");
+        let rows = c.settings("x", false);
+        let r = rows
+            .iter()
+            .find(|r| r.key == "max-tool-rounds")
+            .expect("the row");
+        assert_eq!(r.value, "unlimited");
+        let mut bounded = c.clone();
+        bounded.max_tool_rounds = 12;
+        assert_eq!(
+            bounded
+                .settings("x", false)
+                .iter()
+                .find(|r| r.key == "max-tool-rounds")
+                .expect("the row")
+                .value,
+            "12",
+            "and a real bound still reads as its number"
+        );
+    }
+
     /// Off is reachable and is **said out loud**, because a refusal that can only be
     /// routed around teaches people to route around refusals.
     #[test]
     fn turning_the_progress_check_off_is_a_declared_state() {
         let mut c = Config::for_this_box("/tmp");
         c.stall_rounds = 0;
+        // With a backstop still armed. Both off is a DIFFERENT state and has its
+        // own disclosure and its own test below — reading them as one is how an
+        // operator comes to believe something is still catching runaway turns.
+        c.max_tool_rounds = 200;
         let d = c
             .disclosures(&GateWiring::read_only())
             .into_iter()

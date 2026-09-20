@@ -307,10 +307,18 @@ impl ProgressDetector {
             s.push_str("; ");
             s.push_str(&r);
         }
-        s.push_str(&format!(
-            ". The {backstop}-round backstop was not the reason — this is the \
-             progress check. If the turn was working, raise --stall-rounds."
-        ));
+        // `0` is the unbounded backstop, and "the 0-round backstop was not the
+        // reason" would read as a bound of zero rather than as none.
+        s.push_str(&match backstop {
+            0 => ". There is no round backstop — this is the progress check, and it \
+                  is the only thing that stopped the turn. If the turn was working, \
+                  raise --stall-rounds."
+                .to_string(),
+            n => format!(
+                ". The {n}-round backstop was not the reason — this is the progress \
+                 check. If the turn was working, raise --stall-rounds."
+            ),
+        });
         s
     }
 }
