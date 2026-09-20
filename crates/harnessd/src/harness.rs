@@ -2449,6 +2449,37 @@ impl<'a> Harness<'a> {
             None => None,
             Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
         };
+        // **The ledger-to-provider ratio survives a restart, because it is already
+        // in the store.**
+        //
+        // `Config::ledger_scale` is measured at the end of each metered turn and
+        // lives in memory, so a restart threw it away and everything that plans
+        // against the window — `should_compact`, `room_for_next_turn`, the
+        // `/reseat` carry check — fell back to comparing ledger tokens against a
+        // provider window until the next turn measured it again.
+        //
+        // That window is not a rare one: it is exactly the sequence this daemon
+        // asks for. Restart to pick up new tools, `/reseat` to get them into
+        // message zero — and the re-seat is the first thing that runs, before any
+        // turn. The operator hit it within minutes of the restart:
+        // *"reseat_unchecked — this session has not taken a metered turn yet"*.
+        //
+        // Nothing has to be re-measured. `context_tokens` on the session row IS
+        // the provider's count for the last prompt, written by `persist_context`
+        // at the end of the turn that measured it, and the ledger it was paired
+        // with is the one just rebuilt — the conversation has not changed since.
+        // So the pair is recovered rather than recomputed, and no model is asked
+        // anything.
+        if cfg.provider.is_some()
+            && cfg.ledger_scale.is_none()
+            && let Some(store) = &store
+            && let Ok(Some(row)) = store.session(&cfg.session_id)
+            && let Some(provider_tokens) = row.context_tokens
+            && provider_tokens > 0
+            && session.ledger.len() > 0
+        {
+            cfg.ledger_scale = Some((session.ledger.len() as u64, provider_tokens));
+        }
         // **Fill the harness view's slot, now that there is something to disclose.**
         // The tool was registered before the gate and the backend existed — it had
         // to be, to be in the prompt — and this is the first point where the

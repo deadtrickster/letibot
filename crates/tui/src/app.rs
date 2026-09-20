@@ -4742,6 +4742,33 @@ impl App {
 
     /// File something that happened between rows, at the row it happened at.
     fn note(&mut self, n: Note) {
+        // **A warning is announced once, so it is noted once.**
+        //
+        // The same `Warning` can reach a head twice: `adopt` plants everything the
+        // snapshot carries at anchor 0, and the live arm anchors at the CURRENT
+        // end of the transcript. Two copies of one announcement, in two places —
+        // and the second one sits under the conversation, so new rows arrive
+        // beneath it and it reads as pinned to the bottom. The operator, on three
+        // of them: *"sometimes new messages come under those three but then those
+        // three again pinned to the bottom, sometimes they just stay pinned"*.
+        //
+        // Identity is `(code, detail, ts)`: `ts` is the log's own clock for the
+        // envelope that carried it, so the same announcement has the same one by
+        // whichever route it arrives, and two genuinely separate warnings that
+        // agree on all three are the same sentence at the same instant — which a
+        // reader cannot tell apart either, and should not be shown twice.
+        //
+        // The FIRST anchor wins. A warning belongs where it happened, and the
+        // later arrival is a redelivery rather than a new event.
+        if let Note::Warned(w) = &n
+            && self.notes.iter().any(|(_, o)| {
+                matches!(o, Note::Warned(p) if p.code == w.code
+                    && p.detail == w.detail
+                    && p.ts == w.ts)
+            })
+        {
+            return;
+        }
         let at = self.items.len();
         self.notes.push((at, n));
         if self.notes.len() > 64 {
@@ -13588,6 +13615,90 @@ mod tests {
             1,
             "the line must be one width throughout; got {seen:?}"
         );
+    }
+
+    /// **One announcement is noted once, wherever it arrives from.**
+    ///
+    /// A `Warning` can reach a head twice: `adopt` plants everything the snapshot
+    /// carries at anchor 0, and the live arm anchors at the CURRENT end of the
+    /// transcript. Two copies in two places — and the second sits under the
+    /// conversation, so new rows arrive beneath it and it reads as stuck to the
+    /// bottom. The operator, on three of them: *"sometimes new messages come
+    /// under those three but then those three again pinned to the bottom,
+    /// sometimes they just stay pinned"*.
+    ///
+    /// The `ts` is taken from the snapshot rather than invented, and that is the
+    /// premise, not a detail. The view stamps `env.ts` and so does the live arm,
+    /// so the same announcement carries the same one by either route — a test
+    /// that made one up would be feeding the head a DIFFERENT warning and would
+    /// pass against a head that deduplicates nothing.
+    #[test]
+    fn one_warning_delivered_twice_is_noted_once() {
+        let hub = letibot_sessionlog::hub::Hub::new("s");
+        for i in 0..12 {
+            hub.publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
+                item_id: format!("r{i}"),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            });
+            hub.record_item(
+                &format!("r{i}"),
+                letibot_transcript::TranscriptItem::User {
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: format!("row r{i}"),
+                    }],
+                },
+            );
+        }
+        let published = hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: "reseated".into(),
+            detail: "THE-WARNING".into(),
+        });
+
+        let att = hub.attach("tui", "d", letibot_sessionlog::protocol::Caps::default(), 0);
+        let snap = att.snapshot.clone().expect("a snapshot");
+        let carried = snap
+            .warnings
+            .iter()
+            .find(|w| w.detail == "THE-WARNING")
+            .expect("the premise: the snapshot carries the warning");
+        assert_eq!(
+            carried.ts, published.ts,
+            "the premise: one announcement has ONE ts, whichever route it takes"
+        );
+
+        let mut a = app();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: att.head_id.clone(),
+            dropped: att.dropped,
+            snapshot: Some(Box::new(snap)),
+            resumed_from: att.resumed_from,
+            scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
+        });
+        // And now the same envelope again, through the live arm — a redelivery.
+        a.apply(ServerFrame::Event(published.clone()));
+
+        assert_eq!(
+            a.notes
+                .iter()
+                .filter(|(_, n)| matches!(n, Note::Warned(w) if w.detail == "THE-WARNING"))
+                .count(),
+            1,
+            "one announcement, one note: {:?}",
+            a.notes
+        );
+        // The first anchor wins: it belongs where it happened, not under whatever
+        // the conversation has reached by the time it is redelivered.
+        let (at, _) = a
+            .notes
+            .iter()
+            .find(|(_, n)| matches!(n, Note::Warned(w) if w.detail == "THE-WARNING"))
+            .expect("the note");
+        assert_eq!(*at, 0, "the snapshot's anchor is kept, not the replay's");
     }
 
     /// **A fork is one line, however many rows it carries.**

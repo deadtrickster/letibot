@@ -73,7 +73,16 @@ fn until(
                     return seen;
                 }
             }
-            Err(_) => break,
+            // **A quiet 500 ms is not a dead channel.** This read `Err(_) => break`,
+            // which made the deadline above it decorative: the real tolerance was
+            // half a second of silence, and on a box running the whole workspace's
+            // test binaries at once that is easy to spend. It flaked exactly there
+            // and nowhere else, which is the signature.
+            //
+            // Only a sender that is gone ends the wait early; a timeout goes round
+            // again until the deadline it was given.
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     panic!(
