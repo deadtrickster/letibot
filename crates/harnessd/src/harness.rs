@@ -3527,10 +3527,29 @@ impl<'a> Harness<'a> {
                     .into(),
             ));
         };
-        // The carry has to FIT. `plan_overrun` answers that against the window
-        // this session plans in — see `Config::planning_window` — and a fork onto
-        // a base too big to prefill would trade a summary for a session that
-        // cannot take a turn at all.
+        // **The carry has to fit, and "fit" has to be measured in ONE unit.**
+        //
+        // `resident` below is counted off the ledger, with this box's own
+        // vocabulary. On a metered provider that is not the number the provider
+        // will refuse at and not the number the operator's header shows: the
+        // ledger holds the reasoning rows that `letibot_provider::messages` drops,
+        // so it over-counts. Measured on the operator's own session, 2026-09-20:
+        // 991,596 in the ledger against 671,280 the provider counted for the same
+        // conversation, 49% apart.
+        //
+        // This compared the ledger figure against `planning_window()`, which is
+        // the window in LEDGER units — correct, but only while `ledger_scale` is
+        // known. Unmeasured, `planning_window` hands back the provider's own
+        // window unchanged, and the comparison silently became ledger-against-
+        // provider. That refused a `/reseat` whose carry had 400k tokens of room,
+        // and printed `991596 of 1000000` under a header reading 671k with no way
+        // to reconcile the two.
+        //
+        // So: convert to the PROVIDER's units and compare there, because that is
+        // the number the operator can check. And when nobody has measured the
+        // ratio yet, **do not refuse** — an unmeasured ratio is not a small one,
+        // the error is all in one direction, and losing a lossless re-seat over a
+        // conversion the daemon admits it cannot do is the worse failure.
         let per_item: Vec<u64> = (0..self.session.items.len())
             .map(|i| {
                 self.session
@@ -3541,17 +3560,49 @@ impl<'a> Harness<'a> {
             })
             .collect();
         let resident: u64 = per_item.iter().sum();
-        if let Some(window) = self.cfg.planning_window()
-            && resident + self.cfg.headroom() >= window
+        // In the provider's units where they differ, and the ledger's where they
+        // do not — a local endpoint counts with the vocabulary the ledger uses, so
+        // `provider_tokens` is `None` there and the ledger figure IS the figure.
+        let carried = match self.provider.is_some() {
+            true => self.cfg.provider_tokens(resident),
+            false => Some(resident),
+        };
+        if let Some(window) = self.cfg.context_window
+            && let Some(carried) = carried
+            && carried + self.cfg.headroom() >= window
         {
+            let note = if carried == resident {
+                String::new()
+            } else {
+                format!(
+                    " (that is {resident} token(s) in this box's own ledger; the provider \
+                     counts the same conversation as {carried}, and its number is the one \
+                     that decides)"
+                )
+            };
             return Err(HarnessError::Setup(format!(
-                "carrying this conversation verbatim would put {resident} token(s) in front \
-                 of a {window}-token window, leaving less than the {} a turn needs. \
+                "carrying this conversation verbatim would put {carried} token(s) in front \
+                 of a {window}-token window{note}, leaving less than the {} a turn needs. \
                  Re-seating without summarising only works while the conversation still \
                  fits; `/reseat summarise` summarises and fits, and `/compact` does the \
                  same without changing the prompt. Nothing was changed.",
                 self.cfg.headroom()
             )));
+        }
+        // Unmeasured ratio: carry it, and say that the fit was not checked rather
+        // than pretend either way. The first metered turn measures the scale, so
+        // this is a window of one turn per daemon and not a standing hole.
+        if carried.is_none() {
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "reseat_unchecked".into(),
+                detail: format!(
+                    "this session has not taken a metered turn yet, so how the provider \
+                     counts it is unmeasured and the carry could not be checked against \
+                     the window. Going ahead: {resident} token(s) by this box's ledger, \
+                     which over-counts what a provider is sent. If the next turn does not \
+                     fit, `/compact` is the way back."
+                ),
+            });
         }
 
         let before = tool_names(&self.prefix.tools_json);

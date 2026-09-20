@@ -924,10 +924,19 @@ impl<'a> Sessions<'a> {
         // what the caller gets, which is the honest answer.
         if wall {
             for _ in 0..WALL_CONTINUES {
+                // **The session's own config, not the daemon's.** `ledger_len` is
+                // counted off the ledger and `room_for_next_turn` has to compare
+                // it in the same units — which means the window scaled by
+                // `ledger_scale`, and that is measured per SESSION and lives on
+                // the session's harness. `self.base` is the command line, where it
+                // is always `None`, so this asked "does 991k ledger tokens fit in
+                // a 1M provider window" and answered no for a conversation the
+                // provider counted at 671k. The same unit confusion as the
+                // `/reseat` refusal, one door along.
                 let room = self
                     .open
                     .get(session_id)
-                    .map(|h| self.base.room_for_next_turn(h.ledger_len() as u64))
+                    .map(|h| h.config().room_for_next_turn(h.ledger_len() as u64))
                     .unwrap_or(false);
                 if !room {
                     break;
