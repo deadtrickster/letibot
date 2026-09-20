@@ -3028,9 +3028,12 @@ impl App {
             // screen on top swallows them, because a view that is not on the
             // screen does not move.
             Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown => {
+                // **A page is a screen, not ten lines.** `PageUp` moved by a constant ten,
+                // which on a 40-row terminal is a quarter of the page the key is named for
+                // — and on the tail path it compounded with the crawl `scroll_up` fixes.
                 let (up, by) = match k {
-                    Key::PageUp => (true, 10),
-                    Key::PageDown => (false, 10),
+                    Key::PageUp => (true, self.screen_rows.max(1)),
+                    Key::PageDown => (false, self.screen_rows.max(1)),
                     // Three lines a notch: a wheel notch is a row at a time in
                     // a pager, but a transcript row can be two screen rows after
                     // wrapping, and a notch that moves one wrapped row reads as
@@ -3081,11 +3084,15 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                self.scroll = if up {
-                    (self.scroll + by).min(self.body_len)
+                if up {
+                    // **Through `scroll_up`, which renders as it goes.** Assigning `scroll`
+                    // here and letting the frame's fill catch up is what made a page crawl:
+                    // the frame clamps against the rows rendered so far, so a press could
+                    // never express "further up than I have drawn".
+                    self.scroll_up(by);
                 } else {
-                    self.scroll.saturating_sub(by)
-                };
+                    self.scroll = self.scroll.saturating_sub(by);
+                }
                 return None;
             }
             _ => {}
@@ -3704,7 +3711,7 @@ impl App {
                     // almost none of them. Every other state change in this file
                     // sets it; these two did not.
                     Key::Up => {
-                        self.scroll = (self.scroll + 1).min(self.body_len);
+                        self.scroll_up(1);
                         self.redraw = true;
                     }
                     Key::Down => {
@@ -5344,6 +5351,33 @@ impl App {
         })
     }
 
+    /// **Scroll back by `by` lines, rendering whatever that needs.**
+    ///
+    /// The operator: *"i want scroll back work"*. The first version set `scroll` and let the
+    /// next frame's `fill_backward` catch up — but the frame clamps `scroll` against the
+    /// rows rendered **so far**, so the scroll could never express "further up than I have
+    /// drawn", and a press bought only the handful of lines the last frame happened to add.
+    /// Measured: twelve rounds of eight PageUps reached message 143 of 400.
+    ///
+    /// So the fill happens **here**, before the scroll is clamped, and it asks for a screen
+    /// beyond where the reader is going rather than for exactly where they are. A key that
+    /// scrolls is a key that renders; leaving the rendering to the next frame is what made
+    /// it crawl.
+    ///
+    /// `body_len` is deliberately **not** the clamp here. It is the *last frame's* total, and
+    /// on the tail path it is smaller than where the reader is going — so clamping against it
+    /// is what made a press buy one frame's worth instead of a screen. The fill raises the
+    /// real total, and `body_window` clamps against that after it has.
+    fn scroll_up(&mut self, by: usize) {
+        if self.hist_floor > 0 {
+            // A screen past where the reader is *going*, so the next press has rows to move
+            // into and does not have to wait for a frame to catch up. `screen_rows` is the
+            // last frame's height, which is the best estimate the key handler has.
+            self.fill_backward(self.scroll + by + self.screen_rows + TAIL_SLACK);
+        }
+        self.scroll = self.scroll.saturating_add(by);
+    }
+
     /// The visible `room` lines of the body, and nothing else built.
     fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
@@ -5565,11 +5599,10 @@ impl App {
             }
         }
 
-        // **Scrolling up back-fills.** The reader has moved above the window, and the
-        // rows up there were deliberately not rendered — so render more, on demand,
-        // rather than having thrown them away. This is the operator's *"then some scroll
-        // up buffer if needed"*: the work happens when the reader looks, not when they
-        // attach.
+        // **Scrolling up back-fills.** A belt to `scroll_up`'s braces: that key renders what
+        // its own press needs, and this catches anything that moved the scroll without going
+        // through a key — a click, a restore, a test that sets `scroll` directly. It asks for
+        // a screen beyond `scroll` for the same reason `scroll_up` does.
         //
         // Before the borrows below, because it needs the whole `App`.
         if self.scroll > 0 && self.hist_floor > 0 {
@@ -13128,6 +13161,55 @@ mod tests {
         );
     }
 
+    /// **Scrolling up reaches the beginning.**
+    ///
+    /// The operator: *"i want scroll back work"*. Two things made it crawl: `PageUp` moved a
+    /// constant ten lines on a 40-row terminal, and the back-fill happened on the frame
+    /// *after* the key — so the scroll was clamped against the rows rendered so far and a
+    /// press could never express "further up than I have drawn". Measured before the fix:
+    /// twelve rounds of eight PageUps reached message 143 of 400.
+    ///
+    /// This asserts the end state a reader expects: page up enough and the first row of the
+    /// conversation is on screen.
+    #[test]
+    fn scrolling_up_reaches_the_beginning() {
+        let mut a = app();
+        a.walk_limit = 1;
+        for i in 0..400u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("message {i}\n")),
+            )));
+        }
+        a.screen(80, 24);
+        assert!(a.hist_floor > 0, "this fixture never enters tail mode");
+
+        // Enough pages for 400 messages on a 24-row screen, with room to spare.
+        for _ in 0..80 {
+            a.key(Key::PageUp);
+            a.screen(80, 24);
+        }
+        let top = a.screen(80, 24).join("\n");
+        assert!(
+            top.contains("message 0"),
+            "the beginning of the conversation is not reachable: {top:?}"
+        );
+        assert_eq!(
+            a.hist_floor, 0,
+            "the head reached the first row but says rows are missing above it"
+        );
+        // And the way back down still works.
+        for _ in 0..80 {
+            a.key(Key::PageDown);
+            a.screen(80, 24);
+        }
+        assert_eq!(a.scroll, 0, "scrolling back to the tail did not land at the tail");
+    }
+
     /// **Scrolling up renders more, on demand.**
     ///
     /// The operator's *"then some scroll up buffer if needed"*. A tail frame deliberately
@@ -14429,7 +14511,17 @@ mod tests {
         });
         a.key(Key::WheelUp);
         a.key(Key::PageUp);
-        assert_eq!(a.sub_out.as_ref().unwrap().scroll, 13, "the view scrolled");
+        // **A page is a screen here too.** The constant was ten, so this read `13`; a pager's
+        // PageUp moves a page, and the subagent view is a pager. Asserted as the sum rather
+        // than a literal so the two keys stay distinguishable — a PageUp that moved nothing
+        // would still make this check meaningful.
+        let page = a.screen_rows;
+        assert!(page > 10, "the fixture's screen is not tall enough to tell the two apart");
+        assert_eq!(
+            a.sub_out.as_ref().unwrap().scroll,
+            3 + page,
+            "the view scrolled a wheel notch and a page"
+        );
         assert_eq!(a.scroll, 0, "the conversation did not");
         a.key(Key::Esc);
         assert!(a.sub_out.is_none());
