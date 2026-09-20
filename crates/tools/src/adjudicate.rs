@@ -1904,6 +1904,22 @@ impl AdjudicatedGate {
         mut self,
         sink: std::sync::Arc<dyn crate::authorise::CorpusSink>,
     ) -> Self {
+        // **Seed the request counter from what the sink already holds.**
+        //
+        // `next_id` is `adj-<session_id>-<seq>` off an in-memory `seq`, and a
+        // resumed session keeps its id — so every restart began at 1 and re-emitted
+        // ids the table already had. `record_adjudication` is `INSERT OR IGNORE`,
+        // so each one was silently dropped, and a daemon had to out-decide its own
+        // history before a single row landed again. Measured 2026-09-20 in the
+        // operator's store: a session restarted with 646 rows recorded NOTHING for
+        // the whole run, and one restarted with 182 rows lost all ~100 decisions of
+        // an eighteen-minute session. The evidence a labelled corpus exists to
+        // collect is exactly what was being thrown away.
+        //
+        // Seeded here rather than at construction because this is the first moment
+        // a durable sink is known, and `with_identity` has already run — the
+        // session id the seed is keyed on is settled.
+        self.seq = self.seq.max(sink.decisions_recorded(&self.session_id));
         self.corpus_sink = Some(sink);
         self
     }
@@ -5497,6 +5513,53 @@ mod tests {
     /// the permissions file" without ever saying **which**, and did not let them
     /// adjust it. The derived pattern is in the label now — the same helper the
     /// recording site uses, so what is signed and what is written cannot drift —
+    /// **A gate with a durable sink carries on numbering where it left off.**
+    ///
+    /// Without this, `next_id` restarts at 1 on every daemon and `INSERT OR
+    /// IGNORE` drops every colliding row — the whole-session corpus outage
+    /// measured in the operator's store on 2026-09-20.
+    #[test]
+    fn a_resumed_gate_does_not_reissue_request_ids() {
+        /// A sink that reports a history, the way a store-backed one does.
+        struct Resumed(u64);
+        impl crate::authorise::CorpusSink for Resumed {
+            fn decided(&self, _row: &crate::authorise::CorpusRow) {}
+            fn ruled(&self, _id: &str, _what: &crate::authorise::OperatorOverride) {}
+            fn decisions_recorded(&self, _session_id: &str) -> u64 {
+                self.0
+            }
+        }
+
+        let gate = |sink: Option<std::sync::Arc<dyn crate::authorise::CorpusSink>>| {
+            let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+                "human",
+                |req: &AdjudicationRequest| {
+                    Some(AdjudicationDecision::selected(
+                        req,
+                        "allow_once",
+                        "h",
+                        "fine",
+                    ))
+                },
+            )))
+            .with_identity("s-42".to_string(), "dead".to_string())
+            .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+            .with_surroundings(pinned())
+            .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+            if let Some(s) = sink {
+                g = g.with_corpus_sink(s);
+            }
+            let _ = g.admit(&bash(&json!({"command": "ls -la"})));
+            g.log[0].request.id.clone()
+        };
+
+        // A fresh session starts at one.
+        assert_eq!(gate(None), "adj-s-42-0001");
+        // A session with 646 rows behind it does not reissue any of them.
+        let id = gate(Some(std::sync::Arc::new(Resumed(646))));
+        assert_eq!(id, "adj-s-42-0647", "a restart re-emitted a stored id");
+    }
+
     /// **The consented point admits a shell command without asking.**
     ///
     /// The operator, 2026-09-20: *"switched leticl session to allow-all, pressed

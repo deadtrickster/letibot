@@ -441,7 +441,10 @@ pub enum StoreError {
     Refused(String),
     NotFound(String),
     /// The file was written by a newer build.
-    SchemaTooNew { found: i64, known: i64 },
+    SchemaTooNew {
+        found: i64,
+        known: i64,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -729,10 +732,11 @@ impl Store {
             None => {}
         }
         self.conn.execute_batch(SCHEMA_SQL)?;
-        self.conn
-            .execute("DELETE FROM schema_version", [])?;
-        self.conn
-            .execute("INSERT INTO schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
+        self.conn.execute("DELETE FROM schema_version", [])?;
+        self.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![SCHEMA_VERSION],
+        )?;
         Ok(())
     }
 
@@ -768,9 +772,8 @@ impl Store {
             // v4: a session records the session that spawned it as a subagent, so a
             // subagent tree is a fact on disk rather than an id convention. NULL in
             // every existing row: a session that predates v4 is a top-level one.
-            self.conn.execute_batch(
-                "ALTER TABLE session ADD COLUMN parent_session_id TEXT",
-            )?;
+            self.conn
+                .execute_batch("ALTER TABLE session ADD COLUMN parent_session_id TEXT")?;
         }
         if from < 5 {
             // v5: the adjudication corpus. Created here for a migrated store,
@@ -1136,16 +1139,21 @@ impl Store {
 
     /// Everything needed to rebuild the ledger.
     pub fn load_transcript(&self, transcript_id: &str) -> Result<LoadedTranscript> {
-        let (session_id, parent, forked_at, prefix_id): (String, Option<String>, Option<i64>, String) =
-            self.conn
-                .query_row(
-                    "SELECT session_id, parent_transcript_id, forked_at_seq, stable_prefix_id
+        let (session_id, parent, forked_at, prefix_id): (
+            String,
+            Option<String>,
+            Option<i64>,
+            String,
+        ) = self
+            .conn
+            .query_row(
+                "SELECT session_id, parent_transcript_id, forked_at_seq, stable_prefix_id
                        FROM transcript WHERE id = ?1",
-                    params![transcript_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .optional()?
-                .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
+                params![transcript_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
 
         let (prefix_tokens, h_init) = self.get_stable_prefix(&prefix_id)?;
 
@@ -1276,9 +1284,11 @@ impl Store {
     pub fn title(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
-            .query_row("SELECT title FROM session WHERE id = ?1", params![id], |r| {
-                r.get::<_, Option<String>>(0)
-            })
+            .query_row(
+                "SELECT title FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
             .optional()?
             .flatten()
             .filter(|t: &String| !t.is_empty()))
@@ -1382,10 +1392,8 @@ impl Store {
         }
         // Order matters: `transcript.session_id` is a foreign key and
         // `foreign_keys` is on.
-        self.conn.execute(
-            "DELETE FROM transcript WHERE session_id = ?1",
-            params![id],
-        )?;
+        self.conn
+            .execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
         self.conn
             .execute("DELETE FROM session WHERE id = ?1", params![id])?;
         Ok(())
@@ -1420,8 +1428,15 @@ impl Store {
     /// Idempotent on `request_id`: a retried write must not produce a second row
     /// for one decision, and must not clobber an operator ruling that arrived in
     /// between, which is why this is INSERT OR IGNORE rather than REPLACE.
-    pub fn record_adjudication(&self, a: &NewAdjudication) -> Result<()> {
-        self.conn.execute(
+    ///
+    /// **Returns whether a row was actually written.** `INSERT OR IGNORE` answers
+    /// `Ok(0)` when the key is already there, and the caller read only `is_ok()`
+    /// — so a decision that collided was counted as kept. That is the exact
+    /// shape `lost` exists to make impossible, and it hid a total corpus outage
+    /// for a whole session (see `AdjudicatedGate::next_id`). `false` here means
+    /// the row is NOT in the table and never will be.
+    pub fn record_adjudication(&self, a: &NewAdjudication) -> Result<bool> {
+        let changed = self.conn.execute(
             "INSERT OR IGNORE INTO adjudication
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
                 trail_json, shown, tool, arguments_json, mode, options_json, agent,
@@ -1461,7 +1476,29 @@ impl Store {
             ],
         )?;
 
-        Ok(())
+        Ok(changed == 1)
+    }
+
+    /// **The highest decision number this session has already stored.**
+    ///
+    /// `AdjudicatedGate` numbers its requests `adj-<session_id>-<seq>` from an
+    /// in-memory counter, so a resumed session restarts at 1 and re-emits ids
+    /// that are already in the table. This is what a gate seeds that counter
+    /// from, so a restart continues the sequence instead of colliding with it.
+    ///
+    /// The `+ 6` is `adj-` (4) + the session id + `-` (1), one-based: it reads
+    /// the numeric tail of the id this crate's own writer produced. A row whose
+    /// tail does not parse contributes 0, which only ever makes the seed lower
+    /// and the next write collide once more — never silently wrong in the
+    /// direction that loses data, because that collision is now reported.
+    pub fn max_adjudication_seq(&self, session_id: &str) -> Result<u64> {
+        let n: Option<i64> = self.conn.query_row(
+            "SELECT MAX(CAST(substr(request_id, length(?1) + 6) AS INTEGER))
+               FROM adjudication WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        Ok(n.unwrap_or(0).max(0) as u64)
     }
 
     /// The operator's ruling on a decision already recorded. **This is the
@@ -1472,12 +1509,7 @@ impl Store {
     /// Only fills columns that are NULL. An operator who rules twice on one
     /// request keeps the first ruling, because the first is the one the session
     /// acted on.
-    pub fn record_operator_ruling(
-        &self,
-        request_id: &str,
-        kind: &str,
-        note: &str,
-    ) -> Result<bool> {
+    pub fn record_operator_ruling(&self, request_id: &str, kind: &str, note: &str) -> Result<bool> {
         let now = now_ms();
         let n = self.conn.execute(
             "UPDATE adjudication
@@ -1672,13 +1704,9 @@ impl Store {
             // that says so is who answered. Same defect as the `labelled` count one
             // column over, which is worth the paragraph: a count is not measuring
             // what its NAME says, it is measuring what its PREDICATE says.
-            measured: one(
-                "SELECT COUNT(*) FROM adjudication WHERE verdict_by LIKE 'model%'",
-            )?,
-            disagreements: one(
-                "SELECT COUNT(*) FROM adjudication
-                  WHERE operator_kind IN ('granted', 'revoked')",
-            )?,
+            measured: one("SELECT COUNT(*) FROM adjudication WHERE verdict_by LIKE 'model%'")?,
+            disagreements: one("SELECT COUNT(*) FROM adjudication
+                  WHERE operator_kind IN ('granted', 'revoked')")?,
         })
     }
 
@@ -1689,6 +1717,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::ledger::{TokenLedger, hash_tokens};
     use letibot_transcript::{ReasoningField, SystemOrigin};
@@ -1766,9 +1795,10 @@ mod tests {
         assert!(update.is_err(), "UPDATE must be refused by the trigger");
         assert!(format!("{:?}", update.unwrap_err()).contains("append-only"));
 
-        let delete = s
-            .conn
-            .execute("DELETE FROM transcript_item WHERE transcript_id = ?1", params![tr]);
+        let delete = s.conn.execute(
+            "DELETE FROM transcript_item WHERE transcript_id = ?1",
+            params![tr],
+        );
         assert!(delete.is_err(), "DELETE must be refused by the trigger");
         assert!(format!("{:?}", delete.unwrap_err()).contains("append-only"));
 
@@ -1784,28 +1814,58 @@ mod tests {
             field: ReasoningField::Inline,
             truncated: false,
         };
-        let good = LedgerRow { item_id: "a".into(), tok_offset: 4, tok_len: 2, h_k: [1; 32] };
+        let good = LedgerRow {
+            item_id: "a".into(),
+            tok_offset: 4,
+            tok_len: 2,
+            h_k: [1; 32],
+        };
         s.append_item(&tr, 0, &item, &good, &[1, 2]).unwrap();
 
         // A hole in the token stream.
-        let gap = LedgerRow { item_id: "b".into(), tok_offset: 9, tok_len: 1, h_k: [2; 32] };
+        let gap = LedgerRow {
+            item_id: "b".into(),
+            tok_offset: 9,
+            tok_len: 1,
+            h_k: [2; 32],
+        };
         assert!(s.append_item(&tr, 1, &item, &gap, &[3]).is_err());
 
         // A seq that skips.
-        let skip = LedgerRow { item_id: "c".into(), tok_offset: 6, tok_len: 1, h_k: [3; 32] };
+        let skip = LedgerRow {
+            item_id: "c".into(),
+            tok_offset: 6,
+            tok_len: 1,
+            h_k: [3; 32],
+        };
         assert!(s.append_item(&tr, 5, &item, &skip, &[3]).is_err());
 
         // A re-insert at an index already used: the seq trigger catches it before
         // the primary key does, and either way it is refused.
-        let reuse = LedgerRow { item_id: "d".into(), tok_offset: 4, tok_len: 2, h_k: [4; 32] };
+        let reuse = LedgerRow {
+            item_id: "d".into(),
+            tok_offset: 4,
+            tok_len: 2,
+            h_k: [4; 32],
+        };
         assert!(s.append_item(&tr, 0, &item, &reuse, &[1, 2]).is_err());
 
         // A blob that does not match the row's length.
-        let lying = LedgerRow { item_id: "e".into(), tok_offset: 6, tok_len: 7, h_k: [5; 32] };
+        let lying = LedgerRow {
+            item_id: "e".into(),
+            tok_offset: 6,
+            tok_len: 7,
+            h_k: [5; 32],
+        };
         assert!(s.append_item(&tr, 1, &item, &lying, &[3]).is_err());
 
         // And the good continuation still works.
-        let next = LedgerRow { item_id: "f".into(), tok_offset: 6, tok_len: 1, h_k: [6; 32] };
+        let next = LedgerRow {
+            item_id: "f".into(),
+            tok_offset: 6,
+            tok_len: 1,
+            h_k: [6; 32],
+        };
         s.append_item(&tr, 1, &item, &next, &[3]).unwrap();
         assert_eq!(s.item_count(&tr).unwrap(), 2);
     }
@@ -1830,7 +1890,10 @@ mod tests {
              VALUES ('tr-3', 'sess-1', 'tr-1', NULL, ?1, 0)",
             params![prefix_id],
         );
-        assert!(half.is_err(), "a parent without a fork point must be refused");
+        assert!(
+            half.is_err(),
+            "a parent without a fork point must be refused"
+        );
     }
 
     #[test]
@@ -1840,9 +1903,14 @@ mod tests {
         let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
 
         let items: Vec<TranscriptItem> = vec![
-            TranscriptItem::System { text: "boot".into(), origin: SystemOrigin::Bootstrap },
+            TranscriptItem::System {
+                text: "boot".into(),
+                origin: SystemOrigin::Bootstrap,
+            },
             TranscriptItem::User {
-                parts: vec![letibot_transcript::UserPart::Text { text: "hello".into() }],
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "hello".into(),
+                }],
             },
             TranscriptItem::Reasoning {
                 text: "think".into(),
@@ -1855,7 +1923,11 @@ mod tests {
                 kind: "k".into(),
                 edge: letibot_transcript::SegmentEdge::Open,
             },
-            TranscriptItem::Assistant { text: "hi".into(), tool_calls: vec![], truncated: false },
+            TranscriptItem::Assistant {
+                text: "hi".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
         ];
         // The SegmentMark renders to nothing; every other item to something.
         let payloads: Vec<Vec<u32>> =
@@ -1871,7 +1943,11 @@ mod tests {
         assert_eq!(loaded.h_init, ledger.h_init());
         assert_eq!(loaded.items.len(), 5);
         assert_eq!(
-            loaded.items.iter().map(|(i, ..)| i.clone()).collect::<Vec<_>>(),
+            loaded
+                .items
+                .iter()
+                .map(|(i, ..)| i.clone())
+                .collect::<Vec<_>>(),
             items
         );
 
@@ -1897,7 +1973,9 @@ mod tests {
         let item = TranscriptItem::ToolResult {
             call_id: "c".into(),
             name: "read".into(),
-            outcome: letibot_transcript::ToolOutcome::Abstained { reason: "no cover".into() },
+            outcome: letibot_transcript::ToolOutcome::Abstained {
+                reason: "no cover".into(),
+            },
             payload: "{}".into(),
             edit: None,
         };
@@ -1974,17 +2052,15 @@ mod tests {
             .unwrap();
             // Prove the fixture really is v1: the column is gone.
             assert!(
-                c.query_row("SELECT role FROM session", [], |r| r.get::<_, Option<String>>(0))
+                c.query_row("SELECT role FROM session", [], |r| r
+                    .get::<_, Option<String>>(0))
                     .is_err(),
                 "the fixture still has a role column, so it is not a v1 store"
             );
             assert!(
-                c.query_row(
-                    "SELECT parent_session_id FROM session",
-                    [],
-                    |r| r.get::<_, Option<String>>(0)
-                )
-                .is_err(),
+                c.query_row("SELECT parent_session_id FROM session", [], |r| r
+                    .get::<_, Option<String>>(0))
+                    .is_err(),
                 "the fixture still has a parent_session_id column, so it is not a v1 store"
             );
         }
@@ -2006,7 +2082,10 @@ mod tests {
         assert_eq!(v, SCHEMA_VERSION);
         drop(s);
         let s = Store::open(&path).unwrap();
-        assert!(s.session("s-old").unwrap().is_some(), "reopen is idempotent");
+        assert!(
+            s.session("s-old").unwrap().is_some(),
+            "reopen is idempotent"
+        );
 
         // And a role written after the migration comes back.
         s.put_session(&SessionRecord {
@@ -2071,7 +2150,8 @@ mod tests {
             c.execute("DROP TABLE todo", []).unwrap();
             c.execute("ALTER TABLE session DROP COLUMN parent_session_id", [])
                 .unwrap();
-            c.execute("UPDATE schema_version SET version = 2", []).unwrap();
+            c.execute("UPDATE schema_version SET version = 2", [])
+                .unwrap();
         }
         let s = Store::open(&path).unwrap();
         let v: i64 = rusqlite::Connection::open(&path)
@@ -2115,7 +2195,11 @@ mod tests {
             },
         ];
         s.put_todos("sess-1", &first).unwrap();
-        assert_eq!(s.todos("sess-1").unwrap(), first, "order survives the store");
+        assert_eq!(
+            s.todos("sess-1").unwrap(),
+            first,
+            "order survives the store"
+        );
 
         // The second write is the list, not a patch on it: the revision the model
         // made is the only one the store holds.
@@ -2204,14 +2288,12 @@ mod tests {
                 .unwrap();
             c.execute("ALTER TABLE session DROP COLUMN context_cached", [])
                 .unwrap();
-            c.execute("UPDATE schema_version SET version = 7", []).unwrap();
+            c.execute("UPDATE schema_version SET version = 7", [])
+                .unwrap();
             assert!(
-                c.query_row(
-                    "SELECT context_tokens FROM session",
-                    [],
-                    |r| r.get::<_, Option<i64>>(0)
-                )
-                .is_err(),
+                c.query_row("SELECT context_tokens FROM session", [], |r| r
+                    .get::<_, Option<i64>>(0))
+                    .is_err(),
                 "the fixture still has a context_tokens column, so it is not a v7 store"
             );
         }
@@ -2277,7 +2359,8 @@ mod tests {
                 .unwrap();
             c.execute("ALTER TABLE session DROP COLUMN context_cached", [])
                 .unwrap();
-            c.execute("UPDATE schema_version SET version = 7", []).unwrap();
+            c.execute("UPDATE schema_version SET version = 7", [])
+                .unwrap();
         }
 
         let s = Store::open(&path).unwrap();
@@ -2337,6 +2420,42 @@ mod corpus_tests {
         })
         .expect("session");
         id
+    }
+
+    /// **A resumed session must not silently drop every decision it makes.**
+    ///
+    /// `AdjudicatedGate` numbers requests `adj-<session>-<seq>` from an in-memory
+    /// counter, so a restart re-emits ids that are already stored, and
+    /// `INSERT OR IGNORE` answers `Ok` for each one. Measured 2026-09-20 in the
+    /// operator's store: a session with 646 rows recorded nothing at all after a
+    /// restart, and `lost` stayed at zero the whole time.
+    #[test]
+    fn a_repeated_request_id_is_reported_and_the_seq_can_be_resumed_from() {
+        let s = store();
+        let sid = "s-42";
+        assert_eq!(s.max_adjudication_seq(sid).expect("seq"), 0, "nothing yet");
+
+        let mut a = a_decision("adj-s-42-0001", sid);
+        assert!(
+            s.record_adjudication(&a).expect("write"),
+            "the first write lands"
+        );
+        // The same id again — a restarted daemon's first decision.
+        a.tool = "a different call entirely".into();
+        assert!(
+            !s.record_adjudication(&a).expect("write"),
+            "a collision must report that nothing was written"
+        );
+
+        a.request_id = "adj-s-42-0002".into();
+        assert!(s.record_adjudication(&a).expect("write"));
+        assert_eq!(
+            s.max_adjudication_seq(sid).expect("seq"),
+            2,
+            "a restart seeds from here and carries on at 3"
+        );
+        // Another session's rows are not this one's high-water mark.
+        assert_eq!(s.max_adjudication_seq("s-99").expect("seq"), 0);
     }
 
     fn a_decision(request_id: &str, session_id: &str) -> NewAdjudication {
@@ -2486,10 +2605,16 @@ mod corpus_tests {
         })
         .expect("record");
 
-        assert!(s.record_operator_ruling("req-1", "revoked", "no, not that one").expect("rule"));
+        assert!(
+            s.record_operator_ruling("req-1", "revoked", "no, not that one")
+                .expect("rule")
+        );
 
         let row = &s.corpus(false, 10).expect("corpus")[0];
-        assert_eq!(row.model_verdict.as_deref(), Some("authorised by model-oracle"));
+        assert_eq!(
+            row.model_verdict.as_deref(),
+            Some("authorised by model-oracle")
+        );
         assert_eq!(row.operator_kind.as_deref(), Some("revoked"));
         assert_eq!(row.operator_note.as_deref(), Some("no, not that one"));
         assert_eq!(row.shown.as_deref(), Some("<brief bytes>"));
@@ -2517,7 +2642,8 @@ mod corpus_tests {
             ..a_decision("req-2", &sid)
         })
         .expect("record");
-        s.record_operator_ruling("req-2", "upheld", "correct to ask").expect("rule");
+        s.record_operator_ruling("req-2", "upheld", "correct to ask")
+            .expect("rule");
 
         let row = &s.corpus(true, 10).expect("corpus")[0];
         assert!(row.shown.is_none());
@@ -2534,18 +2660,26 @@ mod corpus_tests {
         let s = store();
         let sid = a_session(&s);
 
-        s.record_adjudication(&a_decision("req-3", &sid)).expect("first");
-        s.record_operator_ruling("req-3", "granted", "yes").expect("rule");
-        s.record_adjudication(&a_decision("req-3", &sid)).expect("second");
+        s.record_adjudication(&a_decision("req-3", &sid))
+            .expect("first");
+        s.record_operator_ruling("req-3", "granted", "yes")
+            .expect("rule");
+        s.record_adjudication(&a_decision("req-3", &sid))
+            .expect("second");
 
         let rows = s.corpus(false, 10).expect("corpus");
         assert_eq!(rows.len(), 1, "one decision is one row");
         assert_eq!(rows[0].operator_kind.as_deref(), Some("granted"));
 
         // And a second ruling keeps the first: the session acted on the first.
-        assert!(!s.record_operator_ruling("req-3", "revoked", "changed mind").expect("again"));
+        assert!(
+            !s.record_operator_ruling("req-3", "revoked", "changed mind")
+                .expect("again")
+        );
         assert_eq!(
-            s.corpus(false, 10).expect("corpus")[0].operator_kind.as_deref(),
+            s.corpus(false, 10).expect("corpus")[0]
+                .operator_kind
+                .as_deref(),
             Some("granted")
         );
     }
@@ -2596,7 +2730,10 @@ mod corpus_tests {
 
         let c = s.corpus_counts().expect("counts");
         assert_eq!(c.total, 7);
-        assert_eq!(c.decided_by_operator, 4, "a1 a2 s1 s2 — every call a person answered");
+        assert_eq!(
+            c.decided_by_operator, 4,
+            "a1 a2 s1 s2 — every call a person answered"
+        );
         assert_eq!(
             c.measured, 3,
             "m1 s1 s2 only — NOT m2, whose model_verdict was written by the gate"
@@ -2604,7 +2741,11 @@ mod corpus_tests {
         assert_eq!(c.disagreements, 1, "s2 alone; an upheld is agreement");
         // The two always-ask rows are in neither `measured` nor `disagreements` and
         // are still the primary dataset: input → the operator's decision.
-        assert_eq!(c.total - c.decided_by_operator, 3, "m1, m2 and r1: nobody was asked");
+        assert_eq!(
+            c.total - c.decided_by_operator,
+            3,
+            "m1, m2 and r1: nobody was asked"
+        );
     }
 
     /// A store written before this table existed is carried forward, not rebuilt.
@@ -2620,7 +2761,8 @@ mod corpus_tests {
         let s = Store::from_connection(s.conn).expect("migrate");
 
         let sid = a_session(&s);
-        s.record_adjudication(&a_decision("after-migration", &sid)).expect("record");
+        s.record_adjudication(&a_decision("after-migration", &sid))
+            .expect("record");
         assert_eq!(s.corpus_counts().expect("counts").total, 1);
     }
 }

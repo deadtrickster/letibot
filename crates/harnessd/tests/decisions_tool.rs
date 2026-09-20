@@ -71,7 +71,7 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     oracle.oracle_model = Some("glm-5.3-flash".into());
     oracle.p_allow = Some(0.94);
     oracle.shown = Some("=== brief ===\ncommand: ar t libfoo.a".into());
-    store.record_adjudication(&oracle).expect("oracle row");
+    assert!(store.record_adjudication(&oracle).expect("oracle row"), "oracle row was not written");
 
     let mut human = adj("adj-s-gate-0226", &session_id);
     human.tool = "write".into();
@@ -80,7 +80,7 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     human.verdict_basis = Some("dead chose `deny` at the head".into());
     human.asked = true;
     human.effect = "refuse".into();
-    store.record_adjudication(&human).expect("human row");
+    assert!(store.record_adjudication(&human).expect("human row"), "human row was not written");
 
     let mut boundary = adj("adj-s-gate-0227", &session_id);
     boundary.tool = "bash".into();
@@ -89,7 +89,7 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     boundary.verdict_basis = Some("network egress to an unseen host".into());
     boundary.tier = "blocked".into();
     boundary.effect = "refuse".into();
-    store.record_adjudication(&boundary).expect("boundary row");
+    assert!(store.record_adjudication(&boundary).expect("boundary row"), "boundary row was not written");
 
     (store, session_id)
 }
@@ -233,7 +233,7 @@ fn counts_are_per_session_and_any_widens_to_everything() {
     other.verdict = Some("allow".into());
     other.verdict_by = Some("human:dead".into());
     other.asked = true;
-    store.record_adjudication(&other).expect("other row");
+    assert!(store.record_adjudication(&other).expect("other row"), "other row was not written");
 
     let src = src(d.path(), &session_id);
     let mine = src.counts(None).expect("counting");

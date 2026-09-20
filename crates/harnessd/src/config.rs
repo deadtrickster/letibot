@@ -135,7 +135,10 @@ impl Seat {
     /// those — and this is what decides which constructor to call before the
     /// schemas exist.
     pub fn needs_writable_backend(self) -> bool {
-        matches!(self, Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode)
+        matches!(
+            self,
+            Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode
+        )
     }
 
     /// Whether this seat needs a backend that can start processes, and therefore
@@ -197,6 +200,26 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     /// Ask the provider to think out loud (`thinking` on GLM).
     pub thinking: bool,
+}
+
+impl ProviderConfig {
+    /// **This provider's context window, from the catalogue.**
+    ///
+    /// The same models.dev number `Harness::retune_window` moves to when the
+    /// operator runs `/models`, so a session that STARTS on a provider plans
+    /// against the same wall as one that switches to it. Before this they did
+    /// not: the start path skipped the lookup entirely and left the window
+    /// `None`, and `None` is not a large window — it is no wall at all, because
+    /// every check that would compact is written `let Some(window) = …`.
+    ///
+    /// `None` when the preset or the model is not in the catalogue, which is the
+    /// honest answer and leaves the old behaviour exactly where it was for a
+    /// model nobody has a number for.
+    pub fn catalogue_window(&self, cat: &letibot_provider::catalogue::Catalogue) -> Option<u64> {
+        letibot_provider::Preset::parse(&self.name)
+            .ok()?
+            .window(self.model.as_deref(), cat)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -640,7 +663,9 @@ impl Config {
 /// stable prefix, so the first session after a key is added re-prefills. That is
 /// the price of turning a capability on, and it is paid once per project.
 fn default_web_search() -> Option<String> {
-    letibot_websearch::resolve_key(None).ok().map(|_| "brave".to_string())
+    letibot_websearch::resolve_key(None)
+        .ok()
+        .map(|_| "brave".to_string())
 }
 
 /// The permission ruleset, two layers in precedence order (last match wins):
@@ -761,7 +786,11 @@ impl Config {
     ///
     /// `mode_source` is the daemon's note about where the mode came from —
     /// the project store or the flag — since the struct itself does not keep it.
-    pub fn settings(&self, mode_source: &str, supervising: bool) -> Vec<letibot_sessionlog::protocol::SettingRow> {
+    pub fn settings(
+        &self,
+        mode_source: &str,
+        supervising: bool,
+    ) -> Vec<letibot_sessionlog::protocol::SettingRow> {
         use letibot_sessionlog::protocol::SettingRow;
         let row = |key: &str, value: String, source: &str, editable: &str| SettingRow {
             key: key.into(),
@@ -782,7 +811,12 @@ impl Config {
         // and which drifted: it offered `supervised`, which is not a mode, and
         // not `automode-edits`, which is.
         out.push(choices(
-            row("mode", self.mode.name.to_string(), mode_source, "/mode NAME"),
+            row(
+                "mode",
+                self.mode.name.to_string(),
+                mode_source,
+                "/mode NAME",
+            ),
             &letibot_tools::mode::Mode::NAMED
                 .iter()
                 .map(|m| m.name)
@@ -821,7 +855,11 @@ impl Config {
             if !names.contains(&now) {
                 names.insert(1, now.clone());
             }
-            let source = if self.provider.is_none() { "--model" } else { "" };
+            let source = if self.provider.is_none() {
+                "--model"
+            } else {
+                ""
+            };
             let mut r = row("model", now, source, "/models PROVIDER/MODEL");
             r.choices = names;
             out.push(r);
@@ -829,7 +867,11 @@ impl Config {
         out.push(choices(
             row(
                 "supervise",
-                if supervising { "on — the guard model answers".into() } else { "off".into() },
+                if supervising {
+                    "on — the guard model answers".into()
+                } else {
+                    "off".into()
+                },
                 "",
                 "/supervise on|off",
             ),
@@ -838,7 +880,12 @@ impl Config {
         // What the session is.
         out.push(row("session", self.session_id.clone(), "", ""));
         out.push(row("seat", self.seat.as_str().to_string(), "--role", ""));
-        out.push(row("workspace", self.workspace.display().to_string(), "", ""));
+        out.push(row(
+            "workspace",
+            self.workspace.display().to_string(),
+            "",
+            "",
+        ));
         // **Where the model may work without asking.** The path cannot go in the
         // system prompt — it carries this daemon's pid, and a prompt that differs
         // per process gives every process its own stable prefix and a cold
@@ -857,9 +904,19 @@ impl Config {
         // The `model` row is up with the changeable ones now: it used to sit here,
         // read-only, saying only the local alias — which is not what answers the
         // turns once a provider is set, and not something a head could act on.
-        out.push(row("dialect", self.dialect.name().to_string(), "--dialect", ""));
+        out.push(row(
+            "dialect",
+            self.dialect.name().to_string(),
+            "--dialect",
+            "",
+        ));
         out.push(row("endpoint", self.endpoint.authority(), "--endpoint", ""));
-        out.push(row("vocab", self.vocab_gguf.display().to_string(), "--vocab", ""));
+        out.push(row(
+            "vocab",
+            self.vocab_gguf.display().to_string(),
+            "--vocab",
+            "",
+        ));
         out.push(row(
             "context",
             match self.context_window {
@@ -870,26 +927,48 @@ impl Config {
             "",
         ));
         out.push(row("auto-compact", self.auto_compact.to_string(), "", ""));
-        out.push(row("effort", self.effort.clone().unwrap_or_else(|| "default".into()), "--effort", ""));
+        out.push(row(
+            "effort",
+            self.effort.clone().unwrap_or_else(|| "default".into()),
+            "--effort",
+            "",
+        ));
         if let Some(p) = &self.provider {
             out.push(row(
                 "provider",
-                format!("{}{}", p.name, p.model.as_ref().map(|m| format!(" ({m})")).unwrap_or_default()),
+                format!(
+                    "{}{}",
+                    p.name,
+                    p.model
+                        .as_ref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ),
                 "providers.toml",
                 "",
             ));
         }
         // The gate.
-        out.push(row("adjudicator", self.adjudicator.as_str().to_string(), "--adjudicator", ""));
+        out.push(row(
+            "adjudicator",
+            self.adjudicator.as_str().to_string(),
+            "--adjudicator",
+            "",
+        ));
         out.push(row(
             "oracle",
-            self.oracle.as_ref().map(|e| e.authority()).unwrap_or_else(|| "none".into()),
+            self.oracle
+                .as_ref()
+                .map(|e| e.authority())
+                .unwrap_or_else(|| "none".into()),
             "--oracle",
             "/supervise HOST:PORT",
         ));
         out.push(row(
             "oracle.model",
-            self.oracle_model.clone().unwrap_or_else(|| "server's default".into()),
+            self.oracle_model
+                .clone()
+                .unwrap_or_else(|| "server's default".into()),
             "",
             "",
         ));
@@ -913,7 +992,11 @@ impl Config {
                     "{} intent(s) up to {}{}",
                     s.intents.len(),
                     s.max_scope.as_str(),
-                    if s.is_declared() { " (declared)" } else { " (earned)" }
+                    if s.is_declared() {
+                        " (declared)"
+                    } else {
+                        " (earned)"
+                    }
                 ),
             },
             "providers.toml [gatekeeper] / calibration",
@@ -930,19 +1013,33 @@ impl Config {
             if self.downgrade.deny.is_empty() {
                 "none".into()
             } else {
-                self.downgrade.deny.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(",")
+                self.downgrade
+                    .deny
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             },
             "",
             "",
         ));
-        out.push(row("bash", self.allow_bash.to_string(), "--bash / --no-bash", ""));
+        out.push(row(
+            "bash",
+            self.allow_bash.to_string(),
+            "--bash / --no-bash",
+            "",
+        ));
         out.push(row("unconfined", self.unconfined.to_string(), "", ""));
         out.push(row(
             "grants.ro",
             if self.grants_ro.is_empty() {
                 "none".into()
             } else {
-                self.grants_ro.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+                self.grants_ro
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             },
             "--grant-ro",
             "",
@@ -975,13 +1072,22 @@ impl Config {
             "",
             "",
         ));
-        out.push(row("max-tool-rounds", self.max_tool_rounds.to_string(), "", ""));
+        out.push(row(
+            "max-tool-rounds",
+            self.max_tool_rounds.to_string(),
+            "",
+            "",
+        ));
         out.push(row("stall-rounds", self.stall_rounds.to_string(), "", ""));
         out.push(row("intent.prose", self.intent_prose.to_string(), "", ""));
         // The fabric.
         out.push(row(
             "flowy",
-            if self.flowy.is_some() { "configured".into() } else { "off".into() },
+            if self.flowy.is_some() {
+                "configured".into()
+            } else {
+                "off".into()
+            },
             "",
             "",
         ));
@@ -993,21 +1099,37 @@ impl Config {
         ));
         out.push(row(
             "web_search",
-            if self.web_search.is_some() { "configured".into() } else { "off".into() },
+            if self.web_search.is_some() {
+                "configured".into()
+            } else {
+                "off".into()
+            },
             "$BRAVE_API_KEY / providers.toml",
             "",
         ));
         out.push(row(
             "web_fetch",
-            if self.web_fetch { "curl".into() } else { "off".into() },
+            if self.web_fetch {
+                "curl".into()
+            } else {
+                "off".into()
+            },
             "--web-fetch",
             "",
         ));
         // The plumbing.
-        out.push(row("socket", self.socket.display().to_string(), "--socket", ""));
+        out.push(row(
+            "socket",
+            self.socket.display().to_string(),
+            "--socket",
+            "",
+        ));
         out.push(row(
             "store",
-            self.store.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none".into()),
+            self.store
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "none".into()),
             "--store",
             "",
         ));
@@ -1146,7 +1268,11 @@ impl Config {
                     file.as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "no file (no $HOME)".into()),
-                    if env { ", plus $LETIBOT_PERMISSION" } else { "" }
+                    if env {
+                        ", plus $LETIBOT_PERMISSION"
+                    } else {
+                        ""
+                    }
                 ),
                 active: true,
             });
@@ -1258,21 +1384,20 @@ impl Config {
                  byte stream. The job verbs and `monitor` are seated and shaped.",
             ));
         }
-        let (state, detail, active) =
-            letibot_tools::adjudicate::startup_disclosure_for(
-                &wiring.adjudicator,
-                wiring.backend_writable,
-                // **The classes travel, rather than a bool that means "write".**
-                // The gate is reachable from any class that is not unattended, so a
-                // disclosure counting only writes would call a planner (`say`) or a
-                // runner (the job verbs) unattended. Passing `true` for "something
-                // is gated" fixed the on/off logic and produced a sentence saying
-                // *"Write tools are callable"* about a session with no write tools —
-                // correct about the boundary and wrong about the session, which is
-                // this defect rather than a smaller version of it.
-                &gated_classes(wiring),
-                wiring.denials_surfaced,
-            );
+        let (state, detail, active) = letibot_tools::adjudicate::startup_disclosure_for(
+            &wiring.adjudicator,
+            wiring.backend_writable,
+            // **The classes travel, rather than a bool that means "write".**
+            // The gate is reachable from any class that is not unattended, so a
+            // disclosure counting only writes would call a planner (`say`) or a
+            // runner (the job verbs) unattended. Passing `true` for "something
+            // is gated" fixed the on/off logic and produced a sentence saying
+            // *"Write tools are callable"* about a session with no write tools —
+            // correct about the boundary and wrong about the session, which is
+            // this defect rather than a smaller version of it.
+            &gated_classes(wiring),
+            wiring.denials_surfaced,
+        );
         out.push(Disclosure {
             subject: "adjudication".into(),
             state: state.into(),
@@ -1644,6 +1769,56 @@ pub fn now_ns() -> u128 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A session that starts on a metered provider gets a wall.**
+    ///
+    /// `harnessd` read the window off `/props` only when there was no provider,
+    /// so `[default] provider = deepseek` in the operator's providers.toml left
+    /// `context_window` at `None` — and `None` is not a big window, it is no
+    /// window: every compaction check reads `let Some(window) = …` and is
+    /// skipped. Measured 2026-09-20: their session reached 1,023,545 resident
+    /// tokens against a model the catalogue puts at 1,000,000, having never
+    /// compacted once. *"leticl session shows 1m context and doesnt compact"*.
+    #[test]
+    fn a_metered_provider_takes_its_window_from_the_catalogue() {
+        let dir = std::env::temp_dir().join(format!("letibot-cat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"deepseek":{"id":"deepseek","models":{
+                 "deepseek-flash":{"id":"deepseek-flash","name":"f",
+                   "limit":{"context":1000000,"output":384000},
+                   "cost":{"input":0.28,"output":0.42}}}}}"#,
+        )
+        .expect("fixture");
+        let cat = letibot_provider::catalogue::Catalogue::read(&path).expect("catalogue");
+
+        let pc = |model: Option<&str>| ProviderConfig {
+            name: "deepseek".into(),
+            model: model.map(str::to_string),
+            api_key: None,
+            thinking: false,
+        };
+        assert_eq!(
+            pc(Some("deepseek-flash")).catalogue_window(&cat),
+            Some(1_000_000),
+            "the wall the operator's session never had"
+        );
+        // A model the catalogue does not carry stays `None` — the old behaviour,
+        // for the case the old comment was actually about.
+        assert_eq!(pc(Some("no-such-model")).catalogue_window(&cat), None);
+        // And a preset this build does not know.
+        assert_eq!(
+            ProviderConfig {
+                name: "nope".into(),
+                ..pc(None)
+            }
+            .catalogue_window(&cat),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     /// The pane's contract: the two rows that change now come first and name
@@ -1663,7 +1838,10 @@ mod tests {
         let leading: Vec<&str> = rows.iter().take(3).map(|r| r.key.as_str()).collect();
         assert!(leading.contains(&"supervise"), "{leading:?}");
         assert!(leading.contains(&"model"), "{leading:?}");
-        let sup = rows.iter().find(|r| r.key == "supervise").expect("supervise");
+        let sup = rows
+            .iter()
+            .find(|r| r.key == "supervise")
+            .expect("supervise");
         assert!(sup.value.starts_with("off"));
         // The model row carries its own choices, so a head can draw the picker
         // without keeping a list of its own.
@@ -1673,7 +1851,11 @@ mod tests {
             "no provider is the local server, and the row still names its alias: {}",
             model.value
         );
-        assert!(model.choices.contains(&"local".to_string()), "{:?}", model.choices);
+        assert!(
+            model.choices.contains(&"local".to_string()),
+            "{:?}",
+            model.choices
+        );
         assert!(
             model.choices.iter().any(|c| c.starts_with("glm/")),
             "{:?}",
@@ -1683,14 +1865,19 @@ mod tests {
         for r in &rows {
             assert!(seen.insert(r.key.clone()), "duplicate key {}", r.key);
         }
-        assert!(rows.iter().any(|r| r.key == "oracle.budget" && r.editable.is_empty()));
-        assert!(rows.iter().any(|r| r.key == "workspace" && r.value == "/tmp/x"));
+        assert!(
+            rows.iter()
+                .any(|r| r.key == "oracle.budget" && r.editable.is_empty())
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.key == "workspace" && r.value == "/tmp/x")
+        );
         // Supervision on reads as on.
         let on = cfg.settings("x", true);
         let sup = on.iter().find(|r| r.key == "supervise").expect("supervise");
         assert!(sup.value.starts_with("on"));
     }
-
 
     /// **The round count is a backstop now, not the stop.**
     ///
@@ -1703,7 +1890,10 @@ mod tests {
     #[test]
     fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
         let c = Config::for_this_box("/tmp");
-        assert!(c.stall_rounds > 0, "a session with no progress check is the defect");
+        assert!(
+            c.stall_rounds > 0,
+            "a session with no progress check is the defect"
+        );
         assert!(
             c.max_tool_rounds >= 100,
             "a real investigation is dozens of rounds; {} is inside that range and \
@@ -1805,7 +1995,10 @@ mod tests {
             ..GateWiring::read_only()
         };
         let w = line(&wired);
-        assert!(w.active, "an attached adjudicator over a writable backend is on");
+        assert!(
+            w.active,
+            "an attached adjudicator over a writable backend is on"
+        );
         assert_ne!(w.detail, u.detail);
 
         // **A fourth thing, and it is the one §4b is about.** An adjudicator over a
@@ -1860,7 +2053,14 @@ mod tests {
     #[test]
     fn an_unknown_role_is_refused_with_the_list() {
         let e = Seat::parse("codre").unwrap_err();
-        for known in ["orchestrator", "planner", "researcher", "coder", "runner", "leticode"] {
+        for known in [
+            "orchestrator",
+            "planner",
+            "researcher",
+            "coder",
+            "runner",
+            "leticode",
+        ] {
             assert!(e.contains(known), "{e}");
         }
         assert_eq!(Seat::parse("coder").unwrap(), Seat::Coder);
@@ -1985,7 +2185,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         for expected in ["spill", "store", "retrieval", "adjudication"] {
-            assert!(all.contains(expected), "{expected} is not disclosed:\n{all}");
+            assert!(
+                all.contains(expected),
+                "{expected} is not disclosed:\n{all}"
+            );
         }
     }
 
@@ -1998,7 +2201,10 @@ mod tests {
                 "the stable prefix contains {volatile:?}, which will change and re-prefill"
             );
         }
-        assert!(DEFAULT_SYSTEM.contains("Answer in English"), "§5.2: state the language");
+        assert!(
+            DEFAULT_SYSTEM.contains("Answer in English"),
+            "§5.2: state the language"
+        );
     }
 }
 
@@ -2015,10 +2221,19 @@ mod compaction_trigger_tests {
         for w in [262144u64, 131072, 32768, 16000, 8192, 4096, 2048, 1024] {
             cfg.context_window = Some(w);
             let h = cfg.headroom();
-            assert!(h < w, "window {w}: headroom {h} is not smaller than the window");
-            assert!(h <= w / 4, "window {w}: headroom {h} is more than a quarter");
+            assert!(
+                h < w,
+                "window {w}: headroom {h} is not smaller than the window"
+            );
+            assert!(
+                h <= w / 4,
+                "window {w}: headroom {h} is more than a quarter"
+            );
             // An empty conversation must never be at the wall.
-            assert!(!cfg.should_compact(0), "window {w} compacts an empty session");
+            assert!(
+                !cfg.should_compact(0),
+                "window {w} compacts an empty session"
+            );
             // And a full one must be.
             assert!(cfg.should_compact(w), "window {w} never compacts");
         }

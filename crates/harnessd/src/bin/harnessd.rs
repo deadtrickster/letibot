@@ -55,8 +55,13 @@ fn open_seat(f: &letibot_harnessd::config::FlowyConfig) -> Result<letibot_flowy:
     let creds = letibot_flowy::creds::discover(&onboarding).map_err(|e| e.to_string())?;
     let seat = letibot_flowy::Seat::open(creds, None, None).map_err(|e| e.to_string())?;
     if f.new_reader {
-        let r = seat.declare_reader().map_err(|e| format!("declaring the reader: {e}"))?;
-        eprintln!("harnessd: declared inbox reader `{}` at cursor {}", r.reader, r.cursor);
+        let r = seat
+            .declare_reader()
+            .map_err(|e| format!("declaring the reader: {e}"))?;
+        eprintln!(
+            "harnessd: declared inbox reader `{}` at cursor {}",
+            r.reader, r.cursor
+        );
     }
     Ok(seat)
 }
@@ -352,7 +357,7 @@ fn run() -> Result<i32, String> {
             // One flag for both would make the guard follow every model change.
             // Start supervised. Equivalent to typing `/supervise` as the first thing
             // in the session, and there so a script does not have to.
-                    "--supervise" => cfg.supervise = true,
+            "--supervise" => cfg.supervise = true,
             "--oracle" => {
                 let v = next()?;
                 let (h, p) = v.rsplit_once(':').ok_or("--oracle wants HOST:PORT")?;
@@ -422,7 +427,11 @@ fn run() -> Result<i32, String> {
             // The wall, when the operator knows it and the server will not say —
             // a metered provider, or a proxy that does not serve /props.
             "--context-window" => {
-                cfg.context_window = Some(next()?.parse().map_err(|e| format!("--context-window: {e}"))?)
+                cfg.context_window = Some(
+                    next()?
+                        .parse()
+                        .map_err(|e| format!("--context-window: {e}"))?,
+                )
             }
             "--no-auto-compact" => cfg.auto_compact = false,
             "--web-search" => {
@@ -455,14 +464,12 @@ fn run() -> Result<i32, String> {
                 cfg.stall_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
             "--spill-inline" => {
-                cfg.spill =
-                    SpillPolicy::Inline(next()?.parse().map_err(|e| format!("{arg}: {e}"))?)
+                cfg.spill = SpillPolicy::Inline(next()?.parse().map_err(|e| format!("{arg}: {e}"))?)
             }
             "--spill-dir" => cfg.spill_storage = SpillStorage::Dir(PathBuf::from(next()?)),
             "--dialect" => {
                 let n = next()?;
-                cfg.dialect =
-                    Dialect::parse(&n).ok_or_else(|| format!("unknown dialect {n:?}"))?;
+                cfg.dialect = Dialect::parse(&n).ok_or_else(|| format!("unknown dialect {n:?}"))?;
             }
             "--endpoint" => {
                 let v = next()?;
@@ -482,7 +489,9 @@ fn run() -> Result<i32, String> {
 
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
-            return Err("--api-key / --thinking need --provider NAME (deepseek | glm | grok)".into());
+            return Err(
+                "--api-key / --thinking need --provider NAME (deepseek | glm | grok)".into(),
+            );
         }
         p.model = model_given.clone();
     }
@@ -596,8 +605,35 @@ fn run() -> Result<i32, String> {
     // endpoint: a metered provider has no `/props`, and its window stays `None`
     // unless the operator states it, because a guessed window would either
     // compact a conversation that had room or fail to compact one that did not.
-    if cfg.context_window.is_none() && cfg.provider.is_none() {
-        cfg.context_window = letibot_turn::serving::served_ctx(&cfg.endpoint);
+    if cfg.context_window.is_none() {
+        cfg.context_window = match &cfg.provider {
+            // A local endpoint states its own window, and `/props` is the only
+            // place that number is true.
+            None => letibot_turn::serving::served_ctx(&cfg.endpoint),
+            // **A metered provider's window comes from the catalogue.**
+            //
+            // This used to be skipped entirely for a provider, on the reasoning
+            // that "a guessed window would either compact a conversation that had
+            // room or fail to compact one that did not". That was right when
+            // nothing here knew a cloud model's size — and it stopped being right
+            // when `catalogue` landed, which is the same models.dev number
+            // `Harness::retune_window` already switches to when the operator runs
+            // `/models`. So a session that switched mid-conversation planned
+            // against a real window and a session that STARTED on the provider
+            // planned against none at all.
+            //
+            // `None` is not a large window, it is no wall: every check that would
+            // compact reads `let Some(window) = self.cfg.context_window` and is
+            // skipped. Measured 2026-09-20 on the operator's box — `[default]
+            // provider = deepseek` in providers.toml, so this branch was taken at
+            // every start, and their session reached 1,023,545 resident tokens
+            // against a model whose catalogue limit is 1,000,000, having never
+            // once compacted. "leticl session shows 1m context and doesnt compact".
+            //
+            // A model the catalogue does not carry still yields `None`, which is
+            // the old behaviour for exactly the case the old comment was about.
+            Some(pc) => pc.catalogue_window(&letibot_provider::catalogue::Catalogue::load()),
+        };
     }
 
     let mut sessions =
@@ -614,7 +650,9 @@ fn run() -> Result<i32, String> {
         // shelf per daemon, because one seat per daemon.
         parts
             .skills
-            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(seat.clone())));
+            .set_shelf(std::sync::Arc::new(letibot_flowy::FabricShelf::new(
+                seat.clone(),
+            )));
     }
     let (prefix_tokens, ledger_head) = sessions
         .harness_of(&session_id)
@@ -677,7 +715,9 @@ fn run() -> Result<i32, String> {
                  listened — and read the refusal first if it has",
                 seat.name()
             ),
-            Err(e) => eprintln!("           node not answering yet ({e}); the listener will keep trying"),
+            Err(e) => {
+                eprintln!("           node not answering yet ({e}); the listener will keep trying")
+            }
         }
     }
     // What this session actually is: rebuilt from the store, or new. Printed as
@@ -769,10 +809,17 @@ fn run() -> Result<i32, String> {
                     } else {
                         format!(
                             "f_keep {}",
-                            keeps.iter().map(|k| format!("{k:.4}")).collect::<Vec<_>>().join(" ")
+                            keeps
+                                .iter()
+                                .map(|k| format!("{k:.4}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         )
                     };
-                    eprintln!("  [{} round(s), {} tool call(s), {tail}]", reply.rounds, reply.tool_calls);
+                    eprintln!(
+                        "  [{} round(s), {} tool call(s), {tail}]",
+                        reply.rounds, reply.tool_calls
+                    );
                     if reply.truncated {
                         eprintln!("  ! the answer was cut short (finish_reason: length)");
                     }
@@ -933,8 +980,8 @@ fn run_query(
                 return Ok(0);
             }
             let parts = Parts::load(cfg).map_err(|e| e.to_string())?;
-            let engine = letibot_harnessd::harness::engine_for(&parts, cfg)
-                .map_err(|e| e.to_string())?;
+            let engine =
+                letibot_harnessd::harness::engine_for(&parts, cfg).map_err(|e| e.to_string())?;
             let mut fixed = 0;
             for (id, system, tools_json, dialect_sha) in empty {
                 let tools: Vec<String> =
@@ -969,9 +1016,7 @@ fn run_query(
                 println!("  {id}: {} tokens", rec.tokens.len());
                 fixed += 1;
             }
-            println!(
-                "repaired {fixed} prefix row(s); the transcripts on them resume again."
-            );
+            println!("repaired {fixed} prefix row(s); the transcripts on them resume again.");
             Ok(0)
         }
         Query::ShowBrief => {
@@ -1045,7 +1090,11 @@ fn run_query(
             // question. Measured 2026-09-16 at 52/11 on the store's rows.
             let arm = letibot_harnessd::calibrate::ARMS
                 .iter()
-                .find(|a| a.claim && a.examples && matches!(a.question, letibot_harnessd::oracle::Question::Verdict))
+                .find(|a| {
+                    a.claim
+                        && a.examples
+                        && matches!(a.question, letibot_harnessd::oracle::Question::Verdict)
+                })
                 .copied()
                 .ok_or("no claim arm in ARMS")?;
             let o = letibot_harnessd::etalon_oracle::measure(cfg, path, &file, arm, 100_000)?;
@@ -1062,8 +1111,14 @@ fn run_query(
             std::fs::write(&out, json).map_err(|e| format!("{}: {e}", out.display()))?;
             eprintln!(
                 "etalon map: {} rows, {} commands, {} unique shapes, {}x{} cells, {} epochs, {:.1}s → {}",
-                map.rows, map.commands, map.unique_shapes, map.side, map.side, map.epochs,
-                t.elapsed().as_secs_f64(), out.display()
+                map.rows,
+                map.commands,
+                map.unique_shapes,
+                map.side,
+                map.side,
+                map.epochs,
+                t.elapsed().as_secs_f64(),
+                out.display()
             );
             Ok(0)
         }
@@ -1261,9 +1316,11 @@ fn scoped(
     // guards for one mistake, because the failure is silent and the blast radius
     // is continuing somebody else's conversation.
     if root.as_os_str().is_empty() {
-        return Err("a store query was scoped to the empty path, which matches every \
+        return Err(
+            "a store query was scoped to the empty path, which matches every \
                     session on this box rather than none. Nothing was searched."
-            .into());
+                .into(),
+        );
     }
     Ok(all
         .into_iter()
@@ -1415,9 +1472,12 @@ mod tests {
         // A real scope still narrows, and no scope at all still means the whole
         // store — the deliberate case, which this must not break.
         assert_eq!(
-            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/rano")))
-                .expect("scoping")
-                .len(),
+            scoped(
+                &store,
+                Some(std::path::Path::new("/home/dead/Projects/rano"))
+            )
+            .expect("scoping")
+            .len(),
             1
         );
         assert_eq!(scoped(&store, None).expect("unscoped").len(), 2);
@@ -1430,17 +1490,23 @@ mod tests {
     fn a_scope_finds_sessions_opened_beneath_it() {
         let (store, _d) = store_with(&[("s-a", "/home/dead/Projects/rano/crates/ui")]);
         assert_eq!(
-            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/rano")))
-                .expect("scoping")
-                .len(),
+            scoped(
+                &store,
+                Some(std::path::Path::new("/home/dead/Projects/rano"))
+            )
+            .expect("scoping")
+            .len(),
             1,
             "a session in a subdirectory belongs to the tree"
         );
         // And not sideways into a sibling.
         assert!(
-            scoped(&store, Some(std::path::Path::new("/home/dead/Projects/leticl")))
-                .expect("scoping")
-                .is_empty()
+            scoped(
+                &store,
+                Some(std::path::Path::new("/home/dead/Projects/leticl"))
+            )
+            .expect("scoping")
+            .is_empty()
         );
     }
 }

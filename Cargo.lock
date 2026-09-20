@@ -948,13 +948,7 @@ dependencies = [
 name = "letibot-code"
 version = "0.1.0"
 dependencies = [
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-go",
- "tree-sitter-json",
- "tree-sitter-python",
- "tree-sitter-rust",
+ "rano",
 ]
 
 [[package]]
