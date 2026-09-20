@@ -524,6 +524,14 @@ impl Hub {
         self.lock().log.session_id().to_string()
     }
 
+    /// One row's body by its **session ordinal**, for a head reading a window of it.
+    ///
+    /// The view's, under the view's lock — see `SessionView::row_body_at` for why it lends the
+    /// whole thing and the *caller* windows it.
+    pub fn row_body_at(&self, row: usize) -> Option<String> {
+        self.lock().view.row_body_at(row)
+    }
+
     pub fn head_seq(&self) -> u64 {
         self.lock().log.head_seq()
     }

@@ -478,6 +478,32 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Read a **window** of one row's body without leaving this session. Answered with a
+    /// `RowFetched` frame on the pump.
+    ///
+    /// `row` is the row's **position in the session** — `0` is its first row ever — which is
+    /// the only name for a row a head can always construct: it knows the rows it holds and
+    /// `items_dropped` says how many came before them. `at` is a byte offset into the body and
+    /// `len` how much to ask for; the daemon caps `len` and clamps `at` to a character
+    /// boundary, so the answer is authoritative about where the window starts. Nothing is
+    /// cached: the same window asked twice is read twice, and a row the daemon has since
+    /// trimmed answers `body: None`.
+    pub fn fetch_row(
+        &mut self,
+        session_id: &str,
+        row: usize,
+        at: usize,
+        len: usize,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::FetchRow {
+            session_id: session_id.to_string(),
+            row,
+            at,
+            len,
+        })?;
+        Ok(())
+    }
+
     /// Ask for the settings this session runs under; answered with
     /// `ServerFrame::Settings`.
     pub fn settings(&mut self) -> Result<(), ClientError> {

@@ -340,34 +340,71 @@ the mouse-reporting bug — now asserts the *new* contract explicitly, including
 gives the arrows back. A view that held them for ever would be the same defect with a new
 cause.
 
-**Still open** (the daemon side): fetching a row the snapshot dropped. `ViewBounds`
-bounds the snapshot, so a very old row is not on the head at all, and this paging works
-over what the head holds.
+**Still open** — two layers, and they are one design: *the head must not hold what it is not
+looking at.*
 
-**And a `FetchRow` built for it was removed the same day, because it could not be
-called.** Worth writing down, because the reasoning is the design:
+**Measured 2026-09-20** (400 messages, 80×24, scrolled to the top): 23 KB of source becomes
+**67 KB of rendered lines** — wrapping and escape codes make rendering about **3×** the source
+— and `hist_lines` holds every line from the floor down, **for ever**. It never shrinks. So the
+coarse bound is `3 × ViewBounds::item_bytes` ≈ 24 MB today, and the moment anything can fetch
+rows on demand it becomes unbounded: scrolling through a 160 MB conversation would render all
+of it and keep all of it.
 
-- It addressed a row by `item_id`, and **a head can only name ids it received**.
-  `items_dropped` is a **count, not a list**, so the rows the fetch was for are exactly the
-  ones whose names the head never learned.
-- For a row it *did* receive, the snapshot already carries the body — so the fetch would
-  have returned what the asker already held.
+**(a) A ring over rendered lines — the head holds a window, not a history.** `hist_lines` is a
+`Vec<String>` indexed by *absolute line* (`take_window` slices `[start, end)` across the
+concatenation of segs, with `hist_lines` as seg 0). Two things make this more than a `VecDeque`
+swap, and both were found by trying to write it down:
 
-So it could only answer questions whose answers the asker had. It compiled, it had seven
-passing tests over a real socket, and no head could reach it. That is the same defect as
-the unreachable container arms found earlier in R18 by mutation — and it was found this
-time by the operator asking *"so rowfetch is not used"*, which is cheaper than a mutation
-run and worth remembering as a check: **who calls this?**
+- **It only makes sense in tail mode.** In an ordinary session `hist_floor == 0` and the window
+  *is* the history; a session small enough to walk fully is small enough to hold. So the ring
+  is a tail-mode mechanism, which keeps it away from `hist_marks` — the forward walk's rewind
+  index, which is empty exactly when tail mode is on.
+- **Eviction needs a per-row line count that tail mode does not keep.** Dropping whole rows from
+  the front means knowing how many *lines* they became, and `hist_marks` is the only row→line map
+  — empty in tail mode. So the ring needs one small parallel structure of its own: the line
+  count per rendered row of the window. Then `hist_line_base` (lines evicted above) and its
+  counterpart (lines evicted below, which must still count towards `total`, or the scroll
+  position jumps when a row is re-rendered).
 
-**What the design needs instead**, in two parts, and neither is small:
+With those, eviction is at both ends around the viewport, refilled by `fill_backward` above and a
+matching `fill_forward` below — both the same shape as the existing one, since rendering a row is
+`item_lines` and nothing else. **This half pays for itself with no protocol traffic at all**: the
+head can re-render any row it holds, so a ring costs a re-render and saves the memory.
 
-1. **Addressing by an ordinal, not an id.** A head knows "I hold rows 5000..7000" and
-   `items_dropped` tells it 5000 came before; "scroll up past the top" then means *fetch
-   row 4999*. `item_id` cannot express that, and the daemon maps ordinal → row internally.
-2. **A store read for anything the view dropped.** `SessionView::trim` `drain`s the rows
-   away — they are not held anywhere in the daemon — so a fetch for a trimmed row has to go
-   to `~/.local/share/letibot/sessions.db`, which is a different path with different
-   ownership from the view.
+**(b) `FetchRow` is restored and *callable*, with a caller still to write.** It was removed
+because it addressed a row by `item_id`, which a head can only name if it **received** it — and
+the rows this is for are exactly the ones it did not. The anchor is now the row's **session
+ordinal**: `0` is the session's first row ever, which a head can always construct, because it
+knows the rows it holds and `items_dropped` says how many came before them. "Scroll up past my
+oldest row" is `items_dropped - 1`.
+
+That is a change of key rather than a rewrite, and it is what makes the thing expressible. Eight
+tests in `crates/sessionlog/tests/fetch_row.rs`, including `an_ordinal_names_window_and_trimmed_rows_alike`
+— a view that has trimmed its first row still answers ordinal 1 with the session's *second* row,
+and answers ordinal 0 with `None` rather than sliding the numbering. That `None` is the honest
+answer for a trimmed row; the store read that would fill it is the piece below.
+
+The window arithmetic is unchanged and was always right: clamp `at`, round it to a character
+boundary, cap `len` **at the daemon** rather than trusting the request, send the body's `total`
+beside the window, and answer `body: None` rather than `""` for a row nobody holds.
+
+**Still to write, and neither is small:** the head must know which ordinal it is missing (it has
+no such flag today), ask, track the answer and render from a window; and a row the daemon itself
+trimmed needs the store read at `~/.local/share/letibot/sessions.db`. That path is a *read of the
+store* from a layer that currently only reads its in-memory view —
+`crates/harnessd/src/transcript_source.rs:196` already does exactly that query
+(`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`), so the SQL exists and
+the question is ownership rather than shape.
+
+**(a) is the one that matters first**, and it is also the smaller: it needs no daemon change, no
+store read and no protocol, and it is what makes (b) safe to add — without it, giving the head
+access to more rows would only move the memory problem from the daemon to the head.
+
+**And it is not `Peek`, which an earlier draft of this item said.** `Peek` fetches a whole
+session's scrollback and has **no position**: you name a session, you get all of it. That is
+right for the picker — "what was that session about" is a whole-thing question — and it is the
+wrong shape for this, which is positional. The *pattern* worth reusing is that it reads without
+moving your seat; the cursor and the window are new.
 
 **Checked before building, 2026-09-20**: across the whole store there are **8 rows over
 64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the
