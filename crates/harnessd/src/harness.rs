@@ -4258,7 +4258,8 @@ impl<'a> Harness<'a> {
         // down on round nine as on round one.
         let mut attempt = 0u32;
 
-        for round in 0..self.cfg.max_tool_rounds {
+        let backstop = round_backstop(self.cfg.max_tool_rounds);
+        for round in 0..backstop {
             // **The wall can arrive MID-TURN, and the turn boundary is too late.**
             //
             // A tool result is appended between rounds, so one big one can put the
@@ -4658,9 +4659,9 @@ impl<'a> Harness<'a> {
                 }
             }
         }
-        Err(HarnessError::LoopBound {
-            rounds: self.cfg.max_tool_rounds,
-        })
+        // Unreachable while unbounded — `usize::MAX` rounds is not a number this
+        // process reaches — and honest if the bound is ever set back.
+        Err(HarnessError::LoopBound { rounds: backstop })
     }
 
     /// This session's steering source: the head's queue, the intent findings, and
@@ -4915,6 +4916,21 @@ impl<'a> Harness<'a> {
                 Some(metrics.cached_tokens),
             )
             .map_err(|e| HarnessError::Store(format!("context: {e}")))
+    }
+}
+
+/// **`0` is unbounded**, which is the default; see [`Config::max_tool_rounds`].
+///
+/// `usize::MAX` rather than a second loop shape, so there is one body and one
+/// place a round is counted — two loops that had to stay in step is how the
+/// `round + 1` in the reporting would come to mean two different things.
+///
+/// A named function rather than a `match` inline, because this is the whole of
+/// "infinity" and it is one line that a test can hold to.
+fn round_backstop(configured: usize) -> usize {
+    match configured {
+        0 => usize::MAX,
+        n => n,
     }
 }
 
@@ -5711,6 +5727,25 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod tests {
+    /// **Infinity is `0`, and it is one line, so it gets one test.**
+    ///
+    /// The operator: *"make 200 tool calls limit configurable and set it to
+    /// infinity"*. `0` reaching the loop as `0` would mean a turn that may take no
+    /// rounds at all — the exact opposite — and it is the kind of inversion that
+    /// looks right in a diff.
+    #[test]
+    fn a_zero_backstop_is_unbounded_and_every_other_number_is_itself() {
+        assert_eq!(super::round_backstop(0), usize::MAX, "0 means no bound");
+        assert_eq!(super::round_backstop(1), 1);
+        assert_eq!(super::round_backstop(200), 200);
+        // And the default is the unbounded one, which is the half of this the
+        // operator actually asked for.
+        assert_eq!(
+            super::round_backstop(Config::for_this_box("/tmp").max_tool_rounds),
+            usize::MAX
+        );
+    }
+
     use super::*;
     use letibot_tools::authorise::TrailProvenance;
 
