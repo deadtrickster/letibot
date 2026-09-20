@@ -2838,3 +2838,167 @@ mod a_fence_ends_only_at_a_line_of_its_own {
         }
     }
 }
+#[cfg(test)]
+mod tail_cut_is_exact {
+    use super::*;
+
+    /// **The licence for rendering only the tail.** Below its first block, a cut tail is
+    /// the whole document's own blocks — which is what lets a head draw the bottom of a
+    /// 4 MB transcript without lexing the other 3.9.
+    ///
+    /// The first block is excluded on purpose and the reason is in [`tail_cut`]'s doc: a
+    /// cut between two lines of one paragraph leaves the tail a paragraph holding only the
+    /// lower lines. The caller asks for more than it draws, so that block is off the top of
+    /// the window.
+    ///
+    /// A naive `\n\n` cut does **not** have this property — measured on a real transcript,
+    /// the last blank line in the final 4 KB gave a tail that disagreed all the way up —
+    /// which is why the guards are applied rather than a `find`.
+    fn exact_below_the_first(src: &str, min: usize) {
+        let Some(cut) = tail_cut(src, min) else { return };
+        let whole = lex(src);
+        let tail = lex(&src[cut..]);
+        if cut == 0 {
+            assert_eq!(tail, whole, "a cut at 0 is the whole document");
+            return;
+        }
+        assert!(!tail.is_empty(), "min {min}: an empty tail from {cut}");
+        let exact = &tail[1..];
+        let n = exact.len();
+        assert!(
+            n <= whole.len(),
+            "min {min}: a tail from {cut} is longer than the document"
+        );
+        assert_eq!(
+            exact,
+            &whole[whole.len() - n..],
+            "min {min}: below its first block, the tail from {cut} is not the document's"
+        );
+    }
+
+    #[test]
+    fn a_tail_cut_is_exact_below_its_first_block() {
+        for min in [64usize, 128, 256, 512, 1024] {
+            exact_below_the_first(include_str!("../tests/fixtures/streamed-message.md"), min);
+            exact_below_the_first(include_str!("../tests/fixtures/box-art-message.md"), min);
+        }
+    }
+
+    /// The ragged first block is **bounded**: one block, not a cascade. If a cut could
+    /// leave several wrong blocks the caller's slack would have to be unbounded.
+    #[test]
+    fn the_ragged_part_is_one_block() {
+        let src = "para one line one\npara one line two\n\nsecond para\n\nthird para\n";
+        let Some(cut) = tail_cut(src, 12) else { panic!("no cut") };
+        assert!(cut > 0, "the cut is inside the document");
+        let whole = lex(src);
+        let tail = lex(&src[cut..]);
+        assert_eq!(&tail[1..], &whole[whole.len() - (tail.len() - 1)..]);
+    }
+
+    /// A cut never lands inside a fence — the case a backward scan cannot decide alone,
+    /// and the reason `fences_in` is consulted.
+    #[test]
+    fn a_cut_never_lands_inside_a_fence() {
+        let src = include_str!("../tests/fixtures/box-art-message.md");
+        let spans: Vec<(usize, usize)> = fences_in(src).iter().map(|f| (f.open, f.end)).collect();
+        for min in [16usize, 48, 128, 512] {
+            let Some(cut) = tail_cut(src, min) else { continue };
+            assert!(
+                !inside_a_fence(&spans, cut),
+                "min {min}: cut {cut} is inside a fence ({spans:?})"
+            );
+        }
+    }
+
+    /// A cut is always on a character boundary, including in a document full of them.
+    /// Walking back by byte is what a first version did, and it sliced `す` in half.
+    #[test]
+    fn a_cut_is_always_on_a_char_boundary() {
+        let src = "日本語のテキストです\n\nsecond 段落 here\n\nthird one\n\nfourth\n";
+        for min in [0usize, 4, 8, 16, 32, 100, 1000] {
+            if let Some(cut) = tail_cut(src, min) {
+                assert!(src.is_char_boundary(cut), "min {min}: cut {cut} is mid-char");
+                // And the result is usable, which a mid-char offset would not be.
+                let _ = lex(&src[cut..]);
+            }
+        }
+    }
+
+    /// A cut inside a loose list still numbers its items the way the model wrote them.
+    ///
+    /// This is why the block models may differ and the screen may not: the renderer
+    /// numbers from the marker (`start + i`), so entering a list mid-way is invisible.
+    #[test]
+    fn a_cut_inside_a_loose_list_still_numbers_the_items_right() {
+        let src = "1. first\n\n2. second\n\n3. third\n\ntail para\n";
+        let Some(cut) = tail_cut(src, 8) else { panic!("no cut") };
+        let tail = lex(&src[cut..]);
+        let whole = lex(src);
+        let starts = |bs: &[Block]| -> Vec<usize> {
+            bs.iter()
+                .filter_map(|b| match b {
+                    Block::List {
+                        ordered: true,
+                        start,
+                        ..
+                    } => Some(*start),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Whatever the cut did, no list in the tail begins with a number the document
+        // never writes there.
+        let written: Vec<usize> = starts(&whole);
+        for s in starts(&tail) {
+            assert!(
+                written.contains(&s),
+                "the tail numbers a list from {s}; the document writes {written:?}"
+            );
+        }
+        // And the exact part is the document's.
+        assert_eq!(&tail[1..], &whole[whole.len() - (tail.len() - 1)..]);
+    }
+
+    /// The edges: more than there is, nothing at all, and a floor larger than the text.
+    #[test]
+    fn the_edges_are_whole_or_nothing() {
+        assert_eq!(tail_cut("", 100), Some(0));
+        assert_eq!(tail_cut("one line", 100), Some(0));
+        assert!(tail_cut("a\n\nb\n", 0).is_some());
+        let long = "para\n\n".repeat(200);
+        assert_eq!(tail_cut(&long, long.len() + 1), Some(0));
+        // A single enormous block with no blank line has no boundary to cut at, and
+        // saying so is the honest answer — the caller lexes it whole.
+        let one_block = "x".repeat(500);
+        assert_eq!(tail_cut(&one_block, 10), None);
+    }
+
+    /// **The size of a real transcript, which is what the operator was waiting for.**
+    ///
+    /// Asserts the ratio rather than a stopwatch: the tail of a big document must cost a
+    /// small fraction of lexing it whole.
+    #[test]
+    #[ignore]
+    fn a_tail_is_far_cheaper_than_the_whole() {
+        let src = include_str!("../tests/fixtures/streamed-message.md");
+        let big = src.repeat(44); // ~150 KB
+        let t = std::time::Instant::now();
+        let whole = lex(&big);
+        let whole_us = t.elapsed().as_secs_f64() * 1e6;
+        for min in [4096usize, 16384] {
+            let t = std::time::Instant::now();
+            let cut = tail_cut(&big, min).expect("a cut");
+            let tail = lex(&big[cut..]);
+            let us = t.elapsed().as_secs_f64() * 1e6;
+            eprintln!(
+                "{} bytes: whole {} blocks {whole_us:.0} us; tail {min} -> {} blocks {us:.0} us ({:.1}%)",
+                big.len(),
+                whole.len(),
+                tail.len(),
+                us * 100.0 / whole_us
+            );
+            assert!(us < whole_us / 4.0, "the tail was not much cheaper");
+        }
+    }
+}
