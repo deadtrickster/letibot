@@ -68,11 +68,21 @@ grammar gets something wrong (the closing fence is not line-anchored; a loose li
 cannot be settled by the tree) and finding it in the text *is* the fix. Deleting those
 would reintroduce the bugs of 2026-09-20.
 
-### R18.1 — `StreamingCode` goes, and the conversation gets 28 languages
+### R18.1 — `StreamingCode` goes, and the conversation gets 28 languages — **DONE 2026-09-20 (`50b005c` + rano `e58600c`)**
 
 The visible win: a code fence is coloured by a 10-language hand-written lexer today, so a
 fence tagged `tsx`, `lua`, `ruby`, `diff` and eighteen others renders plain. Rano knows
 them all.
+
+Done: `crates/ui/src/highlight.rs` 699 → 118 lines, holding `role_for_capture` and
+nothing else; `sidediff` shares that table instead of keeping its own; `CodePaint` is a
+rano `Stream` + `Stream::spans`; `BlockCache`'s instrument is `parses` rather than
+`bytes_highlighted`. Three rano additions landed with it — `Lang::from_token`,
+`Lang::name`, `Stream::spans` — and the walk got 1.5–2.5× cheaper on the way
+(`for_each_capture` no longer builds a `Vec<char>` and a char→byte map per line).
+Measured: ~470 µs per push at the end of a 5.4 KB Rust fence, a frame's budget. What is
+still open is in rano's `TODO.md` §9: the walk is O(text), which is a fence's budget and
+not an editor's whole-file repaint.
 
 **The trade, and measure it before deleting anything.** `StreamingCode`'s guarantee is
 that *a complete line is highlighted exactly once, ever* — rano cannot promise that, and
@@ -112,20 +122,16 @@ if the hand scan really is a diagnosis over structure the grammar cannot carry, 
 and this subtask closes with the note saying why. If it re-derives what the parse already
 says, it goes.
 
-### Rano patches this needs — allowed, the operator said so
+### Rano patches this needed — **all three landed** (`e58600c`)
 
-- **`Lang::from_token(&str)`.** `detect()` maps a *path* (plus a first line) to a `Lang`.
-  A code fence hands over an info string — `rust`, `ts`, `sh`, `bash`, `dockerfile`. With
-  no token route a fence cannot be coloured from rano at all, so this blocks R18.1 and is
-  the first thing to build. Check the aliases against what models actually write, not what
-  extensions are called.
-- **A public route from `Lang` to its highlight query.** `Lang::query()` and
-  `Lang::language()` are private (`syntax.rs:75`, `syntax.rs:110`) and
-  `Stream::captures(query)` takes query *text*, so a consumer holding a `Lang` cannot ask
-  for its captures. Either make `query()` public or add `Stream::captures_highlighted()`.
-- **`Stream` over a growing text** is what a live fence needs; `Highlighter::classes`
-  full-reparses per call and is the wrong shape for one that is still arriving, which is
-  the case `StreamingCode` was written for.
+- **`Lang::from_token(&str)`** — done, with its own alias table rather than `detect`'s
+  (`mk` is Make as an extension and not a token; `sh` is bash as a token and `/bin/sh` as
+  a path).
+- **A route from `Lang` to its highlight query** — done as `Stream::spans`, which is
+  better than making `query()` public: the embedder hands over *nothing* and gets capture
+  names back, so no query text crosses the boundary at all. `classes()` was written first
+  and removed — see rano's commit.
+- **`Stream` over a growing text** — it already existed; the fence feeds it the delta.
 
 **Still open?** From `letibot/`:
 
