@@ -287,6 +287,9 @@ pub struct Config {
     ///
     /// `None` until a metered turn has reported, and on a local session, where
     /// the ledger IS the prompt and the two are the same number by construction.
+    /// **Where an HTTP head listens**, or `None` for the ordinary socket-only
+    /// daemon. `--http HOST:PORT`. See [`crate::httphead`].
+    pub http: Option<String>,
     pub ledger_scale: Option<(u64, u64)>,
     pub unconfined: bool,
     /// A human name for the session, or empty.
@@ -772,6 +775,7 @@ impl Config {
             store: None,
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
+            http: None,
             ledger_scale: None,
             unconfined: false,
             title: String::new(),

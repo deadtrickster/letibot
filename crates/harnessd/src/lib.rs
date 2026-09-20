@@ -86,6 +86,7 @@
 //! view carry the same bytes, on channels that agree.
 
 pub mod corpus;
+pub mod httphead;
 pub mod oracle;
 pub mod answers;
 pub mod backfill;

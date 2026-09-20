@@ -3,7 +3,8 @@
 //! ```text
 //! harnessd [--workspace DIR] [--socket PATH] [--store PATH]
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
-//!          [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]
+//!          [--vocab GGUF] [--system TEXT] [--system-file FILE]
+//!          [--effort low|medium|high|xhigh]
 //!          [--spill-inline BYTES] [--spill-dir DIR]
 //!          [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
@@ -69,7 +70,8 @@ fn open_seat(f: &letibot_harnessd::config::FlowyConfig) -> Result<letibot_flowy:
 fn usage() -> String {
     "harnessd [--workspace DIR] [--socket PATH] [--store PATH]\n\
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
-     \x20        [--vocab GGUF] [--system FILE] [--effort low|medium|high|xhigh]\n\
+     \x20        [--vocab GGUF] [--system TEXT|--system-file FILE]\n\
+     \x20        [--effort low|medium|high|xhigh]\n\
      \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
      \x20        [--max-tool-rounds N] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...] [--slash VERB ...]\n\
      \n\
@@ -476,8 +478,38 @@ fn run() -> Result<i32, String> {
                 let (h, p) = v.rsplit_once(':').ok_or("--endpoint wants HOST:PORT")?;
                 cfg.endpoint = Endpoint::new(h, p.parse().map_err(|e| format!("port: {e}"))?);
             }
+            // **`--system` is the prompt; `--system-file` is where to read one
+            // from.** It used to be the file alone, undocumented as such beyond
+            // one word in the usage line, and the operator hit it the obvious
+            // way: *"wtf is --system FILE? I also want a string"*.
+            //
+            // A value that names an existing file is REFUSED rather than guessed
+            // at. Taking a path as the prompt silently would make a scripted
+            // `--system prompt.txt` start a session whose entire system prompt is
+            // the ten characters `prompt.txt` — the failure nobody checks for,
+            // because the daemon starts and answers.
             "--system" => {
-                cfg.system = std::fs::read_to_string(next()?).map_err(|e| e.to_string())?;
+                let v = next()?;
+                if std::path::Path::new(&v).is_file() {
+                    return Err(format!(
+                        "`--system` takes the prompt ITSELF, and {v:?} is a file that \
+                         exists. If you meant its contents: --system-file {v}. If you \
+                         really meant that text, it cannot be told apart from the path, \
+                         so say it a different way."
+                    ));
+                }
+                cfg.system = v;
+            }
+            // An HTTP head beside the socket, for a daemon whose job is to answer
+            // prompts rather than to hold a conversation — the guard being the
+            // case it was built for. See `crate::httphead`.
+            "--http" => {
+                cfg.http = Some(next()?);
+            }
+            "--system-file" => {
+                let path = next()?;
+                cfg.system = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--system-file {path}: {e}"))?;
             }
             "-h" | "--help" => {
                 println!("{}", usage());
@@ -635,6 +667,12 @@ fn run() -> Result<i32, String> {
             Some(pc) => pc.catalogue_window(&letibot_provider::catalogue::Catalogue::load()),
         };
     }
+
+    // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
+    // needs the same vocabulary and dialect and none of the session state.
+    let cfg_http = cfg.http.clone();
+    let http_parts = parts.clone();
+    let http_cfg = cfg.clone();
 
     let mut sessions =
         match Sessions::open_first_with_seat(&parts, cfg, registry.clone(), seat.clone()) {
@@ -838,6 +876,23 @@ fn run() -> Result<i32, String> {
             seat.stop();
         }
         return Ok(if failed > 0 { 1 } else { 0 });
+    }
+
+    // **The HTTP head, before the worker loop takes this thread.** Its own
+    // thread, its own engine, its own scratch transcripts: it shares the
+    // vocabulary and the dialect and touches no session, so nothing it does can
+    // reach the conversations this daemon is holding.
+    if let Some(addr) = cfg_http.clone() {
+        match std::net::TcpListener::bind(&addr) {
+            Ok(l) => {
+                let (p, c) = (http_parts, http_cfg);
+                std::thread::Builder::new()
+                    .name("http-head".into())
+                    .spawn(move || letibot_harnessd::httphead::serve(l, p, c))
+                    .map_err(|e| format!("starting the http head: {e}"))?;
+            }
+            Err(e) => return Err(format!("--http {addr}: {e}")),
+        }
     }
 
     eprintln!("  waiting for a head. Ctrl-C to stop.");
