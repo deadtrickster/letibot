@@ -891,6 +891,51 @@ pub enum SessionEvent {
         /// Wall time from spawn to settlement.
         elapsed_ms: u64,
     },
+    /// **A window of one background job's output, for a pane that draws it.**
+    ///
+    /// The jobs pane drew `N out` for every row and had no way to show the bytes it counted. Enter
+    /// sent `/job ID`, whose reply is a `Warning` on the session log — so the pane closed and the
+    /// operator read a build log scrolling past in the chat. The operator, 2026-09-20: *"when i
+    /// press enter on jobs pane im not shown the job output im brought back to the main
+    /// conversation with /job <id> posted - this is not what i want"*.
+    ///
+    /// # Why this is an event and not a request-answered frame
+    ///
+    /// `Peek`, `Settings` and `Jobs` are answered on the asking connection because what they read
+    /// is reachable from the **server** — the hub's view, a registry mailbox. Job output is not:
+    /// it lives in the exec host, which is the daemon worker's, so the server would have to
+    /// register a reply channel, queue a command and block its own read loop on the answer,
+    /// stalling that connection's live events for the duration.
+    ///
+    /// It is also **the same thing a slash reply already is**, so publishing it keeps one rule
+    /// rather than two: a verb reads, and what it found lands on the log where every head sees it.
+    /// What this variant adds over the `Warning` prose is the **offsets beside the text** — a pane
+    /// can draw its own header and its own paging instead of parsing a footer sentence.
+    ///
+    /// Additive, like [`Self::TranscriptContent`], so no protocol version moves.
+    JobOutput {
+        /// The job's handle, as the pane lists it.
+        job: String,
+        /// The offset this window actually starts at — the request is clamped, not refused.
+        from: u64,
+        /// One past the window's last byte.
+        to: u64,
+        /// Everything the job has written, all streams together.
+        produced: u64,
+        /// Bytes that fell off the ring before this window: a head must be able to say
+        /// "there was more and it is gone" rather than showing a window whose start looks
+        /// like the job's start.
+        dropped: u64,
+        /// The job's own word — `exited 0`, `running`, `killed by …`.
+        state: String,
+        /// The window, split into lines by the daemon so two heads cannot disagree about
+        /// where a line ends.
+        lines: Vec<String>,
+        /// Where to ask next when there is more that is still readable, and `None` when the
+        /// end is here. The daemon decides rather than the head computing `to`, because only
+        /// the daemon knows how much of the ring survives.
+        next: Option<u64>,
+    },
 }
 
 impl SessionEvent {
@@ -925,6 +970,7 @@ impl SessionEvent {
             SessionEvent::DenialRaised { .. } => "DenialRaised",
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
+            SessionEvent::JobOutput { .. } => "JobOutput",
         }
     }
 }

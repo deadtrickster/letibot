@@ -4935,6 +4935,92 @@ fn round_backstop(configured: usize) -> usize {
     }
 }
 
+/// How many bytes of a job's output one read returns: 16 KiB, enough that a build
+/// log's tail is a single read, with the next offset named when it is not. One
+/// constant because the slash reply, the pane's window and any future reader must
+/// agree about what "one page" means or they will page each other in circles.
+pub const JOB_OUTPUT_WINDOW: usize = 16 * 1024;
+
+/// A window onto a background job's output, with the numbers a pane needs to draw
+/// its own header and its own paging.
+///
+/// [`Harness::job_output`] returns *prose* — a footer sentence with the offsets in
+/// it — for a head that will print the lines it was handed, which is what a slash
+/// reply is. This is the same read with the offsets **beside** the text, so the
+/// jobs pane can say where the window starts, whether anything fell off the front,
+/// and where to ask next without parsing a sentence it did not write. The two reads
+/// sit on one call — `ProcessHost::output` over the capture ring — and differ only
+/// in presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobWindow {
+    /// The offset this window actually starts at — the request is clamped to what
+    /// survives, not refused.
+    pub from: u64,
+    /// One past the window's last byte.
+    pub to: u64,
+    /// Everything the job has written, ever. The denominator.
+    pub produced: u64,
+    /// Bytes that fell off the front of the ring before this window: what a head
+    /// must disclose so a window's start is not read as the job's start.
+    pub dropped: u64,
+    /// The job's own word — `exited 0`, `running`, `killed by …`.
+    pub state: String,
+    /// The window, split into lines **here**, so two heads cannot disagree about
+    /// where a line ends.
+    pub lines: Vec<String>,
+    /// Where to ask next when there is more that is still readable, and `None`
+    /// when the end is here. Decided here rather than by the head computing `to`,
+    /// because only the daemon knows how much of the ring survives.
+    pub next: Option<u64>,
+}
+
+impl<'a> Harness<'a> {
+    /// The same read as [`Self::job_output`], as a window rather than a page of
+    /// prose — see [`JobWindow`] for why both exist.
+    pub fn job_output_window(
+        &self,
+        job: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<JobWindow, String> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return Err("this session has no process host, so it has no jobs".into());
+        };
+        let jid = letibot_tools::exec::JobId(job.to_string());
+        let Some(view) = host.job(&jid) else {
+            return Err(format!(
+                "no job `{job}` here; `/job` with no argument lists them"
+            ));
+        };
+        let slice = host
+            .output(&jid, offset, limit)
+            .map_err(|e| e.to_string())?;
+        Ok(JobWindow {
+            from: slice.from,
+            to: slice.to,
+            produced: slice.produced,
+            dropped: slice.dropped,
+            state: view.state.word(),
+            lines: slice.text().lines().map(str::to_string).collect(),
+            next: next_job_offset(&slice),
+        })
+    }
+}
+
+/// Where a further read of a job's output would start, or `None` when the window
+/// has reached the end of what the ring still holds.
+///
+/// `produced == dropped + retained` for a ring that only discards from the front,
+/// so `to < produced` says exactly "there is more that is still readable" — and the
+/// end of what is held is the only place a further read could go. `next` is the
+/// offset to ask at, not a count, so a pane can ask at it verbatim.
+///
+/// A named free function for the same reason [`round_backstop`] is: it is the one
+/// piece of arithmetic in the window and a test can hold it to.
+fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Option<u64> {
+    (slice.to < slice.produced).then_some(slice.to)
+}
+
 /// How many times a round is re-attempted when the model endpoint fails.
 ///
 /// Six, doubling from a second: 1, 2, 4, 8, 16, 32 — about a minute of waiting
@@ -5756,6 +5842,36 @@ mod tests {
             super::round_backstop(Config::for_this_box("/tmp").max_tool_rounds),
             usize::MAX
         );
+    }
+
+    /// **`next` is the offset to ask at, not a count, and it stops at the end.**
+    ///
+    /// A pane pages by handing `next` straight back as the next request's offset,
+    /// so it has to be the offset the window ended at — and it has to be `None`
+    /// exactly when the ring holds nothing further, or the pane offers a page that
+    /// comes back empty and reads as the job's end.
+    #[test]
+    fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
+        let slice = |from, to, produced, dropped, retained| {
+            letibot_tools::exec::OutputSlice {
+                bytes: Vec::new(),
+                from,
+                to,
+                produced,
+                dropped,
+                retained,
+            }
+        };
+        // A window in the middle of a long job: there is more, and `next` is where
+        // this one ended.
+        assert_eq!(next_job_offset(&slice(0, 16, 40, 0, 40)), Some(16));
+        // The window has taken everything still held: no further page.
+        assert_eq!(next_job_offset(&slice(0, 40, 40, 0, 40)), None);
+        // A ring that dropped its front: the end of what is *held* is the end, even
+        // though `produced` is past `to` — that part is gone, not waiting.
+        assert_eq!(next_job_offset(&slice(992, 1000, 1000, 992, 8)), None);
+        // And a window that stopped short of the retained tail still has a page.
+        assert_eq!(next_job_offset(&slice(992, 996, 1000, 992, 8)), Some(996));
     }
 
     use super::*;

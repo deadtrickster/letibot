@@ -126,6 +126,19 @@ pub enum CommandKind {
     Slash {
         line: String,
     },
+    /// **Read a window of one background job's output, for a head's jobs pane.**
+    ///
+    /// A command rather than a request-answered frame, because job output lives in the exec host
+    /// — the worker's, not the server's — so the ask has to reach the worker. Publishing the
+    /// answer as [`crate::event::SessionEvent::JobOutput`] is then the same rule a slash reply
+    /// follows: a verb reads, and what it found lands on the log.
+    ///
+    /// `offset` is absolute into the job's output, so it stays meaningful after the ring moves
+    /// under it, and the answer names the next one.
+    ReadJobOutput {
+        job: String,
+        offset: u64,
+    },
     /// A head took its queued prompts back — the operator pulled the queued line
     /// into the composer to edit it. Consumed by the running turn's steering
     /// poll (which drops the head's held operator text with it); between turns
@@ -237,6 +250,7 @@ impl CommandKind {
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
+            CommandKind::ReadJobOutput { .. } => "read-job-output",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::Promote => "promote",
         }
@@ -936,6 +950,11 @@ impl Hub {
                     }
                 ),
                 (CommandKind::Slash { line }, _) => format!("/{line}"),
+                // A read, not a mutation: a head that asked while the screen moved
+                // still meant it, and nothing this command alters depends on the seq.
+                (CommandKind::ReadJobOutput { job, .. }, _) => {
+                    format!("reading output of job {job}")
+                }
             };
 
             let verb = kind.verb();

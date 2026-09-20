@@ -695,6 +695,17 @@ pub enum ClientFrame {
     /// List the settings this session runs under. Answered with
     /// [`ServerFrame::Settings`]; never moves the connection.
     Settings,
+    /// Ask for a window of one background job's output, for a head's jobs pane.
+    ///
+    /// A command, so it reaches the worker that owns the exec host — see
+    /// [`CommandKind::ReadJobOutput`]. Answered with
+    /// [`crate::event::SessionEvent::JobOutput`] on the log, which is what every other verb's
+    /// answer is.
+    ReadJobOutput {
+        client_request_id: String,
+        job: String,
+        offset: u64,
+    },
     /// A clean goodbye. **Not** required: TCP close is detach too, and detach is
     /// never abort (§13.2).
     Detach,

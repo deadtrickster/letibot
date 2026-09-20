@@ -287,6 +287,16 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             produced: 41_392,
             elapsed_ms: 74_206,
         },
+        SessionEvent::JobOutput {
+            job: "j7".into(),
+            from: 0,
+            to: 24,
+            produced: 24,
+            dropped: 0,
+            state: "exited 0".into(),
+            lines: vec!["building".into(), "done".into()],
+            next: None,
+        },
     ]
 }
 

@@ -393,9 +393,9 @@ impl<'a> Sessions<'a> {
                         lines: h.job_lines(),
                         ok: true,
                     },
-                    // 16 KiB: enough that a build log's tail is one read, and the
-                    // reply names the next offset when it is not.
-                    Some(j) => match h.job_output(&j, offset, 16 * 1024) {
+                    // One page: a build log's tail is one read, and the reply names
+                    // the next offset when it is not. See [`JOB_OUTPUT_WINDOW`].
+                    Some(j) => match h.job_output(&j, offset, crate::harness::JOB_OUTPUT_WINDOW) {
                         Ok(lines) => SlashReply { lines, ok: true },
                         Err(e) => SlashReply {
                             lines: vec![e],
@@ -1557,6 +1557,44 @@ impl<'a> Sessions<'a> {
                 } else {
                     Outcome::Failed(format!("/{line} was refused"))
                 }
+            }
+            // **A read of a job's output, for the pane that asked.** The same read
+            // `/job ID` does, answered with the offsets **beside** the text instead
+            // of folded into a footer sentence — the jobs pane draws its own header
+            // and its own paging. Published on the log like every other verb's
+            // reply, so both heads see the window the operator opened and neither
+            // has to be the one that asked.
+            CommandKind::ReadJobOutput { job, offset } => {
+                let job = job.clone();
+                let offset = *offset;
+                let window = match self.harness_of(session_id) {
+                    Some(h) => {
+                        h.job_output_window(&job, offset, crate::harness::JOB_OUTPUT_WINDOW)
+                    }
+                    None => Err(format!("session {session_id} is not open")),
+                };
+                if let Some(hub) = &hub {
+                    match window {
+                        Ok(w) => hub.publish(SessionEvent::JobOutput {
+                            job: job.clone(),
+                            from: w.from,
+                            to: w.to,
+                            produced: w.produced,
+                            dropped: w.dropped,
+                            state: w.state,
+                            lines: w.lines,
+                            next: w.next,
+                        }),
+                        // A refused read is a `Warning`, the same as a refused slash,
+                        // and the code says which read it was: the pane renders it as
+                        // a line rather than a window.
+                        Err(e) => hub.publish(SessionEvent::Warning {
+                            code: "job_output_refused".into(),
+                            detail: e,
+                        }),
+                    };
+                }
+                Outcome::Ignored
             }
             CommandKind::Mode { name, consented } => {
                 let mode = match letibot_tools::mode::Mode::parse(name) {

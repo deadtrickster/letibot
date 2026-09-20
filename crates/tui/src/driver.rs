@@ -160,6 +160,13 @@ pub fn tick(
             // which session this connection is in, and nothing is read until the
             // operator asked — the laziness is the point.
             Action::Peek(id) => client.peek(&id)?,
+            // The same shape as `Peek`: a read that comes back as an event on the
+            // log rather than a frame on this connection, and the pane is built from
+            // it. The `client_request_id` is dropped here for the same reason the
+            // peek's is: the answer is addressed to the session, not to the ask.
+            Action::ReadJobOutput { job, offset } => {
+                client.read_job_output(&job, offset)?;
+            }
             // Same shape as `NewSession`: the daemon answers with `Sessions` naming
             // it as `created`, and `App::apply` turns that into the `Switch`. One
             // path for "go to a session that was not here a moment ago", whether it

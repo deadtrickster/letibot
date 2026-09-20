@@ -708,6 +708,10 @@ impl SessionView {
             // finish, which the call view already folds, and its end is carried by
             // the durable `JobSettled` event. The jobs pane folds both itself.
             SessionEvent::JobSettled { .. } => {}
+            // Nothing to fold: a job-output window is drawn by the pane that asked
+            // for it, and the view carries no window state. It is ephemeral besides
+            // (`scrub::is_interactive`), so a late head never replays one.
+            SessionEvent::JobOutput { .. } => {}
         }
     }
 

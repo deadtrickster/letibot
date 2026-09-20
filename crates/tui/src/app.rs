@@ -118,6 +118,19 @@ pub enum Action {
     /// with `Peeked`, and the pane the tree's Enter opens is built from it.
     /// Lazy — nothing is read until this is sent.
     Peek(String),
+    /// Read one background job's output into a pane, without leaving this session
+    /// and without posting a slash to the conversation. Answered with a
+    /// `SessionEvent::JobOutput` on the log, and the pane is built from it. The
+    /// jobs pane's Enter sends this instead of `/job ID` — the operator asked for
+    /// exactly that: *"when i press enter on jobs pane im not shown the job output
+    /// im brought back to the main conversation with /job <id> posted - this is not
+    /// what i want"*.
+    ReadJobOutput {
+        job: String,
+        /// Where the window starts. 0 is the first byte; the pane pages by asking
+        /// at the offset the previous answer named.
+        offset: u64,
+    },
     /// Ask the daemon for the settings this session runs under (`/config`).
     Settings,
     /// Bring a session that is in the store but not in this daemon back to life.
@@ -407,6 +420,47 @@ struct SubOut {
     /// Events that fell off the daemon's scrollback before this read — the same
     /// disclosure a `Hello` makes, because a peek is a replay.
     dropped: u64,
+}
+
+/// The output view the jobs pane's Enter opens: one job's retained output, as the
+/// daemon measured it.
+///
+/// The bytes **and the offsets beside them**, because the pane draws its own header
+/// and its own paging — see `SessionEvent::JobOutput` for why the read comes back as
+/// an event with the numbers attached rather than as the `Warning` prose `/job`
+/// replies with.
+#[derive(Debug, Clone)]
+struct JobOut {
+    job: String,
+    /// The daemon's word for where the job is — `running`, `exited 0`, … Empty
+    /// until the first answer arrives.
+    state: String,
+    /// The offsets of the window actually loaded: `from..to` of `produced`.
+    from: u64,
+    to: u64,
+    produced: u64,
+    /// Bytes that fell off the front of the ring before this window. Disclosed
+    /// because a window that starts mid-log is otherwise read as the job's start.
+    dropped: u64,
+    /// The window, already split into lines by the daemon so two heads cannot
+    /// disagree about where a line ends.
+    lines: Vec<String>,
+    /// Where the daemon says the next page starts, or `None` when the end is here.
+    next: Option<u64>,
+    /// Offsets already loaded, newest last: `←` walks back the way `→` came. A
+    /// stack rather than `from - page` arithmetic, because the page size is the
+    /// daemon's choice and recomputing it here would be a second copy of it.
+    back: Vec<u64>,
+    /// Lines hidden off the bottom of the loaded window. Zero follows the tail;
+    /// the draw clamps it, because only the draw knows the visible height.
+    scroll: usize,
+    /// True from the request until its answer: the overlay says so rather than
+    /// showing an empty window it cannot yet fill.
+    loading: bool,
+    /// The daemon's refusal, when the read could not be answered — a job that fell
+    /// out of the host's table between the listing and Enter. Shown in place of the
+    /// window so the pane does not sit at `reading…` forever.
+    error: Option<String>,
 }
 
 /// line. See `crates/ui/DESIGN.md` §2.3.
@@ -831,6 +885,9 @@ pub struct App {
     sub_out: Option<SubOut>,
     /// The subagent whose output was asked for and not yet answered. Esc cancels.
     sub_out_pending: Option<String>,
+    /// The job-output view the jobs pane's Enter opens, until Esc returns to the
+    /// jobs list. The bytes the pane was counting, finally shown in the pane.
+    job_out: Option<JobOut>,
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
     todos: Vec<letibot_sessionlog::event::TodoEntry>,
@@ -1412,6 +1469,7 @@ impl App {
             subagents_sel: 0,
             sub_out: None,
             sub_out_pending: None,
+            job_out: None,
             todos: Vec::new(),
             repo_todos: None,
             repo_todos_at: None,
@@ -2108,6 +2166,44 @@ impl App {
                 self.redraw = true;
                 Disposition::Filtered
             }
+            // **A job's output, the answer to the jobs pane's Enter.** Not folded
+            // into any view: the pane that asked draws the window, and only that
+            // pane has anywhere to put it. It is ephemeral besides
+            // (`scrub::is_interactive`), so no late head replays one.
+            SessionEvent::JobOutput {
+                job,
+                from,
+                to,
+                produced,
+                dropped,
+                state,
+                lines,
+                next,
+            } => {
+                // Taken only when a window is open for *this* job: a head here may
+                // have closed the pane with Esc before the reply landed, and a
+                // window for a job nobody is looking at is nothing to keep.
+                if let Some(v) = self.job_out.as_mut()
+                    && v.job == job
+                {
+                    v.state = state;
+                    v.from = from;
+                    v.to = to;
+                    v.produced = produced;
+                    v.dropped = dropped;
+                    v.lines = lines;
+                    v.next = next;
+                    v.loading = false;
+                    v.error = None;
+                    // A window lands at its **tail**: a fresh page, or a re-read of
+                    // a running job, should show what it just wrote. `back` is left
+                    // alone, so ← still walks the pages the reader came through.
+                    v.scroll = 0;
+                    self.redraw = true;
+                    return Disposition::Rendered;
+                }
+                Disposition::Filtered
+            }
             SessionEvent::TurnStarted {
                 turn_id,
                 model,
@@ -2665,6 +2761,17 @@ impl App {
                         return Disposition::Rendered;
                     }
                 }
+                // A refused job-output read is answered **in the pane that asked**,
+                // which is still open — otherwise it would sit at `reading…` for
+                // ever, waiting for a window that is not coming. The conversation
+                // gets the note as well.
+                if code == "job_output_refused"
+                    && let Some(v) = self.job_out.as_mut()
+                {
+                    v.loading = false;
+                    v.error = Some(detail.clone());
+                    self.redraw = true;
+                }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered
             }
@@ -3145,6 +3252,39 @@ impl App {
             }
         }
 
+        // **The job-output view owns the keys while it is open.** Up and down walk
+        // the loaded window; right asks for the next page and left walks back the
+        // way right came; Enter refreshes a running job, or takes the next page when
+        // there is one; Esc goes back to the jobs list, not out of everything — the
+        // same shape, key for key, as the subagent-output view above.
+        if self.job_out.is_some() {
+            match k {
+                Key::Up => {
+                    self.job_out.as_mut().unwrap().scroll += 1;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    let v = self.job_out.as_mut().unwrap();
+                    v.scroll = v.scroll.saturating_sub(1);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter | Key::Right if self.editor.text().is_empty() => {
+                    return self.job_out_page(true);
+                }
+                Key::Left if self.editor.text().is_empty() => {
+                    return self.job_out_page(false);
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.job_out = None;
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
         // **The slash listing owns the keyboard while it is up**, the way the
         // subagent-output pane above does: it is a screen covering the
         // conversation, so the keys that scroll and dismiss it must not also
@@ -3607,9 +3747,11 @@ impl App {
         // **An open jobs pane owns Up and Down, and Enter reads the job's output.**
         //
         // The pane already drew `N out` for every row; until now that count was
-        // the whole answer, and the bytes it counted were reachable only by
-        // asking the model to call `job_output`. Enter sends `/job ID` — the same
-        // read, from the row the operator is looking at.
+        // the whole answer, and the bytes it counted reachable only by asking the
+        // model to call `job_output`. Enter reads the row the operator is looking
+        // at, **into a pane** — this is what the previous `/job ID` got wrong: its
+        // reply is a warning on the session log, so the pane closed and the output
+        // scrolled past in the conversation. See the `ReadJobOutput` action.
         if self.jobs_pane && !self.jobs.is_empty() {
             let n = self.jobs.len();
             match k {
@@ -3634,12 +3776,32 @@ impl App {
                         return None;
                     }
                     let job = self.jobs[self.jobs_sel.min(n - 1)].id.clone();
-                    // The reply lands on the session log, which the pane is
-                    // covering: close it so the operator reads what they asked for.
-                    self.jobs_pane = false;
-                    return Some(Action::Slash {
-                        line: format!("job {job}"),
+                    // **The output opens in a pane, not in the conversation.**
+                    // This used to return `Action::Slash { "job {job}" }`, whose
+                    // reply is a `Warning` on the session log — so the pane closed
+                    // and the operator read a build log scrolling past in the chat.
+                    // The operator, 2026-09-20: *"when i press enter on jobs pane im
+                    // not shown the job output im brought back to the main
+                    // conversation with /job <id> posted - this is not what i
+                    // want"*. Now the read is a `ReadJobOutput`: it comes back as a
+                    // `JobOutput` event with the offsets attached, and the overlay
+                    // draws it. The jobs list stays behind it, so Esc returns here.
+                    self.job_out = Some(JobOut {
+                        job: job.clone(),
+                        state: String::new(),
+                        from: 0,
+                        to: 0,
+                        produced: 0,
+                        dropped: 0,
+                        lines: Vec::new(),
+                        next: None,
+                        back: Vec::new(),
+                        scroll: 0,
+                        loading: true,
+                        error: None,
                     });
+                    self.redraw = true;
+                    return Some(Action::ReadJobOutput { job, offset: 0 });
                 }
                 _ => {}
             }
@@ -5074,6 +5236,10 @@ impl App {
             let mut rows = self.sub_out_lines(room);
             rows.truncate(room);
             rows
+        } else if self.job_out.is_some() {
+            let mut rows = self.job_out_lines(room);
+            rows.truncate(room);
+            rows
         } else if self.subagents_pane {
             let rows = self.subagents_lines(w);
             self.pane_window(rows, room)
@@ -5255,6 +5421,8 @@ impl App {
             "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
             "subagents this session spawned · esc closes"
+        } else if self.job_out.is_some() {
+            "↑↓ scroll · → next page · ← back · esc back to jobs"
         } else if self.jobs_pane {
             "background jobs this session started · ↑↓ then enter reads one · esc closes"
         } else if !self.open.is_empty() {
@@ -6653,6 +6821,117 @@ impl App {
             &self.cfg,
             &format!("    arrows scroll, Enter re-reads, Esc back — full: {spill}"),
         ));
+        out.truncate(room);
+        out
+    }
+
+    /// The job-output view's paging. `forward` asks for the page after the one on
+    /// screen — or re-reads the last page when the end is already here, because a
+    /// running job appends and that is how you see what it has written since.
+    /// `!forward` walks back the way forward came, and does nothing at the front of
+    /// the log, where there is no page before the first byte.
+    ///
+    /// The `back` stack lives on the head because the **page size is the daemon's**:
+    /// the head remembers the offsets it was given rather than recomputing a window
+    /// it does not size — the same reason `next` arrives on the event.
+    fn job_out_page(&mut self, forward: bool) -> Option<Action> {
+        let v = self.job_out.as_mut()?;
+        let offset = if forward {
+            let at = v.from;
+            if v.next.is_some() {
+                v.back.push(at);
+            }
+            v.next.unwrap_or(at)
+        } else {
+            v.back.pop()?
+        };
+        v.loading = true;
+        Some(Action::ReadJobOutput {
+            job: v.job.clone(),
+            offset,
+        })
+    }
+
+    /// The job-output view: one job's retained window, with its own header because
+    /// the daemon sent the **offsets** rather than a sentence. The tail shows by
+    /// default; arrows walk back toward the beginning of the loaded window; the
+    /// footer says how much further the reader can go.
+    fn job_out_lines(&mut self, room: usize) -> Vec<String> {
+        let Some(v) = self.job_out.as_mut() else {
+            return Vec::new();
+        };
+        let mut out = vec![colour(
+            &self.cfg,
+            sgr::BOLD,
+            &format!("job output — {}", v.job),
+        )];
+        // A refusal is not a window: the daemon could not answer, so the pane says
+        // what it said rather than drawing an empty log the operator would read as
+        // "the job wrote nothing".
+        if let Some(err) = v.error.clone() {
+            out.push(dim(&self.cfg, "    the daemon refused this read:"));
+            out.push(String::new());
+            out.extend(err.lines().map(without_control));
+            out.push(String::new());
+            out.push(dim(&self.cfg, "    Esc back to jobs"));
+            out.truncate(room);
+            return out;
+        }
+        // The state and the measurement on one line, because they are one fact:
+        // what the job is, and what window of how much is on screen. A `dropped`
+        // count is said here rather than in the footer — a window that begins
+        // mid-log must not be read as the job's beginning.
+        if v.loading && v.state.is_empty() {
+            out.push(dim(&self.cfg, "    reading…"));
+        } else {
+            let mut meta = format!(
+                "    {} — bytes {}..{} of {}",
+                v.state, v.from, v.to, v.produced
+            );
+            if v.dropped > 0 {
+                meta.push_str(&format!(
+                    " ({} earlier byte{} gone off the front)",
+                    v.dropped,
+                    if v.dropped == 1 { "" } else { "s" }
+                ));
+            }
+            out.push(dim(&self.cfg, &meta));
+        }
+        out.push(String::new());
+        let footer = 1;
+        let visible = room.saturating_sub(out.len() + footer).max(1);
+        // A job that has written nothing is a different statement from a window of
+        // nothing, and the state says which. `running` is the daemon's own word
+        // (`JobState::word`), tested literally for the same reason the jobs pane
+        // tests `exited 0` literally: the head renders the daemon's vocabulary and
+        // keeps no second copy of the enum.
+        if v.lines.is_empty() && !v.loading {
+            out.push(dim(
+                &self.cfg,
+                if v.state == "running" {
+                    "    it is running and has written nothing yet."
+                } else {
+                    "    it wrote nothing at all."
+                },
+            ));
+        }
+        let max_scroll = v.lines.len().saturating_sub(visible);
+        v.scroll = v.scroll.min(max_scroll);
+        let end = v.lines.len() - v.scroll;
+        let start = end.saturating_sub(visible);
+        for l in &v.lines[start..end] {
+            out.push(without_control(l));
+        }
+        while out.len() < room.saturating_sub(footer) {
+            out.push(String::new());
+        }
+        let hint = match (v.next, v.back.is_empty()) {
+            (Some(_), false) => "arrows scroll · → next page · ← back · Esc to jobs",
+            (Some(_), true) => "arrows scroll · → next page · Esc to jobs",
+            (None, false) => "arrows scroll · ← back · Esc to jobs",
+            (None, true) => "arrows scroll · Esc to jobs",
+        };
+        out.push(dim(&self.cfg, &format!("    {hint}")));
         out.truncate(room);
         out
     }
@@ -17482,13 +17761,18 @@ mod tests {
         assert!(a.jobs_pane);
         assert_eq!(
             a.key(Key::Enter),
-            Some(Action::Slash {
-                line: "job j7".into()
+            Some(Action::ReadJobOutput {
+                job: "j7".into(),
+                offset: 0
             })
         );
         assert!(
-            !a.jobs_pane,
-            "the reply lands on the log the pane was covering"
+            a.jobs_pane,
+            "the jobs list stays behind the overlay, so esc returns to it"
+        );
+        assert!(
+            a.job_out.is_some(),
+            "the overlay opens at once and says it is reading"
         );
     }
 
@@ -17507,9 +17791,6 @@ mod tests {
         assert!(!a.jobs_pane, "esc closes the pane like the other screens");
     }
 
-    /// The operator, looking at a row that says how many bytes it produced:
-    /// *"i go to jobs panel and no way to get job output"*. Enter on the row is
-    /// that way — it sends the daemon the same `/job ID` the composer would.
     /// **Ctrl+O guards the command, not the turn.** The operator, looking at a
     /// `◐ Running "cargo test …"` card while the head refused: *"nothing is
     /// running to move to the background"* / *"how come"*. The gate asked whether
@@ -17640,11 +17921,124 @@ mod tests {
         assert_eq!(a.jobs_sel, 1);
         assert_eq!(
             a.key(Key::Enter),
-            Some(Action::Slash {
-                line: "job j2".into()
+            Some(Action::ReadJobOutput {
+                job: "j2".into(),
+                offset: 0
             }),
             "enter reads the selected job, by the daemon's id"
         );
+    }
+
+    /// **The window lands in the pane.** The `JobOutput` event the daemon publishes
+    /// for a `ReadJobOutput` fills the overlay the jobs pane opened, offsets and
+    /// all, and the overlay pages with → and ← without ever touching the
+    /// conversation.
+    #[test]
+    fn the_job_output_event_fills_the_overlay_and_it_pages() {
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j3", "cargo build", false)],
+        ));
+        a.key(Key::CtrlQ);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::ReadJobOutput {
+                job: "j3".into(),
+                offset: 0
+            })
+        );
+        // The first page arrives: the head is told where it is and where next is.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::JobOutput {
+                job: "j3".into(),
+                from: 0,
+                to: 10,
+                produced: 30,
+                dropped: 0,
+                state: "exited 0".into(),
+                lines: vec!["line one".into(), "line two".into()],
+                next: Some(10),
+            },
+        )));
+        let v = a.job_out.as_ref().expect("the overlay is open");
+        assert!(!v.loading, "the answer clears the wait");
+        assert_eq!(v.state, "exited 0");
+        assert_eq!(v.lines.len(), 2);
+        assert_eq!(v.next, Some(10));
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("job output — j3"), "{screen}");
+        assert!(
+            screen.contains("exited 0 — bytes 0..10 of 30"),
+            "the pane draws the offsets it was sent, not a parsed sentence: {screen}"
+        );
+
+        // → asks for the page the daemon named, and remembers where it was.
+        assert_eq!(
+            a.key(Key::Right),
+            Some(Action::ReadJobOutput {
+                job: "j3".into(),
+                offset: 10
+            })
+        );
+        assert_eq!(a.job_out.as_ref().unwrap().back, vec![0]);
+        // ← walks back the way → came, by the offset it was given — the head never
+        // computes a page size, because the size is the daemon's.
+        assert_eq!(
+            a.key(Key::Left),
+            Some(Action::ReadJobOutput {
+                job: "j3".into(),
+                offset: 0
+            })
+        );
+        assert!(a.job_out.as_ref().unwrap().back.is_empty());
+        // At the front there is no page before the first byte, so ← does nothing.
+        assert_eq!(a.key(Key::Left), None);
+        // Esc returns to the jobs list, which never closed.
+        a.key(Key::Esc);
+        assert!(a.job_out.is_none());
+        assert!(a.jobs_pane, "esc goes back to jobs, not out of everything");
+    }
+
+    /// **A refused read is answered in the pane, not left at `reading…`.** A job can
+    /// fall out of the host's table between the listing and Enter — the daemon then
+    /// answers with a `job_output_refused` warning, and the pane that asked must say
+    /// so rather than wait for a window that is not coming.
+    #[test]
+    fn a_refused_job_output_read_lands_in_the_pane() {
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j4", "cargo build", false)],
+        ));
+        a.key(Key::CtrlQ);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::ReadJobOutput {
+                job: "j4".into(),
+                offset: 0
+            })
+        );
+        assert!(a.job_out.as_ref().unwrap().loading);
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "job_output_refused".into(),
+                detail: "no job `j4` here; `/job` with no argument lists them".into(),
+            },
+        )));
+        let v = a.job_out.as_ref().expect("the pane is still open");
+        assert!(!v.loading, "the refusal ends the wait");
+        assert_eq!(
+            v.error.as_deref(),
+            Some("no job `j4` here; `/job` with no argument lists them")
+        );
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("the daemon refused this read"), "{screen}");
+        assert!(screen.contains("no job `j4` here"), "{screen}");
     }
 
     /// Jobs belong to the session that started them. Carried across a switch the

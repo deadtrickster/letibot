@@ -72,6 +72,11 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Replayed, this would ask a head to draw itself for a tool call that
         // finished long ago.
         SessionEvent::ScreenRequested { .. } => true,
+        // Ephemeral, and the same as a progress frame: a job-output window is what
+        // the job had written when the head asked, and a window from four minutes
+        // ago is a lie about now. The job's durable residue is `JobSettled`; this
+        // is the pane answering a keypress, not a fact that stays true.
+        SessionEvent::JobOutput { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.
@@ -137,6 +142,11 @@ pub struct ScrubReport {
     /// the count that, if it is ever nonzero on a *live* path, means a head is
     /// about to be asked something twice.
     pub settled_decisions: u64,
+    /// Job-output windows dropped as stale. A window is what the job had written
+    /// when a head asked, so a replayed one is a lie about now — the same shape as
+    /// the progress frames above, and the pane re-reads rather than replaying.
+    #[serde(default)]
+    pub job_output: u64,
 }
 
 impl ScrubReport {
@@ -145,6 +155,7 @@ impl ScrubReport {
             + self.tokens_generated
             + self.tool_progress
             + self.settled_decisions
+            + self.job_output
     }
 
     pub fn is_empty(&self) -> bool {
@@ -210,6 +221,14 @@ impl StoredProjection {
             }
             SessionEvent::DecisionRequested { req_id, .. } if self.settled.contains(req_id) => {
                 self.report.settled_decisions += 1;
+                None
+            }
+            // A job-output window is what the job had written when the head asked.
+            // Replayed it shows a state that has moved — the job has written more,
+            // or ended — so it is dropped exactly as a progress frame is, and the
+            // pane that wants it asks again.
+            SessionEvent::JobOutput { .. } => {
+                self.report.job_output += 1;
                 None
             }
             // An unsettled request survives the scrub. It is still owed an answer
@@ -319,6 +338,29 @@ mod tests {
     }
 
     #[test]
+    fn a_job_output_window_is_stripped_from_the_replay_and_the_count_travels() {
+        // A window is what the job had written when the head asked, so replaying it
+        // to a late head states a now that has moved — and there is nothing for
+        // that head to have asked for. Dropped, like a progress frame, and counted
+        // so "busy" and "quiet" stay distinguishable.
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(SessionEvent::JobOutput {
+            job: "j4".into(),
+            from: 0,
+            to: 10,
+            produced: 10,
+            dropped: 0,
+            state: "exited 0".into(),
+            lines: vec!["hello".into()],
+            next: None,
+        });
+        let window: Vec<_> = log.retained().cloned().collect();
+        let (kept, report) = scrub_replay(log.retained(), &window);
+        assert!(kept.is_empty(), "a replayed window is a lie about now: {kept:?}");
+        assert_eq!(report.job_output, 1);
+    }
+
+    #[test]
     fn settledness_is_learned_from_the_whole_log_not_only_from_the_window() {
         // The answer is at seq 4; a head resuming from seq 4 gets a window that
         // starts after it. Without the whole-log pre-pass the request at seq 2 is
@@ -346,6 +388,7 @@ mod tests {
                     | SessionEvent::TokensGenerated { .. }
                     | SessionEvent::ToolProgress { .. }
                     | SessionEvent::DecisionRequested { .. }
+                    | SessionEvent::JobOutput { .. }
             );
             assert_eq!(interactive, expected, "{}", e.kind());
         }

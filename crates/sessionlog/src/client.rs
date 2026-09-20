@@ -504,6 +504,18 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Ask for a window of one background job's output. Answered by an
+    /// `SessionEvent::JobOutput` on the session log, like every other verb.
+    pub fn read_job_output(&mut self, job: &str, offset: u64) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ReadJobOutput {
+            client_request_id: client_request_id.clone(),
+            job: job.to_string(),
+            offset,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Ask for the settings this session runs under; answered with
     /// `ServerFrame::Settings`.
     pub fn settings(&mut self) -> Result<(), ClientError> {

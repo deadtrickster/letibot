@@ -827,6 +827,19 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::ReadJobOutput {
+                client_request_id,
+                job,
+                offset,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    seat.hub.head_seq(),
+                    CommandKind::ReadJobOutput { job, offset },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Slash {
                 client_request_id,
                 expected_seq,
