@@ -261,6 +261,33 @@ pub struct Config {
     /// re-seats to [`Seat::Coder`] for its tools but must not be re-confined to a
     /// project its parent already left. A subagent of a coder session stays confined,
     /// because its parent is.
+    /// **What the last metered turn cost in each side's tokens**, as
+    /// `(ledger, provider)`.
+    ///
+    /// The ledger counts this conversation as a LOCAL rendered prompt, in the
+    /// session's own vocabulary and with its reasoning blocks in it. A messages
+    /// provider is sent neither: `letibot_provider::messages` drops `Reasoning`
+    /// on purpose, because DeepSeek documents that `reasoning_content` must not
+    /// be sent back. So the two numbers measure different things, and every
+    /// compaction decision was comparing one against the other.
+    ///
+    /// Measured in the operator's own store, 2026-09-20:
+    ///
+    /// | transcript | ledger    | reasoning       | ledger − reasoning | provider  |
+    /// |------------|-----------|-----------------|--------------------|-----------|
+    /// | letibot    | 1,072,176 | 363,111 (33.9%) | 709,065            | ~607,000  |
+    /// | leticl     | 1,495,702 | 400,788 (26.8%) | 1,094,914          | 1,048,607 |
+    ///
+    /// Take the reasoning out and the counts agree to 4-17%, which is ordinary
+    /// variance between two tokenizers; leave it in and the ledger runs 1.4-1.8x
+    /// high, by a factor that is not a constant — it is however much the model
+    /// thought. So the session that thinks more compacts earlier, which is the
+    /// opposite of what anybody wants. `letibot` compacted with 39% of its
+    /// window free.
+    ///
+    /// `None` until a metered turn has reported, and on a local session, where
+    /// the ledger IS the prompt and the two are the same number by construction.
+    pub ledger_scale: Option<(u64, u64)>,
     pub unconfined: bool,
     /// A human name for the session, or empty.
     ///
@@ -614,15 +641,40 @@ impl Config {
         // window, `should_compact` true on every turn, and compaction a loop that
         // never lets a conversation start. Caught by asking what the formula does
         // at the edges rather than at 262144.
-        let w = self.context_window.unwrap_or(0);
+        let w = self.planning_window().unwrap_or(0);
         (w / 16).max(2048).min(w / 4)
     }
 
     /// Is this turn's resident size close enough to the wall to compact first?
     /// `false` whenever the window is unknown — not knowing is not a reason to
     /// act, and an invented number here would compact conversations that had room.
+    /// **The window, in the units the caller is counting in.**
+    ///
+    /// Every caller measures `resident` off the ledger, so the window has to be
+    /// in ledger tokens too. [`Config::context_window`] is the PROVIDER's number
+    /// — it is what the provider will refuse at, and it is what the banner
+    /// should say — so planning against it directly compares two different
+    /// counts. See [`Config::ledger_scale`] for the measurement and what it cost.
+    ///
+    /// The ratio is measured, not assumed, because it is not a constant: it is
+    /// how much of the conversation is reasoning, which varies per session and
+    /// over the life of one. Clamped to [1/4, 4] so a single odd turn cannot
+    /// move the wall somewhere absurd, and `None` stays `None` — an unknown
+    /// window is not a large one.
+    pub fn planning_window(&self) -> Option<u64> {
+        let w = self.context_window?;
+        let Some((ledger, provider)) = self.ledger_scale else {
+            return Some(w);
+        };
+        if ledger == 0 || provider == 0 {
+            return Some(w);
+        }
+        let scaled = (w as u128 * ledger as u128) / provider as u128;
+        Some((scaled.clamp((w / 4) as u128, (w as u128) * 4)) as u64)
+    }
+
     pub fn should_compact(&self, resident_tokens: u64) -> bool {
-        let Some(w) = self.context_window else {
+        let Some(w) = self.planning_window() else {
             return false;
         };
         self.auto_compact && resident_tokens + self.headroom() >= w
@@ -720,6 +772,7 @@ impl Config {
             store: None,
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
+            ledger_scale: None,
             unconfined: false,
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
@@ -1769,6 +1822,63 @@ pub fn now_ns() -> u128 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The window is planned in the units the ledger counts in.**
+    ///
+    /// The ledger counts a LOCAL rendered prompt with reasoning in it; a
+    /// messages provider is sent neither, because `letibot_provider::messages`
+    /// drops `Reasoning` (DeepSeek documents that `reasoning_content` must not
+    /// be sent back). Comparing one against the other made a conversation that
+    /// thinks a lot compact while most of its window was free.
+    ///
+    /// The numbers below are the operator's own, 2026-09-20.
+    #[test]
+    fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.context_window = Some(1_000_000);
+        cfg.auto_compact = true;
+
+        // Before any metered turn there is nothing to convert with, so the
+        // provider's number stands.
+        assert_eq!(cfg.planning_window(), Some(1_000_000));
+
+        // letibot #t18: the ledger called it 1,072,176; deepseek called it
+        // ~607,000. Planning against 1,000,000 ledger tokens compacted a
+        // conversation with 39% of its window free.
+        cfg.ledger_scale = Some((1_072_176, 607_000));
+        let w = cfg.planning_window().expect("a window");
+        assert!(
+            (1_700_000..1_800_000).contains(&w),
+            "a 1M provider window is ~1.77M ledger tokens here, got {w}"
+        );
+        assert!(
+            !cfg.should_compact(1_072_176),
+            "this is the turn that compacted early and must not any more"
+        );
+        // And it still compacts when the conversation really is at the wall.
+        assert!(cfg.should_compact(w));
+
+        // leticl #t11 thought less, so its ledger runs closer to the provider's
+        // count — the ratio is a measurement, not a constant.
+        cfg.ledger_scale = Some((1_495_702, 1_048_607));
+        let w2 = cfg.planning_window().expect("a window");
+        assert!((1_400_000..1_500_000).contains(&w2), "got {w2}");
+
+        // A nonsense measurement cannot move the wall somewhere absurd.
+        cfg.ledger_scale = Some((1, 1_000_000));
+        assert_eq!(cfg.planning_window(), Some(250_000), "clamped at a quarter");
+        cfg.ledger_scale = Some((1_000_000, 1));
+        assert_eq!(
+            cfg.planning_window(),
+            Some(4_000_000),
+            "clamped at four times"
+        );
+
+        // An unknown window is still not a large one.
+        cfg.context_window = None;
+        assert_eq!(cfg.planning_window(), None);
+        assert!(!cfg.should_compact(u64::MAX / 2));
+    }
 
     /// **A session that starts on a metered provider gets a wall.**
     ///

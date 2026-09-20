@@ -1011,15 +1011,29 @@ impl<'a> Sessions<'a> {
     /// window is configured. A caller that has just told the operator "a
     /// compaction was attempted" needs that to be a fact rather than a hope.
     fn compact_if_at_the_wall(&mut self, session_id: &str) -> bool {
-        let resident = match self.open.get(session_id) {
-            Some(h) => h.ledger_len() as u64,
+        // **The SESSION's config, not the daemon's.** The wall is a property of
+        // the model this conversation is on and of how its tokens relate to the
+        // ledger's — both of which are per session and neither of which the base
+        // knows. `self.base` was answering for every session at once, so a
+        // session on a metered provider was judged by the daemon's unmeasured
+        // numbers. See `Config::ledger_scale`.
+        let (resident, window, headroom, due) = match self.open.get(session_id) {
+            Some(h) => {
+                let r = h.ledger_len() as u64;
+                let c = h.config();
+                (
+                    r,
+                    c.planning_window().unwrap_or(0),
+                    c.headroom(),
+                    c.should_compact(r),
+                )
+            }
             None => return false,
         };
-        if !self.base.should_compact(resident) {
+        if !due {
             return false;
         }
         let hub = self.registry.get(session_id);
-        let window = self.base.context_window.unwrap_or(0);
         // **Said where it can be seen, not only where a head would see it.** The
         // hub reaches attached heads; a one-shot has none, and a compaction it
         // could not see is precisely the "a session doing something the operator
@@ -1028,7 +1042,7 @@ impl<'a> Sessions<'a> {
         eprintln!(
             "  compacting: {resident} of {window} tokens resident, less than the {} the \
              next turn needs",
-            self.base.headroom()
+            headroom
         );
         if let Some(hub) = &hub {
             hub.publish(SessionEvent::Warning {
@@ -1038,7 +1052,7 @@ impl<'a> Sessions<'a> {
                      {} the next turn needs — compacting now, as one more message so \
                      the prefix the server already holds is reused. This is the wall, \
                      not a judgement about the conversation.",
-                    self.base.headroom()
+                    headroom
                 ),
             });
         }
@@ -1064,7 +1078,13 @@ impl<'a> Sessions<'a> {
                 // conversation continue. Better to say so once and let the wall
                 // be the wall: the operator can `/compact` by hand, shorten the
                 // session, or raise the window.
-                if self.base.should_compact(after) {
+                // The session's own judgement again, for the same reason.
+                let still_due = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.config().should_compact(after))
+                    .unwrap_or(false);
+                if still_due {
                     self.base.auto_compact = false;
                     if let Some(h) = self.open.get_mut(session_id) {
                         h.config_mut().auto_compact = false;
@@ -1079,7 +1099,7 @@ impl<'a> Sessions<'a> {
                                  looping once per turn. The summary itself is near the \
                                  wall: start a fresh session, or raise --context-window \
                                  if the server really has more.",
-                                self.base.headroom()
+                                headroom
                             ),
                         });
                     }
