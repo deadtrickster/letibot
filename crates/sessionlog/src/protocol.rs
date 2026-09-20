@@ -658,17 +658,19 @@ pub enum ClientFrame {
     /// seat, its acks and its live events are untouched. Lazy by construction:
     /// nothing is read until this is sent, and sending it again is a fresh read.
     Peek { session_id: String },
-    /// **Read a window of one row's body, addressed by the row's position in the session.**
+    /// **The daemon is a proxy: it answers from its caches, or from the store.**
     ///
-    /// The operator: *"bring fetchrows back for long conversations, we dont want to hold all
-    /// rows in memory for really big conversations"*. The first version addressed a row by
-    /// `item_id`, which a head can only name if it **received** it — and the rows this is for
-    /// are exactly the ones it did not. So it was uncallable, and it was removed.
+    /// Its two in-memory rings are a **cache tuned for the normal case** — the tail of a
+    /// conversation and some scrollback, which is what a head shows — and a request for a row
+    /// outside them is an ordinary cache miss. So the daemon reads the store, which has every
+    /// row, and the head neither knows nor should know which of the three answered. That is
+    /// why this takes an ordinal and not a tier: there is one name for a row, and resolving it
+    /// is the daemon's business.
     ///
-    /// `row` is the **session ordinal**: `0` is the session's first row ever, not the oldest
-    /// the daemon still holds. That is the number a head *can* express, because it knows its
-    /// own window (`items_dropped + index of a row it holds`) and `items_dropped` says how
-    /// many came before it. "Scroll up past my oldest row" is then `row = items_dropped - 1`.
+    /// `row` is the **session ordinal**: `0` is the session's first row ever. That is the
+    /// number a head can always construct, because it knows the rows it holds and
+    /// `items_dropped` says how many came before them. "Scroll up past my oldest row" is then
+    /// `row = items_dropped - 1`.
     ///
     /// `at` is a byte offset into that row's body and `len` how much to send back. The model is
     /// `read`'s own `ranges`, one layer down.
@@ -817,9 +819,12 @@ pub enum ServerFrame {
     /// than refused, so where the answer starts is the daemon's decision and not a
     /// restatement of the request.
     ///
-    /// `body: None` is the case a head must not confuse with an empty one: the row is not
-    /// in the daemon's view at all — trimmed by `ViewBounds`, or past the end of the session
-    /// — and an empty string would read as "the row is empty" rather than "nobody has it".
+    /// **`body: None` means the row does not exist, not that the daemon must be asked
+    /// elsewhere.** The daemon is a **proxy** for anything its own caches do not hold —
+    /// see [`ClientFrame::FetchRow`] — so a head asks once and never learns which tier
+    /// answered. `None` for a row past the end of the session, and for a session this
+    /// daemon cannot reach the store of; an empty string would read as "the row is empty"
+    /// rather than "there is no such row", and the two must not look alike.
     RowFetched {
         session_id: String,
         /// The session ordinal that was asked for, echoed so the answer names its row.

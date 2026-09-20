@@ -388,22 +388,37 @@ matching `fill_forward` below — both the same shape as the existing one, since
 `item_lines` and nothing else. **This half pays for itself with no protocol traffic at all**: the
 head can re-render any row it holds, so a ring costs a re-render and saves the memory.
 
-**(b) `FetchRow` is restored and *callable*, with a caller still to write.** It was removed
-because it addressed a row by `item_id`, which a head can only name if it **received** it — and
-the rows this is for are exactly the ones it did not. The anchor is now the row's **session
-ordinal**: `0` is the session's first row ever, which a head can always construct, because it
-knows the rows it holds and `items_dropped` says how many came before them. "Scroll up past my
-oldest row" is `items_dropped - 1`.
+**(b) `FetchRow`, and the daemon is a *proxy*.** The operator's framing, and it is the right
+one: *"it is a cache problem - the daemon is optimized for normal usecase - heads show the latest
++ some scroll back. if a head wants something in the way past - daemon is simply a proxy from the
+store to the head."*
 
-That is a change of key rather than a rewrite, and it is what makes the thing expressible. Eight
-tests in `crates/sessionlog/tests/fetch_row.rs`, including `an_ordinal_names_window_and_trimmed_rows_alike`
-— a view that has trimmed its first row still answers ordinal 1 with the session's *second* row,
-and answers ordinal 0 with `None` rather than sliding the numbering. That `None` is the honest
-answer for a trimmed row; the store read that would fill it is the piece below.
+So the two in-memory rings are not tiers a head navigates — they are **a cache tuned for the
+normal case**, and a request outside them is an ordinary cache miss that the daemon resolves from
+the store. The head asks **once**, by ordinal, and never learns which of the three answered. That
+is why the frame takes an ordinal and not a tier, and why `body: None` means *the row does not
+exist* rather than *ask somewhere else*.
 
-The window arithmetic is unchanged and was always right: clamp `at`, round it to a character
-boundary, cap `len` **at the daemon** rather than trusting the request, send the body's `total`
-beside the window, and answer `body: None` rather than `""` for a row nobody holds.
+This also replaces the "three steps" an earlier draft of this item had, which had the head
+reasoning about log ring versus store. It does not: resolution belongs behind the frame.
+
+**What is still missing:**
+
+1. **The head does not ask yet** — no flag for "this ordinal is missing", no tracking of an
+   answer, and no partial-body render. Blocking, and independent of where the answer comes from.
+2. **The daemon does not proxy yet.** `row_body_at` answers from the view and returns `None` on a
+   miss (`crates/sessionlog/src/view.rs`), so today a trimmed row answers `None` even though the
+   log ring — and the store — still have it. Resolution wants to be one method: view, then log
+   ring, then the store through
+   [`SessionSource`](../../crates/sessionlog/src/registry.rs), the trait that already exists for
+   exactly this reason (*"A **trait and not a `Store`**… the daemon passes an implementation in"*),
+   implemented as `StoreSessions` in `crates/harnessd/src/sessions.rs`.
+
+**What the store path has to answer**, recorded because it would otherwise be found by a row
+landing in the wrong place: **a session is not one table of rows.** Resume forks make the rows a
+*chain* of transcripts — `crates/harnessd/src/transcript_source.rs:129` walks `transcript` ordered
+by `created_at` rather than querying `transcript_item` directly — so the ordinal the head counts
+must be the sequence that chain produces.
 
 **And the head's window and the daemon's ring are allowed to disagree** — the operator's call:
 *"regarding different heads that can display disjoint sets - it is their problem essentially"*.
