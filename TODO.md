@@ -534,7 +534,7 @@ to fit a screen.
 
 ---
 
-## R21 — the jobs pane cannot show a job's output, and the reply path is why
+## R21 — the jobs pane cannot show a job's output, and the reply path is why — **DONE 2026-09-20 (`3aabe4f`)**
 
 The operator, 2026-09-20: *"when i press enter on jobs pane im not shown the job output im brought
 back to the main conversation with /job <id> posted - this is not what i want - when i press enter
@@ -586,7 +586,9 @@ closes the pane so the operator can read it there.
   structured twin were written and are small.
 - The head needs **no new frame and no reply channel**: `CommandKind` + the fan-out already carry
   it, and the head's `ServerEvent` arm fills a `job_out` pane that mirrors `sub_out`.
-- Paging is `Action::Slash { line: "job j12 --offset N" }` again — the verb already takes it.
+- Paging is the same event again: the answer carries `next`, the offset to ask at when the ring
+  still holds more, and the head asks a `ReadJobOutput` at it. The head keeps a stack of the
+  offsets it was given rather than the page size, because the page size is the daemon's.
 - **No `PROTOCOL_VERSION` bump**: `SessionEvent` is an internally-tagged enum and this is an
   additive variant, the same way `TranscriptContent` and `JobSettled` were added.
 
@@ -599,10 +601,13 @@ closes the pane so the operator can read it there.
 to the list, `↓` pages when there is more and says so when there is not, and the conversation gains
 nothing the operator did not ask to put there.
 
-**Not started.** The design above is settled and the two shortcuts are ruled out with reasons; the
-implementation is the six files. Left unstarted deliberately at the end of a long session, after
-one half-built feature earlier the same day — a protocol addition begun tired is how a tree ends up
-not compiling.
+**Done.** Implemented in `3aabe4f`, and one thing is different from the design above: paging is
+**not** a slash reply. Once the window is a `ReadJobOutput` there is no reason to route "the next
+page" back through the verb, so the event carries `next` and the head asks a second
+`ReadJobOutput` at it — the head keeps the offsets (`←` walks back the way `→` came) rather than
+recomputing a window it does not size. One thing was also **added** that the design did not name:
+the window is ephemeral, so `scrub::is_interactive` returns true and `StoredProjection::keep`
+strips it and counts it — a window from four minutes ago is a lie about now.
 
 ---
 
