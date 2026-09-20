@@ -5497,6 +5497,44 @@ mod tests {
     /// the permissions file" without ever saying **which**, and did not let them
     /// adjust it. The derived pattern is in the label now — the same helper the
     /// recording site uses, so what is signed and what is written cannot drift —
+    /// **The consented point admits a shell command without asking.**
+    ///
+    /// The operator, 2026-09-20: *"switched leticl session to allow-all, pressed
+    /// y, got a warning, still asked about grep"*. The move itself is tested in
+    /// `wired`; this is the half that matters afterwards — that the point the
+    /// move lands on actually stops asking about `bash`.
+    #[test]
+    fn the_consented_point_admits_a_shell_command_unasked() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::ALLOW_ALL_HERE)
+        .with_exec_follows_mode(true)
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+
+        let args = json!({"command": "cd /home/dead/Projects/leticl && grep -n \"x\" src/"});
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the operator was asked at a point that admits exec: {}",
+            g.log[0].decision.basis
+        );
+        assert_eq!(g.log[0].decision.by, "gate:mode", "{:?}", g.log[0].decision);
+    }
+
     /// **The durable rule names the program that needs authority, not the first
     /// word of the line.**
     ///

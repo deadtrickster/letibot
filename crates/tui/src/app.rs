@@ -353,6 +353,18 @@ struct JobRow {
     /// How it came to be in the background: `asked`, `promoted`, or
     /// `promoted by NAME`. Empty on a settlement-only row, for the same reason.
     how: String,
+    /// **The command, copied when the row is made.**
+    ///
+    /// This used to be joined at draw time out of `self.turn`, and `self.turn` is
+    /// the CURRENT turn — while a background job's whole purpose is to outlive the
+    /// turn that started it. So the moment the turn ended, every settled job's row
+    /// read `(command not in this head's window)`, which the operator saw on a job
+    /// that had finished seconds earlier in the turn they were watching.
+    ///
+    /// Copied at the one moment it is certainly in the window: the backgrounded
+    /// finish, whose call is the call that is finishing. Empty only on a
+    /// settlement-only row, whose start this head genuinely never saw.
+    command: String,
     /// `JobState::word` once settled — `exited 0`, `killed by job_kill` — and
     /// empty while running. Deliberately the process's word, never "ok"/"error".
     state: String,
@@ -365,6 +377,20 @@ struct JobRow {
 /// it is in. The pane behaves like a terminal — the tail shows by default,
 /// arrows walk back toward the beginning — and the whole view is spilled to a
 /// file, because a cap on the pane must not be a cap on the record.
+/// **A subprocess's bytes must not drive the operator's terminal.**
+///
+/// `/job ID` hands back what a command wrote, and a command writes whatever it
+/// likes — colour, cursor moves, a scroll region, a title change. Rendered
+/// straight, those are instructions to the terminal the head is drawing on, from
+/// a process the head does not control. Control characters become a space, which
+/// keeps the column count the wrapper is about to rely on: dropping them instead
+/// would silently reflow the line.
+fn without_control(line: &str) -> String {
+    line.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// One row of the config pane.
 #[derive(Debug, Clone)]
 struct ConfigRow {
@@ -830,6 +856,19 @@ pub struct App {
     ///
     /// One field for all of them: only one pane is open at a time, and the
     /// alternative is six of these that each go stale separately.
+    /// **A slash reply that is a listing, not a sentence.**
+    ///
+    /// Feedback for `/…` arrives as `Warning { code: "slash" }`, and a head that
+    /// renders every warning as a note put `/job j89`'s SIXTEEN KILOBYTES of
+    /// command output straight into the conversation scrollback — between the
+    /// model's turns, with the subprocess's own ANSI in it. The operator, looking
+    /// at it: *"it returned the output in the main conversation window wtf"*.
+    ///
+    /// A one-line confirmation is still a note; those read well there and a pane
+    /// for them would be a keystroke to dismiss nothing. Anything longer is a
+    /// listing, and a listing belongs on a screen you open and close. `(title,
+    /// lines)`, `None` when the pane is shut.
+    slash_out: Option<(String, Vec<String>)>,
     pane_scroll: usize,
     /// What the last draw of a pane measured: how many rows it had, and how many
     /// fitted. Kept so a cursor moved by a keypress can scroll itself into view —
@@ -1135,6 +1174,7 @@ impl App {
             repo_todos_at: None,
             repo_sel: 0,
             repo_open: false,
+            slash_out: None,
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
@@ -1761,6 +1801,7 @@ impl App {
                         job,
                         call_id: String::new(),
                         how: String::new(),
+                        command: String::new(),
                         state,
                         produced,
                         elapsed_ms,
@@ -1970,11 +2011,20 @@ impl App {
                 // through the call's §4.1 target.
                 if let letibot_transcript::ToolOutcome::Backgrounded { handle, how, .. } = &outcome
                 {
+                    // Read now, not at draw time: this call is in the window
+                    // because it is the one finishing.
+                    let command = self
+                        .turn
+                        .as_ref()
+                        .and_then(|t| t.calls.iter().find(|c| c.call_id == call_id))
+                        .map(|c| c.target.clone())
+                        .unwrap_or_default();
                     self.jobs.retain(|j| j.job != *handle);
                     self.jobs.push(JobRow {
                         job: handle.clone(),
                         call_id: call_id.clone(),
                         how: how_word(how),
+                        command,
                         state: String::new(),
                         produced: 0,
                         elapsed_ms: 0,
@@ -2316,6 +2366,20 @@ impl App {
                 // "I chose not to show this" different from "nothing happened".
                 if code == "turn_failed" {
                     return Disposition::Filtered;
+                }
+                // A slash LISTING opens the pane; a slash sentence stays a note.
+                // The daemon sends both under one code — `detail` is the command
+                // it echoes back, then the reply — so the head splits them by the
+                // only thing that distinguishes them, which is length.
+                if code == "slash" || code == "slash_refused" {
+                    let (echo, body) = detail.split_once('\n').unwrap_or((&detail, ""));
+                    let lines: Vec<String> = body.lines().map(|l| without_control(l)).collect();
+                    if lines.len() > 3 {
+                        self.slash_out = Some((echo.to_string(), lines));
+                        self.pane_scroll = 0;
+                        self.redraw = true;
+                        return Disposition::Rendered;
+                    }
                 }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered
@@ -2750,6 +2814,32 @@ impl App {
                 }
                 Key::Esc | Key::CtrlC => {
                     self.sub_out = None;
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
+        // **The slash listing owns the keyboard while it is up**, the way the
+        // subagent-output pane above does: it is a screen covering the
+        // conversation, so the keys that scroll and dismiss it must not also
+        // reach the composer behind it.
+        if self.slash_out.is_some() {
+            match k {
+                Key::Esc | Key::CtrlC => {
+                    self.slash_out = None;
+                    self.pane_scroll = 0;
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Up => {
+                    self.pane_scroll = self.pane_scroll.saturating_add(1);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    self.pane_scroll = self.pane_scroll.saturating_sub(1);
                     self.redraw = true;
                     return None;
                 }
@@ -4508,7 +4598,14 @@ impl App {
         let room = h
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
-        let mut out = if self.help {
+        let mut out = if let Some((echo, lines)) = self.slash_out.clone() {
+            let p = self.cfg.palette();
+            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
+            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+            rows.push(String::new());
+            rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
+            self.pane_window(rows, room)
+        } else if self.help {
             let help = help_lines(&self.cfg, w);
             self.pane_window(help, room)
         } else if self.stats {
@@ -5809,17 +5906,23 @@ impl App {
             } else {
                 ("[!]", sgr::RED)
             };
-            // The command is the call's §4.1 display target, joined at draw time:
-            // the arguments reach a head with the transcript, which for a
-            // backgrounded call is the same moment as the finish. A settlement
-            // replayed without its start has no call to join, and the row then
-            // says so rather than guessing.
-            let command = self
-                .turn
-                .as_ref()
-                .and_then(|t| t.calls.iter().find(|c| c.call_id == j.call_id))
-                .map(|c| c.target.clone())
-                .filter(|t| !t.is_empty())
+            // **The command the row remembered**, then the live call, then an
+            // admission. The remembered one is what makes this right across a turn
+            // boundary: a background job outlives its turn by definition, and
+            // `self.turn` is only ever the current one, so joining against it made
+            // every settled job read `(command not in this head's window)` the
+            // moment the turn ended. The live lookup stays as the fallback for a
+            // row that predates the field, and the admission for a settlement whose
+            // start this head never saw — which is the case it was written for.
+            let command = Some(j.command.clone())
+                .filter(|c| !c.is_empty())
+                .or_else(|| {
+                    self.turn
+                        .as_ref()
+                        .and_then(|t| t.calls.iter().find(|c| c.call_id == j.call_id))
+                        .map(|c| c.target.clone())
+                        .filter(|t| !t.is_empty())
+                })
                 .unwrap_or_else(|| "(command not in this head's window)".to_string());
             let picked = i == sel;
             out.push(format!(
@@ -15024,6 +15127,143 @@ mod tests {
         assert!(
             lines.contains("not in this head's window"),
             "an unknown command says so: {lines}"
+        );
+    }
+
+    /// **A background job's command survives the turn that started it.**
+    ///
+    /// The lookup was against `self.turn`, which is only ever the CURRENT turn,
+    /// while outliving its turn is the whole point of a background job. So every
+    /// settled job read `(command not in this head's window)` as soon as the turn
+    /// ended. The operator, 2026-09-20, on a job that had finished seconds
+    /// earlier: *"▸ [x] j89 (command not in this head's window)"*.
+    #[test]
+    fn a_jobs_command_survives_the_turn_that_started_it() {
+        let mut a = App::new(plain_cfg(100));
+        a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            proposed_bash("c1", "\"cargo test --workspace\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            backgrounded_finished("j1", "c1"),
+        )));
+        let lines = a.jobs_lines(100).join("\n");
+        assert!(
+            lines.contains("cargo test"),
+            "while the turn is live: {lines}"
+        );
+
+        // The turn ends and the next one begins — the job is still running, and
+        // the call it came from is no longer in `self.turn`.
+        a.apply(ServerFrame::Event(env(3, testing::turn_started("t2"))));
+        let lines = a.jobs_lines(100).join("\n");
+        assert!(
+            lines.contains("cargo test"),
+            "the command was forgotten at the turn boundary: {lines}"
+        );
+        assert!(!lines.contains("not in this head's window"), "{lines}");
+    }
+
+    /// **A job's output opens a screen; it does not land in the conversation.**
+    ///
+    /// `/job ID` can hand back 16 KiB of whatever a command wrote, and it arrives
+    /// as `Warning { code: "slash" }` like every other slash reply — so a head
+    /// that renders warnings as notes put a subprocess's stdout, ANSI and all,
+    /// into the scrollback between the model's turns. The operator: *"it returned
+    /// the output in the main conversation window wtf"*.
+    #[test]
+    fn a_long_slash_reply_opens_a_pane_and_a_short_one_stays_a_note() {
+        let mut a = App::new(plain_cfg(80));
+        let notes_before = a.notes.len();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "slash".into(),
+                detail: "/job j89\nline one\nline two\nline three\nline four".into(),
+            },
+        )));
+        assert!(
+            a.slash_out.is_some(),
+            "a listing must not go to the scrollback"
+        );
+        assert_eq!(a.notes.len(), notes_before, "and must not also be a note");
+        let screen = a.screen(80, 24).join("\n");
+        assert!(screen.contains("/job j89"), "{screen}");
+        assert!(screen.contains("line four"), "{screen}");
+
+        // Esc closes it and the conversation is back.
+        a.key(Key::Esc);
+        assert!(a.slash_out.is_none());
+
+        // A one-line confirmation is still a note: a screen for it would be a
+        // keystroke to dismiss nothing.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Warning {
+                code: "slash".into(),
+                detail: "/mode automode\nthis session is at `automode`".into(),
+            },
+        )));
+        assert!(a.slash_out.is_none(), "a sentence is not a listing");
+        assert!(a.notes.len() > notes_before);
+    }
+
+    /// **A subprocess's control bytes never reach the terminal.**
+    ///
+    /// What `/job` returns is whatever the command wrote — colour, cursor moves,
+    /// a scroll region. Rendered straight, those are instructions to the
+    /// operator's terminal from a process nobody vetted.
+    #[test]
+    fn a_slash_listing_strips_control_characters() {
+        let mut a = App::new(plain_cfg(80));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "slash".into(),
+                detail: "/job j1\n\u{1b}[2m dim \u{1b}[0m\nb\nc\nd".into(),
+            },
+        )));
+        let (_, lines) = a.slash_out.clone().expect("a listing");
+        assert!(
+            !lines.iter().any(|l| l.contains('\u{1b}')),
+            "an escape survived into the pane: {lines:?}"
+        );
+        assert!(
+            lines[0].contains("dim"),
+            "the text itself is kept: {lines:?}"
+        );
+    }
+
+    /// **Enter on a job row asks the daemon for its output.**
+    ///
+    /// The operator: *"i cant enter the job to see its output"*. The binding is
+    /// guarded on an empty composer — Enter with text in it is still a prompt —
+    /// so both halves are pinned here.
+    #[test]
+    fn enter_on_a_job_row_reads_its_output() {
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Event(env(
+            1,
+            proposed_bash("c1", "\"cargo test --workspace\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            backgrounded_finished("j7", "c1"),
+        )));
+        a.key(Key::CtrlQ);
+        assert!(a.jobs_pane);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Slash {
+                line: "job j7".into()
+            })
+        );
+        assert!(
+            !a.jobs_pane,
+            "the reply lands on the log the pane was covering"
         );
     }
 

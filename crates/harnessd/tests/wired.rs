@@ -135,7 +135,16 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     // addition is not a decision until it is written down here too.
     assert_eq!(
         w.seated,
-        vec!["read", "grep", "glob", "ask_code", "ask_corpus", "read_spill", "todo_write", "flowy"],
+        vec![
+            "read",
+            "grep",
+            "glob",
+            "ask_code",
+            "ask_corpus",
+            "read_spill",
+            "todo_write",
+            "flowy"
+        ],
         "the default tool set changed; that is a re-prefill for every stored session \
          as well as a capability change"
     );
@@ -176,7 +185,15 @@ fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
     let p = parts(&cfg);
     let hub = Hub::new(&cfg.session_id);
     let h = Harness::open(&p, cfg, hub).expect("opens");
-    for absent in ["write", "edit", "bash", "job_list", "monitor", "web_search", "todo"] {
+    for absent in [
+        "write",
+        "edit",
+        "bash",
+        "job_list",
+        "monitor",
+        "web_search",
+        "todo",
+    ] {
         assert!(
             !h.wiring().seated.iter().any(|s| s == absent),
             "`{absent}` reached a default session's prompt"
@@ -388,9 +405,8 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 
     // With the flag and the toolchain granted.
     cfg.allow_bash = true;
-    cfg.grants_ro = vec![
-        std::path::PathBuf::from(std::env::var("HOME").expect("a home")).join(".cargo"),
-    ];
+    cfg.grants_ro =
+        vec![std::path::PathBuf::from(std::env::var("HOME").expect("a home")).join(".cargo")];
     cfg.session_id = "s-coder-bash".into();
     let hub2 = Hub::new(&cfg.session_id);
     let h2 = Harness::open_with(&p, cfg, hub2, Some(Box::new(Attached)), None)
@@ -413,7 +429,10 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
         .map(|d| d.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(all.contains(".cargo"), "the grant is not in the disclosure: {all}");
+    assert!(
+        all.contains(".cargo"),
+        "the grant is not in the disclosure: {all}"
+    );
     assert!(
         all.contains("READABLE INTO CONTEXT"),
         "a grant must be disclosed with what it costs: {all}"
@@ -508,7 +527,9 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/home/dead/Projects/letibot",
-        target_exists: None, scripts: &[] });
+        target_exists: None,
+        scripts: &[],
+    });
     assert!(
         matches!(decision, GateDecision::Refuse { .. }),
         "a gate with nothing behind it must refuse"
@@ -579,7 +600,9 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         turn_id: "t1",
         call_id: "c2",
         workspace: "/home/dead/Projects/letibot",
-        target_exists: Some(false), scripts: &[] });
+        target_exists: Some(false),
+        scripts: &[],
+    });
     let adjudicable: Vec<(String, String)> = hub
         .retained()
         .into_iter()
@@ -593,7 +616,10 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
     let (by, grant) = adjudicable
         .last()
         .expect("a call nobody could answer is still a refusal somebody can grant");
-    assert_eq!(by, "none", "nobody was attached, and that is who refused it");
+    assert_eq!(
+        by, "none",
+        "nobody was attached, and that is who refused it"
+    );
     assert!(
         grant.contains("adj-"),
         "the operator must be able to grant it by name: {grant}"
@@ -633,5 +659,41 @@ fn a_denial_is_replayed_to_a_head_that_was_not_there() {
         kept, 1,
         "scrubbing a denial puts back the hole §4b was written against, one head \
          later: somebody who joined after the refusal sees only a dead task"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The operator's sequence, 2026-09-20: "switched leticl session to allow-all,
+// pressed y, got a warning, still asked about grep".
+
+/// A leticode session, as the daemon opens one: unconfined, `bash` seated, the
+/// point it actually starts at.
+fn leticode_cfg(session: &str) -> Config {
+    let mut cfg = config(Seat::Leticode);
+    cfg.session_id = session.into();
+    cfg.allow_bash = true;
+    cfg.mode = letibot_tools::mode::Mode::AUTO_EDITS;
+    // automode-edits needs an oracle to open; the endpoint is never contacted
+    // here (reachability is deliberately not probed at open).
+    cfg.oracle = Some(letibot_turn::Endpoint::parse("127.0.0.1:8080").expect("endpoint"));
+    cfg
+}
+
+#[test]
+fn consenting_to_allow_all_admits_a_shell_command_unasked() {
+    let cfg = leticode_cfg("allow-all-exec");
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
+        .expect("a leticode session opens at automode-edits");
+
+    // The move the head sends after the operator presses `y`.
+    let said = h
+        .set_mode_consented(letibot_tools::mode::Mode::ALLOW_ALL, true)
+        .expect("consent moves the session");
+    eprintln!("  set_mode_consented -> {said}");
+    assert!(
+        said.contains("this box") || said.contains("confirmation"),
+        "the move must say it stands on the confirmation: {said}"
     );
 }
