@@ -903,8 +903,13 @@ impl Hub {
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
                 }
+                // "requested" said nothing about when, and the answer used to be
+                // "after the turn" — which is why it read as having done nothing.
+                // A running turn takes it at its next round boundary now
+                // (`Harness::apply_queued_mode`), so this is true in both states.
                 (CommandKind::Mode { name, consented }, _) => format!(
-                    "mode `{name}` requested{}",
+                    "mode `{name}` requested — it takes effect from the next call, \
+                     whether or not a turn is running{}",
                     if *consented {
                         " — with the operator's confirmation that this box is the boundary"
                     } else {
@@ -1039,6 +1044,27 @@ impl Hub {
                 CommandKind::Prompt { .. } | CommandKind::Interrupt { .. }
             )
         })?;
+        g.commands.remove(i)
+    }
+
+    /// **The next mode change a running turn can act on.**
+    ///
+    /// A mode command used to sit here until the worker came back, which is
+    /// after the turn — so `/mode` during a turn moved nothing while the turn
+    /// kept asking under the old point. That is precisely when an operator
+    /// reaches for it: they are being asked repeatedly and want it to stop.
+    /// `Harness::set_mode`'s own doc says the gate "reads its mode at decision
+    /// time" and that nobody typing `/mode` means "next time" — true between
+    /// turns and false during one, which is the gap this closes.
+    ///
+    /// Scanned and popped like [`Self::try_steering_command`], and for the same
+    /// reason it is safe to: the worker polls this at a ROUND boundary, on the
+    /// thread that owns the harness, so the change is applied by its owner and
+    /// not raced into from a head's connection.
+    pub fn try_mode_command(&self) -> Option<QueuedCommand> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len())
+            .find(|&i| matches!(g.commands[i].kind, CommandKind::Mode { .. }))?;
         g.commands.remove(i)
     }
 
@@ -1568,6 +1594,62 @@ mod tests {
                 .iter()
                 .any(|d| d.req_id == "r1"),
             "the question must survive a malformed answer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mode_steering_tests {
+    use super::*;
+    use crate::testing::*;
+
+    /// **A mode change reaches a running turn.**
+    ///
+    /// It used to sit in the queue until the worker came back — which is after
+    /// the turn — so `/mode allow-all` during a turn moved nothing while the turn
+    /// went on asking under the old point. Measured on the operator's own session,
+    /// 2026-09-20: four asks at `automode-edits` after they had set `allow-all`,
+    /// and the two confirmation cards arriving only when the model stopped.
+    #[test]
+    fn a_mode_command_is_taken_mid_turn_and_a_compaction_still_waits() {
+        let hub = Hub::new("s1");
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+
+        hub.submit(&a.head_id, "c1", 0, CommandKind::Compact);
+        hub.submit(
+            &a.head_id,
+            "c2",
+            0,
+            CommandKind::Mode {
+                name: "allow-all".into(),
+                consented: true,
+            },
+        );
+
+        // The mode is taken now, from inside the turn.
+        let got = hub.try_mode_command().expect("a mode command");
+        match got.kind {
+            CommandKind::Mode { name, consented } => {
+                assert_eq!(name, "allow-all");
+                assert!(consented, "the operator's confirmation travelled with it");
+            }
+            other => panic!("took the wrong command: {other:?}"),
+        }
+        // Once. A second poll finds nothing rather than re-applying it.
+        assert!(hub.try_mode_command().is_none());
+
+        // And the compaction queued in front of it is untouched: it belongs to the
+        // worker, at the end of the turn, exactly as before.
+        assert!(
+            hub.try_steering_command().is_none(),
+            "a compaction is not steering"
+        );
+        assert!(
+            matches!(
+                hub.take_command().map(|c| c.kind),
+                Some(CommandKind::Compact)
+            ),
+            "the compaction was eaten"
         );
     }
 }
