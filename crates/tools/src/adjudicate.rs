@@ -545,8 +545,24 @@ pub fn always_ask_options() -> Vec<DecisionOption> {
 /// was that the offer said "add tool and verb to the permissions file" without
 /// ever saying **which**, and a rule nobody can read is one nobody should be
 /// asked to sign.
-pub fn permission_options(derived: &str) -> Vec<DecisionOption> {
-    vec![
+/// **The durable rung, when one can be offered at all.**
+///
+/// `None` from [`derived_pattern`] means the matcher would ask again whatever
+/// rule were written, so the rung is left off the ladder rather than shown and
+/// then quietly ignored — the rule the recording site states: *"an operator is
+/// never shown a button whose effect the gate would then decline to honour."*
+/// One helper for all three ladders, because three copies of this condition is
+/// three chances for one of them to go on offering it.
+fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
+    derived.map(|d| DecisionOption {
+        id: "allow_always".into(),
+        label: format!("Always allow `{d}` (written to ~/.config/letibot/permission.json)"),
+        kind: OptionKind::AllowAlways,
+    })
+}
+
+pub fn permission_options(derived: Option<&str>) -> Vec<DecisionOption> {
+    let mut out = vec![
         DecisionOption {
             id: "allow_once".into(),
             label: "Allow this one".into(),
@@ -557,24 +573,19 @@ pub fn permission_options(derived: &str) -> Vec<DecisionOption> {
             label: "Allow this class for the rest of the session".into(),
             kind: OptionKind::AllowSession,
         },
-        DecisionOption {
-            id: "allow_always".into(),
-            label: format!(
-                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
-            ),
-            kind: OptionKind::AllowAlways,
-        },
-        DecisionOption {
-            id: "deny".into(),
-            label: "Deny".into(),
-            kind: OptionKind::Deny,
-        },
-        DecisionOption {
-            id: "deny_and_tell".into(),
-            label: "Deny, and tell the model why".into(),
-            kind: OptionKind::DenyAndTell,
-        },
-    ]
+    ];
+    out.extend(durable_rung(derived));
+    out.push(DecisionOption {
+        id: "deny".into(),
+        label: "Deny".into(),
+        kind: OptionKind::Deny,
+    });
+    out.push(DecisionOption {
+        id: "deny_and_tell".into(),
+        label: "Deny, and tell the model why".into(),
+        kind: OptionKind::DenyAndTell,
+    });
+    out
 }
 
 /// The ladder for an exec-class call.
@@ -588,8 +599,8 @@ pub fn permission_options(derived: &str) -> Vec<DecisionOption> {
 /// allow_session — so allow_session should always be offered too."* It is, and
 /// the grant it records is scoped the way the rule is: the program and the
 /// class, never exec at large.
-pub fn exec_options(derived: &str, program: &str) -> Vec<DecisionOption> {
-    vec![
+pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption> {
+    let mut out = vec![
         DecisionOption {
             id: "allow_once".into(),
             label: "Allow this one".into(),
@@ -600,24 +611,19 @@ pub fn exec_options(derived: &str, program: &str) -> Vec<DecisionOption> {
             label: format!("Allow `{program}` (this class) for the rest of the session"),
             kind: OptionKind::AllowSession,
         },
-        DecisionOption {
-            id: "allow_always".into(),
-            label: format!(
-                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
-            ),
-            kind: OptionKind::AllowAlways,
-        },
-        DecisionOption {
-            id: "deny".into(),
-            label: "Deny".into(),
-            kind: OptionKind::Deny,
-        },
-        DecisionOption {
-            id: "deny_and_tell".into(),
-            label: "Deny, and tell the model why".into(),
-            kind: OptionKind::DenyAndTell,
-        },
-    ]
+    ];
+    out.extend(durable_rung(derived));
+    out.push(DecisionOption {
+        id: "deny".into(),
+        label: "Deny".into(),
+        kind: OptionKind::Deny,
+    });
+    out.push(DecisionOption {
+        id: "deny_and_tell".into(),
+        label: "Deny, and tell the model why".into(),
+        kind: OptionKind::DenyAndTell,
+    });
+    out
 }
 
 /// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
@@ -633,8 +639,8 @@ pub fn exec_options(derived: &str, program: &str) -> Vec<DecisionOption> {
 /// should always be offered too."* The weaker option is back, and the gate
 /// honours it: an explicit answer is the operator overriding the point's
 /// default, which is what answering an ask has always meant.
-pub fn once_only_options(mode_name: &'static str, derived: &str) -> Vec<DecisionOption> {
-    vec![
+pub fn once_only_options(mode_name: &'static str, derived: Option<&str>) -> Vec<DecisionOption> {
+    let mut out = vec![
         DecisionOption {
             id: "allow_once".into(),
             label: "Allow this one".into(),
@@ -645,28 +651,23 @@ pub fn once_only_options(mode_name: &'static str, derived: &str) -> Vec<Decision
             label: "Allow this class for the rest of the session".into(),
             kind: OptionKind::AllowSession,
         },
-        DecisionOption {
-            id: "allow_always".into(),
-            label: format!(
-                "Always allow `{derived}` (written to ~/.config/letibot/permission.json)"
-            ),
-            kind: OptionKind::AllowAlways,
-        },
-        DecisionOption {
-            id: "deny".into(),
-            label: "Deny".into(),
-            kind: OptionKind::Deny,
-        },
-        DecisionOption {
-            id: "deny_and_tell".into(),
-            label: format!(
-                "Deny, and tell the model why  (mode `{mode_name}` asks once per call by \
+    ];
+    out.extend(durable_rung(derived));
+    out.push(DecisionOption {
+        id: "deny".into(),
+        label: "Deny".into(),
+        kind: OptionKind::Deny,
+    });
+    out.push(DecisionOption {
+        id: "deny_and_tell".into(),
+        label: format!(
+            "Deny, and tell the model why  (mode `{mode_name}` asks once per call by \
                  default; `allow_session` above lifts that for this class until the \
                  daemon stops)"
-            ),
-            kind: OptionKind::DenyAndTell,
-        },
-    ]
+        ),
+        kind: OptionKind::DenyAndTell,
+    });
+    out
 }
 
 /// One aggregated line of R11's history: what the gate did before, on actions of
@@ -1320,7 +1321,10 @@ impl Adjudicator for ConsoleAdjudicator {
                 return AdjudicationDecision::unavailable(
                     req,
                     "gate:unavailable",
-                    &format!("the console adjudicator's stream is poisoned (asked {})", self.who),
+                    &format!(
+                        "the console adjudicator's stream is poisoned (asked {})",
+                        self.who
+                    ),
                 );
             }
         };
@@ -1337,7 +1341,10 @@ impl Adjudicator for ConsoleAdjudicator {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Timeout,
                 by: "gate:timeout".into(),
-                basis: format!("the ask channel closed without an answer (asked {})", self.who),
+                basis: format!(
+                    "the ask channel closed without an answer (asked {})",
+                    self.who
+                ),
                 latency_ms: started.elapsed().as_millis() as u64,
             },
             Ok(_) => {
@@ -2165,14 +2172,21 @@ impl AdjudicatedGate {
             // that offers the durable rule, and the grant an exec answer
             // records is scoped to the program and the class, the way the
             // durable rule is scoped to the program and its verb.
-            options: if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
-                always_ask_options()
-            } else if call.access == Access::Exec {
-                exec_options(&derived_pattern(call), &grant_program(baseline))
-            } else if self.mode.grants == crate::mode::GrantScope::Session {
-                permission_options(&derived_pattern(call))
-            } else {
-                once_only_options(self.mode.name, &derived_pattern(call))
+            options: {
+                // Derived once. It is the answer to "what would *Always allow*
+                // write", and both the label and the decision to offer it at all
+                // come from that one answer.
+                let derived = derived_pattern(call, baseline);
+                let derived = derived.as_deref();
+                if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
+                    always_ask_options()
+                } else if call.access == Access::Exec {
+                    exec_options(derived, &grant_program(baseline))
+                } else if self.mode.grants == crate::mode::GrantScope::Session {
+                    permission_options(derived)
+                } else {
+                    once_only_options(self.mode.name, derived)
+                }
             },
             // §11.5: `Deny` for a permission, and `AgentDecides` only for a
             // question. Nothing here is a question yet.
@@ -2388,7 +2402,11 @@ impl AdjudicatedGate {
                 // makes an example an example. Still not the raw arguments: the rule
                 // that keeps a command out of the brief keeps it out of here.
                 action: format!("{} {}", row.request.tool, row.request.target),
-                verdict: if row.effect == "admit" { "allowed" } else { "refused" },
+                verdict: if row.effect == "admit" {
+                    "allowed"
+                } else {
+                    "refused"
+                },
                 turns_ago: match (now_turn, turn_seq(&row.request.turn_id)) {
                     (Some(n), Some(t)) => Some(n.saturating_sub(t)),
                     _ => None,
@@ -2563,7 +2581,11 @@ impl Gate for AdjudicatedGate {
 
     fn describe(&self) -> String {
         match (self.supervise, &self.advisor) {
-            (true, Some(a)) => format!("{} — supervised by {}", self.adjudicator.describe(), a.describe()),
+            (true, Some(a)) => format!(
+                "{} — supervised by {}",
+                self.adjudicator.describe(),
+                a.describe()
+            ),
             _ => self.adjudicator.describe(),
         }
     }
@@ -2843,7 +2865,11 @@ impl Gate for AdjudicatedGate {
             // somebody writes may admit something while still wanting the verdict.
             self.advise_on_a_settled_call(
                 &req,
-                format!("the `{}` mode admits {} unasked", self.mode.name, call.access.as_str()),
+                format!(
+                    "the `{}` mode admits {} unasked",
+                    self.mode.name,
+                    call.access.as_str()
+                ),
             );
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
@@ -3085,27 +3111,40 @@ impl Gate for AdjudicatedGate {
                             // option that writes a rule, so it is the one place a
                             // pattern has a meaning. An `allow_once` carrying a glob
                             // would be a grant nobody named.
+                            // **And a rule that could never match is not written.**
+                            //
+                            // `derived_pattern` returns `None` when the matcher
+                            // would ask again whatever we wrote — a heredoc or a
+                            // substitution, which `bash_segments` refuses to split.
+                            // The ladder no longer offers the option there, so this
+                            // is the belt to that brace: an `allow_always` arriving
+                            // from an older head, a replayed answer or a test must
+                            // not put a dead rule in the operator's config. Their
+                            // own typed glob still wins, because they wrote it
+                            // knowing what it says.
                             let pattern = match typed_pattern {
-                                Some(p) => p,
-                                None => derived_pattern(call),
+                                Some(p) => Some(p),
+                                None => derived_pattern(call, &baseline),
                             };
-                            let rule = crate::permission::Rule::new(
-                                call.name,
-                                pattern,
-                                crate::permission::Action::Allow,
-                            );
-                            if let Some(sink) = &self.permission_sink
-                                && let Err(e) = sink(&rule)
-                            {
-                                // The rule holds for this session either way; the
-                                // audit row carries why it will not outlive it.
-                                eprintln!(
-                                    "letibot: the always-allow rule `{}` for `{}` was not \
-                                     written down: {e}",
-                                    rule.pattern, rule.permission
+                            if let Some(pattern) = pattern {
+                                let rule = crate::permission::Rule::new(
+                                    call.name,
+                                    pattern,
+                                    crate::permission::Action::Allow,
                                 );
+                                if let Some(sink) = &self.permission_sink
+                                    && let Err(e) = sink(&rule)
+                                {
+                                    // The rule holds for this session either way; the
+                                    // audit row carries why it will not outlive it.
+                                    eprintln!(
+                                        "letibot: the always-allow rule `{}` for `{}` was not \
+                                     written down: {e}",
+                                        rule.pattern, rule.permission
+                                    );
+                                }
+                                self.permission.push(rule);
                             }
-                            self.permission.push(rule);
                         } else if k == OptionKind::AllowSession
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
                         {
@@ -3404,7 +3443,9 @@ fn target_of(args: &Value) -> String {
     // all. Its absence from this list is why an operator was shown *"`bash` wants
     // exec access to `<no target argument>`"* and had to approve a command the
     // prompt would not name — the one field the decision is actually about.
-    for key in ["command", "path", "url", "query", "repo", "server", "pattern"] {
+    for key in [
+        "command", "path", "url", "query", "repo", "server", "pattern",
+    ] {
         if let Some(v) = args.get(key).and_then(|v| v.as_str())
             && !v.trim().is_empty()
         {
@@ -3440,13 +3481,42 @@ fn permission_pattern(args: &Value) -> String {
 /// operator agreed to and the rule that lands in the file cannot drift apart.
 /// The operator-typed glob wins at the recording site; this is the default the
 /// label shows.
-fn derived_pattern(call: &GateCall<'_>) -> String {
-    match call.args.get("command").and_then(|v| v.as_str()) {
-        Some(cmd) if call.access == Access::Exec => {
-            crate::permission::always_pattern_for_command(cmd)
-        }
-        _ => permission_pattern(call.args),
+/// **The rule an *Always allow* answer would write, or `None` when none could.**
+///
+/// `None` is not "no pattern could be spelled" — it is *the matcher will ask
+/// again whatever we write*, and the caller drops the option rather than
+/// offering it. See [`crate::permission::a_durable_rule_can_apply`].
+///
+/// For an exec call the pattern is built from the **same stage
+/// [`grant_program`] reads** — the last one — rather than from the first
+/// whitespace token of the raw string. Those two disagreed on every compound
+/// command, and the durable half had the naive answer: measured on the
+/// operator's screen, `cd … && python3 - <<'PY'` offered `python3` for the
+/// session and `cd*` for ever.
+fn derived_pattern(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Option<String> {
+    let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) else {
+        return Some(permission_pattern(call.args));
+    };
+    if call.access != Access::Exec {
+        return Some(permission_pattern(call.args));
     }
+    if !crate::permission::a_durable_rule_can_apply(cmd) {
+        return None;
+    }
+    // The parse when there is one, the raw string when there is not: a command
+    // layer A could not resolve still gets an offer, and it gets the same one it
+    // always did rather than nothing.
+    let staged = baseline
+        .command
+        .as_ref()
+        .and_then(|n| n.stages.last())
+        .and_then(|stage| {
+            stage.program_name().map(|program| {
+                let first = stage.argv.first().and_then(|w| w.literal());
+                crate::permission::always_pattern_for_stage(program, first)
+            })
+        });
+    Some(staged.unwrap_or_else(|| crate::permission::always_pattern_for_command(cmd)))
 }
 
 /// A baseline's command as a shape, when it has one.
@@ -3490,27 +3560,55 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
             "human:test",
             move |req: &AdjudicationRequest| {
-                let opt = if req.target.contains("refused.example") { "deny" } else { "allow_once" };
-                Some(AdjudicationDecision::selected(req, opt, "human:test", "ruled"))
+                let opt = if req.target.contains("refused.example") {
+                    "deny"
+                } else {
+                    "allow_once"
+                };
+                Some(AdjudicationDecision::selected(
+                    req,
+                    opt,
+                    "human:test",
+                    "ruled",
+                ))
             },
         )))
         .with_surroundings(pinned());
         let unseen = |g: &AdjudicatedGate, cmd: &str| {
             matches!(
-                g.baseline_for(&bash_at(&json!({"command": cmd}), "probe")).tier,
-                Tier::AlwaysAsk { rule: "network_egress_to_an_unseen_host", .. }
+                g.baseline_for(&bash_at(&json!({"command": cmd}), "probe"))
+                    .tier,
+                Tier::AlwaysAsk {
+                    rule: "network_egress_to_an_unseen_host",
+                    ..
+                }
             )
         };
 
-        assert!(unseen(&g, "curl -s https://api.example.org/v1/x"), "a first contact");
+        assert!(
+            unseen(&g, "curl -s https://api.example.org/v1/x"),
+            "a first contact"
+        );
         let one = json!({"command": "curl -s https://api.example.org/v1/x"});
-        assert!(matches!(g.admit(&bash_at(&one, "s#1")), GateDecision::Admit));
-        assert!(!unseen(&g, "curl -s https://api.example.org/v1/y"), "the second contact with an admitted host is not a first one");
+        assert!(matches!(
+            g.admit(&bash_at(&one, "s#1")),
+            GateDecision::Admit
+        ));
+        assert!(
+            !unseen(&g, "curl -s https://api.example.org/v1/y"),
+            "the second contact with an admitted host is not a first one"
+        );
 
         assert!(unseen(&g, "curl -s https://refused.example/x"));
         let bad = json!({"command": "curl -s https://refused.example/x"});
-        assert!(!matches!(g.admit(&bash_at(&bad, "s#2")), GateDecision::Admit));
-        assert!(unseen(&g, "curl -s https://refused.example/y"), "a refused host is still unseen");
+        assert!(!matches!(
+            g.admit(&bash_at(&bad, "s#2")),
+            GateDecision::Admit
+        ));
+        assert!(
+            unseen(&g, "curl -s https://refused.example/y"),
+            "a refused host is still unseen"
+        );
     }
 
     /// **A shape the operator approved is not asked again — and the things that
@@ -3539,12 +3637,18 @@ mod tests {
         .with_surroundings(pinned());
 
         let one = json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
-        assert!(matches!(g.admit(&bash_at(&one, "s#1")), GateDecision::Admit));
+        assert!(matches!(
+            g.admit(&bash_at(&one, "s#1")),
+            GateDecision::Admit
+        ));
         assert_eq!(asked.load(Ordering::Relaxed), 1);
 
         // Different pattern, different context count, different file: one shape.
         let two = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
-        assert!(matches!(g.admit(&bash_at(&two, "s#2")), GateDecision::Admit));
+        assert!(matches!(
+            g.admit(&bash_at(&two, "s#2")),
+            GateDecision::Admit
+        ));
         assert_eq!(
             asked.load(Ordering::Relaxed),
             1,
@@ -3617,7 +3721,10 @@ mod tests {
 
         // A different pattern, count and file — one shape, and nobody is asked.
         let now = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
-        assert!(matches!(g.admit(&bash_at(&now, "s#1")), GateDecision::Admit));
+        assert!(matches!(
+            g.admit(&bash_at(&now, "s#1")),
+            GateDecision::Admit
+        ));
         assert_eq!(
             asked.load(Ordering::Relaxed),
             0,
@@ -3648,11 +3755,9 @@ mod tests {
         .with_surroundings(pinned());
 
         let cmd = "grep -n \"fn foo\" -A 3 /w/b.rs";
-        let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(
-            cmd,
-            &pinned(),
-        ))
-        .expect("a command has a shape");
+        let shape =
+            crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(cmd, &pinned()))
+                .expect("a command has a shape");
 
         // Seeded at a class this call is not: read, off the project, irreversible.
         let wrong = ActionClass {
@@ -3676,7 +3781,10 @@ mod tests {
     #[test]
     fn an_unreadable_seeded_class_is_dropped_rather_than_guessed() {
         let mut g = AdjudicatedGate::closed();
-        assert_eq!(g.seed_shapes([("grep -n <arg>".to_string(), "nonsense".to_string())]), 0);
+        assert_eq!(
+            g.seed_shapes([("grep -n <arg>".to_string(), "nonsense".to_string())]),
+            0
+        );
         assert_eq!(
             g.seed_shapes([("grep -n <arg>".to_string(), "read,host_project".to_string())]),
             0,
@@ -3746,7 +3854,12 @@ mod tests {
         struct Session;
         impl Adjudicator for Session {
             fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
-                AdjudicationDecision::selected(req, "allow_session", "human:test", "yes, for the session")
+                AdjudicationDecision::selected(
+                    req,
+                    "allow_session",
+                    "human:test",
+                    "yes, for the session",
+                )
             }
             fn describe(&self) -> String {
                 "test".into()
@@ -3761,9 +3874,15 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: None, scripts: &[] };
+            target_exists: None,
+            scripts: &[],
+        };
         assert!(matches!(g.admit(&call), GateDecision::Admit));
-        assert_eq!(g.grants().len(), 1, "a session grant was taken under writes-allowed");
+        assert_eq!(
+            g.grants().len(),
+            1,
+            "a session grant was taken under writes-allowed"
+        );
 
         // Move to always-ask: the grant does not survive the point it was taken at.
         let dropped = g.set_mode(Mode::ALWAYS_ASK).expect("the gate moves");
@@ -3784,7 +3903,9 @@ mod tests {
             turn_id: "t1",
             call_id: "c2",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true), scripts: &[] };
+            target_exists: Some(true),
+            scripts: &[],
+        };
         let _ = g.admit(&write);
         assert_eq!(
             g.grants().len(),
@@ -3873,7 +3994,9 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true), scripts: &[] });
+            target_exists: Some(true),
+            scripts: &[],
+        });
         assert!(
             matches!(d, GateDecision::Admit),
             "the model authorised it and the person was asked anyway: {d:?}"
@@ -3890,7 +4013,9 @@ mod tests {
             turn_id: "t1",
             call_id: "c2",
             workspace: "/home/dead/Projects/letibot",
-            target_exists: Some(true), scripts: &[] });
+            target_exists: Some(true),
+            scripts: &[],
+        });
         assert!(
             !matches!(d, GateDecision::Admit),
             "an always-ask action was settled by the model: {d:?}"
@@ -3909,10 +4034,16 @@ mod tests {
             "cargo test -p letibot-tools"
         );
         // Still the most concrete argument first for the file tools.
-        assert_eq!(super::target_of(&json!({"path": "src/main.rs"})), "src/main.rs");
+        assert_eq!(
+            super::target_of(&json!({"path": "src/main.rs"})),
+            "src/main.rs"
+        );
         // And a call that genuinely names nothing still says so rather than
         // borrowing a word it never had.
-        assert_eq!(super::target_of(&json!({"limit": 5})), "<no target argument>");
+        assert_eq!(
+            super::target_of(&json!({"limit": 5})),
+            "<no target argument>"
+        );
     }
 
     /// `Gate::describe` defaults to naming the absence, and an attached gate names
@@ -3942,7 +4073,9 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/w",
-            target_exists: Some(true), scripts: &[] }
+            target_exists: Some(true),
+            scripts: &[],
+        }
     }
 
     /// **At the widest point on the operator's box, the secret stores are still
@@ -3959,7 +4092,12 @@ mod tests {
     #[test]
     fn the_never_write_list_outranks_the_widest_point_on_this_box() {
         let yes = |req: &AdjudicationRequest| {
-            Some(AdjudicationDecision::selected(req, "allow_once", "model:test", "sure"))
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_once",
+                "model:test",
+                "sure",
+            ))
         };
         let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new("model:test", yes)))
             .with_surroundings(pinned())
@@ -3968,7 +4106,10 @@ mod tests {
         // The point of the point: an ordinary edit inside the workspace, admitted
         // with nobody asked at all.
         let ordinary = json!({"path": "/w/src/lib.rs", "content": "fn main() {}"});
-        assert!(matches!(g.admit(&call("write", &ordinary)), GateDecision::Admit));
+        assert!(matches!(
+            g.admit(&call("write", &ordinary)),
+            GateDecision::Admit
+        ));
 
         // And the stores, which the mode cannot reach.
         for path in [
@@ -4045,7 +4186,11 @@ mod tests {
 
     impl Fixed {
         fn new(id: &'static str, allow: bool) -> Self {
-            Fixed { id, allow, seen: std::sync::Mutex::new(None) }
+            Fixed {
+                id,
+                allow,
+                seen: std::sync::Mutex::new(None),
+            }
         }
     }
 
@@ -4077,8 +4222,9 @@ mod tests {
     }
 
     fn supervised_gate(model_allows: bool, human_allows: bool) -> AdjudicatedGate {
-        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", model_allows));
-                AdjudicatedGate::new(Box::new(Fixed::new("human:op", human_allows)))
+        let advisor: std::sync::Arc<dyn Adjudicator> =
+            std::sync::Arc::new(Fixed::new("model:test", model_allows));
+        AdjudicatedGate::new(Box::new(Fixed::new("human:op", human_allows)))
             .with_mode(crate::mode::Mode::ALWAYS_ASK)
             .with_advisor(advisor)
             .start_supervised(true)
@@ -4099,8 +4245,9 @@ mod tests {
                 .first()
                 .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
         });
-        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", true));
-                let mut g = AdjudicatedGate::new(Box::new(human))
+        let advisor: std::sync::Arc<dyn Adjudicator> =
+            std::sync::Arc::new(Fixed::new("model:test", true));
+        let mut g = AdjudicatedGate::new(Box::new(human))
             .with_mode(crate::mode::Mode::ALWAYS_ASK)
             .with_advisor(advisor)
             .start_supervised(true);
@@ -4153,7 +4300,9 @@ mod tests {
         assert_eq!(row.effect, "refuse");
         // And the label, computed from the two rather than typed later.
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("revoked"),
             "the model would have admitted and the person stopped it"
         );
@@ -4164,7 +4313,9 @@ mod tests {
         let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
         let row = g.corpus().remove(0);
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("granted")
         );
 
@@ -4174,7 +4325,9 @@ mod tests {
         let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
         let row = g.corpus().remove(0);
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("upheld")
         );
         assert!(!row.is_disagreement());
@@ -4266,8 +4419,11 @@ mod tests {
 
         let asks_model = std::sync::Arc::new(AtomicUsize::new(0));
         let asks_human = std::sync::Arc::new(AtomicUsize::new(0));
-        let advisor: std::sync::Arc<dyn Adjudicator> =
-            std::sync::Arc::new(Counted { id: "model:test", allow: true, n: asks_model.clone() });
+        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counted {
+            id: "model:test",
+            allow: true,
+            n: asks_model.clone(),
+        });
         // A point that ASKS about writes and lets one answer stand for the session —
         // the shape a grant is for. Written out rather than borrowed from `NAMED`,
         // because supervision is no longer a point and this test is about the grant,
@@ -4340,7 +4496,8 @@ mod tests {
                 .find(|o| o.kind.is_allow())
                 .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
         });
-        let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", true));
+        let advisor: std::sync::Arc<dyn Adjudicator> =
+            std::sync::Arc::new(Fixed::new("model:test", true));
         let mut g = AdjudicatedGate::new(Box::new(human))
             .with_mode(crate::mode::Mode::ALWAYS_ASK)
             .with_advisor(advisor)
@@ -4362,7 +4519,10 @@ mod tests {
             2,
             "exec asks every time; a standing permission never covers it"
         );
-        assert!(g.grants().is_empty(), "and no grant is taken over an exec call");
+        assert!(
+            g.grants().is_empty(),
+            "and no grant is taken over an exec call"
+        );
     }
 
     /// **A configured glob settles the call and the model is still asked.**
@@ -4380,7 +4540,8 @@ mod tests {
             crate::permission::config_to_ruleset(json.as_object().unwrap()).unwrap()
         };
         let gate = |cfg: serde_json::Value, model_allows: bool| {
-            let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Fixed::new("model:test", model_allows));
+            let advisor: std::sync::Arc<dyn Adjudicator> =
+                std::sync::Arc::new(Fixed::new("model:test", model_allows));
             AdjudicatedGate::new(Box::new(NoAdjudicator))
                 .with_mode(crate::mode::Mode::ALWAYS_ASK)
                 .with_advisor(advisor)
@@ -4390,12 +4551,22 @@ mod tests {
 
         // An `allow` rule admits, and the oracle's agreement is recorded.
         let mut g = gate(json!({ "edit": "allow" }), true);
-        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+        assert_eq!(
+            g.admit(&call("edit", &json!({"path": "a.rs"}))),
+            GateDecision::Admit
+        );
         let row = g.corpus().remove(0);
-        assert!(row.model_verdict.as_deref().unwrap().starts_with("admit by model:test"));
+        assert!(
+            row.model_verdict
+                .as_deref()
+                .unwrap()
+                .starts_with("admit by model:test")
+        );
         assert!(!row.asked, "nobody was asked: a rule decided");
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("upheld")
         );
 
@@ -4409,7 +4580,9 @@ mod tests {
         ));
         let row = g.corpus().remove(0);
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("revoked"),
             "the model would have admitted and the operator's rule refused"
         );
@@ -4418,7 +4591,10 @@ mod tests {
         // And nothing about the advice changed the outcome: the same rules with a
         // model that would refuse still admit and still refuse, respectively.
         let mut g = gate(json!({ "edit": "allow" }), false);
-        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+        assert_eq!(
+            g.admit(&call("edit", &json!({"path": "a.rs"}))),
+            GateDecision::Admit
+        );
     }
 
     /// At every point but `supervised` a settled call spends no oracle round trip.
@@ -4431,11 +4607,19 @@ mod tests {
         let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
             .with_mode(crate::mode::Mode::WRITES_ALLOWED)
             .with_permission(rules);
-        assert_eq!(g.admit(&call("edit", &json!({"path": "a.rs"}))), GateDecision::Admit);
+        assert_eq!(
+            g.admit(&call("edit", &json!({"path": "a.rs"}))),
+            GateDecision::Admit
+        );
         let row = g.corpus().remove(0);
         // The verdict column holds what decided — the rule — and no label is
         // invented, because nothing was consulted to agree or disagree with.
-        assert!(row.model_verdict.as_deref().unwrap().contains("gate:permission"));
+        assert!(
+            row.model_verdict
+                .as_deref()
+                .unwrap()
+                .contains("gate:permission")
+        );
         assert!(row.operator.is_none());
     }
 
@@ -4508,7 +4692,7 @@ mod tests {
         //    at a point that does — the wiring is shared and the rule is the same.
         let n = std::sync::Arc::new(AtomicUsize::new(0));
         let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counting(n.clone()));
-                let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
             .with_mode(crate::mode::Mode::ALWAYS_ASK)
             .with_advisor(advisor)
             .start_supervised(true);
@@ -4584,7 +4768,11 @@ mod tests {
         assert!(row.asked);
         // And a head renders it as an absence rather than as an opinion.
         let advice = g.log[0].advice.as_ref().unwrap();
-        assert!(advice.line().starts_with("no model verdict"), "{}", advice.line());
+        assert!(
+            advice.line().starts_with("no model verdict"),
+            "{}",
+            advice.line()
+        );
     }
 
     /// **Supervision changes who is consulted and nothing else.**
@@ -4629,10 +4817,17 @@ mod tests {
             "the same calls ask the same person; supervision adds a verdict, not a question"
         );
         let row = g.corpus().remove(1);
-        assert!(row.model_verdict.as_deref().unwrap().starts_with("admit by model:test"));
+        assert!(
+            row.model_verdict
+                .as_deref()
+                .unwrap()
+                .starts_with("admit by model:test")
+        );
         assert_eq!(row.verdict_by.as_deref(), Some("human:op"));
         assert_eq!(
-            row.operator.as_ref().map(crate::authorise::OperatorOverride::as_str),
+            row.operator
+                .as_ref()
+                .map(crate::authorise::OperatorOverride::as_str),
             Some("upheld")
         );
 
@@ -4650,7 +4845,9 @@ mod tests {
     fn supervision_without_an_advisor_refuses_by_name() {
         let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
             .with_mode(crate::mode::Mode::ALWAYS_ASK);
-        let e = g.set_supervision(true).expect_err("nothing to supervise with");
+        let e = g
+            .set_supervision(true)
+            .expect_err("nothing to supervise with");
         assert!(e.contains("gatekeeper"), "{e}");
         assert!(!g.supervising());
     }
@@ -5089,7 +5286,9 @@ mod tests {
             turn_id: "t1",
             call_id: "c1",
             workspace: "/w",
-            target_exists: None, scripts: &[] }
+            target_exists: None,
+            scripts: &[],
+        }
     }
 
     /// A gate that would admit anything an adjudicator is consulted about, so that a
@@ -5298,6 +5497,96 @@ mod tests {
     /// the permissions file" without ever saying **which**, and did not let them
     /// adjust it. The derived pattern is in the label now — the same helper the
     /// recording site uses, so what is signed and what is written cannot drift —
+    /// **The durable rule names the program that needs authority, not the first
+    /// word of the line.**
+    ///
+    /// `always_pattern_for_command` took `command.split_whitespace().next()`,
+    /// which is the program only when the command is one stage. On the
+    /// operator's screen, 2026-09-20, `cd /home/dead/Projects/letibot/letibot &&
+    /// python3 - <<'PY' …` offered *Allow `python3` for the session* beside
+    /// *Always allow `cd*`* — two derivations of the same question, and the
+    /// durable one, the one written to their config, had the naive answer.
+    #[test]
+    fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            |req: &AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+        let _ = g.admit(&bash(&json!({
+            "command": "cd /home/dead/Projects/letibot && cargo test -p letibot-tools"
+        })));
+        let req = &g.log[0].request;
+        let always = req
+            .options
+            .iter()
+            .find(|o| o.id == "allow_always")
+            .expect("a segmentable command still offers the durable rule");
+        assert!(
+            always.label.contains("cargo test*"),
+            "names the stage that carries the authority: {}",
+            always.label
+        );
+        assert!(
+            !always.label.contains("`cd*`"),
+            "offered a permanent rule over `cd`: {}",
+            always.label
+        );
+    }
+
+    /// **A rule the matcher could never consult is not offered at all.**
+    ///
+    /// `bash_segments` refuses to split a command carrying a heredoc, and
+    /// `evaluate_bash` turns that into `Ask` before any rule is read — so for
+    /// these commands *Always allow* is inert however it is spelled. Offering it
+    /// invites the operator to sign something durable that does nothing, and
+    /// then asks them again next time. The rule this seam already states: *"an
+    /// operator is never shown a button whose effect the gate would then decline
+    /// to honour."*
+    #[test]
+    fn a_heredoc_is_offered_no_durable_rule_because_none_could_match() {
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human",
+            |req: &AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_surroundings(pinned())
+        .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+        let cmd = "cd /home/dead/Projects/letibot && python3 - <<'PY'\nprint(1)\nPY";
+        // The premise, asserted rather than assumed: no rule can answer this.
+        assert!(
+            !crate::permission::a_durable_rule_can_apply(cmd),
+            "the premise of this test is that the matcher refuses to segment it"
+        );
+        let _ = g.admit(&bash(&json!({ "command": cmd })));
+        let req = &g.log[0].request;
+        assert!(
+            req.option("allow_always").is_none(),
+            "offered a durable rule that cannot match: {:?}",
+            req.options.iter().map(|o| &o.label).collect::<Vec<_>>()
+        );
+        // The rungs that do work are still there.
+        assert!(req.option("allow_once").is_some());
+        assert!(req.option("allow_session").is_some());
+        assert!(req.option("deny").is_some());
+    }
+
     /// and a glob typed after `allow_always` in the composer still overrides it.
     #[test]
     fn the_always_allow_label_shows_the_rule_it_writes() {
@@ -5845,7 +6134,10 @@ mod scripts_brief_tests {
     fn a_truncated_script_says_what_was_not_read() {
         let out = scripts_section(&[ScriptSource {
             path: "big.py".into(),
-            body: ScriptBody::Truncated { head: "print(1)".into(), omitted: 40_000 },
+            body: ScriptBody::Truncated {
+                head: "print(1)".into(),
+                omitted: 40_000,
+            },
         }]);
         assert!(out.contains("40000 NOT SHOWN"), "{out}");
         assert!(out.contains("anything could be in it"), "{out}");

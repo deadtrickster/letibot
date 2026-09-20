@@ -355,11 +355,56 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
     }
 }
 
+/// **Can a durable rule ever apply to this command?**
+///
+/// [`evaluate_bash`] requires every segment to be allowed, and [`bash_segments`]
+/// refuses to split a command carrying a heredoc or a substitution — which
+/// `evaluate_bash` turns into [`Action::Ask`] *before any rule is consulted*. So
+/// for those commands no rule in the file can ever answer, however it is
+/// written.
+///
+/// That matters because *Always allow* writes to the operator's config and
+/// outlives the session. Offering it for a command the matcher will always ask
+/// about again is the one shape `adjudicate.rs` forbids at this exact seam:
+/// *"an operator is never shown a button whose effect the gate would then
+/// decline to honour."* Measured 2026-09-20 on the operator's own screen — a
+/// `python3` heredoc offered *Always allow `cd*`*, which is inert twice over
+/// (see [`always_pattern_for_stage`] for the other half).
+pub fn a_durable_rule_can_apply(command: &str) -> bool {
+    bash_segments(command).is_some()
+}
+
 /// The pattern an *Always allow* answer over a `bash` command writes down: the
 /// program, its verb when the program has verbs, and `*`. `git status
 /// --short` → `git status*`; `cargo test -p x` → `cargo test*`; `ls -la` →
 /// `ls*`. Claude Code's `Bash(git status:*)`, in opencode's spelling.
+///
+/// **Takes the first whitespace token**, which is right only for a command that
+/// is one stage. See [`always_pattern_for_stage`] for the caller that has a
+/// parse and should use it.
 pub fn always_pattern_for_command(command: &str) -> String {
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return "*".to_string();
+    };
+    always_pattern_for_stage(program, words.next())
+}
+
+/// **The same pattern, from a stage the shell grammar already resolved.**
+///
+/// `always_pattern_for_command` reads the first whitespace token of the raw
+/// string, which is the program only when the command is a single stage. The
+/// operator's screen, 2026-09-20: `cd /home/dead/Projects/letibot/letibot &&
+/// python3 - <<'PY' …` offered *Always allow `cd*`* — `cd` being the one token
+/// in that command carrying no authority at all, while the session option
+/// beside it correctly said `python3`, because that one is built from
+/// `grant_program`, which reads the parse.
+///
+/// Two derivations of *which program is this* is one too many, and the durable
+/// rule — the stronger of the two, the one written to a file — had the naive
+/// one. This is the seam where they become one: the caller passes the same
+/// stage `grant_program` reads, and the verb logic below is shared.
+pub fn always_pattern_for_stage(program: &str, first_arg: Option<&str>) -> String {
     const VERBED: &[&str] = &[
         "git",
         "gh",
@@ -388,14 +433,13 @@ pub fn always_pattern_for_command(command: &str) -> String {
         "just",
         "mise",
     ];
-    let mut words = command.split_whitespace();
-    let Some(program) = words.next() else {
+    if program.is_empty() {
         return "*".to_string();
-    };
-    if VERBED.contains(&program) {
-        if let Some(verb) = words.next().filter(|v| !v.starts_with('-')) {
-            return format!("{program} {verb}*");
-        }
+    }
+    if VERBED.contains(&program)
+        && let Some(verb) = first_arg.filter(|v| !v.starts_with('-'))
+    {
+        return format!("{program} {verb}*");
     }
     format!("{program}*")
 }
