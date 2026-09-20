@@ -500,8 +500,36 @@ fn wait_on_job(
         before.produced,
         secs(timeout)
     ));
-    let waited = match host.wait_job(&jid, timeout) {
-        Ok(w) => w,
+    // **The operator can cut a wait short, and this is the wait they most want to
+    // cut.**
+    //
+    // Ctrl-B reaches `bash` through the backend's promote channel, so a long
+    // command can be pushed to the background and the floor handed back. It did
+    // not reach here — and here is where the floor was actually being held. The
+    // measured sequence: a `bash` promoted to `j14`, the model's next move
+    // `job_wait j14 180000`, and three minutes in which the operator's Ctrl-B did
+    // nothing at all and their typed line sat queued. What they saw once the turn
+    // finally ended was `promote_idle — a background request arrived between
+    // turns; nothing was running to move`, twice.
+    //
+    // The job is already in the background; the WAIT is the thing to abandon. So
+    // the deadline is spent in slices and the channel is read between them.
+    let waited = match wait_greedily(ctx, host, &jid, timeout) {
+        Ok(Some(w)) => w,
+        // The operator asked for the floor. Not a failure and not a timeout: the
+        // job is untouched and still theirs to read, and saying "timeout" here
+        // would tell the model a deadline expired when none did.
+        Ok(None) => {
+            let now = host.job(&jid);
+            return Invocation::ok(format!(
+                "the operator interrupted this wait — `{id}` is still running and was \
+                 NOT touched.\n  command: {}\n  output:  {} bytes so far — read it with \
+                 `job_output` job=\"{id}\"\n\nThey have something to say; read it before \
+                 waiting again.",
+                clip(&before.command, 160),
+                now.as_ref().map(|v| v.produced).unwrap_or(0)
+            ));
+        }
         Err(e) => return Invocation::failed(e.to_string(), String::new()),
     };
     let after = host.job(&jid);
@@ -544,6 +572,46 @@ fn wait_on_job(
             format!("`{id}` was running a moment ago and the wait could not observe it"),
             "this is a harness defect rather than an answer about the job.".to_string(),
         ),
+    }
+}
+
+/// Spend `timeout` on `jid` in slices, watching the promote channel between them.
+///
+/// `Ok(None)` means the operator asked for the floor before the job settled. The
+/// slice is short enough that a Ctrl-B feels immediate and long enough that the
+/// loop costs nothing next to a job measured in minutes.
+fn wait_greedily(
+    ctx: &mut InvokeCtx<'_>,
+    host: &dyn ProcessHost,
+    jid: &JobId,
+    timeout: Duration,
+) -> Result<Option<Waited>, crate::exec::ExecError> {
+    const SLICE: Duration = Duration::from_millis(250);
+    let started = std::time::Instant::now();
+    loop {
+        // Before the first slice as well as between them: a request that arrived
+        // while the model was still choosing this tool is not stale, it is early.
+        // Ctrl-B, and the quieter version of the same thing: a line typed while
+        // this wait holds the floor. Either is the operator asking for it back.
+        if ctx.backend.promote_requested().is_some() || ctx.operator_waiting() {
+            return Ok(None);
+        }
+        let left = timeout.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            // The deadline the caller asked for, reported against the whole wait
+            // rather than the last slice of it.
+            let j = host.job(jid);
+            return Ok(Some(Waited::Deadline {
+                took: started.elapsed(),
+                produced: j.as_ref().map(|v| v.produced).unwrap_or(0),
+                since_last_output: j.as_ref().and_then(|v| v.since_last_output),
+            }));
+        }
+        match host.wait_job(jid, left.min(SLICE))? {
+            // A slice that expired is not the wait expiring; go round again.
+            Waited::Deadline { .. } => continue,
+            settled => return Ok(Some(settled)),
+        }
     }
 }
 

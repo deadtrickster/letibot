@@ -54,8 +54,12 @@ impl Tool for Grep {
         ToolSchema::new(
             "grep",
             "Search file contents for a pattern and return matching lines with their \
-             paths and line numbers. Give `pattern`; optionally `path` to scope the \
-             search, `glob` to restrict which files are read, and `case_insensitive`. \
+             paths and line numbers. Give `pattern`; optionally `context` to see the \
+             surrounding lines (like `grep -C`), `path` to scope the search, `glob` to \
+             restrict which files are read, and `case_insensitive`. **With `context` \
+             this is one call where it used to be two** — a grep for the line numbers \
+             and then a read around them — so reach for it whenever the question is \
+             what a match sits in rather than where it is. \
              A search that matches nothing under `path` reports where the pattern does \
              match, and an over-anchored pattern is retried as its bare identifier — \
              both in the same call, so a miss does not need a second one.",

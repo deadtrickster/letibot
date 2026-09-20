@@ -159,6 +159,9 @@ impl SteeringSource for ChannelSteering {
 #[derive(Debug, Default)]
 pub struct Pending {
     queued: Vec<SteeringMessage>,
+    /// An urgent message taken out of the source before the caller was in a
+    /// position to act on it. See [`Pending::hold_urgent`].
+    urgent: Option<SteeringMessage>,
 }
 
 impl Pending {
@@ -183,6 +186,13 @@ impl Pending {
     /// the queued line into the composer to edit it, and the held original must
     /// not land behind the edited resend.
     pub fn absorb(&mut self, source: &mut dyn SteeringSource) -> Option<SteeringMessage> {
+        // A held urgent first, and before the withdraw check: it was already taken
+        // out of the source, so a take-back that arrived after it cannot reach it,
+        // and an interrupt is not something the operator withdraws by editing a
+        // line anyway.
+        if let Some(u) = self.urgent.take() {
+            return Some(u);
+        }
         if source.try_withdraw() {
             self.queued.retain(|m| !m.from_operator);
         }
@@ -201,6 +211,19 @@ impl Pending {
             }
         }
         None
+    }
+
+    /// **Put an urgent message back**, for the next [`Self::absorb`] to return.
+    ///
+    /// The greedy poll before a generation drains the source so the operator's
+    /// words are in the prompt rather than behind it. An urgent message is not
+    /// queued by `absorb` — it is handed back to be acted on — and the caller at
+    /// that point has no generation to interrupt yet. Dropping it there would
+    /// turn an interrupt into silence, which is the worst thing this type could
+    /// do; holding it means the stream loop's first poll finds it and stops at
+    /// the next token, exactly as it always did.
+    pub fn hold_urgent(&mut self, m: SteeringMessage) {
+        self.urgent = Some(m);
     }
 
     /// Everything held, in arrival order, as transcript items. Called at the step

@@ -1058,6 +1058,22 @@ impl Hub {
         g.commands.remove(i)
     }
 
+    /// **Is the operator waiting to say something?** — without taking it.
+    ///
+    /// [`Self::try_steering_command`] removes what it finds, which is right for
+    /// the steering path and wrong for a caller deciding whether to hand the turn
+    /// back: a message consumed here would never reach the worker as a prompt of
+    /// its own. So this only looks.
+    ///
+    /// Scoped to `Prompt`, not `Interrupt`: an interrupt already stops the turn
+    /// through its own path and needs nobody's help.
+    pub fn has_queued_prompt(&self) -> bool {
+        self.lock()
+            .commands
+            .iter()
+            .any(|c| matches!(c.kind, CommandKind::Prompt { .. }))
+    }
+
     /// **The next mode change a running turn can act on.**
     ///
     /// A mode command used to sit here until the worker came back, which is
@@ -1613,6 +1629,57 @@ mod tests {
 mod mode_steering_tests {
     use super::*;
     use crate::testing::*;
+
+    /// **Looking is not taking.**
+    ///
+    /// `has_queued_prompt` exists so a round that backgrounded a job can decide to
+    /// hand the floor back. If it consumed what it found, the operator's message
+    /// would vanish from the worker's queue and be answered by nobody — which is
+    /// the defect `try_steering_command` was careful about in the other direction.
+    /// So: it sees the prompt, and the prompt is still there afterwards.
+    #[test]
+    fn peeking_at_a_queued_prompt_leaves_it_for_the_worker() {
+        let hub = Hub::new("s-peek");
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        assert!(!hub.has_queued_prompt(), "nothing queued yet");
+
+        hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "stop and look at this".into(),
+            },
+        );
+        assert!(hub.has_queued_prompt());
+        // Twice, because the whole point is that the first look changed nothing.
+        assert!(hub.has_queued_prompt());
+        assert!(
+            matches!(
+                hub.take_command().map(|c| c.kind),
+                Some(CommandKind::Prompt { .. })
+            ),
+            "the prompt must still be there for the worker"
+        );
+        assert!(!hub.has_queued_prompt(), "and gone once it is taken");
+    }
+
+    /// An interrupt is not a prompt: it stops the turn through its own path, and a
+    /// yield that fired on it would end turns the operator only meant to cut short.
+    #[test]
+    fn an_interrupt_is_not_a_queued_prompt() {
+        let hub = Hub::new("s-peek2");
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Interrupt {
+                reason: "esc".into(),
+            },
+        );
+        assert!(!hub.has_queued_prompt());
+    }
 
     /// **A mode change reaches a running turn.**
     ///

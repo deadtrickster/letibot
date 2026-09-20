@@ -167,3 +167,45 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
         Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
     }
 }
+
+#[cfg(test)]
+mod prompt_line_tests {
+    use crate::runtime::Tool;
+
+    /// **A parameter the tool description does not name does not exist.**
+    ///
+    /// `context` and `ranges` shipped with careful property descriptions and were
+    /// not added to the line above them. The property description is metadata a
+    /// model skims; the tool description is the prompt line it reads and
+    /// summarises itself with. Measured on the operator's own session, 2026-09-20:
+    /// a session whose prefix carried both concluded it had neither, said so, and
+    /// went back to `sed` — *"so the pg-noop session which is supposedly started
+    /// after our tooling tweaks still uses damn sed"*.
+    ///
+    /// Worse, `abdc5d0`'s commit message claimed the opposite had been done: *"Only
+    /// now does the prompt line have anything to stand on, so it names both"*. The
+    /// argument went into a source comment, which nothing reads at runtime.
+    ///
+    /// Both halves are asserted, because either alone passes on the bug: the
+    /// PROPERTY must be in the schema, and the DESCRIPTION must name it.
+    #[test]
+    fn the_prompt_line_names_the_parameters_that_replace_the_shell() {
+        for (schema, param) in [
+            (super::grep::Grep.schema(), "context"),
+            (super::read::Read.schema(), "ranges"),
+        ] {
+            let name = schema.name.clone();
+            assert!(
+                schema.parameters["properties"].get(param).is_some(),
+                "`{name}` must actually take `{param}` — otherwise this test is \
+                 asserting nothing about the description below"
+            );
+            assert!(
+                schema.description.contains(param),
+                "`{name}`'s DESCRIPTION must name `{param}`; a model reads this line, \
+                 not the property table. It says: {}",
+                schema.description
+            );
+        }
+    }
+}

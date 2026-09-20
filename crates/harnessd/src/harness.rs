@@ -2017,9 +2017,20 @@ impl<'a> Harness<'a> {
         };
 
         let spiller = build_spiller(&cfg)?;
+        // **The question a long tool asks before spending another minute.**
+        //
+        // `digest` folds two dozen parts and `job_wait` holds a deadline; for the
+        // whole of either, this call is all the session is doing and nothing polls
+        // the head. So the hub's own answer goes down into the tool runtime, and a
+        // tool that is about to spend real time can find out that the operator is
+        // waiting and stop. See `InvokeCtx::operator_waiting`.
+        let waiting_hub = hub.clone();
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
-            .with_gate(gate);
+            .with_gate(gate)
+            .with_operator_waiting(std::sync::Arc::new(move || {
+                waiting_hub.has_queued_prompt()
+            }));
 
         let engine = TurnEngine::new(
             &parts.vocab,
@@ -4347,10 +4358,13 @@ impl<'a> Harness<'a> {
             // steering rows empty.
             //
             // Harmless until T21.3 joined the intent check to the steering source, which
-            // made an injection ordinary rather than rare. Append order is the model's
-            // items first, then the steering, and `reconcile` zips positionally, so the
-            // order here is load-bearing.
-            let mut appended = ok.items.clone();
+            // made an injection ordinary rather than rare. `reconcile` zips positionally,
+            // so the order here is load-bearing — and there are now THREE groups, not
+            // two, because the greedy poll appends whatever was waiting BEFORE the
+            // generation as well. Transcript order is: what arrived while the last tool
+            // ran, then the model's own rows, then what arrived while it was speaking.
+            let mut appended = ok.steering_before.clone();
+            appended.extend(ok.items.iter().cloned());
             appended.extend(ok.steering_applied.iter().cloned());
             self.reconcile(&mut sink, &appended);
             self.persist()?;
@@ -4448,6 +4462,7 @@ impl<'a> Harness<'a> {
 
             tool_calls += calls.len();
             let turn_id = ok.turn_id.clone();
+            let mut backgrounded = false;
             let mut results = Vec::with_capacity(calls.len());
             for call in &calls {
                 // Call order, and appended in call order. See point 3 above.
@@ -4465,6 +4480,11 @@ impl<'a> Harness<'a> {
                 } = &item
                 {
                     progress.observe(call, outcome, payload);
+                    // Backgrounding is the operator reaching for the floor; see the
+                    // yield at the end of this round.
+                    if matches!(outcome, letibot_transcript::ToolOutcome::Backgrounded { .. }) {
+                        backgrounded = true;
+                    }
                 }
                 results.push(item);
             }
@@ -4504,6 +4524,32 @@ impl<'a> Harness<'a> {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push_back(steer);
+            }
+
+            // **A backgrounded job gives the floor back to the OPERATOR, not to
+            // the model.**
+            //
+            // Ctrl-B exists because a tool is taking too long and there is
+            // something to say. It used to end only the `bash` call: control went
+            // straight back to the model, whose very next move was `job_wait` with
+            // a three-minute bound — so the operator was deaf again immediately and
+            // their line sat queued through all of it. *"i backgrounded a job but
+            // my messsage still queued"*.
+            //
+            // So when a round backgrounded something and the operator is waiting,
+            // the turn ends here. Their prompt is deliberately NOT consumed as
+            // steering — `has_queued_prompt` only looks — so the worker picks it up
+            // as a turn of its own and answers it first. That is what asking for
+            // the floor means; the job is still running and still theirs to read.
+            if backgrounded && self.hub.has_queued_prompt() {
+                self.publish_jobs();
+                return Ok(Reply {
+                    text,
+                    metrics,
+                    rounds: round + 1,
+                    tool_calls,
+                    truncated,
+                });
             }
 
             // **The stop, and it is two-stage on purpose.**
