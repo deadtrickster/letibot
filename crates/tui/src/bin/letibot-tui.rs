@@ -157,6 +157,22 @@ fn main() {
     }
 }
 
+/// How long the head waits for the daemon's `Hello` before giving up.
+///
+/// The `Hello` carries the whole snapshot, so this has to allow for a big session on a
+/// busy daemon — but it is bounded because the alternative is what the operator hit: a
+/// daemon that accepts the connection and never answers, and a head that waits for ever
+/// with no screen telling them so. Long enough for a slow snapshot, short enough that a
+/// hung daemon is reported rather than endured.
+const ATTACH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// After this long with no answer, the waiting frame says how to get out.
+///
+/// Under it the cat is just a cat and the wait usually ends in a few hundred
+/// milliseconds; over it something is wrong and the operator should be told that the
+/// escape hatch exists rather than discovering it.
+const ATTACH_IMPATIENT: u64 = 2_000;
+
 /// **Is there a daemon here, and does it speak this build's protocol?**
 ///
 /// `0` when there is and it does, `1` when there is and it does not (with the
@@ -576,9 +592,27 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     // Wait for the `Hello`. **With a screen, draw the cat as the clock moves**; without
     // one — the `--no-tty` path — block properly rather than sleeping in 120 ms steps
     // for a frame nobody will see.
+    //
+    // # The wait has to be escapable, and it was not
+    //
+    // This loop draws the cat while `HeadClient` waits for a `Hello`. The first version
+    // read nothing from the terminal, so **keys went nowhere**: the main loop — the only
+    // place `term.keys()` was called — had not started, and the terminal is in raw mode,
+    // so Ctrl-C is a key event rather than a signal. The operator, on a daemon that
+    // accepted the connection and then died without answering:
+    //
+    //     asking the daemon for this session
+    //                                    3m09s
+    //
+    // *"stuck waiting for daemon and no way to exit"*. Three things were wrong and all
+    // three are fixed here: keys are read and handled, a wait that outlives its budget
+    // gives up, and the frame says so once the wait has gone on long enough to be worth
+    // a sentence.
     let hello: Option<ServerFrame> = match &term {
         None => rx.recv().ok(),
         Some(t) => {
+            let started = Instant::now();
+            let deadline = started + ATTACH_WAIT;
             let mut got = None;
             loop {
                 match rx.recv_timeout(Duration::from_millis(120)) {
@@ -587,10 +621,30 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                         break;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // **Keys first.** Two Ctrl-Cs on an empty composer quit, which is
+                        // what the hint bar under this frame has promised the operator
+                        // since before there was a frame: a hint that names a key the
+                        // wait does not read is a hint that lies.
+                        for k in t.keys() {
+                            let _ = app.key(k);
+                        }
+                        if app.should_quit() {
+                            return Ok(());
+                        }
                         app.clock(now_ms());
                         let (w, h) = t.size();
                         let frame = app.screen(w, h);
                         t.draw_with_cursor(&frame, app.cursor());
+                        if Instant::now() >= deadline {
+                            return Err(format!(
+                                "the daemon did not answer within {}s. It accepted the \
+                                 connection and sent no `Hello`, which is a hung daemon \
+                                 rather than an absent one — `letibot --status` says what \
+                                 is on the socket, and `letibot --stop` stops it.",
+                                ATTACH_WAIT.as_secs()
+                            )
+                            .into());
+                        }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }

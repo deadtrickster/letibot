@@ -1091,6 +1091,15 @@ const CAT_FRAMES: [&str; 8] = [
     "(=^-.-=)~",
 ];
 
+/// When the waiting frame starts naming the way out, in milliseconds.
+///
+/// Under it the cat is a cat and the wait is usually over in a few hundred
+/// milliseconds; over it something is wrong, and the operator should be told the escape
+/// hatch exists rather than having to discover it. The wait loop in `letibot-tui`'s
+/// `main` is what makes the keys live — the first version of that screen did not read
+/// them at all, so the hint bar under it named a key that did nothing.
+const ATTACH_IMPATIENT: u64 = 2_000;
+
 /// The width of the **slot** the cat walks in: the widest frame.
 ///
 /// The frames are not all the same width (`(=^.^=)` against `(=^.^=)~`), and a 7-wide
@@ -4554,8 +4563,13 @@ impl App {
     ///   ╭────────────────────────────────────────────── 1 subagent running ─╮
     ///   │ › why did the cache miss                                               │
     ///   ╰────────────────────────────── ⚠ · ⠹ Responding · 4.2s · 1.2k chars ─╯
-    ///   enter send · alt+enter newline · esc esc interrupt · ctrl-r thinking
+    ///   ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · …
     /// ```
+    ///
+    /// **The bar is one constant string.** It used to open with the keys that change —
+    /// `enter send` idle, `esc interrupt` while a turn runs — and those are three
+    /// different lengths in front of the same tail, so the line moved sideways whenever
+    /// a turn started or the first character was typed. See `Editor::hint`.
     ///
     /// **A box, not an accent bar.** Both were on the table and the box wins on
     /// three counts, none of them taste:
@@ -4975,7 +4989,7 @@ impl App {
         let s = if self.quit_card {
             String::new()
         } else {
-            self.editor.hint(self.turn_running(), self.now_ms, p)
+            self.editor.hint(self.now_ms, p)
         };
 
         let tail = if self.quit_card {
@@ -5509,6 +5523,20 @@ impl App {
             ));
             rows.push(String::new());
             rows.push(centred_row(&cfg, &progress::duration(elapsed), width));
+            // **And, once it has gone on long enough to be worth saying, how to get
+            // out.** Under a couple of seconds this is noise on a wait that is usually
+            // over before it is read; over it, something is wrong and the operator
+            // should not have to work out that the keys they can see in the hint bar
+            // are live — the first version of this screen did not read them at all, so
+            // the bar under it named a key that did nothing (`main`'s wait loop).
+            if elapsed >= ATTACH_IMPATIENT {
+                rows.push(String::new());
+                rows.push(centred_row(
+                    &cfg,
+                    "the daemon has not answered. ctrl-c twice, or wait",
+                    width,
+                ));
+            }
             waiting = rows;
             segs.push(Seg::Borrowed(&waiting));
         }
@@ -12412,8 +12440,14 @@ mod tests {
             "the pre-attach frame draws the empty-session banner anyway"
         );
         // The chrome is there, which is the whole point of drawing early: the
-        // composer's hint bar is the row that says the program is alive.
-        assert!(flat.contains("ctrl+c exit"), "no chrome at all: {flat:?}");
+        // composer's own hint bar is the row that says the program is alive. It is
+        // asserted on the *tail* — `ctrl-s sessions` — rather than on the keys that
+        // used to open it (`ctrl+c exit`), because those are deliberately gone now:
+        // see `Editor::hint`.
+        assert!(
+            flat.contains("ctrl-s sessions"),
+            "no chrome at all: {flat:?}"
+        );
         assert_eq!(frame.len(), 24);
 
         // And once the daemon has answered, a genuinely empty session *does* say so.
@@ -12440,6 +12474,42 @@ mod tests {
             flat.contains("has said nothing yet"),
             "an empty session after the Hello must say so: {flat:?}"
         );
+    }
+
+    /// **The wait becomes impatient, and says so.**
+    ///
+    /// The operator, on a daemon that accepted the connection and never answered:
+    /// *"stuck waiting for daemon and no way to exit"*. The screen said
+    /// `asking the daemon for this session` for three minutes and the hint bar under it
+    /// named `ctrl+c exit` — which did nothing, because the wait loop read no keys.
+    ///
+    /// The keys are live now (`main`), and this is the other half: past
+    /// [`ATTACH_IMPATIENT`] the frame itself says how to get out, so the operator is not
+    /// left to discover that a wait can be abandoned.
+    #[test]
+    fn the_waiting_frame_names_the_way_out_once_it_has_gone_on() {
+        let mut a = app();
+        a.begin_attach_at(0);
+
+        // Immediately: a cat, and no instructions. A wait that is usually over in a few
+        // hundred milliseconds should not open with advice.
+        a.clock(0);
+        let soon = a.screen(80, 24).join("\n");
+        assert!(soon.contains("(=^"), "the cat: {soon:?}");
+        assert!(
+            !soon.contains("not answered"),
+            "advice on a wait that has just started: {soon:?}"
+        );
+
+        // Past the threshold it says so, and names the key that now works.
+        a.clock(ATTACH_IMPATIENT);
+        let late = a.screen(80, 24).join("\n");
+        assert!(late.contains("(=^"), "the cat is still there: {late:?}");
+        assert!(
+            late.contains("has not answered"),
+            "a long wait must say something is wrong: {late:?}"
+        );
+        assert!(late.contains("ctrl-c"), "and how to get out: {late:?}");
     }
 
     /// **The tail frame is the full walk's frame.**

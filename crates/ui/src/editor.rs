@@ -807,23 +807,31 @@ impl Editor {
 
     /// The one-line hint under the composer.
     ///
-    /// It changes after the first Esc and the first Ctrl+C, which is the entire
-    /// mechanism by which anybody learns the double-tap exists.
-    pub fn hint(&self, running: bool, now_ms: u64, palette: Palette) -> String {
+    /// **Empty in the steady state, and that is the point.** It used to name the keys
+    /// that change: `enter send · ctrl+c exit` when idle, `esc interrupt · ctrl+c clear`
+    /// while a turn runs, and a longer form once the composer had text. Those are three
+    /// different lengths in front of a **constant** tail bar (`ctrl-s sessions · …`), so
+    /// the whole bottom line shifted sideways every time a turn started or the first
+    /// character was typed — the operator: *"at the very bottom we have either 'enter
+    /// send' or 'esc interrupt' they have different length and that bottom line always
+    /// jumps back and forth. I dont want that. just dont show enter and esc at all."*
+    ///
+    /// So nothing is shown, and the bar is the tail alone: the same width in every
+    /// state, and `hint_bar` already has the branch that suppresses the separator in
+    /// front of one half.
+    ///
+    /// **The double-tap messages stay**, and they are not the same thing: they appear
+    /// for a second *in response to a key*, which is a reply rather than a flicker, and
+    /// they are the entire mechanism by which anybody learns that a second press does
+    /// something different.
+    pub fn hint(&self, now_ms: u64, palette: Palette) -> String {
         if self.esc_taps.armed(now_ms, INTERRUPT_WINDOW_MS) {
             return palette.paint(Role::Attention, "esc again to interrupt");
         }
         if self.ctrlc_taps.armed(now_ms, QUIT_WINDOW_MS) {
             return palette.paint(Role::Attention, "ctrl+c again to exit");
         }
-        let s = if running {
-            "esc interrupt · ctrl+c clear"
-        } else if self.text.is_empty() {
-            "enter send · ctrl+c exit"
-        } else {
-            "enter send · alt+enter newline · ctrl+c clear"
-        };
-        palette.paint(Role::Faint, s)
+        String::new()
     }
 }
 
@@ -897,13 +905,41 @@ mod tests {
     #[test]
     fn the_hint_announces_the_second_press() {
         let mut e = ed();
-        let before = e.hint(true, 1_000, Palette::None);
+        let before = e.hint(1_000, Palette::None);
         e.key(Key::Esc, 1_000);
-        let after = e.hint(true, 1_100, Palette::None);
+        let after = e.hint(1_100, Palette::None);
         assert_ne!(before, after);
         assert!(after.contains("again"), "{after}");
         // And it lapses.
-        assert!(!e.hint(true, 9_000, Palette::None).contains("again"));
+        assert!(!e.hint(9_000, Palette::None).contains("again"));
+    }
+
+    /// **The steady hint is empty, so the bottom line cannot jump.**
+    ///
+    /// The operator: *"at the very bottom we have either 'enter send' or 'esc
+    /// interrupt' they have different length and that bottom line always jumps back and
+    /// forth"*. Three different prefixes — idle, running, and composer-not-empty — sat
+    /// in front of a constant tail bar, so every state change moved the whole line.
+    ///
+    /// This asserts the absence, in every steady state, because the fix *is* the
+    /// absence: a hint that returns `""` in all three cannot shift anything.
+    #[test]
+    fn the_steady_hint_is_empty_whichever_state_the_editor_is_in() {
+        let mut e = ed();
+        assert_eq!(e.hint(1_000, Palette::None), "", "an idle composer");
+        type_str(&mut e, "writing something");
+        assert_eq!(e.hint(1_000, Palette::None), "", "a composer with text");
+        // A running turn is the other state the old hint distinguished, and it no
+        // longer reaches the hint at all — the parameter is gone, so the only way it
+        // could shift the line is by being named here. `hint` takes no `running` for
+        // that reason; this asserts the editor's own text is not what changes.
+        assert!(!e.hint(1_000, Palette::None).contains("interrupt"));
+
+        // The double-taps still speak, which is the part that must not be lost.
+        e.key(Key::Esc, 2_000);
+        assert!(e.hint(2_100, Palette::None).contains("esc again to interrupt"));
+        // And each lapses back to nothing.
+        assert_eq!(e.hint(99_000, Palette::None), "");
     }
 
     #[test]
