@@ -4346,6 +4346,15 @@ impl<'a> Harness<'a> {
             // pane opened mid-turn answers with this round's table, not last
             // round's. Cheap: the list is filtered before it is built.
             self.publish_jobs();
+            // **And a mode change the operator made while this turn was running.**
+            //
+            // It sat in the command queue until the worker came back — which is
+            // after the turn — so `/mode` moved nothing while the turn went on
+            // asking under the old point. That is exactly when somebody reaches
+            // for it. Applied here, at the round boundary, on the thread that owns
+            // the harness: the gate reads its mode at decision time, so the very
+            // next call is governed by it.
+            self.apply_queued_mode();
             self.persist()?;
             // The calls of this round have run; if the model revised its plan,
             // the store and the heads hear about it now, at the round boundary —
@@ -4401,6 +4410,49 @@ impl<'a> Harness<'a> {
     /// Rebuilt per round because it borrows nothing and holds only clones; what it
     /// must **share** is the trail, the injected queue and the monitor cursor, so a
     /// firing picked up in one round is not delivered again in the next.
+    /// **A `/mode` issued while this turn is running**, taken at a round boundary.
+    ///
+    /// Reported exactly as the between-turns path reports it — same sentence,
+    /// same codes — because "what did my mode change do" must not depend on
+    /// whether a turn happened to be running when it was typed.
+    fn apply_queued_mode(&mut self) {
+        let Some(cmd) = self.hub.try_mode_command() else {
+            return;
+        };
+        let letibot_sessionlog::hub::CommandKind::Mode { name, consented } = &cmd.kind else {
+            return;
+        };
+        let mode = match letibot_tools::mode::Mode::parse(name) {
+            Ok(m) => m,
+            Err(e) => {
+                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "mode_unknown".into(),
+                    detail: e,
+                });
+                return;
+            }
+        };
+        // **Not persisted from here.** The project row is `Sessions`' business and
+        // is written on the between-turns path; a consented `allow-all` is not
+        // written at all. This is the session's own point moving, and nothing else.
+        let consented = *consented;
+        match self.set_mode_consented(mode, consented) {
+            Ok(said) => {
+                let applied = self.cfg.mode;
+                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "mode_set".into(),
+                    detail: format!("{said}. {}", applied.summary),
+                });
+            }
+            Err(why) => {
+                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "mode_set_refused".into(),
+                    detail: format!("this session stays at `{}`: {why}", self.cfg.mode.name),
+                });
+            }
+        }
+    }
+
     fn steering(&self) -> HubSteering {
         HubSteering {
             hub: self.hub.clone(),
