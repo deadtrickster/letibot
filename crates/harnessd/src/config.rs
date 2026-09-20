@@ -1823,6 +1823,36 @@ pub fn now_ns() -> u128 {
 #[cfg(test)]
 mod tests {
 
+    /// **The consented point describes itself, not the one that was asked for.**
+    ///
+    /// `Mode::ALLOW_ALL`'s summary says "the VM is the boundary and nothing
+    /// inside it reaches this box", which is true of a firecode placement and
+    /// false of the operator's laptop. Printing it for a session that landed on
+    /// `ALLOW_ALL_HERE` put that sentence two lines above "the confinement
+    /// prerequisite is what refuses this point on a bare host" — on 2026-09-20,
+    /// in one card, on their screen.
+    #[test]
+    fn the_two_allow_all_points_do_not_borrow_each_others_sentences() {
+        use letibot_tools::mode::Mode;
+        assert!(
+            Mode::ALLOW_ALL.summary.contains("the VM is the boundary"),
+            "the confined point still claims a VM"
+        );
+        assert!(
+            !Mode::ALLOW_ALL_HERE.summary.contains("VM"),
+            "the consented point must not claim a boundary it does not have: {}",
+            Mode::ALLOW_ALL_HERE.summary
+        );
+        assert!(
+            Mode::ALLOW_ALL_HERE.summary.contains("operator confirmed"),
+            "and must say what it DOES stand on: {}",
+            Mode::ALLOW_ALL_HERE.summary
+        );
+        // The names differ too, so a card naming the applied point cannot read as
+        // the confined one.
+        assert_ne!(Mode::ALLOW_ALL.name, Mode::ALLOW_ALL_HERE.name);
+    }
+
     /// **The window is planned in the units the ledger counts in.**
     ///
     /// The ledger counts a LOCAL rendered prompt with reasoning in it; a
