@@ -222,21 +222,50 @@ an `attaching` flag that suppresses it — `the_frame_before_the_attach_claims_n
 so before printing its own reports, so entering the screen before a refused attach
 still lands the error on a restored terminal.
 
-**Still open**: what remains of an attach is the parse, and every lever is
-consumer-side. Three, smallest to largest:
+**The design, and it is the operator's rather than mine.** Stated twice, and I said
+yes to it both times and then planned as though I had not:
 
-1. **Lex less of each row.** `budget.body_lines` already bounds the *render* to 40
-   lines per block, but the lex produces every line first — so a 5000-line message is
-   fully parsed to draw a head and a tail. The inline pass (half the cost) could run
-   lazily per line at render time, which would cap it at what is drawn. Bounded work,
-   and it changes the `Block` model: runs are computed on demand rather than at lex.
-2. **Cache the rendered history.** Key it on (session, item id, width, colour) and a
-   `--continue` of an unchanged session skips the parse entirely. The strongest fix for
-   the reported flow, and it is a disk format plus an invalidation rule.
-3. **Paint chrome first, fill history over frames.** The walk's marks are cumulative
-   (`HistMark { lines, note_upto, class }`), so a partial body has to agree with where
-   the view is anchored — the one to do last, because it touches the thing that makes
-   scrollback correct.
+> so in a way we are looking back right, instead of looking in the future, interesting
+> challenge for treesitter  — 2026-09-20, on the tail problem
+
+> render chrome asap, then render the very current frame of text, then some scroll up
+> buffer if needed — mind the bounds of blocks, etc  — earlier the same day
+
+So: **stream backwards.** The document is finished and the head wants its *end* — the
+current frame, then scrollback above it, fetched as it is looked at. That is a viewport
+over a buffer the daemon already owns, which is what an editor has, and it is *not* the
+three-patch list a first pass at this item produced (lex less, cache the render, fill
+over frames). Those were written after `tail_cut` was built from the operator's own
+insight and then not wired up — the mechanism for this design already exists in
+`crates/tui/src/markdown.rs` and every one of those three would have worked around it.
+
+**Stage 1 — the window is a window (no protocol change).**
+`tail_cut(src, min_bytes)` returns the offset near the end from which the suffix parses
+standalone. Committed and tested (`815200e`, `ad0a10a`): `lex(tail)[1..]` is the
+document's blocks, the first may be ragged and goes off the top, and a 4 KB tail of
+152 KB measures **3.0%** of the whole's cost. What is missing is only the caller: the
+walk in `body_window` still lexes each row whole.
+
+**Stage 2 — a row is a logical string, and the head holds a viewport.**
+The operator's own framing, and it is the right one: a tool result of 418 KB is a
+*logical* string that wraps to thousands of *display* lines, of which 40 are on screen.
+Wrapping exists; paging does not, so an unfolded row is unreachable past the fold. The
+fix is the editor's, not a cap: the daemon owns the buffer, the head holds the window,
+and a row fetched on demand when it is unfolded. `Peek` already fetches a stored
+conversation for the session picker, so the mechanism is built — it needs a row-shaped
+form rather than a new protocol.
+
+**Stage 3 — bound the snapshot in bytes (`ViewBounds`).**
+`items: 2_000` bounds *count*, and the operator has sessions of **160 MB and thousands
+of turns** where a row may be 418 KB — so the snapshot can be most of a gigabyte. This
+is the first half of the viewport rather than an optimisation: without it the window has
+nothing to be a window *over*. Do it first only in the sense that it is small and needs
+no protocol change; on its own it just drops old rows and still ships the fat one.
+
+**Not a fix**: making the grammars cheaper. Both external scanners are upstream, and the
+markdown half costing ~20x the Rust half per byte is a fact about those scanners rather
+than about rano. Nor is capping a row's payload at the source: that cuts the logical
+string to fix a display problem, which the operator named as the editor mistake.
 
 **Not a fix**: making the grammars cheaper. Both external scanners are upstream, and the
 markdown half costing ~20x the Rust half per byte is a fact about those scanners rather
