@@ -137,6 +137,9 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
             tier: "may_approve".into(),
             trail_json: serde_json::to_string(&trail).map_err(|e| e.to_string())?,
             shown: None,
+            // R11. An etalon row is replayed from a store that predates the column, and
+            // its brief was already `None` (nobody rendered one).
+            reply: None,
             tool: "bash".into(),
             arguments_json: r.arguments.to_string(),
             mode: "automode".into(),
@@ -150,6 +153,9 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
             oracle_ms: None,
             oracle_model: None,
             brief_sha: None,
+            // A row replayed from a corpus that has no `consulted` flag: `None` is
+            // "not recorded", which is what an etalon row honestly is.
+            consulted: None,
             effect: if r.outcome == "refused" { "refuse".into() } else { "admit".into() },
             // Every row here is asked: the point is what the guard says.
             asked: true,

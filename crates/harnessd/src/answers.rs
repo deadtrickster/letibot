@@ -405,6 +405,7 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
         // head that reconstructed the verdict would render a guess about what the
         // oracle said — `ModelBrief`'s rule, one layer out.
         advice: req.advice.as_ref().map(|a| WireAdvice {
+            consulted: a.consulted,
             would: a.would.to_string(),
             by: a.by.clone(),
             basis: a.basis.clone(),
@@ -634,6 +635,13 @@ impl Adjudicator for EscalateOnTimeout {
 
     fn last_brief(&self) -> Option<String> {
         self.human.last_brief().or_else(|| self.inner.last_brief())
+    }
+
+    /// **The model's bytes, not the person's** (R11). The corpus column is the input an
+    /// ORACLE was given, and the human's half of this pair has no such bytes; where both
+    /// answered, the model's is the exchange a reader came to check.
+    fn last_reply(&self) -> Option<String> {
+        self.inner.last_reply().or_else(|| self.human.last_reply())
     }
 
     fn last_advice(&self) -> Option<ModelAdvice> {

@@ -32,7 +32,7 @@
 //! here would be a second definition of "measured" that drifts from the first.
 
 use letibot_tokencore::rusqlite;
-use letibot_tokencore::store::Store;
+use letibot_tokencore::store::{Store, ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL};
 use letibot_tools::builtins::decisions::{
     DecisionCounts, DecisionHits, DecisionQuery, DecisionRow, DecisionSource,
 };
@@ -312,12 +312,22 @@ impl DecisionSource for StoreDecisions {
         };
         Ok(DecisionCounts {
             total: one(""),
-            decided_by_operator: one(" AND asked = 1"),
-            // The same definition `corpus_counts` uses: an oracle actually
-            // answered, which is `oracle_ms IS NOT NULL` — not merely that a model
-            // adjudicator was in the chain.
-            measured: one(" AND oracle_ms IS NOT NULL"),
-            disagreements: one(" AND operator_kind IS NOT NULL"),
+            // **The predicates are imported, not re-typed.** This function is the
+            // scoped twin of `Store::corpus_counts`, and the two drifted exactly as a
+            // copied `WHERE` clause does: `measured` read
+            // `oracle_ms IS NOT NULL`, which matches **every** row because
+            // `oracle_ms` is `0` and never NULL — the scoped banner announced that
+            // every decision in the session was measured against a model. And
+            // `disagreements` read `operator_kind IS NOT NULL`, which counts a ruling
+            // the operator *agreed* with; on this box 2026-09-21 that reported `1863`
+            // where the true figure is `1294`.
+            //
+            // Both are now interpolated from the one definition in the store crate.
+            // A count is not measuring what its NAME says, it is measuring what its
+            // PREDICATE says — so there is one predicate.
+            decided_by_operator: one(&format!(" AND {ASKED_SQL}")),
+            measured: one(&format!(" AND {MEASURED_SQL}")),
+            disagreements: one(&format!(" AND {DISAGREEMENT_SQL}")),
         })
     }
 }

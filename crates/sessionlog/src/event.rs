@@ -186,6 +186,27 @@ pub struct Timings {
 /// `DecisionOption` and `OptionKind` already have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAdvice {
+    /// **Whether an oracle was actually consulted** (R11).
+    ///
+    /// No `PROTOCOL_VERSION` bump: an added, defaulted field on an existing variant.
+    /// An older head ignores it and renders exactly what it rendered before.
+    ///
+    /// `false` covers every case where the model adjudicator produced a verdict
+    /// *without asking a model*: an unresolved action, an always-ask entry, a blocked
+    /// one, an uncollected trail, an intent outside the oracle's earned scope. Those
+    /// are layer A's answers arriving through layer B's door, and they are not
+    /// verdicts — so `would: "unavailable"` with `consulted: false` is *nobody spoke*,
+    /// which a head must not render as *a model said unavailable*.
+    ///
+    /// **Load-bearing for the corpus, which is why it is on the wire at all.**
+    /// `letibot_tools`' own twin carries it and warned that without it a row whose
+    /// "verdict" was `always-ask short-circuit` would be labelled as the operator
+    /// agreeing or disagreeing with an opinion nothing held — manufactured signal, and
+    /// the worst kind, because it looks like data. The wire copy had nowhere to put it,
+    /// so a head could only guess from the prose. Defaulted, because a daemon from
+    /// before this field sent none and `false` is the honest reading of silence.
+    #[serde(default)]
+    pub consulted: bool,
     /// `admit`, `refuse`, `ask` or `unavailable` — what the model's answer would
     /// have done on its own.
     pub would: String,
@@ -301,6 +322,29 @@ const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
 /// Nested values are **elided, not flattened**: `{…}` and `[…]` say there is more
 /// without pretending a JSON dump is a label.
 ///
+/// # Where that rule was drawn narrower, and why (R15)
+///
+/// **A nested value is elided only when the map has no scalar to show at all.** An
+/// edit's `edits` array was landing in front of the filename —
+/// `▸ Edited […] letibot/crates/harnessd/src/answers.rs · ok · 3ms · 10 lines` — so the
+/// most valuable position on the row was occupied by a placeholder whose "more" is the
+/// **diff sitting directly underneath it**. The operator's ruling: *"`[…]` should be
+/// gone for Edit"*, not moved.
+///
+/// The line is drawn on the *arguments* and not on the tool name, because the whole rule
+/// above is derived — a per-tool table is what this function exists to avoid. The general
+/// point survives intact: `[…]` is still what a map of nothing but nested values says,
+/// which is the case where a label would otherwise be empty. **No seated tool in this
+/// tree has that shape today** — every one carries a scalar `path`, `pattern` or `cmd` —
+/// so that arm is reachable by a tool added later, and a card with no label at all falls
+/// back to the call id rather than to a blank (`subject` in the head's `targets`).
+///
+/// **What was deliberately not changed:** the `SUBJECT_KEYS` prepend below. It answers the
+/// other failure — the budget breaking *before* `path`, leaving a card that says nothing
+/// about which file — and reordering it was proposed and rejected in favour of removal:
+/// on an edit nothing else belongs first, so the row should not need a rule to put the
+/// file there.
+///
 /// # It is public because a head needs it twice
 ///
 /// Once on the wire, for a call that is *running*. And once locally, for a settled
@@ -319,19 +363,26 @@ pub fn display_target(arguments: &str) -> String {
         return truncate_target(&scalar(&v).unwrap_or_default());
     };
     let mut parts: Vec<String> = Vec::new();
+    // The placeholders of the nested values the walk passed, kept apart so that they can
+    // be dropped if any scalar turned up (R15). In written order, so the fallback below
+    // reads like the arguments the model wrote.
+    let mut elided: Vec<&'static str> = Vec::new();
     let mut subject_seen = false;
     for (_k, val) in &map {
         if SUBJECT_KEYS.contains(&_k.as_str()) {
             subject_seen = true;
         }
-        parts.push(match scalar(val) {
-            Some(s) => s,
-            None if val.is_array() => "[…]".into(),
-            None => "{…}".into(),
-        });
+        match scalar(val) {
+            Some(s) => parts.push(s),
+            None if val.is_array() => elided.push("[…]"),
+            None => elided.push("{…}"),
+        }
         if parts.iter().map(|p| p.len() + 1).sum::<usize>() > TARGET_MAX_BYTES {
             break;
         }
+    }
+    if parts.is_empty() {
+        parts = elided.into_iter().map(str::to_string).collect();
     }
     if !subject_seen
         && let Some(val) = SUBJECT_KEYS.iter().find_map(|k| map.get(*k))
@@ -1142,12 +1193,48 @@ mod tests {
         );
     }
 
+    /// **R15: an edit's row is the file, and the `edits` array says nothing.**
+    ///
+    /// The operator's screen carried
+    /// `▸ Edited […] letibot/crates/harnessd/src/answers.rs · ok · 3ms · 10 lines`, and the
+    /// ruling was *"`[…]` should be gone for Edit"* — **not moved**. The placeholder sat in
+    /// the most valuable position on the row while the "more" it pointed at was the diff
+    /// directly underneath it.
+    ///
+    /// The line, and it is on the *arguments* rather than on the tool: **a nested value is
+    /// elided only when the map has no scalar at all.** The elision rule therefore keeps
+    /// every case where it earns its keep — a label that would otherwise be *empty* — and
+    /// stops spending a token on a row that already names something.
     #[test]
-    fn a_nested_argument_is_elided_rather_than_dumped() {
+    fn a_nested_argument_is_elided_only_when_nothing_else_can_be_shown() {
+        // The batch edit, in the order the model writes it (`edits` first). The row is the
+        // file: no placeholder before it, and none after it either.
+        assert_eq!(
+            display_target(r#"{"edits":[{"old":"x"}],"path":"letibot/src/answers.rs"}"#),
+            "letibot/src/answers.rs"
+        );
+        // The other order. The previous cut of this test asserted `"a.rs […]"` — and that
+        // string was the defect, not the expectation.
         assert_eq!(
             display_target(r#"{"path":"a.rs","edits":[{"old":"x"}]}"#),
-            "a.rs […]"
+            "a.rs"
         );
+        // An object nested beside a scalar: the scalar is the label.
+        assert_eq!(
+            display_target(r#"{"cmd":"cargo test","env":{"RUST_LOG":"x"}}"#),
+            "\"cargo test\""
+        );
+
+        // **And the rule keeps its other half.** A map with nothing scalar in it still
+        // says there is more rather than rendering an empty label; in this tree that is
+        // reachable only by a tool added later, because every seated one carries a scalar
+        // `path`, `pattern` or `cmd`.
+        assert_eq!(display_target(r#"{"rows":[1,2,3]}"#), "[…]");
+        assert_eq!(display_target(r#"{"nested":{"a":1}}"#), "{…}");
+        assert_eq!(display_target(r#"{"rows":[1],"opts":{"a":1}}"#), "[…] {…}");
+        // An argument object with nothing in it at all is the empty label, which is what
+        // makes the head fall back to the call id instead of drawing a blank row.
+        assert_eq!(display_target("{}"), "");
     }
 
     #[test]

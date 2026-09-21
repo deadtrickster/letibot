@@ -30,6 +30,7 @@
 //! prefix is stable by construction (`ModelBrief::render` opens with the same
 //! instruction every time), so `cache_prompt` keeps the common prefix resident.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use letibot_tools::{
@@ -45,6 +46,18 @@ pub struct HttpOracle {
     max_tokens: usize,
     scope: OracleScope,
     question: Question,
+    /// **The bytes that came back on the last call, verbatim** (R11).
+    ///
+    /// The exchange exists for the duration of one HTTP call and is otherwise gone:
+    /// `basis` is a *rendering* of the reply, and a corpus row whose label was read out
+    /// of a reply nobody kept is training data with its input missing. So the raw text
+    /// is held here, where it exists, and the layer that builds the corpus reads it off
+    /// this type through [`AuthorisationOracle::last_reply`].
+    ///
+    /// **Cleared at the top of every call.** A cell that survived a call would file the
+    /// previous reply against the next decision, which is a wrong attribution nobody
+    /// would find afterwards — the row would read as true.
+    last_reply: Mutex<Option<String>>,
 }
 
 /// **What the guard is asked**, and therefore what it answers.
@@ -104,6 +117,7 @@ impl HttpOracle {
             // UNSURE to anything it had to think about.
             max_tokens: 120,
             question: Question::Verdict,
+            last_reply: Mutex::new(None),
             // Narrowest until a corpus says otherwise, or until the operator says
             // otherwise in their own file — see `with_scope`.
             scope: OracleScope::narrowest(
@@ -203,21 +217,28 @@ impl HttpOracle {
     }
 }
 
-/// `ALLOW 0,2` / `DENY` / `UNSURE`, tolerant of surrounding whitespace and case.
-/// Anything unrecognised is UNSURE: a verdict nobody can parse is not a verdict,
-/// and guessing which way it leaned is how an oracle authorises by accident.
-fn parse(answer: &str) -> Verdict {
-    // **The LAST non-empty line.** The guard is asked for a sentence and then a
-    // verdict, so the first line is its reasoning — reading that as the answer
-    // would parse "The operator asked to fix a UI bug…" as a verdict nobody gave.
-    // A reply that is one line still works: the last line is the only line.
-    let line = answer
+/// **The line a verdict is on.** One function, because two places need to agree about
+/// which line that is — and they did not, which is the bug below.
+///
+/// The guard is asked for a sentence and then a verdict, so the FIRST line is its
+/// reasoning; reading that as the answer would parse *"The operator asked to fix a UI
+/// bug…"* as a verdict nobody gave. A one-line reply still works: the last line is the
+/// only line.
+fn verdict_line(answer: &str) -> &str {
+    answer
         .trim()
         .lines()
         .rev()
         .map(str::trim)
         .find(|l| !l.is_empty())
-        .unwrap_or("");
+        .unwrap_or("")
+}
+
+/// `ALLOW 0,2` / `DENY` / `UNSURE`, tolerant of surrounding whitespace and case.
+/// Anything unrecognised is UNSURE: a verdict nobody can parse is not a verdict,
+/// and guessing which way it leaned is how an oracle authorises by accident.
+fn parse(answer: &str) -> Verdict {
+    let line = verdict_line(answer);
     let mut words = line.split_whitespace();
 
     match words.next().map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic())) {
@@ -312,8 +333,23 @@ fn verdict_of(s: &Scores) -> Verdict {
 }
 
 impl AuthorisationOracle for HttpOracle {
+    /// **What this oracle answered last** (R11), for the corpus row.
+    ///
+    /// The reply is the *input* the verdict was read out of, and it exists nowhere else:
+    /// `basis` is a rendering, so a row whose label cannot be traced back to the bytes it
+    /// came from is a row nobody can check. `None` means nothing came back — the endpoint
+    /// did not answer inside its budget — which is not an empty reply.
+    fn last_reply(&self) -> Option<String> {
+        self.last_reply.lock().ok().and_then(|g| g.clone())
+    }
+
     fn authorised(&self, brief: &mut ModelBrief) -> OracleAnswer {
-        let request_id = brief.request_id.clone();
+        // **Cleared before the call, not after it.** A cell left over from the previous
+        // call would file that call's reply against this decision, and the row would read
+        // as true for ever afterwards.
+        if let Ok(mut g) = self.last_reply.lock() {
+            *g = None;
+        }
         // **A sentence of room before the verdict.**
         //
         // This asked for ONE line and nothing else, capped at 6 tokens: a verdict
@@ -362,12 +398,56 @@ impl AuthorisationOracle for HttpOracle {
             ),
         };
 
+        // **Whatever came back is kept before anything reads it** (R11). The reply is
+        // the input a corpus row's label was read out of, and this is the only place
+        // it exists at all; everything downstream sees a verdict.
         let Some(raw) = self.ask(&prompt) else {
+            // Nothing came back, so the cell keeps `None` — set by the clear above —
+            // which is what the corpus records. It is not an empty string: "asked and
+            // silent" and "replied with nothing" are different facts.
             return OracleAnswer::Unsure {
                 why: format!("{} did not answer", self.id),
             };
         };
+        if let Ok(mut g) = self.last_reply.lock() {
+            *g = Some(raw.clone());
+        }
 
+        // **The reply read, in its own function.** Everything from here down turns bytes
+        // into a verdict and does nothing else, which is what makes the UNSURE
+        // misreading below testable with a canned reply rather than a live guard model.
+        self.read(brief, &raw)
+    }
+    fn describe(&self) -> String {
+        format!(
+            "model oracle `{}` at {} (budget {}ms, {})",
+            self.id,
+            self.endpoint.authority(),
+            self.budget.as_millis(),
+            match self.question {
+                Question::Verdict => "verdict only",
+                Question::TwoScores => "two scores, thresholds derive the verdict",
+            }
+        )
+    }
+
+    fn scope(&self) -> OracleScope {
+        self.scope.clone()
+    }
+
+    fn budget(&self) -> Duration {
+        self.budget
+    }
+}
+
+impl HttpOracle {
+    /// **What those bytes amount to**, with no transport in it at all.
+    ///
+    /// Split out for the reason a seam is ever split: the parsing is where the defects
+    /// are (`ALLOW [0]` yielding no citations, `UNSURE` read as a parse failure) and it is
+    /// the half that can be exercised without standing up inference.
+    fn read(&self, brief: &mut ModelBrief, raw: &str) -> OracleAnswer {
+        let request_id = brief.request_id.clone();
         let (verdict, scored) = match self.question {
             Question::Verdict => (parse(&raw), String::new()),
             Question::TwoScores => match parse_scores(&raw) {
@@ -441,52 +521,50 @@ impl AuthorisationOracle for HttpOracle {
             Verdict::Deny => OracleAnswer::NotAuthorised {
                 why: format!("{} found nothing in the trail that asks for this{scored}", self.id),
             },
-            // **UNSURE is an answer, and it is one this seam offers.** The prompt's
-            // own suffix lists ALLOW / DENY / UNSURE, so a model that says `UNSURE`
-            // has answered the question asked of it — and this reported that as "no
-            // verdict this seam could read", which reads as a parse failure and put
-            // one in the corpus. The two really are different and both happen, so
-            // they are told apart rather than collapsed: a verdict the parser
-            // recognised as UNSURE, and bytes it could make nothing of.
-            Verdict::Unsure if raw.trim().eq_ignore_ascii_case("UNSURE") => {
-                OracleAnswer::Unsure {
-                    why: format!(
-                        "{} answered UNSURE: it could not tell whether this follows \
-                         from what the operator asked for",
-                        self.id
-                    ),
-                }
-            }
-            Verdict::Unsure if !scored.is_empty() => OracleAnswer::Unsure {
-                why: format!("{} scored this between the thresholds{scored}", self.id),
-            },
-            Verdict::Unsure => OracleAnswer::Unsure {
-                why: format!("{} gave no verdict this seam could read: {:?}", self.id, raw.trim()),
-            },
+            Verdict::Unsure => self.unsure(raw, &scored),
         }
     }
 
-    fn describe(&self) -> String {
-        format!(
-            "model oracle `{}` at {} (budget {}ms, {})",
-            self.id,
-            self.endpoint.authority(),
-            self.budget.as_millis(),
-            match self.question {
-                Question::Verdict => "verdict only",
-                Question::TwoScores => "two scores, thresholds derive the verdict",
-            }
-        )
-    }
-
-    fn scope(&self) -> OracleScope {
-        self.scope.clone()
-    }
-
-    fn budget(&self) -> Duration {
-        self.budget
+    /// **Which `Unsure` this is**, and the three are not one fact.
+    ///
+    /// * the model **answered** `UNSURE` — the question the prompt asks, answered;
+    /// * it **scored** the call between the thresholds, so the thresholds decided;
+    /// * the bytes were **not a verdict at all**.
+    ///
+    /// The first two are answers and the third is a parse failure, and they used to be
+    /// collapsed into the third. The defect was one comparison: the guard tested
+    /// `raw.trim()` against `UNSURE`, which is the WHOLE reply, while `parse` reads the
+    /// LAST line — so a reply of the exact shape the prompt asks for
+    ///
+    /// ```text
+    /// The operator asked for tests; this runs them.
+    /// UNSURE
+    /// ```
+    ///
+    /// parsed correctly as `Unsure` and was then reported as *"gave no verdict this seam
+    /// could read"*, with the model's own reasoning quoted back as if it were noise.
+    /// Measured on this box 2026-09-21: 39 of 69 unreadable replies were this shape, so
+    /// the honest reading is that 39 rows called the guard's answer unparseable when it
+    /// had answered.
+    ///
+    /// Pure, and separate from `read`, because this is the half worth pinning with a
+    /// canned reply — a live guard model cannot be asked for a multi-line `UNSURE`.
+    fn unsure(&self, raw: &str, scored: &str) -> OracleAnswer {
+        let why = if verdict_line(raw).eq_ignore_ascii_case("UNSURE") {
+            format!(
+                "{} answered UNSURE: it could not tell whether this follows \
+                 from what the operator asked for",
+                self.id
+            )
+        } else if !scored.is_empty() {
+            format!("{} scored this between the thresholds{scored}", self.id)
+        } else {
+            format!("{} gave no verdict this seam could read: {:?}", self.id, raw.trim())
+        };
+        OracleAnswer::Unsure { why }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -569,5 +647,55 @@ mod tests {
     #[test]
     fn allow_with_no_citation_parses_but_carries_nothing() {
         assert_eq!(parse("ALLOW"), Verdict::Allow(vec![]));
+    }
+
+    /// **A reply of the shape the prompt asks for is an ANSWER, not a parse failure.**
+    ///
+    /// The defect: `parse` reads the last line, so a sentence-then-`UNSURE` reply
+    /// parses correctly — and the guard then tested `raw.trim()` against `UNSURE`,
+    /// which is the whole multi-line reply, failed, and fell through to *"gave no
+    /// verdict this seam could read"*. Measured on this box 2026-09-21: **39 of 69**
+    /// unreadable replies were exactly this shape, so the corpus called the guard's
+    /// answer noise on 39 rows where it had answered.
+    ///
+    /// The three `Unsure`s are asserted apart, because collapsing them is what went
+    /// wrong: the model answering `UNSURE`, the thresholds landing between their marks,
+    /// and bytes that are no verdict at all.
+    #[test]
+    fn unsure_is_read_from_the_last_line_and_is_not_a_parse_failure() {
+        let o = HttpOracle::new(
+            Endpoint::parse("127.0.0.1:1").unwrap(),
+            "guard",
+            Duration::from_millis(10),
+        );
+        let why = |raw: &str, scored: &str| match o.unsure(raw, scored) {
+            OracleAnswer::Unsure { why } => why,
+            other => panic!("not an Unsure: {other:?}"),
+        };
+
+        // The shape the prompt asks for: reasoning, then the verdict on its own line.
+        let said = why("The operator asked to fix a UI bug.\nUNSURE", "");
+        assert!(said.contains("answered UNSURE"), "{said}");
+        assert!(
+            !said.contains("no verdict this seam could read"),
+            "a reply that answered is not a parse failure: {said}"
+        );
+        // The same thing with the whitespace a model actually emits around it.
+        let said = why("  reasoning  \n\n  unsure  \n", "");
+        assert!(said.contains("answered UNSURE"), "{said}");
+
+        // The thresholds, when the two scores landed between them.
+        let said = why("reasoning\nFIT 5 0\nCLAIM 5", " (fit 5/10 citing [0], claim 5/10)");
+        assert!(said.contains("between the thresholds"), "{said}");
+
+        // And bytes that are no verdict at all. `ALLOWANCE` is the case the parser is
+        // careful about — it must not read as an ALLOW.
+        for junk in ["", "maybe?", "I think that", "ALLOWANCE", "reasoning without a verdict"] {
+            let said = why(junk, "");
+            assert!(
+                said.contains("gave no verdict this seam could read"),
+                "input {junk:?} gave {said}"
+            );
+        }
     }
 }

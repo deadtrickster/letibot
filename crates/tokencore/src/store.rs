@@ -126,6 +126,14 @@ pub struct StoredAdjudication {
     pub oracle_ms: Option<i64>,
     pub oracle_model: Option<String>,
     pub brief_sha: Option<String>,
+    /// **Whether an oracle was consulted** (R11, v10). `None` on rows written before the
+    /// column existed — "not recorded" — which is a different statement from
+    /// `Some(false)`, "recorded, and nobody asked a model".
+    pub consulted: Option<bool>,
+    /// **What the oracle answered, verbatim** (R11, v9). `None` means either that
+    /// no oracle was consulted — `verdict_by` says which — or that one was asked and
+    /// nothing came back inside its budget.
+    pub reply: Option<String>,
     pub effect: String,
     pub asked: bool,
     pub operator_kind: Option<String>,
@@ -133,6 +141,35 @@ pub struct StoredAdjudication {
     pub operator_latency_ms: Option<i64>,
     pub corpus_version: i64,
 }
+
+/// **The three predicates every count of the corpus is built from, in one place.**
+///
+/// A `WHERE` clause copied into a second file is a count that drifts, and these did:
+/// `harnessd/src/decision_source.rs` kept its own copies and two of them measured
+/// something other than what they were named after — `measured` was
+/// `oracle_ms IS NOT NULL`, which matches **every** row because `oracle_ms` is `0` and
+/// never NULL, and `disagreements` was `operator_kind IS NOT NULL`, which counts a
+/// ruling the operator *agreed* with. Measured on this box 2026-09-21: the scoped count
+/// read `1863` ruled-against where the true figure was `1294`.
+///
+/// The store's own comments already say the thing that generalises: **a count is not
+/// measuring what its NAME says, it is measuring what its PREDICATE says.** So the
+/// predicate is written once, next to the schema it reads, and both callers interpolate
+/// it.
+pub const ASKED_SQL: &str = "asked = 1";
+/// An oracle **actually spoke**. Not "a model adjudicator was in the chain" and not "a
+/// model decided" — the two are different facts and both were counted as this one.
+/// `consulted` is written from `ModelAdvice::consulted`, which is the flag the whole
+/// distinction exists for.
+pub const MEASURED_SQL: &str = "consulted = 1";
+/// **The rows a fine-tune is for**: the operator ruled *against* what the model would
+/// have done. `granted` and `revoked` only — `upheld` is the operator agreeing, and
+/// counting it here made the number mean "ruled on" while wearing the name of "differ".
+pub const DISAGREEMENT_SQL: &str = "operator_kind IN ('granted', 'revoked')";
+/// **A model decided the call itself**, which is neither of the two above and had no
+/// name before this: `automode` lets the oracle's own verdict admit, and at `/supervised`
+/// the oracle only advises while a person decides.
+pub const MODEL_DECIDED_SQL: &str = "verdict_by LIKE 'model%'";
 
 /// What the corpus holds, for the disclosure and for `/gate corpus`.
 ///
@@ -158,11 +195,17 @@ pub struct CorpusCounts {
     pub total: u64,
     /// `asked = 1`: a person was put in front of this call and answered it.
     pub decided_by_operator: u64,
-    /// An oracle was actually consulted and gave a verdict. Not merely "a model
-    /// adjudicator answered" — see `ModelAdvice::consulted`.
+    /// **An oracle was actually consulted** — [`MEASURED_SQL`], from
+    /// `ModelAdvice::consulted`, which is what that flag is for. **`NULL` before schema
+    /// v10**, so rows written earlier read `0` here and `model_decided` below is the
+    /// count that speaks for them; a reader who sees the two apart is seeing the flag's
+    /// arrival date, which is a fact and not a defect.
     pub measured: u64,
-    /// The operator ruled against what the model would have done.
+    /// The operator ruled against what the model would have done — [`DISAGREEMENT_SQL`].
     pub disagreements: u64,
+    /// A model decided the call — [`MODEL_DECIDED_SQL`]. The one count that is exact on
+    /// rows written before v10.
+    pub model_decided: u64,
 }
 
 /// The write shape for one decision. A struct rather than an argument list
@@ -195,6 +238,15 @@ pub struct NewAdjudication {
     pub oracle_ms: Option<i64>,
     pub oracle_model: Option<String>,
     pub brief_sha: Option<String>,
+    /// **Whether an oracle was actually consulted** (R11), from
+    /// `ModelAdvice::consulted` — the flag that separates *the oracle said ask* from
+    /// *nobody asked a model*. Without it the only way to ask was a regex over
+    /// `model_verdict`'s prose.
+    pub consulted: Option<bool>,
+    /// **What the oracle answered, verbatim** (R11). `None` when none was consulted,
+    /// or when the one that was did not answer inside its budget — `verdict_by`
+    /// tells those apart, and these are the bytes the verdict was read out of.
+    pub reply: Option<String>,
     pub effect: String,
     /// Whether the operator was actually put in front of this decision.
     pub asked: bool,
@@ -217,7 +269,10 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-pub const SCHEMA_VERSION: i64 = 8;
+/// **10** since the corpus records whether an oracle was consulted, and what it answered
+/// (R11) — a column and a flag, both additive, both described at their migration arms
+/// below. **9** added `oracle_reply` for the same requirement.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -331,8 +386,23 @@ CREATE TABLE IF NOT EXISTS adjudication (
     -- The trail as rendered into the brief, and the exact bytes the oracle saw.
     -- `shown` is NULL when no oracle was consulted -- a human-only decision is
     -- still a corpus row, and "nobody asked a model" is a fact about it.
+    --
+    -- **R11: this column is the BRIEF, and until 2026-09-21 it never held one.**
+    -- It was set on 147 of 5785 rows and NULL on every row an oracle decided,
+    -- because the gate asked its decider for `last_brief()` and the decider was a
+    -- person's card (`req.brief()`, whose first line is `decision — …`) while the
+    -- adjudicator that had rendered the real brief kept it in a cell it never
+    -- reported. Both halves are fixed in the same commit; rows written before it
+    -- keep their cards, and are recognisable as such because they are exactly the
+    -- rows a human decided.
     trail_json     TEXT NOT NULL,
     shown          TEXT,
+    -- **R11: what came back, verbatim, before anything parses it.** NULL means no
+    -- oracle answered -- either because none was consulted (`verdict_by`) or
+    -- because the one that was did not reply inside its budget. The parsed reading
+    -- is `verdict_basis`; this is the bytes it was read out of, and a corpus whose
+    -- labels cannot be traced back to them is a corpus nobody can check.
+    oracle_reply   TEXT,
     -- **The input, unnormalised.** `action` above is layer A's reading of it, and
     -- a corpus that kept only the reading can never be re-featurised when layer A
     -- changes -- which it will, because the whole point of collecting this is to
@@ -368,6 +438,12 @@ CREATE TABLE IF NOT EXISTS adjudication (
     -- Which brief format produced `shown`. A corpus spanning a prompt change is
     -- two datasets, and without this nobody can tell where the seam is.
     brief_sha      TEXT,
+    -- **R11: whether an oracle was actually consulted.** `NULL` on rows written before
+    -- schema v10 — "recorded before this was kept" — and `0`/`1` after. `ModelAdvice::consulted`
+    -- is the flag; this is its durable form, and without it the only way to ask the
+    -- question was a regex over `model_verdict` prose, which this file's own comments
+    -- warn against (`re-parsing prose to recover a label is how a corpus rots`).
+    consulted      INTEGER,
     effect         TEXT NOT NULL,
     -- **Was a human actually asked?** The operator named this case directly: an
     -- UNSURE the gate surfaced and the operator answered anyway is a corpus row,
@@ -919,6 +995,47 @@ impl Store {
                 )?;
             }
         }
+        if from < 9 {
+            // v9: **what the oracle answered, verbatim** (R11). `shown` was meant to be
+            // the other half and held the operator's card instead; the brief now goes
+            // where that column's own doc says it goes, so what needed a column was the
+            // reply.
+            //
+            // NULL on every existing row: "recorded before this column existed", and
+            // indistinguishable from "the oracle did not answer" — which `verdict_by`
+            // separates, because that names whether an oracle was consulted at all.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('adjudication') \
+                     WHERE name = 'oracle_reply'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reply TEXT")?;
+            }
+        }
+        if from < 10 {
+            // v10: **whether an oracle was consulted** (R11), as a column rather than a
+            // reading of `model_verdict`'s prose. NULL-able on purpose: a row written
+            // before this cannot say, and "we did not keep it" must not look like "no
+            // model was asked". `CorpusCounts::measured` counts `= 1`, so an old store
+            // reports 0 there and `model_decided` is the count that speaks for its rows.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('adjudication') \
+                     WHERE name = 'consulted'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE adjudication ADD COLUMN consulted INTEGER")?;
+            }
+        }
         Ok(())
     }
 
@@ -1439,12 +1556,12 @@ impl Store {
         let changed = self.conn.execute(
             "INSERT OR IGNORE INTO adjudication
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
-                trail_json, shown, tool, arguments_json, mode, options_json, agent,
+                trail_json, shown, oracle_reply, tool, arguments_json, mode, options_json, agent,
                 model_verdict, verdict, verdict_by, verdict_basis, p_allow, oracle_ms,
-                oracle_model, shape, shape_class, brief_sha, effect, asked,
+                oracle_model, shape, shape_class, brief_sha, consulted, effect, asked,
                 corpus_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             rusqlite::params![
                 a.request_id,
                 a.session_id,
@@ -1455,6 +1572,7 @@ impl Store {
                 a.tier,
                 a.trail_json,
                 a.shown,
+                a.reply,
                 a.tool,
                 a.arguments_json,
                 a.mode,
@@ -1470,6 +1588,7 @@ impl Store {
                 a.shape,
                 a.shape_class,
                 a.brief_sha,
+                a.consulted.map(|c| c as i64),
                 a.effect,
                 a.asked as i64,
                 CORPUS_VERSION,
@@ -1534,9 +1653,11 @@ impl Store {
     /// which it wants.
     pub fn corpus(&self, only_labelled: bool, limit: usize) -> Result<Vec<StoredAdjudication>> {
         const COLS: &str = "request_id, session_id, turn_id, decided_ms, action, baseline,
-                    tier, trail_json, shown, tool, arguments_json, mode, options_json,
+                    tier, trail_json, shown, oracle_reply, tool, arguments_json, mode,
+                    options_json,
                     agent, model_verdict, verdict, verdict_by, verdict_basis, p_allow,
-                    oracle_ms, oracle_model, brief_sha, effect, asked, operator_kind,
+                    oracle_ms, oracle_model, brief_sha, consulted, effect, asked,
+                    operator_kind,
                     operator_note, operator_latency_ms, corpus_version";
         let sql = if only_labelled {
             format!(
@@ -1559,25 +1680,27 @@ impl Store {
                     tier: r.get(6)?,
                     trail_json: r.get(7)?,
                     shown: r.get(8)?,
-                    tool: r.get(9)?,
-                    arguments_json: r.get(10)?,
-                    mode: r.get(11)?,
-                    options_json: r.get(12)?,
-                    agent: r.get(13)?,
-                    model_verdict: r.get(14)?,
-                    verdict: r.get(15)?,
-                    verdict_by: r.get(16)?,
-                    verdict_basis: r.get(17)?,
-                    p_allow: r.get(18)?,
-                    oracle_ms: r.get(19)?,
-                    oracle_model: r.get(20)?,
-                    brief_sha: r.get(21)?,
-                    effect: r.get(22)?,
-                    asked: r.get::<_, i64>(23)? != 0,
-                    operator_kind: r.get(24)?,
-                    operator_note: r.get(25)?,
-                    operator_latency_ms: r.get(26)?,
-                    corpus_version: r.get(27)?,
+                    reply: r.get(9)?,
+                    tool: r.get(10)?,
+                    arguments_json: r.get(11)?,
+                    mode: r.get(12)?,
+                    options_json: r.get(13)?,
+                    agent: r.get(14)?,
+                    model_verdict: r.get(15)?,
+                    verdict: r.get(16)?,
+                    verdict_by: r.get(17)?,
+                    verdict_basis: r.get(18)?,
+                    p_allow: r.get(19)?,
+                    oracle_ms: r.get(20)?,
+                    oracle_model: r.get(21)?,
+                    brief_sha: r.get(22)?,
+                    consulted: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
+                    effect: r.get(24)?,
+                    asked: r.get::<_, i64>(25)? != 0,
+                    operator_kind: r.get(26)?,
+                    operator_note: r.get(27)?,
+                    operator_latency_ms: r.get(28)?,
+                    corpus_version: r.get(29)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1690,8 +1813,10 @@ impl Store {
         };
         Ok(CorpusCounts {
             total: one("SELECT COUNT(*) FROM adjudication")?,
-            decided_by_operator: one("SELECT COUNT(*) FROM adjudication WHERE asked = 1")?,
-            // **`verdict_by`, not `model_verdict`.**
+            decided_by_operator: one(&format!(
+                "SELECT COUNT(*) FROM adjudication WHERE {ASKED_SQL}"
+            ))?,
+            // **`measured` is `consulted`, not `verdict_by LIKE 'model%'`.**
             //
             // That predicate was a tautology and this banner said so out loud:
             // "60 decisions recorded: 3 you answered yourself, 60 measured against
@@ -1700,13 +1825,23 @@ impl Store {
             // when there is no advice, so it is always `Some` and the count was the
             // total wearing another name.
             //
-            // The thing being counted is "an oracle spoke", and the only column
-            // that says so is who answered. Same defect as the `labelled` count one
-            // column over, which is worth the paragraph: a count is not measuring
-            // what its NAME says, it is measuring what its PREDICATE says.
-            measured: one("SELECT COUNT(*) FROM adjudication WHERE verdict_by LIKE 'model%'")?,
-            disagreements: one("SELECT COUNT(*) FROM adjudication
-                  WHERE operator_kind IN ('granted', 'revoked')")?,
+            // It was replaced by `verdict_by LIKE 'model%'`, which is exact for "a
+            // model decided" and still not the thing this number is named after: at
+            // `/supervised` the oracle is consulted and a PERSON decides, so that
+            // predicate silently dropped every row where the guard spoke and was
+            // overruled — the rows the operator calls *"the rows a fine-tune is for"*.
+            // The fact is `ModelAdvice::consulted` and it is a column now (**v10**),
+            // so this reads the fact. `model_decided` carries the other one.
+            //
+            // **A count is not measuring what its NAME says, it is measuring what its
+            // PREDICATE says** — and the predicate lives in one place now, above.
+            measured: one(&format!("SELECT COUNT(*) FROM adjudication WHERE {MEASURED_SQL}"))?,
+            disagreements: one(&format!(
+                "SELECT COUNT(*) FROM adjudication WHERE {DISAGREEMENT_SQL}"
+            ))?,
+            model_decided: one(&format!(
+                "SELECT COUNT(*) FROM adjudication WHERE {MODEL_DECIDED_SQL}"
+            ))?,
         })
     }
 
@@ -2477,6 +2612,67 @@ mod corpus_tests {
         }
     }
 
+    /// **R11: the exchange is on the row, and an older row says so honestly.**
+    ///
+    /// The corpus table already had a column for the brief — `shown` — and it was being
+    /// filled with the operator's decision card, because the gate asked its *decider* for
+    /// `last_brief` and the decider is a person at a supervised point. Measured on this box
+    /// 2026-09-21: set on 147 of 5785 rows, `NULL` on every row an oracle decided, and all
+    /// 147 were rows a human answered. The reply had no column at all.
+    ///
+    /// So there are two assertions here and they are different statements: a row written
+    /// now carries both halves through the round trip, and a row written before the column
+    /// existed reads `NULL` for the reply — *"recorded before this was kept"* — which is
+    /// what a reader has to be able to tell apart from *"the oracle did not answer"*.
+    #[test]
+    fn the_oracles_brief_and_reply_round_trip_and_an_older_row_says_null() {
+        let s = store();
+        let session = a_session(&s);
+        let mut d = a_decision("adj-r11", &session);
+        d.shown = Some("brief — a file was read\ntrail: 1 operator message(s)".into());
+        d.reply = Some("It follows from what was asked.\nALLOW 0".into());
+        assert!(s.record_adjudication(&d).unwrap());
+
+        let row = s.corpus(false, 10).unwrap().remove(0);
+        assert!(row.shown.as_deref().unwrap().starts_with("brief — "), "{:?}", row.shown);
+        assert!(row.reply.as_deref().unwrap().contains("ALLOW 0"), "{:?}", row.reply);
+
+        // The other two facts, which are not the same as a missing column: no oracle was
+        // consulted at all, and one was asked and said nothing.
+        let mut quiet = a_decision("adj-quiet", &session);
+        quiet.shown = None;
+        quiet.reply = None;
+        assert!(s.record_adjudication(&quiet).unwrap());
+        let row = s
+            .corpus(false, 10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request_id == "adj-quiet")
+            .unwrap();
+        assert_eq!(row.shown, None);
+        assert_eq!(row.reply, None);
+
+        // A row from an older daemon: the column is there and empty, which is why
+        // `verdict_by` is what tells a reader whether anybody was asked.
+        s.conn
+            .execute(
+                "UPDATE adjudication SET oracle_reply = NULL WHERE request_id = 'adj-r11'",
+                [],
+            )
+            .unwrap();
+        let row = s
+            .corpus(false, 10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request_id == "adj-r11")
+            .unwrap();
+        assert_eq!(row.reply, None);
+        assert!(
+            row.shown.is_some(),
+            "the brief survives a reply that was never recorded"
+        );
+    }
+
     /// **The warm start is exactly as wide as the session that earned it.**
     ///
     /// Six rows, one per bound, and only the first may come back. Each of the other
@@ -2693,11 +2889,16 @@ mod corpus_tests {
     fn counts_separate_who_decided_from_what_was_measured() {
         let s = store();
         let sid = a_session(&s);
+        // **`consulted` is the third axis, and it is what `measured` reads (R11).** Here
+        // "the model said something" and "an oracle was consulted" are the same row
+        // shape, so the fixture sets both together; `m2` below is the row where they
+        // come apart — `model_verdict` written by the GATE, nobody asked.
         let add = |id: &str, asked: bool, verdict: Option<&str>, rule: Option<&str>| {
             s.record_adjudication(&NewAdjudication {
                 asked,
                 model_verdict: verdict.map(str::to_string),
                 verdict_by: verdict.map(|_| "model:test".to_string()),
+                consulted: verdict.map(|_| true),
                 ..a_decision(id, &sid)
             })
             .expect("record");
@@ -2738,7 +2939,16 @@ mod corpus_tests {
             c.measured, 3,
             "m1 s1 s2 only — NOT m2, whose model_verdict was written by the gate"
         );
-        assert_eq!(c.disagreements, 1, "s2 alone; an upheld is agreement");
+        assert_eq!(
+            c.disagreements, 1,
+            "s2 alone — an `upheld` is the operator AGREEING, and counting it here is the \
+             defect this predicate was fixed for (R11: 1863 reported against a true 1294)"
+        );
+        // **The count that speaks for rows written before v10.** Every row here carries
+        // `verdict_by: model:test`, so "a model decided" is 3 where "an oracle was
+        // consulted" is 3 — the two agree in this fixture and are different fields in
+        // the schema, which is the whole reason both are reported.
+        assert_eq!(c.model_decided, 3, "m1 s1 s2: a model decided these");
         // The two always-ask rows are in neither `measured` nor `disagreements` and
         // are still the primary dataset: input → the operator's decision.
         assert_eq!(

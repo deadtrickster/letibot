@@ -863,15 +863,29 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                     // operator personally answered four hundred calls read as
                     // "0 ruled on".
                     format!("  {} you answered yourself", c.decided_by_operator),
-                    format!("  {} carry a model verdict", c.measured),
+                    format!(
+                        "  {} where an oracle was actually consulted",
+                        c.measured
+                    ),
                     format!(
                         "  {} where you and the model differ — the rows a fine-tune is for",
                         c.disagreements
                     ),
+                    format!("  {} decided by a model, not by a rule", c.model_decided),
                     format!(
                         "  {} decided by a rule or a mode with nobody asked",
                         c.total.saturating_sub(c.decided_by_operator)
                     ),
+                    // **The two columns nothing writes** (R11). Named here rather than
+                    // left for a reader to discover: `p_allow` has no producer because
+                    // the oracle this build ships answers with a hard label and the
+                    // logprob encoding that would give it a number is not built, and
+                    // `oracle_model` is empty because the model is already named in
+                    // full on `verdict_by` (`model oracle \`qwen-3.8-27b\` at …`).
+                    "  p_allow and oracle_model are NULL on every row: neither has a \
+                     producer — see `CorpusRow` in `letibot-tools`. A reader must not \
+                     read their NULL as a measurement."
+                        .to_string(),
                 ],
                 ok: true,
             },

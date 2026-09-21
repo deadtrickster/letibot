@@ -1612,11 +1612,16 @@ impl Config {
                         "every decision this gate makes is written to the session \
                          store, with the model's verdict and the operator's ruling in \
                          separate columns so a disagreement survives as a label. \
-                         {} decisions recorded: {} you answered yourself, {} measured \
-                         against a model, {} where the two differ. \
+                         {} decisions recorded: {} you answered yourself, {} where an \
+                         oracle was actually consulted, {} where you and it differ, \
+                         {} decided by a model. \
                          `/gate recent` shows them; `/gate ok|grant|revoke ID [note]` \
                          rules on one after the fact.",
-                        c.total, c.decided_by_operator, c.measured, c.disagreements
+                        c.total,
+                        c.decided_by_operator,
+                        c.measured,
+                        c.disagreements,
+                        c.model_decided
                     ),
                 )),
                 None => out.push(Disclosure::off(

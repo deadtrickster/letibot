@@ -1117,6 +1117,22 @@ pub trait Adjudicator: Send + Sync {
         None
     }
 
+    /// **What an oracle answered, verbatim, on the last call — when one answered.**
+    ///
+    /// The twin of `last_brief`, and `None` for every adjudicator that has no bytes to
+    /// show: a boundary rule, a person and a short-circuit are not replies. ([`ModelAdjudicator`]
+    /// implements it from the oracle it drives.)
+    ///
+    /// **Why it is asked for rather than returned with the verdict:** the reply is not part
+    /// of the decision — an `OracleAnswer` says what should happen and needs no copy of the
+    /// words it was read out of. What needs them is the corpus, which is written a layer up,
+    /// and a corpus row whose label cannot be traced back to its input is a row nobody can
+    /// check. A reply this seam could not parse is the one worth reading most, so it is
+    /// reported whether or not anything was made of it.
+    fn last_reply(&self) -> Option<String> {
+        None
+    }
+
     /// **What a model said about the last call, when a model was consulted first.**
     ///
     /// [`SupervisedAdjudicator`]'s, and `None` for every other adjudicator. The
@@ -1425,9 +1441,20 @@ pub struct AdjudicationRow {
     /// corpus assembled later from such rows is not recoverable. Set by
     /// [`AdjudicatedGate::record_override`].
     pub operator: Option<crate::authorise::OperatorOverride>,
-    /// The bytes an oracle was actually shown, when one was consulted. Verbatim rather
-    /// than reconstructed, for the same reason.
+    /// The bytes an oracle was actually shown — **the brief** — when one was consulted.
+    /// Verbatim rather than reconstructed, for the same reason.
+    ///
+    /// **R11: it holds the card when a person was asked and no oracle was.** The gate
+    /// asked its *decider* for `last_brief()`; the decider is the person's card
+    /// (`req.brief()`) whenever a human answers, and on the rows where an oracle decided
+    /// the field was simply `NULL`. Measured on this box 2026-09-21: set on 147 of 5785
+    /// rows, `NULL` on every oracle-decided one. Fixed at the source — the gate now asks
+    /// whichever adjudicator consulted an oracle — so a new row is the brief or nothing.
     pub shown: Option<String>,
+    /// **What the oracle answered, verbatim** (R11). `None` when none was consulted, or
+    /// when the one that was did not answer — `verdict_by` separates those, and the
+    /// parsed reading is `verdict_basis`, which is a *rendering* of exactly these bytes.
+    pub reply: Option<String>,
     /// What a model said about this call **before** the person answered, at a
     /// supervised point. `None` everywhere else, and never the decider's own answer
     /// under another name.
@@ -1455,6 +1482,7 @@ impl AdjudicationRow {
             action: self.request.summary.clone(),
             trail: self.request.trail.clone(),
             shown: self.shown.clone(),
+            reply: self.reply.clone(),
             shape: self.request.shape.clone(),
             shape_class: self
                 .request
@@ -1498,6 +1526,11 @@ impl AdjudicationRow {
             p_allow: None,
             decision_ms: self.decision.latency_ms,
             brief_format: BRIEF_FORMAT,
+            // **The flag, not an inference** (R11). `advice` is `None` only for an
+            // adjudicator that consults nothing — a boundary rule, a person, a console
+            // — and `consulted: false` inside a `Some` is the model adjudicator saying
+            // it short-circuited. Both mean no oracle spoke.
+            consulted: self.advice.as_ref().is_some_and(|a| a.consulted),
             effect: self.effect,
             asked: self.asked,
             operator: self.operator.clone(),
@@ -1693,9 +1726,13 @@ pub struct AdjudicatedGate {
     denials: Option<Box<dyn crate::authorise::DenialSink>>,
     /// The consecutive-denial circuit breaker.
     pub breaker: crate::authorise::Breaker,
-    /// The brief the adjudicator was shown for the call in flight, moved into the row
+    /// The bytes an oracle was shown for the call in flight, moved into the row
     /// by [`AdjudicatedGate::record`].
     shown: Option<String>,
+    /// **What that oracle answered** (R11), from the same adjudicator and the same call
+    /// as `shown` — the reply is the input a corpus row's label was read out of, and a
+    /// row whose verdict cannot be traced back to its bytes is a row nobody can check.
+    reply: Option<String>,
     /// What a model said about the call in flight, at a supervised point. Taken from
     /// [`Adjudicator::last_advice`] beside `shown` and moved into the row the same
     /// way.
@@ -1744,6 +1781,7 @@ impl AdjudicatedGate {
             denials: None,
             breaker: crate::authorise::Breaker::default(),
             shown: None,
+            reply: None,
             advice: None,
             standing: None,
             advisor: None,
@@ -2290,6 +2328,34 @@ impl AdjudicatedGate {
         }))
     }
 
+    /// **What the oracle was shown, and what it answered** (R11), from whichever
+    /// adjudicator actually consulted one — the one thing the corpus cannot reconstruct
+    /// afterwards.
+    ///
+    /// **The gate used to ask its *decider*, and the decider is not who has the brief.**
+    /// Where a person answers, their adjudicator's `last_brief` is the decision CARD
+    /// (`req.brief()`, whose first line is `decision — …`) rather than the oracle's input;
+    /// and where the model's own verdict decides, the gate never reached the line that
+    /// asked anybody at all. Measured on this box 2026-09-21: `shown` was set on 147 of
+    /// 5785 rows, `NULL` on every row an oracle decided, and all 147 were rows a person
+    /// answered. So the source is the advisor when the advisor was put to this call, else
+    /// the decider when the decider is itself a model — and **nothing** otherwise, because
+    /// a card is not the bytes an oracle was given. Both halves come from that one
+    /// adjudicator, so `shown` and `reply` cannot describe different calls.
+    fn file_exchange(&mut self) {
+        let asked = self.advice.as_ref().is_some_and(|a| a.consulted);
+        let decided = self.adjudicator.last_advice().is_some_and(|a| a.consulted);
+        let source: Option<&dyn Adjudicator> = if asked {
+            self.advisor.as_deref()
+        } else if decided {
+            Some(self.adjudicator.as_ref())
+        } else {
+            None
+        };
+        self.shown = source.and_then(|a| a.last_brief());
+        self.reply = source.and_then(|a| a.last_reply());
+    }
+
     fn record(
         &mut self,
         request: AdjudicationRequest,
@@ -2298,6 +2364,9 @@ impl AdjudicatedGate {
         direction: String,
     ) {
         let shown = self.shown.take();
+        // The other half of the exchange (R11), taken beside `shown` and from the same
+        // adjudicator, so the two cannot describe different calls.
+        let reply = self.reply.take();
         // **An admitted contact makes the host seen.** The always-ask rule is
         // `network_egress_to_an_UNSEEN_host`, and its whole design is that the
         // second contact is not a first one — "by then the operator has seen
@@ -2363,6 +2432,7 @@ impl AdjudicatedGate {
             effect,
             operator,
             shown,
+            reply,
             advice,
             direction,
             mode,
@@ -3056,16 +3126,19 @@ impl Gate for AdjudicatedGate {
                 latency_ms: a.latency_ms,
             };
             self.breaker.admitted(&direction);
+            // **This path consulted the oracle too, and it used to file nothing.** The
+            // model's own verdict admitted the call here, before the gate ever reaches its
+            // decider — so the brief the advisor rendered and the reply that admitted it
+            // were dropped, and `shown` was left holding whatever the *previous* call had
+            // put there. Measured on this box 2026-09-21: 486 rows whose `verdict_by` names
+            // an oracle, and not one of them had `shown`.
+            self.file_exchange();
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
 
         let decision = self.adjudicator.decide(&req);
-        // What it was shown, verbatim, for the corpus row — and, at a supervised
-        // point, what the model told the person before they answered. Both are read
-        // here rather than off `req`, because the gate's own request is the one the
-        // adjudicator was *handed*: whatever it learned downstream is its to report.
-        self.shown = self.adjudicator.last_brief();
+        self.file_exchange();
         let typed_pattern = self.adjudicator.last_pattern();
 
         match &decision.outcome {
@@ -4235,6 +4308,16 @@ mod tests {
         fn describe(&self) -> String {
             self.id.to_string()
         }
+
+        /// **The fixture now carries both halves of an exchange** (R11), because the
+        /// corpus columns have to come from the adjudicator that asked an oracle.
+        fn last_brief(&self) -> Option<String> {
+            Some(format!("brief — {}\ntrail: 1 operator message(s) of 1 scanned", self.id))
+        }
+
+        fn last_reply(&self) -> Option<String> {
+            Some("It follows from what was asked.\nALLOW 0".to_string())
+        }
     }
 
     fn supervised_gate(model_allows: bool, human_allows: bool) -> AdjudicatedGate {
@@ -4347,6 +4430,81 @@ mod tests {
             Some("upheld")
         );
         assert!(!row.is_disagreement());
+    }
+
+    /// **R11: the corpus keeps the bytes, and from the adjudicator that asked an
+    /// oracle.**
+    ///
+    /// Two defects, one column each, and both were live:
+    ///
+    /// * **`shown` held the person's card, not the oracle's brief.** The gate asked its
+    ///   *decider* for `last_brief`, and at a supervised point the decider is the human
+    ///   adjudicator, whose `last_brief` is `req.brief()` — the decision card, whose
+    ///   first line is `decision — …`. Measured on this box 2026-09-21: `shown` was set
+    ///   on 147 of 5785 rows and was `NULL` on every row an oracle decided, so the
+    ///   corpus had 147 cards and **zero briefs**.
+    /// * **`reply` did not exist**, so the bytes a verdict was read out of were dropped
+    ///   with the HTTP call that carried them. 1,192 rows are ones where the operator
+    ///   and the model differ — *"the rows a fine-tune is for"* — and none of them had
+    ///   its input.
+    ///
+    /// The assertion is that both come from the ADVISOR, which the fixture stamps with
+    /// its own id so the two cannot be confused.
+    #[test]
+    fn the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card() {
+        let mut g = supervised_gate(true, false); // the model admits; the person stops it
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        assert!(g.corpus()[0].asked, "a person answered this one");
+        let row = g.corpus().remove(0);
+
+        let shown = row
+            .shown
+            .as_deref()
+            .expect("an oracle was consulted, so the brief is on the row");
+        assert!(shown.contains("model:test"), "not the oracle's brief: {shown}");
+        assert!(
+            !shown.starts_with("decision —"),
+            "the person's card is on a row an oracle decided: {shown}"
+        );
+        let reply = row
+            .reply
+            .as_deref()
+            .expect("the oracle answered, so the reply is on the row");
+        assert!(reply.contains("ALLOW 0"), "{reply}");
+
+        // **And nothing is filed where nobody spoke.** At `always-ask` with no advisor
+        // the gate consults no oracle, and both columns stay empty rather than carrying
+        // the card or a previous call's reply.
+        let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
+            .with_mode(crate::mode::Mode::ALWAYS_ASK);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let row = g.corpus().remove(0);
+        assert!(row.asked, "the person answered");
+        assert_eq!(row.shown, None, "a person's answer is not an oracle's brief");
+        assert_eq!(row.reply, None, "and it is not a reply either");
+
+        // **The model's own verdict admits, and that path uses to file nothing at all.**
+        // It returns before the gate ever reaches its decider, so the brief and the reply
+        // that admitted the call were dropped and `shown` kept whatever the previous call
+        // had put there. Measured: 486 rows whose `verdict_by` names an oracle, and not
+        // one of them had `shown`.
+        let mut g = supervised_gate(true, true).with_mode(crate::mode::Mode::AUTO);
+        let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
+        let row = g.corpus().remove(0);
+        assert!(
+            row.verdict_by.as_deref().unwrap_or("").contains("model"),
+            "the model decided this one: {row:?}"
+        );
+        assert!(
+            row.shown.as_deref().is_some_and(|s| s.contains("model:test")),
+            "the model decided and its brief was not filed: {:?}",
+            row.shown
+        );
+        assert!(
+            row.reply.as_deref().is_some_and(|r| r.contains("ALLOW 0")),
+            "nor its reply: {:?}",
+            row.reply
+        );
     }
 
     /// **The adviser is not load-bearing.** An oracle that cannot answer leaves the

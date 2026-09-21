@@ -133,6 +133,11 @@ impl CorpusSink for StoreCorpus {
             shape: row.shape.clone(),
             shape_class: row.shape_class.clone(),
             brief_sha: Some(row.brief_format.to_string()),
+            // **The flag the counts read** (R11). `Row::consulted` is
+            // `ModelAdvice::consulted`, so this column is the fact rather than a regex
+            // over prose — and `CorpusCounts::measured` counts it.
+            consulted: Some(row.consulted),
+            reply: row.reply.clone(),
             effect: row.effect.to_string(),
             asked: row.asked,
         };

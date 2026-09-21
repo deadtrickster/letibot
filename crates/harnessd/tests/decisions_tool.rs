@@ -22,7 +22,12 @@ fn adj(request_id: &str, session_id: &str) -> NewAdjudication {
         baseline: "read".into(),
         tier: "may_approve".into(),
         trail_json: "[]".into(),
-        shown: None,
+        shown: Some("brief — a file was read".into()),
+        // R11: both halves of the exchange are on the row now, and this fixture carries
+        // them so a reader that renders one cannot quietly drop the other.
+        reply: Some("It follows from what was asked.\nALLOW 0".into()),
+        // R11: the flag the counts read. This fixture's oracle spoke.
+        consulted: Some(true),
         tool: "bash".into(),
         arguments_json: "{}".into(),
         mode: "automode-edits".into(),

@@ -8368,7 +8368,18 @@ impl App {
         // informs the answer and must never supply it, or the corpus fills with rows
         // recording a keystroke rather than a judgement.
         if let Some(a) = &d.advice {
-            for l in wrap(&format!("  model says {}: {}", a.would, a.basis), w) {
+            // **An oracle that was NOT consulted did not say anything.** `would:
+            // "unavailable"` with `consulted: false` is layer A's own answer arriving
+            // through layer B's door — an unresolved action, an always-ask entry, a
+            // rule — and rendering it as `model says unavailable: …` claims a model
+            // spoke. The distinction is the field this commit added, and the sentence
+            // is the same one `letibot_tools`' own `ModelAdvice::line()` writes.
+            let said = if a.consulted {
+                format!("  model says {}: {}", a.would, a.basis)
+            } else {
+                format!("  no model verdict — {}", a.basis)
+            };
+            for l in wrap(&said, w) {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
             // **Said out loud when it is a fact, omitted when it is not one.**
@@ -10722,11 +10733,17 @@ fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
     }
     match &d.advice {
         Some(a) => {
+            // **The same distinction the card draws**: a verdict from an oracle that was
+            // asked, and layer A's answer from one that was not.
             out.extend(wrap(
-                &format!(
-                    "oracle ({}, {}ms) would {}: {}",
-                    a.by, a.latency_ms, a.would, a.basis
-                ),
+                &if a.consulted {
+                    format!(
+                        "oracle ({}, {}ms) would {}: {}",
+                        a.by, a.latency_ms, a.would, a.basis
+                    )
+                } else {
+                    format!("no model verdict — {}", a.basis)
+                },
                 w,
             ));
             // **Empty cites is loud.** An authorisation the oracle could not ground
@@ -11611,6 +11628,7 @@ mod tests {
         d.advice = Some(letibot_sessionlog::event::ModelAdvice {
             // The case the operator saw: the oracle was consulted and could not
             // produce a verdict, which the daemon poses as a verdict anyway.
+            consulted: true,
             would: "unavailable".into(),
             by: "adjudicator".into(),
             basis: "the verdict could not be read".into(),
@@ -13482,6 +13500,7 @@ mod tests {
                 choices: Vec::new(),
                 because: String::new(),
                 advice: Some(letibot_sessionlog::event::ModelAdvice {
+                    consulted: true,
                     would: "admit".into(),
                     by: "glm-5.3-flash".into(),
                     basis: "the operator asked for a clean rebuild in this turn".into(),
@@ -13561,6 +13580,7 @@ mod tests {
             },
             basis: "dead chose `allow` at the head".into(),
             advice: Some(letibot_sessionlog::event::ModelAdvice {
+                consulted: true,
                 would: "admit".into(),
                 by: "glm".into(),
                 basis: "it looks routine".into(),

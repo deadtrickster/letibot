@@ -1344,6 +1344,23 @@ pub trait AuthorisationOracle: Send + Sync {
     fn budget(&self) -> Duration {
         Duration::from_millis(400)
     }
+
+    /// **The bytes this oracle answered with, verbatim, on its last call** (R11).
+    ///
+    /// `None` for an oracle that answers from a table and has no bytes to show, and for
+    /// one that was asked and did not answer — which the gate's own `verdict_by`
+    /// separates from "nobody asked".
+    ///
+    /// **It is here rather than returned with the verdict** because the reply is not part
+    /// of the answer: `OracleAnswer` is the decision, and a decision does not need the
+    /// words it was read out of. What needs them is the corpus, and the corpus is written
+    /// by the layer above — so the layer above asks for them, the same way it already asks
+    /// for [`Adjudicator::last_brief`](crate::adjudicate::Adjudicator::last_brief).
+    /// A reply that cannot be parsed is exactly the one worth reading, so this reports it
+    /// whether or not anything was made of it.
+    fn last_reply(&self) -> Option<String> {
+        None
+    }
 }
 
 /// An oracle driven by a function. **The fake**, and the seam a real one plugs into.
@@ -1774,6 +1791,10 @@ pub struct CorpusRow {
     pub trail: AuthorisationTrail,
     /// The bytes the oracle was given, verbatim. `None` when no oracle was consulted.
     pub shown: Option<String>,
+    /// **The bytes the oracle answered with, verbatim** (R11). `None` when none was
+    /// consulted or when the one that was did not answer in time — the same two facts
+    /// `shown`'s `None` covers from the other side.
+    pub reply: Option<String>,
     /// **The command's shape**: the parse with its literals replaced by holes, so
     /// the same question asked about a different file is one row. `None` for a call
     /// that is not a command. See `letibot_code::shell::shape`.
@@ -1826,6 +1847,11 @@ pub struct CorpusRow {
     /// A corpus spanning a prompt change is two datasets, and without this nobody
     /// can find the seam.
     pub brief_format: &'static str,
+    /// **Whether an oracle was consulted for this call** (R11). From
+    /// `ModelAdvice::consulted`, so the corpus can answer *did a model speak* without a
+    /// regex over `model_verdict`'s prose — which the doc on `verdict_basis` warns
+    /// against in as many words.
+    pub consulted: bool,
 
     // --- what happened, and the label --------------------------------------
     /// What the gate did.
@@ -1966,6 +1992,19 @@ impl Adjudicator for Budgeted {
         self.inner.last_brief()
     }
 
+    /// **Forwarded, and its absence was a defect of the same family as the missing
+    /// `last_brief`** (R11). A wrapper that answers for the adjudicator inside it must
+    /// answer for *all* of it: the gate asks "did the thing behind you consult an
+    /// oracle", and a `None` from the default reads as *nobody did*, which silently
+    /// emptied the corpus's `shown` and `oracle_reply` columns for every budgeted gate.
+    fn last_advice(&self) -> Option<crate::adjudicate::ModelAdvice> {
+        self.inner.last_advice()
+    }
+
+    fn last_reply(&self) -> Option<String> {
+        self.inner.last_reply()
+    }
+
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
         let inner = self.inner.clone();
         let r = req.clone();
@@ -2036,6 +2075,13 @@ pub struct ModelAdjudicator {
     baseline: Box<dyn Fn(&AdjudicationRequest) -> Baseline + Send + Sync>,
     /// The last brief rendered, for the corpus row.
     pub last_shown: Mutex<Option<String>>,
+    /// **The last reply the oracle gave, verbatim** (R11), for the corpus row.
+    ///
+    /// Taken off the oracle rather than off the answer: `OracleAnswer` is a decision and
+    /// carries no bytes, so the only place the reply exists is the oracle that read it.
+    /// Cleared before each call for the same reason the oracle clears its own — a stale
+    /// reply filed against the next decision is a wrong row that reads as true.
+    last_reply: Mutex<Option<String>>,
     /// What the last call amounted to, for [`Adjudicator::last_advice`].
     ///
     /// Reported by this type rather than inferred by a caller, because only this
@@ -2074,6 +2120,7 @@ impl ModelAdjudicator {
             oracle,
             baseline: Box::new(baseline),
             last_shown: Mutex::new(None),
+            last_reply: Mutex::new(None),
             last_advice: Mutex::new(None),
             notice: Box::new(|_, _| {}),
         }
@@ -2149,6 +2196,15 @@ impl ModelAdjudicator {
 impl Adjudicator for ModelAdjudicator {
     fn last_advice(&self) -> Option<crate::adjudicate::ModelAdvice> {
         self.last_advice.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// **The bytes this adjudicator answered with**, taken from the oracle it drives.
+    ///
+    /// `OracleAnswer` is a decision and carries no bytes, so the reply exists only on the
+    /// oracle; this is how the layer that writes the corpus asks for it. See
+    /// [`AuthorisationOracle::last_reply`](crate::authorise::AuthorisationOracle::last_reply).
+    fn last_reply(&self) -> Option<String> {
+        self.last_reply.lock().ok().and_then(|g| g.clone())
     }
 
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
@@ -2284,6 +2340,12 @@ impl Adjudicator for ModelAdjudicator {
         if let Ok(mut g) = self.last_shown.lock() {
             *g = Some(shown.clone());
         }
+        // **Cleared with the brief, and filled from the oracle afterwards.** Both halves of
+        // the exchange are per-call state on the type that has them; the corpus is written
+        // a layer up and asks for both.
+        if let Ok(mut g) = self.last_reply.lock() {
+            *g = None;
+        }
 
         // Below this line the oracle IS consulted, and only below it — which is
         // also the line where the wait starts, so it is where the operator is told
@@ -2295,7 +2357,16 @@ impl Adjudicator for ModelAdjudicator {
                 self.oracle.describe()
             ),
         );
-        match self.oracle.authorised(&mut brief) {
+        let answer = self.oracle.authorised(&mut brief);
+        // **The reply, taken the moment it exists** (R11), and before the answer is read
+        // at all: an answer this seam cannot parse is the one most worth reading
+        // afterwards, so the bytes are kept whether or not anything was made of them.
+        if let Ok(mut g) = self.last_reply.lock()
+            && let Some(raw) = self.oracle.last_reply()
+        {
+            *g = Some(raw);
+        }
+        match answer {
             OracleAnswer::Authorised(w) => self.note(
                 AdjudicationDecision {
                     request_id: req.id.clone(),
@@ -3261,6 +3332,7 @@ mod tests {
             action: "systemctl restart harnessd".into(),
             trail: trail_saying("yeah restart", 1),
             shown: Some("…brief…".into()),
+            reply: Some("ALLOW 0".into()),
             baseline: "ask".into(),
             tier: "adjudicable",
             tool: "bash".into(),
@@ -3275,6 +3347,7 @@ mod tests {
             p_allow: None,
             decision_ms: 312,
             brief_format: crate::adjudicate::BRIEF_FORMAT,
+            consulted: false,
             effect: "refuse",
             asked: false,
             operator: Some(OperatorOverride::Granted {
