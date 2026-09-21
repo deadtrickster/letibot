@@ -1174,6 +1174,23 @@ impl<'a> Harness<'a> {
             }
         }
 
+        // **R6: seat an opencode session in ITS directory.** The daemon's start
+        // directory is a fact about the daemon; the conversation happened in opencode's
+        // `directory`, and a session seated at the wrong root is exactly the
+        // `letibot --session` defect the store comment above records. Read **before the
+        // backend is built**, because the root is baked into it — the same reason the
+        // stored workspace is resolved here and not later. Only for a session that is not
+        // yet in the store: a re-run resumes and keeps the root it was imported with.
+        if stored.is_none()
+            && let Some(oc_id) = cfg.session_id.strip_prefix("oc-").map(str::to_string)
+            && let Some(db) = letibot_opencode::default_db_path()
+            && let Ok(src) = letibot_opencode::Source::open(&db)
+            && let Ok(dir) = src.directory(&oc_id)
+            && !dir.is_empty()
+        {
+            cfg.workspace = PathBuf::from(dir);
+        }
+
         // **The mode is a session property, resolved after the workspace is final.**
         //
         // D13. The workspace was just settled (either the daemon's start directory or
@@ -2553,7 +2570,7 @@ impl<'a> Harness<'a> {
             .into_iter()
             .map(|d| (d.subject, d.state, d.detail))
             .collect();
-        let h = Harness {
+        let mut h = Harness {
             session_registry: session_registry.clone(),
             mode_source,
             wiring,
@@ -2595,7 +2612,156 @@ impl<'a> Harness<'a> {
         if h.resumed.is_some() {
             h.republish();
         }
+        // **R6: a session whose id marks an opencode conversation reads it in.**
+        //
+        // `oc-` is the namespace mark and the rest is opencode's opaque id
+        // (`ses_f68f5d…`). Only for a session that is **not** a resume: re-running the
+        // same `--session oc-<id>` finds the stored session and resumes it rather than
+        // importing a second copy, which is the idempotency rule. The import never
+        // fails the session — a missing database or id is a sentence on the log and
+        // the head stays up, because by the time it is read the head is already a
+        // working head with a screen.
+        if h.resumed.is_none()
+            && let Some(oc_id) = h.cfg.session_id.strip_prefix("oc-").map(str::to_string)
+        {
+            h.import_opencode(&oc_id);
+        }
         Ok(h)
+    }
+
+    /// **Read an opencode conversation into this session (R6).**
+    ///
+    /// The reading is `letibot-opencode`'s; this is the half that turns its rows into
+    /// **this** session's rows and keeps the screen live while it does. It is
+    /// deliberately not allowed to fail the session: a missing database or a missing id
+    /// is a sentence on the log, and the head stays up.
+    ///
+    /// # Why the read is on the worker and the screen is still up first
+    ///
+    /// `Session::append_items` is the one writer and it is the worker's, so the reading
+    /// happens here. What makes that *"the UI is up before anything is read"* rather
+    /// than a startup dependency is that the **head attaches to the registry's hub, not
+    /// to this harness**: the session is registered — and attachable — before the worker
+    /// opens it, so a head joining now gets an empty snapshot and every row as a live
+    /// event. Rows land as they are read because each is appended and published as the
+    /// reader reaches it, and `ImportProgress` reports the reader's own count so the bar
+    /// is the fact and not a rendering of it.
+    fn import_opencode(&mut self, oc_id: &str) {
+        let Some(path) = letibot_opencode::default_db_path() else {
+            self.import_note(
+                "import_no_db",
+                "no $HOME, so no opencode database path to read. The session stays up and \
+                 empty."
+                    .into(),
+            );
+            return;
+        };
+        let source = match letibot_opencode::Source::open(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.import_note(
+                    "import_no_db",
+                    format!(
+                        "{e}\n\nThe session stays up: prompt it like any other and it runs on \
+                         this head's own model."
+                    ),
+                );
+                return;
+            }
+        };
+        let tree = match source.tree(oc_id) {
+            Ok(t) => t,
+            Err(e) => {
+                self.import_note(
+                    "import_no_session",
+                    format!("{e}\n\nThe session stays up and empty."),
+                );
+                return;
+            }
+        };
+
+        // **Rule 1, said where a reader will see it.** These are another agent's rows,
+        // under another provider; a reader who cannot tell whose they are cannot weigh
+        // them. The origin — the id, the directory, the provider/model — goes on the log
+        // the head reads.
+        self.import_note("imported", tree.root.origin());
+        let total = tree.parts;
+        self.import_tick(0, total);
+
+        let mut failure: Option<String> = None;
+        let mut since_persist = 0u64;
+        let report = source.read_tree(oc_id, &mut |ev| match ev {
+            letibot_opencode::Event::Progress { done, .. } => {
+                // Throttled: one tick per 64 parts is a live bar, and one per part is
+                // thousands of publishes for a quarter-second read.
+                if done % 64 == 0 {
+                    self.import_tick(done, total);
+                }
+            }
+            letibot_opencode::Event::Row(r) => {
+                if failure.is_some() {
+                    return;
+                }
+                if let Err(e) = self.append_imported(&[r.item]) {
+                    failure = Some(e.to_string());
+                    return;
+                }
+                since_persist += 1;
+                if since_persist >= 512 {
+                    since_persist = 0;
+                    if let Err(e) = self.persist() {
+                        failure = Some(e.to_string());
+                    }
+                }
+            }
+            letibot_opencode::Event::Scrap(s) => self.import_note("import_scrap", s.said),
+        });
+
+        match (failure, report) {
+            (Some(e), _) => self.import_note(
+                "import_failed",
+                format!(
+                    "the import stopped part-way: {e}. What arrived is on the screen and in \
+                     the store; the rest did not."
+                ),
+            ),
+            (None, Err(e)) => self.import_note(
+                "import_failed",
+                format!(
+                    "reading opencode's database stopped part-way: {e}. What arrived is on the \
+                     screen and in the store; the rest did not."
+                ),
+            ),
+            (None, Ok(report)) => {
+                let _ = self.persist();
+                // The last tick clears the head's line; the summary is the durable
+                // residue, and it carries the spend rule 2 is about.
+                self.import_tick(total, total);
+                self.import_note("imported_summary", report.summary());
+            }
+        }
+    }
+
+    /// Append imported rows through the one writer, exactly as a turn's rows go in.
+    fn append_imported(&mut self, items: &[TranscriptItem]) -> Result<(), HarnessError> {
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session.append_items(&self.engine, items, &mut sink)?;
+        self.reconcile(&mut sink, items);
+        Ok(())
+    }
+
+    /// A warning on this session's log — the one place an import reports itself.
+    fn import_note(&self, code: &str, detail: String) {
+        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: code.to_string(),
+            detail,
+        });
+    }
+
+    /// One progress tick, from the reader's own count.
+    fn import_tick(&self, done: u64, total: u64) {
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::ImportProgress { done, total });
     }
 
     /// Put the restored conversation back on the session's log.

@@ -341,3 +341,52 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
         _ => panic!("the second prompt must be served second"),
     }
 }
+
+/// **R6: an `oc-` id is created for import, not refused as unknown.**
+///
+/// `--session oc-<id>` names an opencode conversation that lives in *opencode's*
+/// database and nowhere in this daemon's store. Before R6 the `ResumeSession` for it was
+/// refused with `no such session in the store` — correct for a typo, wrong for an import.
+/// The two are told apart by the namespace mark: `oc-` means *bring opencode's
+/// conversation in*, and "this daemon does not hold it" is exactly the state an import
+/// starts from. The daemon's open then reads the database into the session it created.
+#[test]
+fn an_oc_id_is_created_for_import_rather_than_refused_as_unknown() {
+    let (registry, server) = start("oc");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(server.path(), "live", 0, "tui", "dead", Caps::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping = std::thread::spawn(move || pump(reader, tx));
+
+    let oc = "oc-ses_f68f5fd80ffe3lS06lxORVNfS9";
+    client.resume_session(oc).unwrap();
+    let f = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
+    let ServerFrame::Sessions { created, .. } = f else {
+        unreachable!()
+    };
+    assert_eq!(
+        created.as_deref(),
+        Some(oc),
+        "created, so the daemon's open can read the database into it"
+    );
+    assert!(
+        registry.get(oc).is_some(),
+        "the session exists, so a head can attach and watch it fill"
+    );
+
+    // **An id that is neither `oc-` nor in the store is still refused by name.** The
+    // `oc-` arm must not become "any unknown id creates a session", which would make a
+    // typo indistinguishable from an import — the exact confusion the two reject codes
+    // exist to keep apart.
+    client.resume_session("s-typo").unwrap();
+    let f = until(&rx, |f| matches!(f, ServerFrame::Rejected { .. }));
+    let ServerFrame::Rejected { reason, .. } = f else {
+        unreachable!()
+    };
+    assert!(reason.contains(REJECT_NOT_IN_STORE), "{reason}");
+    assert!(reason.contains("s-typo"), "{reason}");
+
+    let _ = client.detach();
+    drop(client);
+    let _ = pumping.join();
+}

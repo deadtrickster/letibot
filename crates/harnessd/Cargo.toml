@@ -25,6 +25,8 @@ letibot-provider.workspace = true
 letibot-websearch.workspace = true
 # The curl fetcher behind `web_fetch` (`--web-fetch`).
 letibot-webfetch.workspace = true
+# R6: reading an opencode conversation into this session's rows.
+letibot-opencode.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 serde.workspace = true
 # preserve_order for the reason every crate in this tree needs it: a tool call's

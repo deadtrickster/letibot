@@ -4547,6 +4547,26 @@ impl App {
             self.say("this ask offers no options — your line is held");
             return None;
         }
+        // **A line typed while the conversation is still being imported.**
+        //
+        // The import runs as one worker job, so a prompt sent during it is queued and
+        // answered against the whole history, never a half-adopted one — the ordering is
+        // safe by construction. This is the head's half of saying so: while an
+        // `ImportProgress` is live the line is **held**, exactly as it is with no daemon
+        // below, because the answer to it is not coming for a while and showing it as
+        // `queued` would be a promise about a turn nobody has started. Answering against
+        // a transcript that is still filling and then appending the rest would put the
+        // conversation in the wrong order — R2's rule, with the whole history missing
+        // rather than one prompt.
+        if self.import.is_some() {
+            self.set_composer(&text);
+            self.say(
+                "the conversation is still being imported — your line is held here. It sends \
+                 when the import is done.",
+            );
+            self.redraw = true;
+            return None;
+        }
         // **A line typed into a head with no daemon must not look sent.**
         //
         // This is the one place where a detached head could lie quietly. Everything else
@@ -12606,6 +12626,41 @@ mod tests {
             !done.contains("parts"),
             "the line goes when the import is done: {done}"
         );
+    }
+
+    /// **R6: a line typed while the conversation is still being imported is held.**
+    ///
+    /// The daemon answers a prompt sent mid-import against the whole history — the import
+    /// is one worker job, so a prompt cannot interleave — but the head must not show one as
+    /// `queued` for a turn nobody has started. So it is refused and the words go back to the
+    /// field they were typed in: the §4.2 behaviour (`7b9ca62`), reused, because answering
+    /// against a half-adopted transcript and then appending the rest would put the
+    /// conversation in the wrong order (R2's rule with the whole history missing).
+    #[test]
+    fn a_line_typed_during_an_import_is_held_in_the_composer() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::ImportProgress {
+                done: 0,
+                total: 100,
+            },
+        )));
+        for c in "hold me".chars() {
+            a.key(Key::Char(c));
+        }
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "nothing leaves the head while an import is running"
+        );
+        assert_eq!(
+            a.input(),
+            "hold me",
+            "the words are still the operator's, in the field they typed them into"
+        );
+        let s = a.screen(100, 30).join("\n");
+        assert!(s.contains("still being imported"), "{s}");
     }
 
     /// **`reconnecting…` is a state with a clock, not a word.**

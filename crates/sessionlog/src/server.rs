@@ -39,7 +39,7 @@ use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
     ClientFrame, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
 };
-use crate::registry::Registry;
+use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
 
 /// The default socket path, per §13.4. Falls back to `/tmp` when
@@ -497,6 +497,27 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                 } else {
                     match registry.resumable(&session_id) {
+                        // **R6: an `oc-` id is imported, not resumed.** `oc-` marks an
+                        // opencode conversation; the rest is opencode's own id. There is
+                        // nothing in the store to restore on the first ask, so the session
+                        // is created here and the daemon's open reads the database in. A
+                        // *second* ask finds it in the store and takes the resume arm above,
+                        // so re-running the same id resumes rather than importing twice.
+                        None if session_id.starts_with("oc-") => {
+                            match registry.create(&session_id, "", SessionWiring::default()) {
+                                Ok(_) => ServerFrame::Sessions {
+                                    sessions: registry.list(),
+                                    current: seat.hub.session_id(),
+                                    created: Some(session_id),
+                                },
+                                Err(e) => ServerFrame::Rejected {
+                                    client_request_id,
+                                    reason: e.to_string(),
+                                    expected_seq: 0,
+                                    actual_seq: seat.hub.head_seq(),
+                                },
+                            }
+                        }
                         None => ServerFrame::Rejected {
                             client_request_id,
                             reason: format!("{REJECT_NOT_IN_STORE}: {session_id:?}"),

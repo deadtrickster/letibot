@@ -418,6 +418,22 @@ impl Source {
         Ok(report)
     }
 
+    /// **Just the session's `directory`**, so the imported session's tools are confined
+    /// to the tree the conversation was had in rather than the daemon's start directory.
+    /// One query, read before the backend is built because the root is baked into it.
+    pub fn directory(&self, id: &str) -> Result<String> {
+        self.conn
+            .query_row("SELECT directory FROM session WHERE id = ?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => ImportError::NoSuchSession {
+                    id: id.to_string(),
+                },
+                other => ImportError::Sql(other.to_string()),
+            })
+    }
+
     /// The recursive tree of session ids, root first, in a stable order.
     fn tree_ids(&self, root: &str) -> Result<Vec<String>> {
         let sql = "WITH RECURSIVE t(id, depth) AS ( \
