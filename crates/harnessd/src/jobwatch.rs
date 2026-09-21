@@ -38,14 +38,39 @@
 //! with it. A session with three long builds has three blocked threads, which is
 //! the shape the monitor waiter already puts a session in, and each is woken by
 //! the thing it reports.
+//!
+//! # The head is told and the model is not — which is the whole of R7
+//!
+//! [`SessionEvent::JobSettled`] has been on the wire since protocol 14 and the jobs
+//! pane folds it, so the **head** knows. Nothing in `crates/turn/` or the tools layer
+//! reads it, so the **model** — the one process that could act on the job ending —
+//! learns nothing, and its only route to a result is `job_wait`. That is the
+//! affordance the operator hit: *"as soon as i background a job model does `job_wait`
+//! and things block again"*, and it is not discipline, it is the absence of any other
+//! way to find out.
+//!
+//! So a settlement is published twice, to the two readers that need it:
+//!
+//! 1. [`SessionEvent::JobSettled`] to the hub, as it always was — the durable fact,
+//!    the pane's row, every head's picture.
+//! 2. A [`JobCompletion`] onto [`JobWatchers::completions`], which the harness drains
+//!    in [`crate::harness::Harness::wake`] and **submits to the model as a turn of its
+//!    own**, unprompted. That is the hop that was missing.
+//!
+//! The bell is rung for the second one, because a settlement lands **between turns**,
+//! when the worker is blocked in `Registry::next_work` and nothing else would wake it.
+//! It is the same bell monitors ring for a firing, and the ordering rule is the same
+//! one `Bell::next_any` keeps: a wake has nobody waiting on it, a head that pressed
+//! enter does — so a queued prompt is **always** served before a completion.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::SessionEvent;
+use letibot_sessionlog::hub::Hub;
+use letibot_sessionlog::registry::Bell;
 use letibot_tools::exec::{JobId, JobState, ProcessHost, Waited};
 use letibot_tools::{ToolEvent, ToolEventSink};
 use letibot_transcript::ToolOutcome;
@@ -56,6 +81,35 @@ use letibot_transcript::ToolOutcome;
 /// long a closing session's watcher can linger, never how late a settlement is.
 const WATCH_CHUNK: Duration = Duration::from_secs(5);
 
+/// **One background job's end, as the MODEL must be told it.**
+///
+/// Not [`SessionEvent::JobSettled`], and deliberately not on the wire. The event is
+/// the head-facing fact and carries exactly the scalars a pane draws (`job`, `state`,
+/// `produced`, `elapsed_ms`); a completion carries one field more — the **command** —
+/// because the sentence the model is handed has to say what ended, and the command is
+/// only reachable from the live [`JobView`] at the moment it settles. Putting it on
+/// the event would be a wire change nobody needs: no head draws a command from a
+/// settlement, and the head that has the row already has the command from the tool
+/// result that backgrounded it.
+///
+/// Built by the watcher (which has the [`JobView`]), queued on
+/// [`JobWatchers::completions`], and drained by
+/// [`crate::harness::Harness::wake`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobCompletion {
+    /// The job's handle, as the backgrounded result printed it.
+    pub job: String,
+    /// The command it ran. Empty when the job was already reaped and the view is
+    /// gone, which the notice says rather than inventing one.
+    pub command: String,
+    /// What happened to the process: `exited 0`, `signalled 15`, `killed by job_kill`.
+    pub state: String,
+    /// Bytes the job wrote, all streams together — the `job_output` denominator.
+    pub produced: u64,
+    /// Wall time from spawn to settlement.
+    pub elapsed_ms: u64,
+}
+
 /// The per-session set of watched background jobs.
 ///
 /// Held by the harness, fed by [`JobWatchSink`] as backgrounded results pass
@@ -63,6 +117,13 @@ const WATCH_CHUNK: Duration = Duration::from_secs(5);
 pub struct JobWatchers {
     host: Weak<dyn ProcessHost>,
     hub: Weak<Hub>,
+    /// Settlements the model has not been told yet, in the order they happened.
+    /// Drained by [`JobWatchers::take_completions`] on the harness's next wake.
+    completions: Arc<Mutex<VecDeque<JobCompletion>>>,
+    /// The worker's bell, rung when a completion is queued so a settlement between
+    /// turns is not a fact nobody acts on. `None` when there is no daemon — a
+    /// harness driven directly by a test has no worker to wake and honestly says so.
+    bell: Option<Arc<Bell>>,
     stop: Arc<AtomicBool>,
     /// Jobs with a thread blocked on them, so a re-finished call id cannot start
     /// a second watcher for one job.
@@ -75,14 +136,29 @@ pub struct JobWatchers {
 impl JobWatchers {
     /// A watcher set for one session's host and hub. Weak by design — see the
     /// module header.
-    pub fn new(host: &Arc<dyn ProcessHost>, hub: &Arc<Hub>) -> Arc<Self> {
+    ///
+    /// `bell` is the daemon's worker bell, so a settlement between turns wakes the
+    /// model. `None` for a harness with no daemon behind it: the completion is still
+    /// queued and the next `wake` would still drain it, but nothing rings to cause
+    /// one, which is the truth for a session no worker is serving.
+    pub fn new(host: &Arc<dyn ProcessHost>, hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
         Arc::new(JobWatchers {
             host: Arc::downgrade(host),
             hub: Arc::downgrade(hub),
+            completions: Arc::new(Mutex::new(VecDeque::new())),
+            bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    /// **Take every completion the model has not been told yet.** One drain per
+    /// turn: what comes back is what the harness submits, and taking it is what
+    /// stops a settlement being delivered twice.
+    pub fn take_completions(&self) -> Vec<JobCompletion> {
+        let mut g = self.completions.lock().expect("job completions");
+        g.drain(..).collect()
     }
 
     /// Stop every watcher this set has spawned. Called when the session's backend
@@ -105,18 +181,23 @@ impl JobWatchers {
         }
         let host = Weak::clone(&self.host);
         let hub = Weak::clone(&self.hub);
+        let completions = Arc::clone(&self.completions);
+        let bell = self.bell.clone();
         let stop = Arc::clone(&self.stop);
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
-            .spawn(move || watch_one(host, hub, stop, watching, settled, job));
+            .spawn(move || watch_one(host, hub, completions, bell, stop, watching, settled, job));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn watch_one(
     host: Weak<dyn ProcessHost>,
     hub: Weak<Hub>,
+    completions: Arc<Mutex<VecDeque<JobCompletion>>>,
+    bell: Option<Arc<Bell>>,
     stop: Arc<AtomicBool>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
@@ -146,12 +227,32 @@ fn watch_one(
                     .and_then(|v| v.ran_for)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
+                // The command is read here, from the live view, because this is the
+                // last moment it exists: a settlement is delivered between turns, by
+                // which time the job is usually reaped and `/proc` no longer says.
+                let command = view.as_ref().map(|v| v.command.clone()).unwrap_or_default();
                 hub.publish(SessionEvent::JobSettled {
                     job: job.clone(),
-                    state: word,
+                    state: word.clone(),
                     produced,
                     elapsed_ms,
                 });
+                // **And the model, which the event does not reach.** Queued for the
+                // harness's next wake, and the bell rung because a settlement lands
+                // between turns, when nothing else is asking the worker for anything.
+                completions
+                    .lock()
+                    .expect("job completions")
+                    .push_back(JobCompletion {
+                        job: job.clone(),
+                        command,
+                        state: word,
+                        produced,
+                        elapsed_ms,
+                    });
+                if let Some(bell) = &bell {
+                    bell.ring_wake(&hub.session_id());
+                }
                 settled.lock().expect("job watchers").insert(job.clone());
                 break;
             }
@@ -274,7 +375,7 @@ mod tests {
     fn a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement() {
         let hub = Hub::new("s-jobs");
         let host = a_host();
-        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub);
+        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
         let mut sink = JobWatchSink::new(RecordingToolSink::default(), Some(watchers));
 
         let id = spawn_a_short_job(&host, "0.3");
@@ -309,7 +410,7 @@ mod tests {
     fn a_job_watched_twice_and_again_after_settlement_publishes_once() {
         let hub = Hub::new("s-jobs");
         let host = a_host();
-        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub);
+        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
 
         let id = spawn_a_short_job(&host, "0.2");
         watchers.watch(id.0.clone());
@@ -330,5 +431,101 @@ mod tests {
             .filter(|e| matches!(&e.event, SessionEvent::JobSettled { job, .. } if job == &id.0))
             .count();
         assert_eq!(count, 1, "one job, one settlement");
+    }
+
+    /// **R7: the settlement reaches the MODEL, not only the heads.**
+    ///
+    /// `JobSettled` has gone to the hub since protocol 14 and the jobs pane folds it,
+    /// so every head knows. Nothing read it back into a turn, so the model's only route
+    /// to a result was `job_wait` — which is the operator's complaint, and this is the
+    /// hop that answers it. What is asserted is the two things the event cannot carry:
+    /// that a completion is queued for the harness at all, and that it carries the
+    /// **command** (read off the live view, which the durable event does not have and
+    /// which is gone by the time a settlement is delivered).
+    #[test]
+    fn a_settled_job_is_queued_for_the_model_with_the_command_the_event_omits() {
+        let hub = Hub::new("s-jobs");
+        let host = a_host();
+        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+
+        let id = spawn_a_short_job(&host, "0.2");
+        watchers.watch(id.0.clone());
+        wait_for_settlement(&hub, &id.0);
+
+        let done = watchers.take_completions();
+        assert_eq!(done.len(), 1, "one job, one completion for the model");
+        assert_eq!(done[0].job, id.0);
+        assert_eq!(done[0].state, "exited 0");
+        assert!(
+            done[0].command.contains("sleep 0.2"),
+            "the command must reach the model: {:?}",
+            done[0].command
+        );
+        // **Taken, not left to arrive again.** The harness drains once per wake; a
+        // second drain is empty, which is what stops a settlement being delivered as
+        // two turns.
+        assert!(
+            watchers.take_completions().is_empty(),
+            "a completion is taken once, not left for the next wake"
+        );
+    }
+
+    /// **R7's floor rule, structurally: a completion never jumps a queued human line.**
+    ///
+    /// A job ending is not urgent in the operator's sense — nothing is waiting on it but
+    /// the model — so it must not displace a person who pressed enter. That is not a
+    /// check anywhere in this file; it is `Bell::next_any`'s order, where commands drain
+    /// before wakes. Asserted here for the wake a job rings, in the shape the registry's
+    /// own `a_wake_is_served_after_every_queued_command` asserts for a monitor's.
+    #[test]
+    fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+        let r = Registry::new();
+        let hub = r
+            .create("s-jobs", "", SessionWiring::default())
+            .expect("the session registers");
+        // `create` rings an open, and an open is drained first by design.
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+
+        let host = a_host();
+        // The watcher is given the daemon's own bell, which is what makes a settlement
+        // between turns wake the worker rather than sit until something else asks.
+        let watchers = JobWatchers::new(
+            &(host.clone() as Arc<dyn ProcessHost>),
+            &hub,
+            Some(Arc::clone(r.bell())),
+        );
+        let id = spawn_a_short_job(&host, "0.2");
+        watchers.watch(id.0.clone());
+        wait_for_settlement(&hub, &id.0);
+
+        // **The operator types while the job is ending.** Their line is in the hub's
+        // queue before the wake is drained; it must come out of `next_work` first.
+        let head = hub.attach("tui", "dead", Default::default(), 0);
+        hub.submit(
+            &head.head_id,
+            "c1",
+            0,
+            letibot_sessionlog::CommandKind::Prompt {
+                text: "answer me first".into(),
+            },
+        );
+        match r.next_work() {
+            Some(Work::Command(id, cmd)) => {
+                assert_eq!(id, "s-jobs");
+                assert!(matches!(
+                    cmd.kind,
+                    letibot_sessionlog::CommandKind::Prompt { .. }
+                ));
+            }
+            // `Work` is not `Debug` — it carries a `QueuedCommand` — so the failure
+            // names the expectation rather than the value.
+            _ => panic!("the operator's line must be served before the job's completion"),
+        }
+        match r.next_work() {
+            Some(Work::Woken(id)) => assert_eq!(id, "s-jobs", "the job's completion wakes it"),
+            _ => panic!("the completion must arrive as a wake, after the operator's line"),
+        }
     }
 }

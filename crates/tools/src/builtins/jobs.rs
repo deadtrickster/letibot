@@ -370,8 +370,11 @@ impl Tool for JobOutput {
             let why = if view.state.is_running() {
                 format!(
                     "`{id}` is still running ({} elapsed) and has written nothing \
-                     yet. That is not evidence that it will not — call `job_wait` \
-                     with job=\"{id}\" and a deadline rather than polling.",
+                     yet. That is not evidence that it will not — but there is nothing \
+                     to do here: when it ends, its completion reaches you on its own, \
+                     with how it ended and where its output is. `job_wait` with \
+                     job=\"{id}\" is there if you must have the result before you can do \
+                     anything else; otherwise carry on.",
                     secs(view.elapsed)
                 )
             } else {

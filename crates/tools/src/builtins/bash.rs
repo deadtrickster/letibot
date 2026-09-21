@@ -92,8 +92,9 @@ impl Tool for Bash {
              the result says so, names its job id and says which call gets its \
              output — it is still running, it did not fail, and starting it again \
              would give you two. Every run is a job with an id: output is capped \
-             inline and the rest is read with `job_output`, a running job is watched \
-             with `job_wait` and stopped with `job_kill`. Every process lands in a cgroup \
+             inline and the rest is read with `job_output`, and a job's completion \
+             **arrives on its own** when it ends — you are told, unprompted, so you \
+             do not sit and wait on it; a job is stopped with `job_kill`. Every process lands in a cgroup \
              owned by a scope, so a foreground command dies with the turn and a \
              background one with the session unless you name an `scope`. Do not \
              write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
@@ -286,16 +287,20 @@ impl Tool for Bash {
                 Duration::ZERO,
                 Backgrounding::Asked,
                 format!(
-                    "call `job_wait` with job=\"{id}\" and a `timeout_ms`, or \
-                     `job_output` with job=\"{id}\""
+                    "carry on — `{id}`'s completion is delivered to you on its own when \
+                     it ends, so there is nothing to wait for. `job_output` with \
+                     job=\"{id}\" reads what it has written so far; `job_kill` stops it."
                 ),
                 format!(
                     "started `{id}` in the background.\n  command: {command}\n  \
-                     pid: {}\n  scope: {} — {}\n\nIt is running now. `job_wait` with \
-                     job=\"{id}\" blocks until it finishes (a deadline is required, and \
-                     its expiry is reported as its own outcome, not as completion); \
-                     `job_output` with job=\"{id}\" reads what it has written so far; \
-                     `job_kill` stops it.",
+                     pid: {}\n  scope: {} — {}\n\nIt is running now, and **its \
+                     completion will reach you by itself when it ends — do not wait for \
+                     it, and do not poll.** Carry on with something else; when the job \
+                     finishes you are told, unprompted, with its command, how it ended \
+                     and where its output is. `job_kill` stops it. (`job_wait` with \
+                     job=\"{id}\" exists for a job you must have the result of before you \
+                     can do anything else — waiting on a job you just backgrounded is \
+                     giving back the floor you gave up.)",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),
                     scope.reaped_when(),
@@ -353,9 +358,9 @@ impl Tool for Bash {
         // running, and the handle is the way back.
         if let Foreground::Promoted(p) = foreground {
             let next = format!(
-                "call `job_wait` with job=\"{id}\" and a `timeout_ms` to block until \
-                 it finishes, or `job_output` with job=\"{id}\" to read what it has \
-                 written so far"
+                "carry on — `{id}`'s completion will be delivered to you on its own \
+                 when it ends, so there is nothing to wait for. `job_output` with \
+                 job=\"{id}\" reads what it has written so far."
             );
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
@@ -364,7 +369,8 @@ impl Tool for Bash {
                 &next,
                 format!(
                     "{body}\n\n[`{id}` was moved to the background — you did not ask \
-                     for it]\n  command: {command}\n  owned by: {} — {}\n",
+                     for it]\n  command: {command}\n  owned by: {} — {}\n\nIts \
+                     completion will reach you on its own when it ends; do not wait on it.\n",
                     p.to,
                     p.to.kind.reaped_when()
                 ),

@@ -68,7 +68,7 @@ use letibot_turn::{
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
 use crate::dialect::Wiring;
-use crate::jobwatch::{JobWatchSink, JobWatchers};
+use crate::jobwatch::{JobCompletion, JobWatchSink, JobWatchers};
 // `is_writable` is a trait method; the backend's own answer is only reachable
 // with the trait in scope.
 use letibot_tools::ExecBackend as _;
@@ -639,6 +639,62 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
          and an owner ending are three ways a watch stopped existing.",
     );
     s
+}
+
+/// **The completion of a background job, as the sentence the model is handed (R7).**
+///
+/// The other half of [`monitor_notice`], and the same shape: a labelled notice, in the
+/// harness's own voice, submitted as a turn. What it must carry is what the acceptance
+/// criterion names — the job, its command, how it ended, and where its output is — and
+/// what it must **not** do is inline the output: `produced` is a byte count and the words
+/// are one `job_output` away, so a build log of 27,000 lines never enters the context
+/// unbidden.
+///
+/// The closing sentence is the other half of R7, and it is a promise rather than a
+/// footnote: *you do not need to wait for this.* The tool text is what taught the model
+/// that waiting was the only way to learn a result; see `bash`'s backgrounded result and
+/// `job_output`'s empty-job branch for the strings that did the teaching.
+fn completion_notice(done: &[JobCompletion]) -> String {
+    let mut s = String::from("[job] ");
+    if done.len() == 1 {
+        s.push_str("a job you backgrounded has ended:\n");
+    } else {
+        s.push_str(&format!(
+            "{} jobs you backgrounded have ended:\n",
+            done.len()
+        ));
+    }
+    for c in done {
+        let command = if c.command.is_empty() {
+            "command not recorded".to_string()
+        } else {
+            c.command.clone()
+        };
+        s.push_str(&format!(
+            "  - `{}` {} after {}, wrote {} bytes: {}\n",
+            c.job,
+            c.state,
+            human_secs(c.elapsed_ms),
+            c.produced,
+            command,
+        ));
+    }
+    s.push_str(
+        "This is the completion arriving on its own — you do not need to wait for it, and \
+         `job_wait` would only block you for a result you already have. Read what it wrote \
+         with `job_output` (job=\"…\"), then carry on with what you were doing.",
+    );
+    s
+}
+
+/// A duration in the words a settlement reads with: `4.4s`, `1m12s`.
+fn human_secs(ms: u64) -> String {
+    let secs = ms as f64 / 1000.0;
+    if secs < 60.0 {
+        format!("{secs:.1}s")
+    } else {
+        format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
 }
 
 impl SteeringSource for HubSteering {
@@ -1976,7 +2032,15 @@ impl<'a> Harness<'a> {
         // each one and publishes the settlement. `None` when the backend cannot
         // start processes — no host, no jobs, no threads. The sink is the hook
         // because the `Backgrounded` result is where a job id first exists.
-        let job_watch = backend.processes_arc().map(|h| JobWatchers::new(&h, &hub));
+        //
+        // **And it is given the worker's bell (R7).** A settlement was reaching the
+        // heads and nobody else: the model that could act on it had no route to a
+        // background job's result but `job_wait`. The watcher now also queues a
+        // completion and rings this bell, so the settlement arrives as an unprompted
+        // turn of its own — the same route a fired monitor takes.
+        let job_watch = backend
+            .processes_arc()
+            .map(|h| JobWatchers::new(&h, &hub, Some(Arc::clone(session_registry.bell()))));
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
             job_watch.clone(),
@@ -3310,34 +3374,61 @@ impl<'a> Harness<'a> {
         self.wiring.monitor_wake = true;
     }
 
-    /// **Something fired while nothing was running.** T24's wake, from the worker.
+    /// **Something fired while nothing was running.** T24's wake, from the worker —
+    /// and, since R7, **the same door a background job's completion comes through.**
     ///
     /// The daemon calls this when [`letibot_sessionlog::registry::Work::Woken`]
-    /// names this session. Every monitor that settled since the cursor becomes one
-    /// user item and the loop runs — so a condition that happened between turns is
-    /// acted on, rather than sitting in `job_list` until the model happens to ask.
+    /// names this session. Every monitor that settled since the cursor, and every
+    /// background job the watcher has queued a completion for, becomes one user item
+    /// and the loop runs — so a condition that happened between turns is acted on,
+    /// rather than sitting in `job_list` until the model happens to ask.
     ///
     /// `Ok(None)` means nothing had settled after all: a wake that raced a mid-turn
-    /// pickup by [`HubSteering`], which shares the cursor. That is a real outcome
-    /// and not a failure, and returning `None` rather than running an empty turn is
-    /// what stops a spurious wake from costing a generation.
+    /// pickup by [`HubSteering`], or a job settlement this harness had already turned
+    /// into a turn, or a wake with no completion behind it for any other reason. That
+    /// is a real outcome and not a failure, and returning `None` rather than running
+    /// an empty turn is what stops a spurious wake from costing a generation.
+    ///
+    /// It returns `Ok(None)` even when there are no monitors: a session that can
+    /// background a job and watches no condition still has completions to deliver,
+    /// and the early return that used to sit on `self.monitors` is what would have
+    /// made R7 silently monitor-only.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
-        let Some(monitors) = self.monitors.clone() else {
-            return Ok(None);
-        };
-        let since = self.monitor_cursor.load(Ordering::SeqCst);
-        let settled = monitors.settled_count();
-        if settled <= since {
+        // **Two kinds of thing arrive between turns, and they share one turn.**
+        //
+        // A monitor that fired, and a background job that ended. Both are the machine's
+        // reading of the world with nobody having asked, both must reach the model
+        // unprompted, and neither may jump a person who is waiting: that ordering is
+        // `Bell::next_any`'s — commands drain before wakes — and it holds for both
+        // because both arrive as `Work::Woken`.
+        let mut notices: Vec<String> = Vec::new();
+        if let Some(monitors) = self.monitors.clone() {
+            let since = self.monitor_cursor.load(Ordering::SeqCst);
+            let settled = monitors.settled_count();
+            if settled > since {
+                let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
+                self.monitor_cursor.store(settled, Ordering::SeqCst);
+                if !fired.is_empty() {
+                    notices.push(monitor_notice(&fired));
+                }
+            }
+        }
+        // **The hop that did not exist (R7).** `JobSettled` reaches every head; this is
+        // what reaches the model, and taking it here is what stops it arriving twice.
+        let done = self
+            .job_watch
+            .as_ref()
+            .map(|w| w.take_completions())
+            .unwrap_or_default();
+        if !done.is_empty() {
+            notices.push(completion_notice(&done));
+        }
+        if notices.is_empty() {
             return Ok(None);
         }
-        let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
-        self.monitor_cursor.store(settled, Ordering::SeqCst);
-        if fired.is_empty() {
-            return Ok(None);
-        }
-        let text = monitor_notice(&fired);
-        // The harness talking to itself, not the operator. A firing must never be
-        // able to authorise the action it reports on.
+        let text = notices.join("\n\n");
+        // The harness talking to itself, not the operator. A firing — or a job's end —
+        // must never be able to authorise the action it reports on.
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
@@ -5897,6 +5988,49 @@ mod tests {
 
     use super::*;
     use letibot_tools::authorise::TrailProvenance;
+
+    /// **R7's tool-side half: the sentence says the result comes to you.**
+    ///
+    /// The text is the deliverable — it is what taught the model that waiting was the
+    /// only way to learn a result — so what it says is asserted rather than assumed. Two
+    /// things must be in it: the job's own identity (id, command, how it ended), and the
+    /// promise that there is nothing to wait for.
+    #[test]
+    fn a_completion_notice_names_the_job_and_says_do_not_wait() {
+        let text = completion_notice(&[JobCompletion {
+            job: "j7".into(),
+            command: "cargo build --release".into(),
+            state: "exited 0".into(),
+            produced: 4096,
+            elapsed_ms: 4_400,
+        }]);
+        assert!(text.starts_with("[job]"), "labelled like a monitor: {text}");
+        assert!(text.contains("`j7`"), "{text}");
+        assert!(text.contains("exited 0"), "{text}");
+        assert!(text.contains("cargo build --release"), "{text}");
+        assert!(text.contains("4.4s"), "how long it ran: {text}");
+        assert!(text.contains("4096"), "how much it wrote: {text}");
+        // The half that is the fix, not the footnote.
+        assert!(text.contains("do not need to wait"), "{text}");
+        // And it must not inline the output — only say where it is.
+        assert!(text.contains("job_output"), "{text}");
+    }
+
+    /// A job whose view was already reaped still produces a usable notice: the command
+    /// is the one field the durable settlement does not carry, so it is the one that can
+    /// be missing, and the notice says so rather than inventing one.
+    #[test]
+    fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
+        let text = completion_notice(&[JobCompletion {
+            job: "j9".into(),
+            command: String::new(),
+            state: "gone".into(),
+            produced: 0,
+            elapsed_ms: 0,
+        }]);
+        assert!(text.contains("command not recorded"), "{text}");
+        assert!(!text.contains("``"), "an empty pair of backticks: {text}");
+    }
 
     /// **A finished foreground command is not a job anybody acts on.**
     ///
