@@ -113,6 +113,23 @@ pub enum Action {
         /// label promised this and nothing carried it.
         note: Option<String>,
     },
+    /// **Answer a `question`** (§1.7), which is a different frame from `Answer` for a
+    /// reason this tree already records: `Answer` grants or denies a **permission**,
+    /// whose failure mode is *something runs*, while a question answers *which way
+    /// should I go*, whose failure mode is *a person is quoted as saying something
+    /// they did not*. So the two vocabularies stay two frames and two types, and this
+    /// is the head's half of the one that had no sender.
+    ///
+    /// The head could not answer a question **at all** before this: `answer_marked`
+    /// returned `None` for an empty `options`, a question always carries
+    /// `options: []` with the model's offered choices in `choices`, and nothing in
+    /// this crate constructed `ClientFrame::AnswerQuestion`. A question rendered as a
+    /// headline over an empty ladder and *"this ask offers no options — your line is
+    /// held"*.
+    AnswerQuestion {
+        req_id: String,
+        answer: letibot_sessionlog::question::QuestionAnswer,
+    },
     Resync,
     /// Ask the daemon what sessions it holds.
     ListSessions,
@@ -4214,7 +4231,7 @@ impl App {
         // mid-typing must not turn Enter into "send the half-thought" — and a line
         // being typed keeps its digits.
         if !self.open.is_empty() {
-            let n = self.open[0].options.len();
+            let n = decision_rows(&self.open[0]);
             let typing = !self.editor.text().is_empty();
             match k {
                 Key::Up if n > 0 => {
@@ -4671,16 +4688,30 @@ impl App {
     }
 
     /// The marked row is the answer: the marker IS the thing Enter takes, the
-    /// same contract the pickers keep. `None` when the ask offers no options —
-    /// the ladder arm refuses to move through one, and this refuses to answer
-    /// one.
+    /// same contract the pickers keep.
+    ///
+    /// **Two kinds on one card, and they answer through different frames** (§1.7). A
+    /// permission's marked row is an option id and goes as `Action::Answer`; a
+    /// question's is an index into the model's offered choices and goes as
+    /// `Action::AnswerQuestion`. `None` when the row is not an answer: a permission
+    /// that offers nothing, or a question whose model offered no choices and expects
+    /// words instead — which the typed path carries, and which a bare Enter must not
+    /// turn into an empty answer (the daemon refuses that, and a refusal the head
+    /// could have predicted is a keystroke thrown away).
     fn answer_marked(&mut self) -> Option<Action> {
         let d = self.open.first()?;
-        let n = d.options.len();
+        let n = decision_rows(d);
         if n == 0 {
             return None;
         }
-        let option_id = d.options[self.sel.min(n - 1)].option_id.clone();
+        let at = self.sel.min(n - 1);
+        if d.kind == "question" {
+            return Some(Action::AnswerQuestion {
+                req_id: d.req_id.clone(),
+                answer: letibot_sessionlog::question::QuestionAnswer::choosing(at),
+            });
+        }
+        let option_id = d.options[at].option_id.clone();
         let req_id = d.req_id.clone();
         Some(Action::Answer {
             req_id,
@@ -4723,6 +4754,33 @@ impl App {
         // is how a permission arriving mid-typing turned Enter into "send the
         // half-thought" (the operator, 2026-09-17).
         if let Some(d) = self.open.first().cloned() {
+            // **A question is answered with words, and that is not a courtesy**
+            // (§1.7). D10's third field is `free` — *"a typed answer, and a
+            // first-class one"* — and the requirement names the alternative it is
+            // against: *"not claude code 'chat later'"*. So under a question every
+            // line is either one of the model's own choices or an answer, and
+            // neither is "hold the words and answer the marked row".
+            //
+            // **A line that IS a choice answers by index.** Matching the text is
+            // how a person answers a menu they were shown, and it costs one
+            // comparison per choice; `option` is preferred over `free` because the
+            // model gets back *which of the three it offered* rather than a
+            // sentence it has to re-read as one of them.
+            if d.kind == "question" {
+                let typed = text.trim();
+                if typed.is_empty() {
+                    return self.answer_marked();
+                }
+                let at = d.choices.iter().position(|c| c.trim().eq_ignore_ascii_case(typed));
+                let answer = match at {
+                    Some(i) => letibot_sessionlog::question::QuestionAnswer::choosing(i),
+                    None => letibot_sessionlog::question::QuestionAnswer::free(typed),
+                };
+                return Some(Action::AnswerQuestion {
+                    req_id: d.req_id.clone(),
+                    answer,
+                });
+            }
             match match_option(&d, text.trim()) {
                 OptionChoice::One {
                     option_id,
@@ -8695,23 +8753,31 @@ impl App {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
-        // **One option per line, with the highlighted one marked.**
+        // **One row per answer, with the highlighted one marked.**
         //
         // They used to be joined with `·` onto one wrapped line, which is readable but
         // is not a control: there was nothing to move and nothing to press, so the only
         // way in was to type the id. A ladder the eye can walk is also a ladder Up/Down
         // can walk, and the two have to agree -- the marker IS the thing Enter takes.
-        for (i, o) in d.options.iter().enumerate() {
-            let picked = i == self.sel.min(d.options.len().saturating_sub(1));
+        //
+        // **And the rows come from whichever field this kind keeps them in** (§1.7):
+        // a question's are its `choices`, and drawing `options` for one is what left the
+        // card with an empty ladder under a question. The label for a question is the
+        // choice itself, with no `(option_id)` beside it, because a question's answers
+        // have no ids — they are the model's prose, offered back to it as an index.
+        let rows: Vec<String> = if d.kind == "question" {
+            d.choices.clone()
+        } else {
+            d.options
+                .iter()
+                .map(|o| format!("{}  ({})", o.label, o.option_id))
+                .collect()
+        };
+        for (i, body) in rows.iter().enumerate() {
+            let picked = i == self.sel.min(rows.len().saturating_sub(1));
             // The id stays on the line. Typing it still works, a script still uses it,
             // and a reader learning the ladder sees both spellings of the same choice.
-            let body = format!(
-                "{} {}  ({})",
-                if picked { "▸" } else { " " },
-                o.label,
-                o.option_id
-            );
-            for l in wrap(&format!("  {body}"), w) {
+            for l in wrap(&format!("  {} {body}", if picked { "▸" } else { " " }), w) {
                 out.push(if picked {
                     // Inverse video rather than another colour: the prompt is already
                     // yellow, and a highlight that is a second hue reads as a second
@@ -8763,7 +8829,14 @@ impl App {
         // The glob line is only shown when an *always allow* is actually on offer.
         // A hint for an option this request does not have is an affordance that does
         // nothing, which teaches the operator to stop reading the hints.
-        let hint = if d
+        //
+        // **A question's hints are its own** (§1.7). *"or type the id"* names
+        // something a question does not have — its rows are the model's prose, not ids
+        // — and the whole point of the free field is that a typed line is an answer
+        // rather than a mistake to be corrected.
+        let hint = if d.kind == "question" {
+            "  ↑↓ to choose · Enter to answer · or type your own answer"
+        } else if d
             .options
             .iter()
             .any(|o| o.kind == letibot_sessionlog::event::OptionKind::AllowAlways)
@@ -9420,6 +9493,27 @@ fn digit_row(k: &Key, n: usize) -> Option<usize> {
     let Key::Char(c) = k else { return None };
     let d = c.to_digit(10)? as usize;
     (1..=n.min(9)).contains(&d).then(|| d - 1)
+}
+
+/// **How many rows a card's ladder has** — and one question for both kinds, because
+/// the two kinds do not carry their rows in the same field (§1.7).
+///
+/// A `permission` puts its allowed answers in `options`. A **`question` carries
+/// `options: []`** and puts the model's offered choices in `choices`
+/// (`Vec<String>`), so a head that asks `options.len()` gets `0` for every question —
+/// which is exactly how this head came to be unable to answer one at all: the ladder
+/// bound was zero, `answer_marked` returned `None`, and a typed line was held with
+/// *"this ask offers no options"*.
+///
+/// One function rather than a condition at each of the four call sites, because those
+/// four have to agree about it: the bound the arrows wrap on, the bound the digits
+/// use, the row `answer_marked` takes, and the rows the card draws.
+fn decision_rows(d: &OpenDecision) -> usize {
+    if d.kind == "question" {
+        d.choices.len()
+    } else {
+        d.options.len()
+    }
 }
 
 fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
@@ -19250,6 +19344,171 @@ mod tests {
         assert!(!bare.contains("s left"), "{bare}");
         assert!(!bare.contains("if nobody answers"), "{bare}");
         assert!(bare.contains("allow_once"), "the card is still drawn: {bare}");
+    }
+
+    /// **§1.7: a question can be answered.**
+    ///
+    /// The requirement's own words for this head are *"cannot answer one at all"*, and
+    /// the measurement behind that is worth restating because it is not obvious from
+    /// either the type or the screen: a question carries **`options: []` with the model's
+    /// offered choices in `choices`** (`Vec<String>`), and every row of this head's
+    /// ladder machinery asked `options.len()` — so the bound was zero, the arrows had
+    /// nothing to wrap on, `answer_marked` returned `None`, and a typed line was held
+    /// with *"this ask offers no options"* while the card drew an empty ladder under a
+    /// question the model had offered three answers to.
+    ///
+    /// D10's three fields, one at a time: **index**, **the choice's own text**, and
+    /// **free text** — the last being *"a typed answer, and a first-class one"*, named
+    /// against Claude Code's *"chat later"*.
+    #[test]
+    fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
+        use letibot_sessionlog::event::OnTimeout;
+        let question = |choices: &[&str]| {
+            let mut d = decision_with(&[]);
+            d.kind = "question".into();
+            d.summary = "which database should the migration target?".into();
+            d.choices = choices.iter().map(|c| (*c).to_string()).collect();
+            d.on_timeout = OnTimeout::Deny;
+            d
+        };
+        let one = question(&["postgres", "sqlite", "a new one"]);
+
+        // **The card draws the model's choices**, and it no longer claims the ask
+        // offered none — which is what it said while drawing an empty ladder.
+        let a = app();
+        let card = a.decision_lines(&one, 200).join("\n");
+        assert!(card.contains("which database should the migration target?"), "{card}");
+        for c in ["postgres", "sqlite", "a new one"] {
+            assert!(card.contains(c), "the choice {c:?} is not on the card: {card}");
+        }
+        // A question's rows are prose, so there is no `(option_id)` beside them — and
+        // the hint offers the free answer rather than naming an id the question has not
+        // got.
+        assert!(card.contains("or type your own answer"), "{card}");
+        assert!(!card.contains("type the id"), "{card}");
+
+        // **1. By index, with the arrows and Enter.** The marker is the answer, the same
+        // contract every other ladder in this file keeps.
+        let mut a = app();
+        a.open.push(one.clone());
+        assert_eq!(a.sel, 0);
+        assert_eq!(a.key(Key::Down), None, "moving is not answering");
+        assert_eq!(a.sel, 1);
+        match a.key(Key::Enter) {
+            Some(Action::AnswerQuestion { req_id, answer }) => {
+                assert_eq!(req_id, "d1");
+                assert_eq!(answer.option, Some(1));
+                assert_eq!(answer.free, None, "an index answer says no words");
+            }
+            other => panic!("the marked row is the answer, got {other:?}"),
+        }
+
+        // **2. By the choice's own text**, which is how a person answers a menu they
+        // were shown. Answered as an INDEX rather than as free prose, because the model
+        // should get back which of the three it offered.
+        let mut a = app();
+        a.open.push(one.clone());
+        match a.submit("sqlite".into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, Some(1), "{answer:?}");
+                assert_eq!(answer.free, None, "{answer:?}");
+            }
+            other => panic!("a choice's own text is that choice, got {other:?}"),
+        }
+        // Case and surrounding whitespace are a person's, not a spelling test — but
+        // the *words* still have to be the choice's. `PostgreSQL` is not `postgres`
+        // (ten characters against eight), so it is free text; `  SQLITE  ` is the
+        // second choice wearing a person's casing and spacing.
+        let mut a = app();
+        a.open.push(one.clone());
+        match a.submit("  SQLITE  ".into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, Some(1), "{answer:?}")
+            }
+            other => panic!("got {other:?}"),
+        }
+        let mut a = app();
+        a.open.push(one.clone());
+        match a.submit("PostgreSQL".into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, None, "not a choice, so it is words: {answer:?}");
+                assert_eq!(answer.free.as_deref(), Some("PostgreSQL"));
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // **3. Free text** — a sentence the model did not offer. This is the field the
+        // requirement names as first-class, and the one the old code path could not
+        // reach at all: it held the words and answered the marked row instead.
+        let mut a = app();
+        a.open.push(one.clone());
+        match a.submit("neither — split it into two migrations".into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, None);
+                assert_eq!(answer.free.as_deref(), Some("neither — split it into two migrations"));
+            }
+            other => panic!("a typed sentence is an answer, got {other:?}"),
+        }
+        assert!(
+            a.open.len() == 1,
+            "the head holds the words rather than answering: {:?}",
+            a.input()
+        );
+
+        // **And a question whose model offered nothing is still answerable in words.**
+        // This is the boundary the four call sites have to agree about: no rows, so no
+        // marked answer and no digits — but the composer still answers.
+        let bare = question(&[]);
+        let mut a = app();
+        a.open.push(bare.clone());
+        assert_eq!(a.key(Key::Enter), None, "there is no marked row to take");
+        assert_eq!(a.key(Key::Char('2')), None, "and no row 2");
+        match a.submit("do whatever you think is best".into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, None, "{answer:?}");
+                assert_eq!(answer.free.as_deref(), Some("do whatever you think is best"));
+            }
+            other => panic!("got {other:?}"),
+        }
+        // An empty line on a question with no choices answers nothing rather than
+        // sending an empty answer the daemon would refuse — a refusal the head can
+        // predict is a keystroke thrown away.
+        let mut a = app();
+        a.open.push(bare);
+        assert_eq!(a.submit(String::new()), None);
+    }
+
+    /// **A question's rows must not be able to answer a permission, or the reverse.**
+    ///
+    /// `decision_rows` is the one place the two kinds' row counts are reconciled, and
+    /// getting it wrong is silent: a `question` read as a `permission` shows an empty
+    /// ladder (which is the defect above), and a `permission` read as a `question` would
+    /// answer `option: None` with the option's label as free text — a grant nobody gave,
+    /// which is worse than not answering.
+    #[test]
+    fn the_row_count_is_the_kinds_own_field_in_both_directions() {
+        use letibot_sessionlog::event::OptionKind;
+        let permission = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        assert_eq!(decision_rows(&permission), 2, "a permission counts `options`");
+        assert!(permission.choices.is_empty(), "the premise: it has no choices");
+
+        let mut q = decision_with(&[]);
+        q.kind = "question".into();
+        q.choices = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(decision_rows(&q), 3, "a question counts `choices`");
+        assert!(q.options.is_empty(), "the premise: it has no options");
+
+        // And the answers go through different frames, which is the reason the two
+        // kinds are not merged into one ladder.
+        let mut a = app();
+        a.open.push(q.clone());
+        assert!(matches!(
+            a.key(Key::Enter),
+            Some(Action::AnswerQuestion { .. })
+        ));
+        let mut b = app();
+        b.open.push(permission);
+        assert!(matches!(b.key(Key::Enter), Some(Action::Answer { .. })));
     }
 
     /// **A refused call is not a decision, so nothing about deadlines is drawn on one.**

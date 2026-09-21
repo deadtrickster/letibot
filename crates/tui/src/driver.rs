@@ -342,6 +342,12 @@ impl Link {
                             note.as_deref(),
                         )?;
                     }
+                    // **The frame this head had no way to send** (§1.7). `Answer`
+                    // above grants a permission; this answers a question, and the
+                    // client method has existed since protocol 5 with no caller.
+                    Action::AnswerQuestion { req_id, answer } => {
+                        self.client.answer_question(&req_id, answer)?;
+                    }
                     Action::Resync => {
                         self.client.request_resync()?;
                     }

@@ -1,143 +1,110 @@
-the gate card says how long there is, and what silence will do
+a question is drawn with its choices, and can be answered
 
-§1.6, **MISSING IN BOTH HEADS** — so this is not a port, it is the requirement
-implemented against leticl's `550bc94`, which is the reference for it because
-neither head had it and one of them had to go first. The operator was bitten the
-same night: *"two gate cards timed out unanswered at 300 seconds with `not_run by
-gate:timeout` — nothing on the card had said that was coming."*
+§1.7, whose requirement for this head is stated in five words: **"A … cannot answer one
+at all."** That is measured rather than relayed, and the measurement is the interesting
+part because it is invisible in both the type and the screen:
 
-Both facts were already on the wire — `DecisionRequested` carries `deadline` and
-`on_timeout` (`event.rs:569-574`) — and this head drew neither. **And it already
-drew a countdown on the secret card**, which is the shape of the whole omission: the
-instrument existed in both trees and had never been pointed at the gate, where the
-consequence of silence is a decision rather than a missing password.
+- A **`question` carries `options: []`** and puts the model's offered answers in
+  `choices` (`Vec<String>`) — the two kinds do not keep their rows in one field.
+- Every row of this head's ladder machinery asked **`options.len()`**, so for a question
+  the bound was zero: the arrows had nothing to wrap on, the digits had nothing to
+  select, `answer_marked` returned `None` for the empty ladder, and a typed line was
+  **held** with *"this ask offers no options — your line is held"*.
+- And `OpenDecision::choices` was read by **nothing in this head** — checked by grep
+  rather than assumed — so a question rendered as a headline over an empty ladder.
 
-## The three rulings
+**Nothing was missing on the wire.** `ClientFrame::AnswerQuestion` carrying
+`QuestionAnswer { option, note, free }` has existed since protocol 5, the client method
+`answer_question` has existed with **no caller**, and the daemon validates the answer
+against `choices` and refuses a permission/question mix-up by name. The whole gap was
+this head's: no `Action` variant, no driver arm, no rendering, and a row count read
+from the wrong field.
 
-**1. A ladder, not a number.** The unit changes with the time left, so the reader gets
-the precision the moment is worth: a countdown that ticks for five minutes is
-furniture, and one that ticks for ten seconds is a pressure nobody asked for. Every
-value below is asserted in `letibot-ui`'s test, taken from the reference's own table
-rather than from my implementation, because two heads have to agree for the
-requirement to be met:
+## The fix, and it is one function plus three callers
 
-    300s -> "expires in 5 min"      whole minutes, changing once a minute
-    181s -> "expires in 4 min"      rounded UP
-    120s -> "expires in 2 min"      the boundary is inclusive upward
-    119s -> "1m59s left"            seconds from here
-     59s -> "59s left"              whole seconds — `47s`, never `47.0s`
+`decision_rows(d)` is **the one place the two kinds' row counts are reconciled** — a
+permission counts `options`, a question counts `choices` — and the reason it is a
+function rather than a condition is that four sites have to agree about it: the bound
+the arrows wrap on, the bound the digits use, the row `answer_marked` takes, and the
+rows the card draws. Those four disagreeing is exactly the defect above, and it is
+silent: a wrong count does not throw.
 
-**Minutes round up and seconds do not**, and the direction is the point: a card must
-never claim less time than there is. `3m00.001s` is closer to four minutes than to
-three, and a card that says three has told the person they have less than they do.
-**Getting that right needed a second pass**: my first cut floored to seconds and then
-divided, which loses the millisecond and with it the minute it belonged to — 180,001 ms
-read `3 min`. The rounding is on the milliseconds in one step
-(`remaining_ms.div_ceil(60_000)`), and the boundary case is now a test.
+Then D10's three fields, one at a time, which the requirement names as one vocabulary
+rather than a menu plus a fallback:
 
-**2. A card past its own deadline.** The case the operator actually hit. A card still
-on the screen after its own deadline is one the daemon has already settled and this
-head has not been told the outcome of, so it says so:
+- **By index** — arrows and Enter, and a digit, the same contract every other ladder in
+  this file keeps. An answer of `choosing(i)`.
+- **By the choice's own text** — typing what the card offered answers with that
+  **index**, not with prose, so the model gets back *which of the three it offered*.
+  Case and surrounding whitespace are a person's, not a spelling test.
+- **Free text** — *"a typed answer, and a first-class one"*, and the sentence the
+  requirement is named against is Claude Code's *"chat later"*, which turns a question
+  into a suspended turn instead of an answer. A line that is not one of the choices is
+  `free`, not a mistake to be corrected.
 
-    past its deadline by 14s; the daemon has not said what became of it · if nobody answers, it RUNS anyway
+**Two frames, not one ladder.** `Answer` grants or denies a **permission** — failure
+mode *something runs*. `AnswerQuestion` answers *which way should I go* — failure mode
+*a person is quoted as saying something they did not*. `question.rs` already argues
+this at length and `hub.rs` enforces it: a permission's answer sent to a question is
+refused by name, and the check is written fail-closed (only a request that *says* it is
+a question accepts a person's sentence). So the two kinds keep their own frames, and
+this commit adds the sender the second one never had.
 
-**It never counts into negative seconds** — a number that means nothing and reads as a
-rendering fault — and it **keeps the consequence clause**, because that clause is a
-RULE and not an observation: an operator looking at an expired card with
-`on_timeout: allow` learns the one thing they most need to from it.
+## The boundary the four sites agree about
 
-**3. `deadline: null` draws nothing.** `null` is §11.5's *wait forever* — a policy,
-not missing information — so there is no silence for a clause to describe.
-**This is §13.2b answered in the other direction from `unreadable 0` on `/status`, and
-deliberately**: that count IS shown at zero, because a head that does not count frames
-it cannot read is a different head, while a countdown on an ask with no deadline is a
-number nobody took. Both are asserted — including that the card is still otherwise
-drawn, so "draws nothing" cannot be satisfied by drawing nothing at all.
+**A question whose model offered nothing is still answerable in words.** No rows means
+no marked answer and no digits — `answer_marked` returns `None` — and the composer
+still answers. And an **empty** line on such a question answers nothing at all rather
+than sending an empty answer: the daemon refuses `QuestionAnswer::default()` as
+`AnswerDefect::Empty`, and a refusal the head could have predicted is a keystroke
+thrown away. Both are asserted.
 
-## What silence does, in the daemon's own words
+## The card
 
-Below the options, because the order a person reads is the question, the choices, then
-what happens if they do nothing:
-
-    deny  -> if nobody answers, nothing runs
-    allow -> if nobody answers, it RUNS anyway
-    ask   -> if nobody answers, the guard model decides
-
-**The upper case on `RUNS` is the point of the line.** It is the only one of the three
-that does something nobody asked for, and an operator who walked away believing the
-default was `deny` when it was `allow` has been told nothing at all by a clock.
-
-**The "unknown word" arm has nothing to catch here, and saying which is which is the
-part that matters.** The reference adds *"a word this head does not know draws no
-clause rather than a guess"*; `OnTimeout` is an **enum on the wire** in this tree, so a
-fourth value is not a word this function fails to recognise — it is a frame the
-deserializer refuses, which lands in the `unreadable` bucket with everything else this
-build cannot read (R3). A wrong consequence is worse than an absent one, and neither is
-silence.
-
-## The two-clocks trap: checked, and this head does **not** have it
-
-leticl found a third instance of R13's trap while measuring the instrument it was sent
-to copy: its secret card subtracted a **Unix** deadline from a **monotonic** clock and
-had been drawing hundreds of thousands of seconds since it was written. The operator
-asked whether mine does the same, and the answer is no — `SecretRequested.deadline` is
-Unix millis and this head's clock is Unix millis (`bin::now_ms`, `driver::now_ms`,
-both `SystemTime::UNIX_EPOCH`), so the subtraction is in one frame.
-
-That was already asserted in `fe80602` rather than argued, and it is re-asserted here
-against the ladder's own spellings. **It also turned up the one real defect on that
-card**, which is worth recording: the countdown is the last field on that line and the
-card *trims to the width*, so on a ~96-column terminal the number is cut off before it
-can be read. Not fixed here — recorded, because a deadline a narrow screen cannot show
-is the same family as everything else this queue is about.
-
-## One instrument, which was the finding
-
-`secret_lines` now calls the same `progress::countdown` the gate card does. `120s left`
-was that card's old spelling and `expires in 2 min` is what the shared ladder makes of
-it — the same number, and the two cards can no longer disagree about how long there is.
-
-**And the repaint rate follows from the ladder rather than being chosen.** The finest
-rung is one whole second, so a countdown needs one frame a second and not the ten a
-spinner needs. The reference has a `live-frame-interval-ms` for this; **this head does
-not need one and must not grow one** — `term.keys()` returns after ~100 ms of quiet
-(`VMIN=0 VTIME=1`) and `Driver::tick` composes a frame unconditionally, which is the
-same property that disproved the R13 unification in `fe80602`. Two heads, one
-requirement, two mechanisms that are correct for different reasons — which is the
-argument for requirements rather than shared implementations, and the second time
-tonight it has earned its keep.
+The rows come from whichever field the kind keeps them in, which is the rendering half
+of the same bug. A question's label is the **choice itself**, with no `(option_id)`
+beside it — a question's answers have no ids; they are the model's prose offered back
+as an index — and its hint is its own: *"↑↓ to choose · Enter to answer · or type your
+own answer"*, because *"or type the id"* names something a question has not got, and the
+free field is the point.
 
 ## Tests
 
-- `a_countdown_changes_unit_with_the_time_left_and_never_overstates_the_pressure` and
-  `the_minutes_rung_says_expires_and_the_seconds_rungs_say_left` in `letibot-ui` — the
-  ladder's table, both rounding boundaries, no decimal on a whole second, no negative.
-- `the_gate_card_says_how_long_there_is_and_what_silence_does` in `letibot-tui` — the
-  ladder on the card, all three consequence clauses, the order (consequence after the
-  choices), the expired sentence with its clause kept and `-` absent, and the null
-  deadline drawing neither countdown nor clause while the card itself is still drawn.
-- The secret card's test now asserts the shared spellings at four instants, including
-  `0s left` for an expired one rather than a number counting backwards.
+- `a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways` — the card
+  draws the choices and no longer claims the ask offered none; index by arrows and
+  Enter; index by the choice's text, including a person's casing (`  SQLITE  `); free
+  text; and the no-choices boundary in both directions (words work, empty does not).
+  **One of my own assertions was wrong and the failure is worth recording**: I wrote
+  `PostgreSQL` as the case-fold example for the choice `postgres`, and it is ten
+  characters against eight — a *different word*, so it correctly fell through to free
+  text. The test now asserts both: `  SQLITE  ` is the choice, `PostgreSQL` is words.
+- `the_row_count_is_the_kinds_own_field_in_both_directions` — `decision_rows` on each
+  kind with the other's field asserted empty, and the answers going through the two
+  different `Action`s. A permission read as a question would answer `option: None` with
+  an option's label as free text, which is a grant nobody gave.
 
-`cargo test -p letibot-tui`: **304 passed, 0 failed, 4 ignored** (302 + 2).
-`cargo test -p letibot-ui`: **101 passed, 0 failed**. All targets green on both.
+`cargo test -p letibot-tui`: **306 passed, 0 failed, 4 ignored** (304 + 2).
 
-**Not verified, and said rather than glossed:** `letibot-harnessd`, `-sessionlog`,
-`-tokencore` and `-turn` have not been run since `write.rs` changed in `65725ce` — a
-run of all four together was started and then contended on the cargo lock with my own
-concurrent builds, and it is still in flight as this is written. Nothing in this
-commit touches them; the outstanding question is only whether any of their tests
-depended on the refusal that `65725ce` removed, and `clauses.rs` — where that
-dependency actually lived — is green. `rustfmt --check` still cannot run: it writes a
-temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts.
+**Not verified, and said rather than glossed:** `rustfmt --check` still cannot run — it
+writes a temp file and `bash` is closed for that direction by the circuit breaker, which
+only the operator lifts. `letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn`
+have not been re-run since `65725ce`; that run was started twice and contended on the
+cargo lock with my own builds both times, so it is not that they fail — it is that I do
+not have their result. Nothing in this commit or that one touches them directly, and
+`clauses.rs`, where the only dependency on the removed refusal actually lived, is green.
+
+**Latent in both heads, and live the day something raises one**: `RequestKind::Question`
+is **never constructed** anywhere in this tree — every site is
+`RequestKind::Permission` — so this path has no producer yet. That is why the
+requirement is *correctness, not urgency*, and it is also why it is worth fixing now:
+the two heads disagreeing about a frame nobody sends is exactly the state that makes
+the first sender a bug report.
 
 ## Not in this commit
 
-**§1.7 — a question can be answered.** The reference landed it alongside §1.6 because
-it was already in that tree. A's half is **checked, not assumed**, and it is what the
-requirement says rather than the crash leticl had: `OpenDecision::choices` is read by
-**nothing** in this head, and `match_option` iterates `options`, which is empty for a
-question — so a question draws no choices and a typed line under one is held with
-*"this ask offers no options"*. It does not TYPE-ERROR. It cannot be answered at all,
-which is the same requirement unmet by a different failure, and it is the next item.
+**`note`** — D10's middle field, *"option B, but only for the CUDA box"* — is carried by
+the wire and by `QuestionAnswer`, and **no head can set it**. The requirement says so
+for both: *"Neither can send `note` or `free`"* was true of both before this; `free` is
+true no longer, and `note` still is. It needs a syntax (`2 — only for the CUDA box`?) and
+that is a decision about a card's grammar rather than a missing line of code, so it is
+recorded here rather than half-invented.
