@@ -936,24 +936,40 @@ pub enum SessionEvent {
         /// the daemon knows how much of the ring survives.
         next: Option<u64>,
     },
-    /// **How far an import has got**, from the importer's own counter.
+    /// **A named operation the daemon is filling rows for**, with its own counter.
     ///
-    /// R6. The head draws a counted line while an opencode conversation is read in,
-    /// and the counter has to be the **fact** — parts read — not a rendering of it. The
-    /// head *could* count the rows still lacking a body, and that is exactly what it
-    /// must not do: `FORK_STALLED` is three seconds (a body that has not come in three
-    /// seconds is not coming), so a healthy but slow import would have the head say
-    /// *"9,570 row(s) announced and never filled in"* three seconds in — false,
-    /// alarming, and it burns the one diagnostic that tells the operator something true
-    /// about their session. So the daemon counts what it read and publishes here.
+    /// R6, generalized. Four things look identical from a head — an opencode import, a
+    /// reseat, a compaction, and an ordinary turn — because all four announce rows before
+    /// their bodies (that is `TranscriptAppended`/`TranscriptContent`, §4.5). **Only the
+    /// daemon knows which operation is running**, because it is the one running it; a head
+    /// that tried to tell them apart could only infer a cause from the symptom *"rows have
+    /// no bodies yet"*, and that inference is the defect it was written to avoid: the head
+    /// drew *"carrying the conversation onto the new prompt"* over every ordinary reply,
+    /// announcing a carry that was not happening.
     ///
-    /// **Ephemeral**, like [`SessionEvent::JobOutput`]: a progress frame from four
-    /// minutes ago is a lie about now. The import's durable residue is the rows
-    /// themselves and the finish note; this is the line that walks while it fills.
-    ImportProgress {
-        /// Parts read so far.
+    /// So the daemon names the operation (`what`), names the unit it counts (`unit`), and
+    /// reports how far it has got (`done` of `total`). The head draws exactly that — it no
+    /// longer derives a progress bar from body-less rows at all. This is the same rule the
+    /// day's diagnosis produced three times over: **an indicator must be the fact, not a
+    /// rendering of the fact** — the monitor firing, R2's queued prompt, and now this. In
+    /// each case the fix was identical: *let the layer that owns the fact state it.*
+    ///
+    /// `unit` is a string rather than an enum because the units honestly differ and are the
+    /// daemon's to name: `parts` for an import (opencode parts read), `rows` for a carry
+    /// (transcript rows announced). A head renders `{done} of {total} {unit}`.
+    ///
+    /// **Ephemeral**, like [`SessionEvent::JobOutput`]: a progress frame from four minutes
+    /// ago is a lie about now. The operation's durable residue is the rows themselves and
+    /// the note that says it finished; this is the line that walks while it fills.
+    Filling {
+        /// The operation, in the daemon's own words — `importing an opencode
+        /// conversation`, `carrying the conversation onto the new prompt`.
+        what: String,
+        /// What `done` and `total` count: `parts`, `rows`.
+        unit: String,
+        /// How much of it is done.
         done: u64,
-        /// Parts in the whole tree, known from one `count(*)` before the first row.
+        /// How much there is, known before the first row where it can be.
         total: u64,
     },
 }
@@ -991,7 +1007,7 @@ impl SessionEvent {
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
             SessionEvent::JobOutput { .. } => "JobOutput",
-            SessionEvent::ImportProgress { .. } => "ImportProgress",
+            SessionEvent::Filling { .. } => "Filling",
         }
     }
 }

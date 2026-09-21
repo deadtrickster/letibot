@@ -77,11 +77,11 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // ago is a lie about now. The job's durable residue is `JobSettled`; this
         // is the pane answering a keypress, not a fact that stays true.
         SessionEvent::JobOutput { .. } => true,
-        // Ephemeral: an import's *progress* is a line that walks while it fills, and a
-        // tick from four minutes ago is a lie about now. The import's durable residue
+        // Ephemeral: a fill's *progress* is a line that walks while it fills, and a
+        // tick from four minutes ago is a lie about now. The operation's durable residue
         // is the rows it appended and the note that says it finished; scrubbing this
         // and keeping those is exactly right.
-        SessionEvent::ImportProgress { .. } => true,
+        SessionEvent::Filling { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.

@@ -1233,35 +1233,41 @@ pub struct App {
     attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
     cursor: Option<(usize, usize)>,
-    /// The last counted number of rows waiting for a body, and when it last
-    /// changed. See the stall check in `screen`.
-    bodies_last: usize,
-    bodies_moved_ms: u64,
     /// The daemon's reason for ending this head, kept past the screen. See
     /// [`App::farewell`].
     bye: Option<String>,
-    /// The high-water mark of rows waiting for a body, since it was last zero.
+    /// **A bulk announcement the daemon has not filled yet.**
     ///
-    /// The denominator of the fork line: a fork announces every row before any
-    /// body follows, so the peak IS the size of the carry and `peak - pending` is
-    /// how much has landed. Reset when the last body arrives, so the next fork
-    /// measures itself and not the one before.
-    ///
-    /// **The numerator is counted, not accumulated.** An incremental counter went
-    /// wrong the first time and went wrong silently: `self.items` is replaced
-    /// wholesale by a snapshot (`App::adopt`), and a fork is exactly when one
-    /// arrives, so the tally and the rows it was supposed to describe came apart
-    /// — every later `record_item` then failed its `position` lookup and
-    /// decremented nothing. The operator saw a bar that never moved: *"so,
-    /// counter wasnt moving - 0 always"*. See [`App::bodies_pending`], which asks
-    /// the rows instead of remembering.
-    bodies_peak: usize,
-    /// **How far an opencode import has got**, from the daemon's own counter (R6).
-    /// `Some((done, total))` while it is reading and `None` when it is not — cleared
-    /// the moment `done == total`, because the finish is a durable note, not a line
-    /// that stays. See [`import_line`] for why this is the importer's count and not
-    /// a count of the rows still lacking a body.
-    import: Option<(u64, u64)>,
+    /// Recorded **only when a snapshot is ingested** — never by a live
+    /// `TranscriptAppended`. That is the whole point of it: a live row is body-less for
+    /// the R2 window of *every ordinary message*, so a trigger built on "some row lacks a
+    /// body" fires on a healthy session and announces a carry that is not happening. A
+    /// snapshot's rows are a **bulk** announcement — a fork, a reseat, a resume, an import
+    /// — and a live append is not, so the shape of the evidence separates the two with no
+    /// threshold. See [`Bulk`].
+    bulk: Option<Bulk>,
+    /// **A fill the daemon named** ([`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)):
+    /// `what`, `unit`, `done`, `total`, or `None` when nothing is running. Cleared the
+    /// moment `done >= total`, because the finish is a durable note, not a line that
+    /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
+    /// the rows still lacking a body.
+    filling: Option<(String, String, u64, u64)>,
+}
+
+/// **A bulk announcement: the ids a snapshot carried with no body, and when it landed.**
+///
+/// The evidence, not a symptom. A snapshot that arrives full of body-less rows is a
+/// *carry* — a fork, a reseat, a resume, an import, or an attach to a daemon mid-carry —
+/// and this is how the head knows that, because it recorded it at the moment of ingestion.
+/// A live `TranscriptAppended` never creates one: it is the R2 window of an ordinary
+/// message, which is why *"some row lacks a body"* was the wrong trigger.
+#[derive(Debug, Clone)]
+struct Bulk {
+    /// The ids the snapshot announced with no body. A body landing removes its id; an
+    /// empty set means the announcement is complete and the trigger clears itself.
+    ids: std::collections::HashSet<String>,
+    /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
+    at_ms: u64,
 }
 
 /// A run of body lines: history is **borrowed** from the head's own buffer, the
@@ -1305,108 +1311,70 @@ fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
     format!("{}{pad}", " ".repeat(left))
 }
 
-/// How long the fork line may sit at the same count before it stops claiming to
-/// be progress, in milliseconds.
+/// **How long a bulk announcement may stay unfilled before the head says it is not
+/// coming**, in milliseconds.
 ///
-/// A fork's bodies arrive in a burst — thousands in well under a second — so
-/// three seconds without movement is not slow, it is stopped. Short enough that a
-/// stuck bar is gone before it is annoying; long enough that a genuine pause
-/// between two bursts does not flicker it away.
-const FORK_STALLED: u64 = 3_000;
+/// **Measured against the right case, which is why it is seconds and not minutes.** The
+/// trigger is a snapshot's bulk announcement ([`Bulk`]), so the R2 slow case — a prompt
+/// queued behind a running turn, which can honestly sit body-less for minutes — never
+/// sets it. What remains is a carry, and a carry's bodies are published by the daemon in
+/// the same loop as its announcements (`Harness::republish`, `Harness::import_opencode`),
+/// so the window is one delivery batch rather than a generation.
+///
+/// Measured on this box's store: rows per turn over 957 turns are median 17, p90 130,
+/// p99 290, max 591, and the round cadence — how long a *live* row's body has ever really
+/// taken — runs to p99 108 s at the worst. The old 120 s value was calibrated against
+/// exactly those, and that was the error: with the trigger fixed they are *excluded*, and
+/// waiting two minutes to report a body the operator can see is missing now is the same
+/// failure as never reporting it. 5 s clears any delivery lag many times over and fires
+/// while the operator is still watching. (The store has no notion of a body-less row, so
+/// a carry's own body gap cannot be read off it; leticl measured the live case at 31 ms
+/// and chose 5 s for the same reason — the number is bounded by the mechanism, not copied
+/// from a clock that measures a different thing.)
+const BODY_PATIENCE: u64 = 5_000;
 
-/// **One line for a fork in flight**: the cat, the prefill bar, and a count.
+/// **The smallest fill the head draws a bar for**, in the operation's own units.
 ///
-/// Everything here is borrowed rather than invented, which was the instruction —
-/// *"we have this cat animation for progress and we have prefill progress bar for
-/// local models. reuse that instead of spanning me with grayness"*. [`cat_frame`]
-/// is the walking cat the pre-attach wait draws and [`progress::bar`] is the
-/// three-valued bar the local prefill draws. A carry has no cache to show, so
-/// `cache` is zero and the bar reads as two-valued: same glyphs, same widths.
+/// A **screen** decision — the daemon stays a pure reporter (it names every operation and
+/// counts it; the head decides whether the count is worth a bar with a cat on it).
+/// Measured at both ends from this box's own store, because a threshold picked by taste is
+/// one the next person re-tunes on their first flash:
 ///
-/// The numerator is `peak - pending`. A fork announces every carried row before a
-/// single body follows, so the peak IS the size of the carry, and what has not
-/// arrived is what is left to do.
+/// * **An ordinary turn's rows**: 957 turns — median 17, p90 130, p99 290, **max 591**.
+/// * **A real carry**: 42 forks — smallest **448 rows**, largest 576,374.
 ///
-/// A free function, not a method: by the time the tail is assembled, `screen` has
-/// already borrowed `self` mutably for the history cache.
-fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
-    let done = peak.saturating_sub(pending);
-    // **Landed rows go in as `cache`, not as `processed`, and the colour is the
-    // reason.** The bar paints `processed` with `Role::Pending` — yellow — and
-    // `cache` with `Role::Success`. For a prefill that is exactly right: yellow
-    // means being computed now, and costing you. Here nothing is being computed
-    // and nothing is being spent; every filled cell is a row that has safely
-    // arrived, which is what this bar's own vocabulary calls cache. The operator,
-    // on the first version: *"that one is yellow"*.
-    //
-    // `cache` is clamped to the moving edge inside `bar`, so passing the same
-    // number twice paints the whole landed span green and leaves the rest faint.
-    // The cost is the sub-cell edge, which is rounded to a whole cell for the
-    // cache boundary — worth it to stop a carry reading as an expense.
-    let p = progress::Prefill {
-        total: peak as u64,
-        cache: done as u64,
-        processed: done as u64,
-        time_ms: 0,
-    };
-    // **Every field is fixed width and the cat is last.** The operator: *"move cat
-    // to the right most position or thngs jump around"*.
-    //
-    // Two things on this line change width as it runs — the cat, whose frames are
-    // seven and eight columns, and the numerator, which grows from `0` to `2.7k`.
-    // Anything drawn to the RIGHT of either moves when it changes, and a
-    // progress indicator that shuffles sideways reads as a fault rather than as
-    // progress. So the numerator is right-aligned in the width of its own
-    // denominator, which is the widest it can ever be, and the cat goes at the
-    // end where nothing follows it. The bar's own width is fixed by the total,
-    // not by the fraction, so its edge is the only thing that moves — which is
-    // the one thing that is supposed to.
-    let total = progress::thousands(peak as u64);
-    let counts = format!(
-        "{:>w$} of {total} rows",
-        progress::thousands(done as u64),
-        w = total.chars().count()
-    );
-    // The bar takes what the fixed fields and the gaps leave. Clamped at both ends
-    // so a narrow terminal degrades to a short bar rather than to arithmetic that
-    // wraps the line into two.
-    let used = CAT_SLOT + counts.chars().count() + 6;
-    let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
-    vec![
-        String::new(),
-        format!(
-            "  {} {}  {}",
-            progress::bar(&p, bar_cols, cfg.palette()),
-            cfg.palette().paint(Role::Faint, &counts),
-            // Padded to the slot, not to the frame: `(=^.^=)` and `(=^.^=)~` are
-            // different widths and centring or trailing each on its own is what
-            // makes the cat slide. Same rule as the pre-attach wait.
-            cfg.palette()
-                .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
-        ),
-        cfg.palette().paint(
-            Role::Faint,
-            &"  carrying the conversation onto the new prompt".to_string(),
-        ),
-    ]
-}
+/// **The two overlap** (591 > 448), so size cannot separate a turn from a carry — which is
+/// precisely why the trigger is the shape of the evidence ([`Bulk`]) and not this number.
+/// All this decides is whether an operation the daemon *did* name is worth a bar: 256 sits
+/// above the ordinary turn's p90 and below the smallest carry ever seen here. **It gates
+/// the bar only** — the sentence below it is not gated, because a three-row batch does not
+/// deserve a cat but a three-row batch that never lands is exactly what the sentence is
+/// for.
+const MIN_FILLING: u64 = 256;
 
-/// **The line that walks while an opencode conversation is read in (R6).**
+/// **One line for a fill the DAEMON named**: the cat, the bar, and the count.
 ///
-/// The same shape as [`rebasing_line`], and for the same reason — the operator asked
-/// for the cat and the prefill bar rather than *"spanning me with grayness"* — but the
-/// numbers are the **importer's own**: parts read against the tree's part count, both
-/// handed over by the daemon in [`SessionEvent::ImportProgress`]. It is deliberately
-/// not derived from the rows still lacking a body: that is a rendering of the fact, and
-/// at [`FORK_STALLED`] (three seconds) a healthy but slow import would draw *"9,570
-/// row(s) announced and never filled in"* — false, alarming, and it would burn the one
-/// diagnostic that tells the operator something true about their session.
+/// The numbers are the daemon's — `what` in its own words, and `done` of `total` in the
+/// `unit` it named — so this draws the fact rather than a rendering of it. The head used
+/// to draw this line from the rows still lacking a body, which meant inferring the
+/// *operation* from the *symptom*: four things produce body-less rows (an ordinary
+/// reply, a reseat, a compaction, an import) and only some are a carry, so the line said
+/// *"carrying the conversation onto the new prompt"* over every ordinary message. Only
+/// the layer doing the operation knows which one it is; that is `SessionEvent::Filling`,
+/// and this is the one renderer for all of them.
 ///
-/// A free function for the same reason `rebasing_line` is: by the time the tail is
+/// A free function for the same reason `filling_line` is: by the time the tail is
 /// assembled, `screen` has already borrowed `self` mutably.
-fn import_line(done: u64, total: u64, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
+fn filling_line(
+    what: &str,
+    unit: &str,
+    done: u64,
+    total: u64,
+    now_ms: u64,
+    cfg: &RenderConfig,
+) -> Vec<String> {
     // `cache == processed == done`, the same three-valued bar the prefill draws, so the
-    // landed span reads green rather than as an expense — see `rebasing_line`.
+    // landed span reads green rather than as an expense.
     let p = progress::Prefill {
         total,
         cache: done,
@@ -1415,7 +1383,7 @@ fn import_line(done: u64, total: u64, now_ms: u64, cfg: &RenderConfig) -> Vec<St
     };
     let total_s = progress::thousands(total);
     let counts = format!(
-        "{:>w$} of {total_s} parts",
+        "{:>w$} of {total_s} {unit}",
         progress::thousands(done),
         w = total_s.chars().count()
     );
@@ -1430,10 +1398,8 @@ fn import_line(done: u64, total: u64, now_ms: u64, cfg: &RenderConfig) -> Vec<St
             cfg.palette()
                 .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
         ),
-        cfg.palette().paint(
-            Role::Faint,
-            &"  reading an opencode conversation into this session".to_string(),
-        ),
+        cfg.palette()
+            .paint(Role::Faint, &format!("  {what}")),
     ]
 }
 
@@ -1704,10 +1670,8 @@ impl App {
             daemon_protocol: None,
             attach_started_ms: 0,
             cursor: None,
-            bodies_peak: 0,
-            bodies_last: 0,
-            bodies_moved_ms: 0,
-            import: None,
+            bulk: None,
+            filling: None,
             bye: None,
         }
     }
@@ -2446,6 +2410,25 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // **A snapshot records the bulk announcement; a live append never does.**
+        //
+        // The rows a snapshot carries without bodies are a *carry* — a fork, a reseat, a
+        // resume, an import, or an attach to a daemon mid-carry. The rows a live
+        // `TranscriptAppended` adds are the R2 window of an ordinary message, and putting
+        // them here is exactly the defect this replaces: a trigger built on "some row
+        // lacks a body" fires on every healthy turn.
+        self.bulk = {
+            let ids: std::collections::HashSet<String> = self
+                .items
+                .iter()
+                .filter(|i| i.item.is_none())
+                .map(|i| i.item_id.clone())
+                .collect();
+            (!ids.is_empty()).then(|| Bulk {
+                ids,
+                at_ms: self.now_ms,
+            })
+        };
         // **A snapshot replaced every row, so the bindings are pruned to what is
         // still there and still body-less.** Pruned rather than cleared: a resync
         // mid-prompt is exactly when the reply is racing the prompt, and dropping
@@ -2731,19 +2714,25 @@ impl App {
                 }
                 Disposition::Filtered
             }
-            // **How far an import has got (R6).** The line is drawn from the daemon's
-            // own counter — parts read against the tree's part count — and nothing
-            // here derives it from the rows, which is the whole point: counting the
-            // rows still lacking a body would draw *"N rows announced and never
-            // filled in"* three seconds into a healthy import (`FORK_STALLED`), which
-            // is false, alarming, and burns the one diagnostic that is true.
+            // **A fill the daemon NAMED (R6).** `what` is the operation in the daemon's
+            // own words and `done`/`total` are its own count in the `unit` it named — so
+            // the head draws the fact instead of inferring a cause from a symptom.
+            // Counting the rows still lacking a body would draw *"N rows announced and
+            // never filled in"* three seconds into a healthy generation (see
+            // `BODY_PATIENCE`), and — worse — would name the wrong operation: an ordinary
+            // reply is not a carry.
             //
-            // Ephemeral (`scrub::is_interactive`), so a late head never replays a
-            // tick. On the last one the line goes: the daemon's durable finish note
-            // is what says the import is done, and a bar left at `total of total`
-            // would sit on the screen for ever.
-            SessionEvent::ImportProgress { done, total } => {
-                self.import = (done < total).then_some((done, total));
+            // Ephemeral (`scrub::is_interactive`), so a late head never replays a tick.
+            // On the last one the line goes: the daemon's durable finish note is what
+            // says the operation ended, and a bar left at `total of total` would sit on
+            // the screen for ever.
+            SessionEvent::Filling {
+                what,
+                unit,
+                done,
+                total,
+            } => {
+                self.filling = (done < total).then_some((what, unit, done, total));
                 self.redraw = true;
                 Disposition::Rendered
             }
@@ -4547,18 +4536,16 @@ impl App {
             self.say("this ask offers no options — your line is held");
             return None;
         }
-        // **A line typed while the conversation is still being imported.**
+        // **A line typed while a fill is still running.**
         //
-        // The import runs as one worker job, so a prompt sent during it is queued and
-        // answered against the whole history, never a half-adopted one — the ordering is
-        // safe by construction. This is the head's half of saying so: while an
-        // `ImportProgress` is live the line is **held**, exactly as it is with no daemon
-        // below, because the answer to it is not coming for a while and showing it as
-        // `queued` would be a promise about a turn nobody has started. Answering against
-        // a transcript that is still filling and then appending the rest would put the
-        // conversation in the wrong order — R2's rule, with the whole history missing
-        // rather than one prompt.
-        if self.import.is_some() {
+        // The daemon answers a prompt sent mid-import against the whole history — the
+        // import is one worker job, so a prompt cannot interleave — but the head must not
+        // show one as `queued` for a turn nobody has started. So it is refused and the
+        // words go back to the field they were typed in: the §4.2 behaviour (`7b9ca62`),
+        // reused, because answering against a half-adopted transcript and then appending
+        // the rest would put the conversation in the wrong order (R2's rule with the whole
+        // history missing).
+        if self.filling.is_some() {
             self.set_composer(&text);
             self.say(
                 "the conversation is still being imported — your line is held here. It sends \
@@ -5349,11 +5336,11 @@ impl App {
     /// one — and it is built once per frame.
     ///
     /// Derived from `items` on every frame rather than counted, for the reason
-    /// [`App::bodies_peak`] records: `items` is replaced wholesale by a snapshot, and
-    /// a tally that outlived it described rows that no longer exist. A binding whose
-    /// row has been trimmed out of the view, or replaced by a snapshot, draws nothing
-    /// — and this then draws the echo at the tail again, which is the honest answer:
-    /// the words are still this head's to show.
+    /// [`App::bulk`] gives: `items` is replaced wholesale by a snapshot, so anything
+    /// remembered about the rows it replaced describes rows that no longer exist. A
+    /// binding whose row has been trimmed out of the view, or replaced by a snapshot,
+    /// draws nothing — and this then draws the echo at the tail again, which is the
+    /// honest answer: the words are still this head's to show.
     fn echoes_on_screen(&self) -> std::collections::HashSet<String> {
         self.items
             .iter()
@@ -5404,6 +5391,15 @@ impl App {
         // purpose, and neither branch may retire on the announcement instead — see
         // `App::retire_pending`.
         self.bound_prompts.remove(item_id);
+        // **A body landing takes its id off the bulk announcement**, so the count follows
+        // the evidence and not a clock — and an empty set means the carry is complete and
+        // the trigger clears itself.
+        if let Some(b) = self.bulk.as_mut() {
+            b.ids.remove(item_id);
+            if b.ids.is_empty() {
+                self.bulk = None;
+            }
+        }
         // A user row with body is the transcript taking a queued prompt over. The
         // steering path appends the operator's words verbatim
         // (`SteeringMessage::to_item`: "a plain `User` item with exactly its own
@@ -6539,38 +6535,20 @@ impl App {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
-        // **Counted off the rows, every frame.** See `bodies_peak` for why this is
-        // not a tally: `self.items` is replaced wholesale by a snapshot, which is
-        // exactly what a fork delivers, and a tally that survived that described
-        // rows that no longer existed. An `Option` check per row, on the same
-        // order of cost as `transcript_bytes`, which already walks them all.
-        let bodies_pending = self.items.iter().filter(|i| i.item.is_none()).count();
-        // **A bar that has not moved is not progress.**
-        //
-        // A body that never arrives leaves the count stuck, and the line then sits
-        // under a conversation that has carried on — the operator, watching one
-        // read `0 of 2 rows` while the model worked: *"what is amazing - cat
-        // progress bar is still here yet conversation contnues"*. A progress
-        // indicator claims something is in flight, so one that is wrong about that
-        // is worse than the grey placeholders it replaced, which at least named
-        // the rows.
-        //
-        // So it is drawn only while it is MOVING. `bodies_moved_ms` is the last
-        // time the count changed; past `FORK_STALLED` the line goes and the rows
-        // are named instead, once, quietly.
-        if bodies_pending != self.bodies_last {
-            self.bodies_last = bodies_pending;
-            self.bodies_moved_ms = self.now_ms;
+        // **One walk, two numbers, and the numerator cannot exceed its denominator.**
+        // How many rows have ARRIVED, out of how many there are — both counted off the
+        // same pass over `items`, so the difference is a count of rows that are genuinely
+        // missing and never a number larger than the whole. The version this replaces kept
+        // a high-water mark and reported `peak - pending`: on a replaced item vector the
+        // peak was stale and the line said **`97 of 4 rows`**.
+        let arrived = self.items.iter().filter(|i| i.item.is_some()).count();
+        let outstanding = self.items.len() - arrived;
+        // **Nothing missing means the bulk announcement is complete**, so the trigger
+        // clears itself rather than leaving a line to be aged out by a clock.
+        if outstanding == 0 {
+            self.bulk = None;
         }
-        if bodies_pending == 0 {
-            self.bodies_peak = 0;
-        } else {
-            self.bodies_peak = self.bodies_peak.max(bodies_pending);
-        }
-        let stalled = self.now_ms.saturating_sub(self.bodies_moved_ms) >= FORK_STALLED;
-        // Read before the disjoint borrow below, because the fork line is drawn
-        // from the tail and `self` is not whole by then.
-        let (bodies_peak, now_ms) = (self.bodies_peak, self.now_ms);
+        let now_ms = self.now_ms;
 
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
@@ -6715,47 +6693,48 @@ impl App {
             }
         }
 
-        // **A fork in flight, as one line rather than thousands.**
-        //
-        // `/reseat` and `/compact` announce every carried row before any body
-        // follows. Drawn one-per-row that is a screen of `[kind — waiting for the
-        // body of s-…]`; the operator's word for it was *"insane amount of
-        // grainess"*, and their instruction was to reuse what already exists —
-        // *"we have this cat animation for progress and we have prefill progress
-        // bar for local models"*. So: the same cat, and `progress::bar`, which is
-        // the same three-valued bar the prefill draws, fed with rows instead of
-        // tokens.
-        //
-        // It sits at the tail with the queued prompts because that is where the
-        // rows are landing, and it disappears by itself — the last body to arrive
-        // takes the count to zero.
-        if bodies_pending > 0 && bodies_peak > 0 {
-            segs.push(Seg::Owned(if stalled {
-                // The diagnostic the per-row placeholders used to carry, once
-                // instead of once per row. A body that has not come in three
-                // seconds is not coming, and the operator should be told that
-                // rather than shown a bar pretending otherwise.
-                vec![
-                    String::new(),
-                    cfg.palette().paint(
-                        Role::Faint,
-                        &format!(
-                            "  {bodies_pending} row(s) announced and never filled in — \
-                             the daemon said they exist and did not send them"
-                        ),
-                    ),
-                ]
-            } else {
-                rebasing_line(bodies_pending, bodies_peak, now_ms, &cfg)
-            }));
+        // **A fill the daemon NAMED, with a bar when it is big enough to want one.**
+        // The numbers are the daemon's (`Filling`); the threshold gates only whether it is
+        // worth a bar with a cat on it (`MIN_FILLING`), not whether the line appears at
+        // all. The bar carries settled-vs-to-come in the **glyph** (`█`/`░`, never the
+        // prefill's `▓` *being computed now*) because nothing here is being computed — so
+        // the distinction survives a terminal with no colour.
+        if let Some((what, unit, done, total)) = self.filling.clone()
+            && total >= MIN_FILLING
+        {
+            segs.push(Seg::Owned(filling_line(
+                &what, &unit, done, total, now_ms, &cfg,
+            )));
         }
 
-        // **An import in flight, as its own counted line (R6).** The same shape as the
-        // fork bar above, but fed the importer's counter from the daemon rather than a
-        // count of unfilled rows — see [`import_line`] for why that distinction is the
-        // whole requirement and not a detail.
-        if let Some((done, total)) = self.import {
-            segs.push(Seg::Owned(import_line(done, total, now_ms, &cfg)));
+        // **An unnamed bulk announcement: the head says only what it observed.**
+        //
+        // Nobody told this head what the operation is, so it **names no cause** — the
+        // defect this replaces announced *"carrying the conversation onto the new prompt"*
+        // over every ordinary message, because the trigger was a body-less row and every
+        // message has one for the R2 window. The trigger is now the snapshot's bulk
+        // announcement ([`Bulk`]), and the sentence is only ever *how many rows are
+        // missing*; past [`BODY_PATIENCE`] it stops claiming to be progress.
+        //
+        // **Not gated by `MIN_FILLING`.** A three-row batch does not deserve a bar, but a
+        // three-row batch that never lands is exactly what this sentence is for — the
+        // operator learned about a real daemon-side hole from `2 row(s) announced and
+        // never filled in` fired outside any carry.
+        if self.filling.is_none()
+            && let Some(b) = &self.bulk
+        {
+            let said = if now_ms.saturating_sub(b.at_ms) >= BODY_PATIENCE {
+                format!(
+                    "  {outstanding} row(s) announced and never filled in — the daemon said \
+                     they exist and did not send them"
+                )
+            } else {
+                format!("  {outstanding} row(s) announced, waiting for the daemon to send them")
+            };
+            segs.push(Seg::Owned(vec![
+                String::new(),
+                cfg.palette().paint(Role::Faint, &said),
+            ]));
         }
 
         // **The wait, as a walking cat at the centre of the conversation.**
@@ -10502,7 +10481,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         // placeholders is not a diagnostic — it is noise with the shape of one. What
         // IS worth saying is how far along the carry is, and that is one line at the
         // tail with the cat and the bar the prefill already uses; see
-        // `App::rebasing_line`. Both callers drop a render with no lines, so
+        // `App::filling_line`. Both callers drop a render with no lines, so
         // returning none is how a row says "not yet".
         return (RowClass::Other, Vec::new());
     };
@@ -12574,57 +12553,45 @@ mod tests {
         );
     }
 
-    /// **R6: the import's line is the importer's count, not a count of unfilled rows.**
+    /// **R6: a named fill's line is the daemon's count, not a count of unfilled rows.**
     ///
     /// The whole of the ruling: an indicator must be the fact, not a rendering of the
-    /// fact. Counting the rows still lacking a body would draw *"N rows announced and
-    /// never filled in"* three seconds into a healthy import (`FORK_STALLED`), which is
-    /// false, alarming, and it burns the one diagnostic that is true. So the daemon
-    /// counts parts read and the head draws *that*.
+    /// fact. Counting the rows still lacking a body would (a) name the wrong operation —
+    /// an ordinary reply is not an import (see `MIN_FILLING`) — and (b) draw *"never
+    /// filled in"* three seconds into a healthy generation. So the daemon names the
+    /// operation and counts it, and the head draws exactly that.
     #[test]
     fn an_import_draws_the_importers_own_counter_and_clears_when_it_is_done() {
         let mut a = app();
         a.clock(1_000);
+        let tick = |done: u64| SessionEvent::Filling {
+            what: "importing an opencode conversation".into(),
+            unit: "parts".into(),
+            done,
+            total: 9_570,
+        };
         assert!(
             !a.screen(100, 30).join("\n").contains("parts"),
-            "no import line before one is running"
+            "no fill line before one is running"
         );
 
-        a.apply(ServerFrame::Event(env(
-            1,
-            SessionEvent::ImportProgress {
-                done: 0,
-                total: 9_570,
-            },
-        )));
+        a.apply(ServerFrame::Event(env(1, tick(0))));
         let start = a.screen(100, 30).join("\n");
         assert!(start.contains("0 of 9570 parts"), "{start}");
-        assert!(start.contains("reading an opencode conversation"), "{start}");
+        assert!(start.contains("importing an opencode conversation"), "{start}");
 
-        a.apply(ServerFrame::Event(env(
-            2,
-            SessionEvent::ImportProgress {
-                done: 4_790,
-                total: 9_570,
-            },
-        )));
+        a.apply(ServerFrame::Event(env(2, tick(4_790))));
         let mid = a.screen(100, 30).join("\n");
         assert!(mid.contains("4790 of 9570 parts"), "{mid}");
 
         // **The last tick clears the line.** The daemon's durable finish note is what
-        // says the import finished, and a bar left at `total of total` would sit on the
+        // says the fill finished, and a bar left at `total of total` would sit on the
         // screen for ever.
-        a.apply(ServerFrame::Event(env(
-            3,
-            SessionEvent::ImportProgress {
-                done: 9_570,
-                total: 9_570,
-            },
-        )));
+        a.apply(ServerFrame::Event(env(3, tick(9_570))));
         let done = a.screen(100, 30).join("\n");
         assert!(
             !done.contains("parts"),
-            "the line goes when the import is done: {done}"
+            "the line goes when the fill is done: {done}"
         );
     }
 
@@ -12641,7 +12608,9 @@ mod tests {
         let mut a = app();
         a.apply(ServerFrame::Event(env(
             1,
-            SessionEvent::ImportProgress {
+            SessionEvent::Filling {
+                what: "importing an opencode conversation".into(),
+                unit: "parts".into(),
                 done: 0,
                 total: 100,
             },
@@ -15744,24 +15713,22 @@ mod tests {
     }
 
     #[test]
-    fn the_body_of_a_row_arrives_and_replaces_the_progress_line() {
-        // Fault one, end to end through the head: announce, then fill.
-        //
-        // What an announced-but-empty row shows changed. It used to be one
-        // `[kind — waiting for the body of s-…]` per row, which a fork turns into
-        // thousands at once; it is now one progress line for however many are
-        // outstanding. Both halves are still asserted: something says work is in
-        // flight, and the row itself renders once its body lands.
+    fn a_row_without_a_body_draws_nothing_and_renders_its_body_when_it_lands() {
+        // **A body-less row is not evidence of anything.** It used to draw a progress
+        // line claiming the conversation was being carried onto a new prompt — which
+        // every ordinary turn produces, so the line appeared over ordinary replies. The
+        // bar is now the daemon's (`Filling`); a row with no body draws nothing and the
+        // row renders once its body lands.
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "user"))));
         let waiting = a.screen(80, 12).join("\n");
         assert!(
-            waiting.contains("carrying the conversation"),
-            "an announced row with no body is counted, not drawn: {waiting}"
+            !waiting.contains("waiting for the body"),
+            "no per-row placeholder: {waiting}"
         );
         assert!(
-            !waiting.contains("waiting for the body"),
-            "and never as a per-row placeholder: {waiting}"
+            !waiting.contains("carrying the conversation"),
+            "and no bar — a body-less row does not name an operation: {waiting}"
         );
         a.apply(ServerFrame::Event(env(
             2,
@@ -15770,26 +15737,19 @@ mod tests {
         let screen = a.screen(80, 12).join("\n");
         assert!(screen.contains("the operator's own prompt"), "{screen}");
         assert!(!screen.contains("waiting for the body"), "{screen}");
-        assert!(
-            !screen.contains("carrying the conversation"),
-            "the line goes when the last body lands: {screen}"
-        );
     }
 
-    /// **The count is derived from the rows, so a snapshot cannot strand it.**
+    /// **A snapshot full of body-less rows draws nothing, and renders as bodies land.**
     ///
-    /// The first version tallied on the events: `+1` per `TranscriptAppended`,
-    /// `-1` per body. That is wrong in exactly the case it exists for. A fork
-    /// delivers a snapshot, `adopt` replaces `self.items` wholesale, and the tally
-    /// then described rows that were gone — every later `record_item` missed its
-    /// `position` lookup and decremented nothing, so the bar sat at zero for the
-    /// whole carry. The operator: *"so, counter wasnt moving - 0 always"*.
+    /// The old shape drew a bar here by *counting* the rows with no body — which, being
+    /// a count of a symptom, also fired on every ordinary turn. The bar is the daemon's
+    /// now, so a snapshot that carries {n} body-less rows draws no bar at all (nothing
+    /// has named an operation), and each row renders the moment its body arrives.
     ///
-    /// The premise is asserted first and it is the whole test: the snapshot must
-    /// really arrive with bodiless rows in it. Without that this passes on the
-    /// broken version too.
+    /// The premise is asserted first and it is the whole test: the snapshot must really
+    /// arrive with body-less rows in it.
     #[test]
-    fn a_snapshot_full_of_bodiless_rows_still_counts_bodies_as_they_land() {
+    fn a_snapshot_full_of_bodiless_rows_draws_no_bar_and_renders_as_bodies_land() {
         let hub = letibot_sessionlog::hub::Hub::new("s");
         let n = 40usize;
         for i in 0..n {
@@ -15825,13 +15785,15 @@ mod tests {
             sessions: Vec::new(),
         });
         let first = a.screen(80, 40).join("\n");
+        // **No bar.** The head has been told nothing about an operation, and a count of
+        // body-less rows is exactly the proxy this design removed.
         assert!(
-            first.contains(&format!("of {n} rows")),
-            "the carry is counted from the snapshot, not from events this head \
-             never saw: {first}"
+            !first.contains("carrying the conversation"),
+            "a body-less snapshot named a carry nothing asked for: {first}"
         );
+        assert!(!first.contains("of {n} rows"), "{first}");
 
-        // And the bodies move it. This is the assertion the tally failed.
+        // And the rows render as their bodies land.
         for i in 0..10 {
             a.apply(ServerFrame::Event(env(
                 100 + i as u64,
@@ -15840,8 +15802,8 @@ mod tests {
         }
         let moved = a.screen(80, 40).join("\n");
         assert!(
-            moved.contains(&format!("10 of {n} rows")),
-            "ten bodies landed and the counter moved: {moved}"
+            moved.contains("a line of conversation"),
+            "the bodies did not render: {moved}"
         );
     }
 
@@ -15888,9 +15850,9 @@ mod tests {
 
         let mut seen: Vec<usize> = Vec::new();
         // Across the whole run, and across a full cycle of cat frames.
-        for done in [0usize, 7, 99, 100, 999, 1000, 2702] {
+        for done in [0u64, 7, 99, 100, 999, 1000, 2702] {
             for tick in &ticks {
-                let line = rebasing_line(2702 - done, 2702, *tick, &cfg);
+                let line = filling_line("carrying", "rows", done, 2702, *tick, &cfg);
                 seen.push(letibot_ui::width::width(&line[1]));
             }
         }
@@ -16004,7 +15966,7 @@ mod tests {
             width: 100,
             ..Default::default()
         };
-        let line = rebasing_line(1, 4, 0, &cfg).join("");
+        let line = filling_line("carrying", "rows", 3, 4, 0, &cfg).join("");
         assert!(
             line.contains('█'),
             "three landed rows are settled: {line:?}"
@@ -16016,80 +15978,208 @@ mod tests {
         assert!(line.contains('░'), "the one outstanding is not filled at all");
     }
 
-    /// **A bar that stops moving stops claiming to be progress.**
+    /// **A `Hello` carrying a snapshot of `n` body-less rows** — the R9 tests' fixture.
     ///
-    /// A body that never arrives leaves the count stuck, and the line then sits
-    /// under a conversation that has carried on: the operator, watching one read
-    /// `0 of 2 rows` while the model worked — *"what is amazing - cat progress bar
-    /// is still here yet conversation contnues"*. A progress indicator asserts
-    /// that something is in flight, so one that is wrong about that is worse than
-    /// the per-row placeholders it replaced, which at least named the rows.
+    /// A snapshot full of rows with no bodies is a *bulk announcement*, and building one
+    /// means going through a real `Hub` so the snapshot is the daemon's own shape rather
+    /// than a hand-rolled one.
+    fn snapshot_hello(tag: &str, n: usize) -> ServerFrame {
+        let hub = Hub::new(tag);
+        for i in 0..n {
+            hub.publish(SessionEvent::TranscriptAppended {
+                item_id: format!("{tag}.{i}"),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            });
+        }
+        let att = hub.attach("tui", "test", Caps::default(), 0);
+        assert_eq!(
+            att.snapshot
+                .as_ref()
+                .expect("a snapshot")
+                .items
+                .iter()
+                .filter(|i| i.item.is_none())
+                .count(),
+            n,
+            "the premise: the snapshot carries {n} rows with no body"
+        );
+        ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: tag.into(),
+            head_id: att.head_id.clone(),
+            dropped: att.dropped,
+            snapshot: Some(Box::new(att.snapshot.expect("a snapshot"))),
+            resumed_from: att.resumed_from,
+            scrubbed: att.scrubbed,
+            wiring: Default::default(),
+            sessions: Vec::new(),
+        }
+    }
+
+    /// **A named fill draws the bar, an unnamed bulk announcement is said, and a live
+    /// append does neither.**
     ///
-    /// Both halves are asserted, and the first is the premise: while the count is
-    /// MOVING the bar is drawn, so the stall check cannot pass by drawing nothing
-    /// ever.
+    /// Three sources, three rules, and the whole of R9:
+    ///
+    /// * the **bar** is the daemon naming an operation it is running (`Filling`), and only
+    ///   one big enough is worth a cat (`MIN_FILLING`);
+    /// * the **sentence** is the head's own, for a *bulk announcement* a snapshot left
+    ///   outstanding — and it is **not** gated by `MIN_FILLING`, because a three-row batch
+    ///   that never lands is exactly what it is for;
+    /// * a **live** `TranscriptAppended` triggers neither. It is body-less for the R2
+    ///   window of every ordinary message, so a trigger built on "some row lacks a body"
+    ///   announced a carry that was not happening — the defect this replaces.
     #[test]
-    fn the_fork_line_gives_up_when_the_bodies_stop_arriving() {
+    fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_is_not() {
+        // --- the bar, from the daemon.
         let mut a = app();
         a.clock(0);
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Filling {
+                what: "carrying the conversation onto the new prompt".into(),
+                unit: "rows".into(),
+                done: 0,
+                total: 2_702,
+            },
+        )));
+        let carried = a.screen(80, 20).join("\n");
+        assert!(
+            carried.contains("carrying the conversation") && carried.contains("of 2702 rows"),
+            "a named fill draws the bar: {carried}"
+        );
+        // **A small one draws no bar** — under `MIN_FILLING` — and still no sentence, because
+        // the daemon did name it.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Filling {
+                what: "importing an opencode conversation".into(),
+                unit: "rows".into(),
+                done: 0,
+                total: 40,
+            },
+        )));
+        let small = a.screen(80, 20).join("\n");
+        assert!(
+            !small.contains("of 40 rows") && !small.contains("announced"),
+            "a 40-row fill gets no bar and needs no sentence: {small}"
+        );
+
+        // --- the sentence, from an unnamed SNAPSHOT.
+        let mut b = app();
+        b.clock(1_000);
+        b.apply(snapshot_hello("snap", 4));
+        let waiting = b.screen(80, 20).join("\n");
+        assert!(
+            waiting.contains("4 row(s) announced, waiting for the daemon to send them"),
+            "a snapshot with no bodies is a bulk announcement and is said: {waiting}"
+        );
+        // **Past the patience it stops claiming to be progress** — and this is the sentence
+        // that found the operator a real daemon-side hole, so it is not gated by the bar's
+        // threshold either.
+        b.clock(1_000 + BODY_PATIENCE + 1);
+        let stalled = b.screen(80, 20).join("\n");
+        assert!(
+            stalled.contains("4 row(s) announced and never filled in"),
+            "after the patience it says they are not coming: {stalled}"
+        );
+        // And a body landing takes its id off the count, so the line goes.
         for i in 0..4 {
-            a.apply(ServerFrame::Event(env(
+            b.apply(ServerFrame::Event(env(
+                100 + i as u64,
+                testing::content(&format!("snap.{i}"), "a row"),
+            )));
+        }
+        let filed = b.screen(80, 20).join("\n");
+        assert!(
+            !filed.contains("announced"),
+            "the bulk announcement is complete, so the line goes: {filed}"
+        );
+
+        // --- and a live append is not a bulk announcement at all, however long it sits.
+        let mut c = app();
+        c.clock(0);
+        for i in 0..4 {
+            c.apply(ServerFrame::Event(env(
                 i + 1,
                 testing::appended(&format!("s.{i}"), "user"),
             )));
         }
-        let moving = a.screen(80, 20).join("\n");
+        let ordinary = c.screen(80, 20).join("\n");
         assert!(
-            moving.contains("carrying the conversation"),
-            "the premise: a fresh carry draws the bar: {moving}"
+            !ordinary.contains("announced"),
+            "a live body-less row is the R2 window, not a carry: {ordinary}"
         );
-
-        // One body lands, so the count moved; the clock moves with it.
-        a.clock(1_000);
-        a.apply(ServerFrame::Event(env(
-            100,
-            testing::content("s.0", "a row"),
-        )));
-        let still = a.screen(80, 20).join("\n");
+        c.clock(BODY_PATIENCE + 1);
+        let ordinary_late = c.screen(80, 20).join("\n");
         assert!(
-            still.contains("1 of 4 rows"),
-            "it is still progress while it progresses: {still}"
-        );
-
-        // And now nothing arrives for longer than the patience.
-        a.clock(1_000 + FORK_STALLED + 1);
-        let gone = a.screen(80, 20).join("\n");
-        assert!(
-            !gone.contains("carrying the conversation"),
-            "a stuck bar must go: {gone}"
-        );
-        assert!(
-            gone.contains("3 row(s) announced and never filled in"),
-            "and say what is actually wrong, once: {gone}"
+            !ordinary_late.contains("never filled in"),
+            "and it never becomes a stall however long it sits: {ordinary_late}"
         );
     }
 
-    /// **A fork is one line, however many rows it carries.**
+    /// **A replaced item vector cannot invert the count.**
     ///
-    /// `/reseat` carries the whole conversation and announces every row before a
-    /// single body follows. Drawn one-per-row that is a screen of identical
-    /// placeholders — the operator: *"i again so insane amount of grainess with s-
-    /// and whatever tool lines"* — and the instruction was to reuse what exists:
-    /// *"we have this cat animation for progress and we have prefill progress bar
-    /// for local models"*.
-    ///
-    /// The count is the assertion that matters. A test that only looked for the
-    /// word "carrying" would pass on a screen that also had 200 grey rows under it.
+    /// The shape this replaces kept a high-water mark of how many rows lacked a body and
+    /// reported `peak - pending`. A snapshot **replaces** `items` wholesale, so after a
+    /// larger carry was replaced by a smaller one the peak was stale and the line said
+    /// **`97 of 4 rows`** — a numerator larger than its own denominator. The count is now
+    /// how many have ARRIVED out of how many there are, both off one walk of the current
+    /// `items`, so it cannot.
     #[test]
-    fn a_fork_announces_two_hundred_rows_and_draws_one_progress_line() {
+    fn a_replaced_item_vector_cannot_invert_the_count() {
         let mut a = app();
-        let n = 200;
+        a.clock(0);
+        a.apply(snapshot_hello("big", 40));
+        let first = a.screen(80, 40).join("\n");
+        assert!(first.contains("40 row(s) announced"), "{first}");
+
+        // A second snapshot replaces the vector with a SMALLER carry. A remembered peak
+        // would still say 40 here.
+        a.apply(snapshot_hello("small", 4));
+        let after = a.screen(80, 40).join("\n");
+        assert!(
+            after.contains("4 row(s) announced"),
+            "the count follows the rows the head now holds: {after}"
+        );
+        assert!(
+            !after.contains("40 row(s)") && !after.contains("44 row(s)"),
+            "a replaced vector must not leave a number bigger than the whole: {after}"
+        );
+    }
+
+    /// **A fork is one line, however many rows it carries** — and it is the daemon's
+    /// line, drawn from `Filling`, not a bar the head assembled out of body-less rows.
+    ///
+    /// `/reseat` and `/compact` announce the whole conversation; drawn one-per-row that
+    /// was a screen of identical placeholders, and the instruction was to reuse the cat
+    /// and the prefill bar. The count is asserted, not just the word, because a test that
+    /// only looked for "carrying" would pass a screen that also had 300 grey rows under it.
+    #[test]
+    fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
+        let mut a = app();
+        // Above `MIN_FILLING`, so the bar is drawn — that is the thing under test here.
+        let n = 300u64;
+        // The rows the carry announces — still body-less, all of them.
         for i in 0..n {
             a.apply(ServerFrame::Event(env(
                 i + 1,
                 testing::appended(&format!("s.{i}"), "user"),
             )));
         }
+        // **And the daemon names the operation.** This is the half that makes the line
+        // honest: without it there is no bar at all, because a body-less row is not
+        // evidence of a carry.
+        a.apply(ServerFrame::Event(env(
+            n + 1,
+            SessionEvent::Filling {
+                what: "carrying the conversation onto the new prompt".into(),
+                unit: "rows".into(),
+                done: 0,
+                total: n,
+            },
+        )));
         let screen = a.screen(80, 40).join("\n");
         assert_eq!(
             screen.matches("carrying the conversation").count(),
@@ -16100,35 +16190,40 @@ mod tests {
             !screen.contains("waiting for the body"),
             "and not one placeholder among them: {screen}"
         );
-        // The bar is fed rows, so it must say how many — nothing has landed yet.
-        // Right-aligned in the denominator's width, which is what stops the cat
-        // beside it sliding as the number grows.
         assert!(screen.contains(&format!("  0 of {n} rows")), "{screen}");
 
-        // Bodies land and the count follows them.
+        // Bodies land and the daemon's count follows them.
         for i in 0..(n / 2) {
             a.apply(ServerFrame::Event(env(
-                n + i + 1,
-                testing::content(&format!("s.{i}"), "a line of conversation"),
+                2 * n + i + 1,
+                SessionEvent::Filling {
+                    what: "carrying the conversation onto the new prompt".into(),
+                    unit: "rows".into(),
+                    done: i + 1,
+                    total: n,
+                },
             )));
         }
         let half = a.screen(80, 40).join("\n");
         assert!(
             half.contains(&format!("{} of {n} rows", n / 2)),
-            "the numerator is what has arrived: {half}"
+            "the numerator is what the daemon says has arrived: {half}"
         );
 
-        // And the last one takes the line away entirely.
-        for i in (n / 2)..n {
-            a.apply(ServerFrame::Event(env(
-                2 * n + i + 1,
-                testing::content(&format!("s.{i}"), "a line of conversation"),
-            )));
-        }
+        // And the last tick takes the line away entirely.
+        a.apply(ServerFrame::Event(env(
+            4 * n + 1,
+            SessionEvent::Filling {
+                what: "carrying the conversation onto the new prompt".into(),
+                unit: "rows".into(),
+                done: n,
+                total: n,
+            },
+        )));
         let done = a.screen(80, 40).join("\n");
         assert!(
             !done.contains("carrying the conversation"),
-            "nothing is outstanding, so nothing is drawn: {done}"
+            "the fill is done, so nothing is drawn: {done}"
         );
     }
 

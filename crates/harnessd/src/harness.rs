@@ -2686,7 +2686,8 @@ impl<'a> Harness<'a> {
         // the head reads.
         self.import_note("imported", tree.root.origin());
         let total = tree.parts;
-        self.import_tick(0, total);
+        const WHAT: &str = "importing an opencode conversation";
+        self.filling(WHAT, "parts", 0, total);
 
         let mut failure: Option<String> = None;
         let mut since_persist = 0u64;
@@ -2695,7 +2696,7 @@ impl<'a> Harness<'a> {
                 // Throttled: one tick per 64 parts is a live bar, and one per part is
                 // thousands of publishes for a quarter-second read.
                 if done % 64 == 0 {
-                    self.import_tick(done, total);
+                    self.filling(WHAT, "parts", done, total);
                 }
             }
             letibot_opencode::Event::Row(r) => {
@@ -2736,7 +2737,7 @@ impl<'a> Harness<'a> {
                 let _ = self.persist();
                 // The last tick clears the head's line; the summary is the durable
                 // residue, and it carries the spend rule 2 is about.
-                self.import_tick(total, total);
+                self.filling(WHAT, "parts", total, total);
                 self.import_note("imported_summary", report.summary());
             }
         }
@@ -2758,10 +2759,18 @@ impl<'a> Harness<'a> {
         });
     }
 
-    /// One progress tick, from the reader's own count.
-    fn import_tick(&self, done: u64, total: u64) {
-        self.hub
-            .publish(letibot_sessionlog::SessionEvent::ImportProgress { done, total });
+    /// One progress tick for a named operation, from the daemon's own counter.
+    ///
+    /// The head draws a bar from this and from nothing else: it does not derive one
+    /// from body-less rows, because that would mean *inferring* the operation from
+    /// the symptom, which is the defect this event exists to end.
+    fn filling(&self, what: &str, unit: &str, done: u64, total: u64) {
+        self.hub.publish(letibot_sessionlog::SessionEvent::Filling {
+            what: what.to_string(),
+            unit: unit.to_string(),
+            done,
+            total,
+        });
     }
 
     /// Put the restored conversation back on the session's log.
@@ -2777,11 +2786,24 @@ impl<'a> Harness<'a> {
     /// `TurnFinished`. What a head shows after a resume is the conversation, not a
     /// replay of the turns that produced it, and inventing turn boundaries here would
     /// put timings on the screen that no clock measured.
+    ///
+    /// **And it says what it is doing.** A resume or a re-seat announces thousands of
+    /// rows, and that is a real wait on a real session — so the operation is named here,
+    /// by the daemon that is doing it, rather than left for a head to infer from the
+    /// body-less rows it happens to see. One `Filling` per row is the counter; the head
+    /// draws it whenever the total is large enough to be worth a bar.
     fn republish(&self) {
+        let total = self.session.ledger.rows().len() as u64;
         for (i, row) in self.session.ledger.rows().iter().enumerate() {
             let Some(item) = self.session.items.get(i) else {
                 continue;
             };
+            self.filling(
+                "carrying the conversation onto the new prompt",
+                "rows",
+                i as u64 + 1,
+                total,
+            );
             self.hub
                 .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
                     item_id: row.item_id.clone(),

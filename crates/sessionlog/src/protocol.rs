@@ -229,18 +229,23 @@ use crate::view::Snapshot;
 /// second terminal and `letibot --stop`. The head now asks which, and the
 /// answer that stops the daemon travels over the protocol rather than a head
 /// reaching around it to signal a pid.
-/// # 23: an import says how far it has got
+/// # 23: a named operation reports how far it has filled
 ///
-/// [`crate::SessionEvent::ImportProgress`] is a new event, so a version-22 head
-/// receiving one mid-session would fail to parse it — the version-4 argument, and
-/// the same ATTACH-time refusal. It exists because R6's import draws a **counted**
-/// line, and the only honest counter is parts read: the head cannot derive it from
-/// the rows still lacking a body without saying *"N rows announced and never filled
-/// in"* about a session that is filling correctly, because `FORK_STALLED` is three
-/// seconds. So the daemon counts what it read and publishes here, and the head draws
-/// the importer's counter rather than a rendering of it. Ephemeral — a tick from
-/// four minutes ago is a lie about now — so the import's durable residue is the rows
-/// and the finish note, not this.
+/// [`crate::SessionEvent::Filling`] is a new event, so a version-22 head receiving one
+/// mid-session would fail to parse it — the version-4 argument, and the same ATTACH-time
+/// refusal. It exists because the head used to *infer* a running operation from the
+/// symptom *"rows have no bodies yet"* — which every ordinary turn, every reseat, every
+/// compaction and every import all produce — so it drew *"carrying the conversation onto
+/// the new prompt"* over ordinary replies, four times a second. **Only the daemon knows
+/// which operation is running**, because it is the one running it, so it names the
+/// operation and counts it here and the head draws what it is told. **Ephemeral** — a
+/// tick from four minutes ago is a lie about now — so an operation's durable residue is
+/// the rows and the finish note, not this.
+///
+/// **This section covers one ruling, not two.** `ImportProgress { done, total }` landed
+/// an hour before it at this same version, for an opencode import alone; `Filling`
+/// generalizes it in place — same version, same decision — because a carry is the same
+/// kind of fact as an import and the two must not be two events kept in step.
 pub const PROTOCOL_VERSION: u32 = 23;
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
@@ -1089,7 +1094,7 @@ mod tests {
                 | crate::SessionEvent::HeadDetached { .. }
                 | crate::SessionEvent::JobOutput { .. }
                 | crate::SessionEvent::JobSettled { .. }
-                | crate::SessionEvent::ImportProgress { .. }
+                | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::PromptProgress { .. }
                 | crate::SessionEvent::ScreenRequested { .. }
                 | crate::SessionEvent::SecretRequested { .. }
