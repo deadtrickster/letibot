@@ -19,6 +19,7 @@ members = [
     "crates/tools",
     "crates/code",
     "crates/harnessd",
+    "crates/opencode",
 ]
 
 [workspace.package]
@@ -48,3 +49,4 @@ letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-harnessd = { path = "crates/harnessd" }
+letibot-opencode = { path = "crates/opencode" }

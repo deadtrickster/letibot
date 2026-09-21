@@ -1015,6 +1015,15 @@ name = "letibot-http"
 version = "0.1.0"
 
 [[package]]
+name = "letibot-opencode"
+version = "0.1.0"
+dependencies = [
+ "letibot-transcript",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-provider"
 version = "0.1.0"
 dependencies = [
