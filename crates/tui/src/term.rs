@@ -287,7 +287,56 @@ impl Terminal {
     /// A text field with no caret is the kind of thing that reads as "the program
     /// is not listening", and the cursor is free: the terminal already has one.
     pub fn draw_with_cursor(&self, lines: &[String], cursor: Option<(usize, usize)>) {
+        // The frame counter moves for every *attempt*, which is what "frames drawn"
+        // has always meant here: the caller asked for a frame and one was composed.
+        // Whether its bytes reached the glass is the question `paint_to` answers, and
+        // it is a different number.
         self.frames.set(self.frames.get() + 1);
+        let mut out = std::io::stdout();
+        let _ = self.paint_to(&mut out, lines, cursor);
+    }
+
+    /// **One pass: build the bytes, write them, and adopt the glass-state they leave —
+    /// or adopt nothing at all.**
+    ///
+    /// # The bug this exists for: a frame that half-wrote and was believed
+    ///
+    /// The memory of the glass used to be updated *inside* `paint_full`, while the
+    /// bytes were still being built, and the write afterwards was `let _ = …`, which
+    /// throws the error away. So a write that died part-way — a pty that closed, a
+    /// terminal that went away mid-frame, a short write — left the head **believing rows
+    /// were on the glass that it had never written**. The next frame skipped them, on
+    /// the legitimate rule that a row whose text has not changed need not be sent, and
+    /// the hole was therefore permanent: nothing in this head could discover it except
+    /// a full repaint, which is Ctrl-L or a **resize**.
+    ///
+    /// That last word is the operator's own report, and it is why this is worth a
+    /// paragraph rather than a line: *"when i expand tools with Ct scroll stops working,
+    /// even after collapsing back. i have to switch byobu windows back and forth"* —
+    /// switching windows resizes, a resize forces `full`, and the frame repaired itself.
+    /// The explanation that went in the log was escapes in a payload (which is real, and
+    /// is fixed in `without_control`); **this is the other half, and it was the half that
+    /// explained the repair.**
+    ///
+    /// # The rule, and why it is "forget" rather than "remember what landed"
+    ///
+    /// A `write_all` that fails may have written any prefix of its buffer, so the head
+    /// cannot know which rows are up. It could parse its own output for cursor moves and
+    /// count what fit — and a mistake there puts the hole back, silently, which is the
+    /// whole class of defect being fixed. So a failed write means **the glass is
+    /// unknown**: the memory is cleared and `full` is set, and the next frame repaints
+    /// everything. One extra frame after a failure, and no way to be wrong.
+    ///
+    /// `writers` are split out for the same reason `paint_full` takes `&[String]`: this
+    /// is the decision worth a test, and a test that needs a pty to reach it is a test
+    /// nobody runs. Returns whether the glass was invalidated, which is what a test
+    /// asserts and nothing else reads.
+    fn paint_to(
+        &self,
+        out: &mut dyn std::io::Write,
+        lines: &[String],
+        cursor: Option<(usize, usize)>,
+    ) -> bool {
         let mut st = self.stats.get();
         st.frames += 1;
         // A resize is the one thing that really does move every row: the terminal
@@ -300,8 +349,8 @@ impl Terminal {
             self.last_size.set(size);
             self.full.set(true);
         }
-        let s = paint_full(
-            &mut self.shown.borrow_mut(),
+        let (s, next) = paint_full(
+            &self.shown.borrow(),
             lines,
             cursor,
             self.cursor.get(),
@@ -311,11 +360,32 @@ impl Terminal {
             self.silent.set(self.silent.get() + 1);
             st.silent += 1;
             self.stats.set(st);
-            return;
+            // **Adopted, and nothing was written.** The frame needed no bytes, so the
+            // memory it describes is already true — and taking it keeps `shown` the same
+            // length as the frame, which is what the next frame diffs against.
+            *self.shown.borrow_mut() = next;
+            return false;
         }
         // The encoder, before the bytes go out. `?2026h` and `?2026l` are eight
         // bytes each and they are bytes the terminal really is sent, so they are
         // counted rather than discounted as chrome.
+        let wrote = out
+            .write_all(b"\x1b[?2026h")
+            .and_then(|()| out.write_all(s.as_bytes()))
+            .and_then(|()| out.write_all(b"\x1b[?2026l"))
+            .and_then(|()| out.flush());
+        if wrote.is_err() {
+            // **No record of a frame that may not be on the glass.** Cleared and marked
+            // unknown, so the next frame is a `full` repaint: see this method's doc for
+            // why "forget" beats "work out how much landed".
+            self.shown.borrow_mut().clear();
+            self.full.set(true);
+            self.stats.set(st);
+            return true;
+        }
+        // **The bytes are out, so now the memory is true.** This is the whole fix: the
+        // adoption is one statement later than it was, and that one statement is the
+        // difference between a diff against the glass and a diff against an intention.
         st.bytes += s.len() as u64 + 16;
         st.rows += s.matches("\x1b[K").count() as u64;
         st.clears += s.matches("\x1b[2J").count() as u64;
@@ -328,16 +398,9 @@ impl Terminal {
             prev.push_str(&s);
         }
         self.stats.set(st);
+        *self.shown.borrow_mut() = next;
         self.cursor.set(cursor);
-        let mut out = std::io::stdout();
-        // DEC 2026. A frame is a run of absolute cursor moves and erases, and a
-        // terminal is otherwise free to present the screen in the middle of one.
-        // Two lines, and the single most effective anti-flicker measure there is;
-        // a terminal that does not know the mode ignores it.
-        let _ = out.write_all(b"\x1b[?2026h");
-        let _ = out.write_all(s.as_bytes());
-        let _ = out.write_all(b"\x1b[?2026l");
-        let _ = out.flush();
+        false
     }
 
     /// Forget what is on the glass, so the next draw repaints everything.
@@ -384,17 +447,26 @@ impl Drop for Terminal {
     }
 }
 
-/// The bytes that turn `shown` into `lines`, updating `shown` as it goes.
+/// The bytes that turn `shown` into `lines`, **and the memory of the glass those bytes
+/// would leave behind**.
 ///
-/// Free and pure-ish so the flicker property is testable without a pty: the whole
-/// claim is "an unchanged frame produces an empty string", and a test that needs a
-/// terminal to check that is a test nobody runs.
+/// Two values rather than one, and the second is the fix for a defect this shared with
+/// the other head: the function used to update the memory *while building the string*,
+/// so a write that died part-way left the head claiming rows were on the glass that it
+/// had never written. Every later frame then skipped them — `shown[i] == *l` — and the
+/// hole was permanent until a resize or Ctrl-L. See [`Terminal::paint_to`], which is
+/// where the two are finally put together, and `a_paint_that_dies_part_way_leaves_no_
+/// record` for the failure measured.
+///
+/// The new memory is built **from the old one plus the lines**, so a caller that has not
+/// written anything yet holds the old memory and nothing else: there is no window in
+/// which the head believes a byte it has not sent.
 pub fn paint(
-    shown: &mut Vec<String>,
+    shown: &[String],
     lines: &[String],
     cursor: Option<(usize, usize)>,
     prev_cursor: Option<(usize, usize)>,
-) -> String {
+) -> (String, Vec<String>) {
     paint_full(shown, lines, cursor, prev_cursor, shown.is_empty())
 }
 
@@ -415,40 +487,70 @@ pub fn paint(
 /// Ctrl-L — *"the diff is against a memory of the screen, and anything that
 /// writes behind the head's back makes that memory wrong"*.
 pub fn paint_full(
-    shown: &mut Vec<String>,
+    shown: &[String],
     lines: &[String],
     cursor: Option<(usize, usize)>,
     prev_cursor: Option<(usize, usize)>,
     full: bool,
-) -> String {
+) -> (String, Vec<String>) {
     let mut s = String::new();
+    // **The glass-state this frame is building TOWARD**, kept apart from the one it is
+    // diffed against. A copy rather than a second pass because the copy is one row per
+    // screen — fifty-odd `String`s next to the frame the caller is about to write — and
+    // the alternative is a diff list whose indices the caller has to re-apply, which is
+    // one more thing to get wrong in the one place where being wrong is silent.
+    let mut next: Vec<String> = shown.to_vec();
     if full {
         s.push_str("\x1b[2J");
-        shown.clear();
+        next.clear();
     }
     // Rows the frame no longer has: erase them, rather than the whole screen.
-    for i in lines.len()..shown.len() {
+    for i in lines.len()..next.len() {
         s.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", i + 1));
     }
     // Rows the frame gained are blank on the glass — either it was just erased,
     // or the loop above erased them when the frame last shrank past them.
-    shown.resize(lines.len(), String::new());
+    next.resize(lines.len(), String::new());
     for (i, l) in lines.iter().enumerate() {
-        if shown[i] == *l {
+        if next[i] == *l {
             continue;
         }
         s.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", i + 1));
         s.push_str(l);
-        shown[i] = l.clone();
+        next[i] = l.clone();
     }
     if s.is_empty() && cursor == prev_cursor {
-        return String::new();
+        return (String::new(), next);
     }
     match cursor {
         Some((r, c)) => s.push_str(&format!("\x1b[{};{}H\x1b[?25h", r + 1, c + 1)),
         None => s.push_str("\x1b[?25l"),
     }
-    s
+    (s, next)
+}
+
+/// **A terminal that writes where it is told, for the tests that are about the encoder
+/// rather than about the pty.** `enter` needs a real terminal; nothing about the diff,
+/// the cursor or the failure policy does.
+#[cfg(test)]
+impl Terminal {
+    fn headless() -> Terminal {
+        Terminal {
+            original: unsafe { std::mem::zeroed() },
+            fd: -1,
+            entered: false,
+            shown: std::cell::RefCell::new(Vec::new()),
+            cursor: std::cell::Cell::new(None),
+            frames: std::cell::Cell::new(0),
+            silent: std::cell::Cell::new(0),
+            stats: std::cell::Cell::new(WriteStats::default()),
+            prev_payload: std::cell::RefCell::new(String::new()),
+            stats_to: None,
+            pending: std::cell::RefCell::new(Vec::new()),
+            last_size: std::cell::Cell::new((80, 24)),
+            full: std::cell::Cell::new(true),
+        }
+    }
 }
 
 fn restore(fd: i32, original: &libc::termios) {
@@ -869,10 +971,19 @@ mod tests {
         let frame: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
         let mut shown = Vec::new();
         let cur = Some((2, 4));
-        assert!(!paint(&mut shown, &frame, cur, None).is_empty(), "first draw");
+        let (first, next) = paint(&shown, &frame, cur, None);
+        assert!(!first.is_empty(), "first draw");
+        shown = next;
         for _ in 0..100 {
-            assert_eq!(paint(&mut shown, &frame, cur, cur), "");
+            let (bytes, next) = paint(&shown, &frame, cur, cur);
+            assert_eq!(bytes, "");
+            // **And the memory is still adopted**, because a frame that needs no
+            // bytes is one whose memory is already true. This is the half that makes
+            // the loop above meaningful: a `paint` that returned the same memory every
+            // time would answer `""` by never having learned anything.
+            shown = next;
         }
+        assert_eq!(shown, frame);
     }
 
     /// The encoder's one arithmetic claim, checked against the thing it counts.
@@ -889,13 +1000,14 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut shown = Vec::new();
-        let first = paint_full(&mut shown, &a, None, None, true);
+        let (first, next) = paint_full(&shown, &a, None, None, true);
         assert_eq!(first.matches("\x1b[K").count(), 5, "every row, once");
+        shown = next;
 
         let mut b = a.clone();
         b[1] = "TWO".into();
         b[3] = "FOUR".into();
-        let second = paint_full(&mut shown, &b, None, None, false);
+        let (second, _) = paint_full(&shown, &b, None, None, false);
         assert_eq!(
             second.matches("\x1b[K").count(),
             2,
@@ -910,19 +1022,116 @@ mod tests {
         // for that is a flash per wrap.
         let a: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
         let mut shown = Vec::new();
-        paint_full(&mut shown, &a, None, None, true);
+        let (_, next) = paint_full(&shown, &a, None, None, true);
+        shown = next;
         let mut b = a.clone();
         b.push("four".into());
-        let bytes = paint_full(&mut shown, &b, None, None, false);
+        let (bytes, next) = paint_full(&shown, &b, None, None, false);
+        shown = next;
         assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
         assert!(bytes.contains("four"), "{bytes:?}");
         assert!(!bytes.contains("one"), "unchanged rows stay put: {bytes:?}");
         // And shrinking erases exactly the row that went, not the screen.
-        let bytes = paint_full(&mut shown, &a, None, None, false);
+        let (bytes, next) = paint_full(&shown, &a, None, None, false);
+        shown = next;
         assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
         assert!(bytes.contains("\x1b[4;1H"), "row four is erased: {bytes:?}");
         // …and the glass is still an honest model of itself.
-        assert_eq!(paint_full(&mut shown, &a, None, None, false), "");
+        assert_eq!(paint_full(&shown, &a, None, None, false).0, "");
+    }
+
+    /// **A paint that dies part way writes no record of the frame it did not finish.**
+    ///
+    /// This is the other head's finding, and it was live here in the same shape: the
+    /// memory of the glass was updated *while the bytes were being built*, and the write
+    /// afterwards threw its error away with `let _ =`. A frame that died part-way
+    /// therefore left this head believing rows were on the glass that it had never
+    /// written, and every later frame skipped them — `shown[i] == *l` — so the hole was
+    /// permanent until a `full` repaint, which is Ctrl-L or **a resize**.
+    ///
+    /// That last word is the operator's own symptom, which is why this is worth the test
+    /// rather than the argument: *"when i expand tools with Ct scroll stops working, even
+    /// after collapsing back. i have to switch byobu windows back and forth"*. Switching
+    /// windows resizes, a resize forces `full`, and the frame repaired itself — so the
+    /// unexplained half of that report was this, and the byobu switch was the cure.
+    ///
+    /// A writer that fails on its **second** call is the interesting one: the first write
+    /// of the frame really does reach the glass, so "commit nothing" and "commit
+    /// everything" are both wrong and the assertion has to be about what the head knows
+    /// rather than about what it sent.
+    #[test]
+    fn a_paint_that_dies_part_way_leaves_no_record() {
+        /// Writes `ok` times, then fails for ever.
+        struct Dies {
+            left: usize,
+            wrote: Vec<u8>,
+        }
+        impl std::io::Write for Dies {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.left == 0 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+                }
+                self.left -= 1;
+                self.wrote.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let t = Terminal::headless();
+        let frame: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
+
+        // The frame draws onto the glass, and the glass is remembered.
+        let mut ok = Dies { left: usize::MAX, wrote: Vec::new() };
+        assert!(!t.paint_to(&mut ok, &frame, None), "a good write invalidates nothing");
+        assert_eq!(*t.shown.borrow(), frame, "the frame is on the glass");
+        assert!(!ok.wrote.is_empty(), "the premise: bytes really went out");
+
+        // **Now a frame whose write dies after one call.** `paint_to` writes the
+        // synchronised-output opener first, so one call in means the glass got that and
+        // nothing of the row itself.
+        let mut dead = Dies { left: 1, wrote: Vec::new() };
+        let mut changed = frame.clone();
+        changed[1] = "TWO".into();
+        assert!(
+            t.paint_to(&mut dead, &changed, None),
+            "a failed write must report that the glass is unknown"
+        );
+        // **Nothing is claimed.** The memory is empty — not the old frame and not the
+        // new one — because the head cannot know which rows landed.
+        assert!(
+            t.shown.borrow().is_empty(),
+            "a frame that died part-way was recorded: {:?}",
+            t.shown.borrow()
+        );
+        // And the next frame is a **full** repaint, so the hole cannot outlive the
+        // failure. This is the half the old code could not do: it had left a memory of
+        // rows it never wrote, and `full` was the only way back out.
+        let mut ok = Dies { left: usize::MAX, wrote: Vec::new() };
+        t.paint_to(&mut ok, &changed, None);
+        let sent = String::from_utf8_lossy(&ok.wrote).to_string();
+        assert!(
+            sent.contains("\x1b[2J"),
+            "the recovery must be a full repaint, not a diff against a guess: {sent:?}"
+        );
+        for row in ["one", "TWO", "three"] {
+            assert!(sent.contains(row), "the repaint must carry every row: {sent:?}");
+        }
+
+        // **And the counters do not claim bytes that were never written.** A frame that
+        // failed is a frame; its bytes are not on the glass, so they are not counted as
+        // having been sent.
+        let t = Terminal::headless();
+        let mut dead = Dies { left: 1, wrote: Vec::new() };
+        t.paint_to(&mut dead, &frame, None);
+        assert_eq!(
+            t.write_stats().bytes,
+            0,
+            "a failed frame counted its bytes as written"
+        );
+        assert_eq!(t.write_stats().frames, 1, "but the frame was attempted");
     }
 
     #[test]
@@ -931,8 +1140,9 @@ mod tests {
         let mut b = a.clone();
         b[1] = "TWO".into();
         let mut shown = Vec::new();
-        paint(&mut shown, &a, None, None);
-        let bytes = paint(&mut shown, &b, None, None);
+        let (_, next) = paint(&shown, &a, None, None);
+        shown = next;
+        let (bytes, _) = paint(&shown, &b, None, None);
         assert!(bytes.contains("TWO"));
         assert!(!bytes.contains("one") && !bytes.contains("three"), "{bytes:?}");
         // Addressed absolutely: row 2, column 1.
