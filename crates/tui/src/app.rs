@@ -7672,6 +7672,27 @@ impl App {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
+        // **Why it is asking, in the words of whoever is stuck.**
+        //
+        // `because` is the one sentence on this card that is not the harness's: on a
+        // question it is the model's own line about what it cannot decide without —
+        // an `ask_user_question`'s *"one line: what you are stuck on and why the
+        // answer changes what you do"*. The head has carried it on `OpenDecision`
+        // since the field existed and **never drawn it**, so a card that asks a
+        // question gave the person the question and no answer to *why are you asking
+        // me this* — which is the whole reason the field is there.
+        //
+        // **Labelled with its speaker**, like every other borrowed sentence on this
+        // card: `model says {would}: {basis}`, `oracle-local · cites …`, `because: …`.
+        // An unlabelled line under `detail` is indistinguishable from more of layer
+        // A's reading, and a reader who cannot tell whose sentence it is cannot weigh
+        // it against their own knowledge — which is the only thing they can do with
+        // somebody else's reason.
+        if !d.because.is_empty() {
+            for l in wrap(&format!("  because: {}", d.because), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+        }
         // **The model's verdict, above the ladder.**
         //
         // At `/mode supervised` the question is not *should this run* but *do you
@@ -7713,6 +7734,35 @@ impl App {
                 None => format!("  {} · {} ms", a.by, a.latency_ms),
             };
             for l in wrap(&tail, w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+        } else if d.kind != "question" {
+            // **And when nobody was asked, the card says that too.**
+            //
+            // The verdict is evidence and **its absence is evidence**: under
+            // `/mode supervised` the question printed above the ladder is not *should
+            // this run* but *do you agree with the model*, and a card that draws
+            // nothing in the place the verdict goes makes *no oracle was consulted*
+            // and *the oracle was asked and said nothing* the same screen. Measured on
+            // this box: an oracle answered and its verdict was unreadable, and the
+            // card said so — while the card nobody had asked said exactly the same
+            // nothing.
+            //
+            // **Only where a gate is.** A `question` is not one: nothing is consulted
+            // for it by construction, so the sentence would answer a question nobody
+            // asked, in the dim register a reader is taught to skim. Every other kind
+            // on this card is a gate, which is the same reading leticl takes.
+            //
+            // The claim is exact rather than approximate: the daemon poses an
+            // `advice` only when a model adjudicator was actually asked for one
+            // (`adjudicate.rs::ask_the_advisor` — `None` off `/supervised` and `None`
+            // with no advisor installed), and when an oracle was asked and could not
+            // answer it still poses a verdict with `would: unavailable`, which draws
+            // above this line and not instead of it.
+            for l in wrap(
+                "  no oracle was consulted for this one — the judgement is yours alone",
+                w,
+            ) {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
@@ -10696,6 +10746,107 @@ mod tests {
             on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
             asked_ts: 0,
         }
+    }
+
+    /// **The card states why it is asking, in the words of whoever is stuck.**
+    ///
+    /// `because` is the model's own line on a question — *"what you are stuck on and
+    /// why the answer changes what you do"* — and this head carried it on
+    /// `OpenDecision` from the day the field existed and never drew it. So the person
+    /// was given a question with no answer to *why are you asking me this*, which is
+    /// the only thing that decides whether the question is worth their time.
+    #[test]
+    fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+
+        // Nothing to say, so nothing said: §13.2b in both directions — a `because:`
+        // row with an empty string is a row of nothing, and the card is not entitled
+        // to it.
+        let bare = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        let drawn = a.decision_lines(&bare, 100).join("\n");
+        assert!(!drawn.contains("because"), "{drawn}");
+
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.because = "the answer changes which migration I write".into();
+        let drawn = a.decision_lines(&d, 100).join("\n");
+        assert!(
+            drawn.contains("because: the answer changes which migration I write"),
+            "{drawn}"
+        );
+        // Labelled with its speaker, and in the same dim register every other
+        // borrowed sentence on this card uses — the oracle's verdict included,
+        // because both are evidence rather than the question. Checked on a head
+        // that emits colour, since the layout tests deliberately do not.
+        let painted = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        let line = painted
+            .decision_lines(&d, 100)
+            .into_iter()
+            .find(|l| l.contains("because:"))
+            .expect("the row");
+        assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
+        // And it sits with the rest of the evidence, above the ladder — read before
+        // the choice is made, which is the only time it can inform one.
+        let because_at = drawn.find("because:").unwrap();
+        let ladder_at = drawn.find("allow_once").unwrap();
+        assert!(because_at < ladder_at, "{drawn}");
+    }
+
+    /// **A card nobody took to an oracle says so, and a card that did does not.**
+    ///
+    /// The two silences are different facts and they rendered identically: under
+    /// `/mode supervised` the question printed above the ladder is *do you agree with
+    /// the model*, and a card with no verdict on it makes *no oracle was consulted*
+    /// and *the oracle was asked and said nothing* the same screen. The operator hit
+    /// the live half of it — an oracle answered and its verdict was unreadable, and
+    /// the card said so — while the card nobody had asked said exactly the same
+    /// nothing.
+    #[test]
+    fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+        let asked = "no oracle was consulted for this one — the judgement is yours alone";
+
+        // Not supervised, or supervised with no advisor installed: nothing was asked,
+        // and the card says which of the two silences this is.
+        let d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        let drawn = a.decision_lines(&d, 100).join("\n");
+        assert!(drawn.contains(asked), "{drawn}");
+
+        // An oracle answered, however badly: the verdict is drawn and the sentence is
+        // not, so "asked" and "not asked" are two screens.
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.advice = Some(letibot_sessionlog::event::ModelAdvice {
+            // The case the operator saw: the oracle was consulted and could not
+            // produce a verdict, which the daemon poses as a verdict anyway.
+            would: "unavailable".into(),
+            by: "adjudicator".into(),
+            basis: "the verdict could not be read".into(),
+            cites: Vec::new(),
+            latency_ms: 4_000,
+        });
+        let drawn = a.decision_lines(&d, 100).join("\n");
+        assert!(
+            !drawn.contains(asked),
+            "an oracle was asked, so the sentence is false: {drawn}"
+        );
+        assert!(drawn.contains("model says unavailable"), "{drawn}");
+
+        // **A question is not a gate, so it says neither.** Nothing is ever consulted
+        // for one, and a line about oracles on a card offering plain-text choices is
+        // noise in the register a reader is taught to skim.
+        let mut q = decision_with(&[]);
+        q.kind = "question".into();
+        let drawn = a.decision_lines(&q, 100).join("\n");
+        assert!(!drawn.contains(asked), "a question said it: {drawn}");
+        assert!(
+            !drawn.contains("model says"),
+            "nor claimed a verdict: {drawn}"
+        );
     }
 
     /// **A glob typed after the option id is the rule's coverage.**
