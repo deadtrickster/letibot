@@ -1,182 +1,130 @@
-the oracle's brief and its reply are on the row, and a count counts its own predicate
+a head knows whether it has every row the daemon says it has
 
-R11. The operator, 2026-09-21: *"all i wanted to see is what was sent to oracle and
-what it replied (still can't btw)."* They could not, and the reason is worse than a
-missing column: the column built to hold the brief existed and held **something
-else**, and the reply had nowhere to go at all. The exchange lived for the duration
-of one HTTP call and was then gone, so a corpus row's label could not be traced back
-to the bytes it was read out of — and the rows this matters for are exactly the ones
-the operator and the model disagree on, 1,294 of them, their own words: *"the rows a
-fine-tune is for."* R15, the operator's ruling on an edit card's label, is folded in
-at the end because it is four lines in the same file's vicinity and one commit is
-cheaper than two.
+R17. Measured from outside this head on 2026-09-22, twice, and the second one is
+the argument:
 
-## Four provenance claims, checked against the store and not the wire type
+* Three prompts rendered `queued ·` on the screen while the tree was clean, no turn
+  was running, and the work they asked for was already committed. (**R16**, the
+  echo that outlives its fact — the same root cause, and it is next.)
+* At 22:52 this head's last row was a prompt at **seq 339** and the ledger held
+  **seq 375**: thirty-six rows of this head's own work, and **the head did not think
+  it was scrolled back** — there was no scrolled-back seam, so it believed it was at
+  the tail. Every judgement anybody makes from that screen is unsafe, including the
+  operator's about whether to send the next prompt, which they got wrong three times
+  in one night for exactly this reason.
 
-§R11 was first written from `ModelAdvice` alone and got all four wrong. Each is
-re-verified here by query against `~/.local/share/letibot/sessions.db`, because the
-fix depends on the correction — the corrected reading is *smaller* than the original,
-and it moves the work from "add a store" to "make one column hold what its own doc
-says".
+**So the requirement is not "a row can go missing". It is that nothing tells anyone
+it did.** `seq` is the log's position, dense, and assigned by the daemon alone — and
+this head assigned it unconditionally (`self.seq = env.seq`), which is precisely what
+makes a delivered row and a dropped one look the same. Three numbers, because the
+same screen is produced by three different faults in three different places.
 
-1. **`brief_sha` is not a hash.** One distinct value in 6,348 rows —
-   `brief/2026-09-14` — because `corpus.rs:172` writes `row.brief_format`, a *format
-   version* (`BRIEF_FORMAT`). Nothing was ever hashed, so it cannot tell two briefs
-   apart; and the earlier claim that the brief was "hashed and thrown away" is wrong
-   in the other direction too, since it was never identified at all.
-2. **`oracle_ms` is not oracle latency.** `corpus.rs:161` writes
-   `Some(row.decision_ms)` — the whole-gate stopwatch. Measured: `NULL` on **0**
-   rows, `0` on **5,681 of 6,348**, max **300,000 ms** against a 20,000 ms budget,
-   which no oracle call could be. Any arithmetic that reads it as "the oracle ran" is
-   measuring the gate; the 486-vs-633 reading this document used to carry is
-   discarded with it.
-3. **The column built to hold the brief held the operator's card.** `shown` is
-   documented as *"the bytes the oracle was given, verbatim."* Measured before this
-   commit: set on **147** rows, of which **147 were rows a person answered**, and
-   `NULL` on all 486 rows an oracle decided. The 147 are recognisable as cards because
-   their first line is `decision <req-id> — …`, which is `req.brief()`
-   (`adjudicate.rs:910`). Cause, one line in the gate: it asked its **decider** for
-   `last_brief`, and at a supervised point the decider is the person.
-4. **`consulted` was not a column at all**, though its own doc calls it *"load-bearing
-   for the corpus"* — so the only way to ask whether a model spoke was a regex over
-   `model_verdict` prose, which `store.rs` warns against in as many words.
+## `gaps` — the wire lost them
 
-## And a fifth thing, which is a bug and not a provenance error
+`env.seq > self.seq + 1` is proof, not a guess. Counted, **said** in the conversation
+naming the range (`seq 2..3 are missing`), and **repaired** by asking for the resync
+that exists for exactly this. Counted and not merely repaired because a gap repaired
+in silence looks identical to a session that never had one — and then nobody learns
+that a socket, a queue or a compaction is losing rows.
 
-**`oracle.rs` filed a correct `UNSURE` as a parse failure.** `parse` reads the **last**
-non-empty line; the guard one branch down tested `raw.trim()` — the **whole**
-multi-line reply — against `"UNSURE"`, failed on exactly the shape the prompt asks
-for, and reported *"gave no verdict this seam could read"* with the model's own
-reasoning quoted back as noise.
+Guarded on the session, so a `Switch` — whose events can arrive on the same socket
+before the new `Hello` has been folded — cannot read the other session's numbering as
+a gap in this one's. And not on `self.seq == 0`, which is a head with no mark yet.
 
-    The operator asked for tests; this runs them.
-    UNSURE
+## `behind` — the daemon still has them
 
-Measured: **39 of the 69 unreadable replies in the corpus are this shape**, so 39 rows
-called the guard's answer unparseable when it had answered. The three `Unsure`s are
-now told apart rather than collapsed — the model **answered** `UNSURE`, the two scores
-landed **between the thresholds**, and the bytes were **no verdict at all** — and
-`verdict_line` (the last non-empty line) is one function, because the defect was two
-places disagreeing about which line a verdict is on.
+This is the state that was measured and could not be named. A head that is *behind*
+has an **empty queue and a correct screen**: it has drawn everything it was given and
+there is nothing more coming yet. From inside, that is indistinguishable from
+*current* — which is why the screen said nothing, and why the operator read a working
+agent as an idle one. A head cannot see the daemon's position unless the daemon states
+it, and there is already one frame that does so without being asked: an `Accepted`
+carries the seq at which the command's effect is visible, and a `Rejected` carries the
+seq the daemon is actually at. Either is the daemon saying *"I am here"*; compared
+with `self.seq` it is a distance, and a lower bound is enough to say *"not current"*.
 
-A second, smaller defect of the same family: `Budgeted` did not forward `last_advice`,
-so a budgeted gate reported that no model spoke about a call it had just consulted a
-model about. A wrapper that answers for the adjudicator inside it has to answer for
-*all* of it.
+Deliberately not an alarm: an ordinary backlog is not a fault, so it is on `/status`
+and not on the border.
 
-## What the row carries now
+## `orphan_bodies` — the wire delivered them and there is no row to put them on
 
-- **`shown` holds the brief**, which is what its doc always said. The gate now asks
-  the adjudicator that **actually consulted an oracle** (`file_exchange`): the advisor
-  when the advisor was put to this call, else the decider when the decider is itself a
-  model, and **nothing** otherwise — a card is not the bytes an oracle was given.
-- **`oracle_reply` is new (schema v9)** and holds the reply **verbatim**, captured
-  before anything reads it. A reply this seam could not parse is the one most worth
-  reading afterwards, so it is kept whether or not anything was made of it.
-- **The model's own verdict admits and that path filed nothing at all.** It returned
-  before the gate ever reached its decider, so the brief that rendered and the reply
-  that admitted it were dropped, and `shown` kept whatever the *previous* call had put
-  there. Measured: **486 rows whose `verdict_by` names an oracle, and not one of them
-  had a brief** (520 such rows by the end of the day, 34 of them written by a build
-  with this fix). That path files now.
-- **`consulted INTEGER` is new (schema v10)**, written from `ModelAdvice::consulted`
-  and `NULL`-able on purpose: a row written before this cannot say, and *"we did not
-  keep it"* must not read as *"no model was asked"*. `SCHEMA_VERSION` 8 → 10 in the
-  same commit; each step is additive and guarded by a `pragma_table_info` check,
-  because migration arms run in order and the store that took v9 must still take v10.
-- **The wire gains `ModelAdvice::consulted`**, `#[serde(default)]`, **no
-  `PROTOCOL_VERSION` bump** — an added, defaulted field on an existing variant, the
-  argument this file already makes twice. Without it `would: "unavailable"` with
-  nothing behind it rendered as `model says unavailable: …`, which claims a model
-  spoke; the two heads that draw it now say `no model verdict — …` instead.
+**Found by reading the two ends rather than guessing at one.** `App::record_item`
+ended `let Some(idx) = … else { return; }` — a body whose id is not in `items` was
+thrown away **in silence**, and there is not even a placeholder left to notice,
+because a body-less row renders as `Vec::new()`. That is a third way a row the ledger
+has can be absent from the screen, and it was invisible in a way the other two are
+not: for a lost event there is a jump in `seq` to look for, and for a missing body
+there is a row on screen, but for this there is nothing at all.
 
-## The predicates, which were measuring something else than their names
+Counted, and said with the id, because the words cannot be drawn — the row is gone.
+Its one known cause is not a bug in this head (a snapshot replaces `items` wholesale,
+and the daemon's view is bounded at 2000 rows / 8 MB of bodies, so a body for a row
+the snapshot already trimmed has nowhere to go); what can be wrong is the
+*frequency*, and a number is how that becomes visible.
 
-`decision_source.rs` kept its own copies of two `WHERE` clauses and both had drifted:
+## What I could not settle, and the instrument that settles it
 
-- `measured: oracle_ms IS NOT NULL` matched **every row** — the column is `0`, never
-  NULL — so the scoped banner announced that every decision in a session had been
-  measured against a model.
-- `disagreements: operator_kind IS NOT NULL` counted `upheld`, which is the operator
-  **agreeing**. Measured: `1863` reported where the true figure is **`1,294`**
-  (`granted` 1,289 + `revoked` 5).
+The operator asked for the boring explanation to be ruled out first: did those rows
+**arrive and not get drawn**, or **never arrive**? I cannot answer that for the
+22:52 window from outside, and I will not pretend to: the three candidate causes were
+all live and only the head's own numbers separate them. What I *can* say from reading
+both ends is what each looks like, and that is now on `/status`:
 
-Both are now interpolated from one definition in the store crate — `ASKED_SQL`,
-`MEASURED_SQL`, `DISAGREEMENT_SQL`, `MODEL_DECIDED_SQL` — because **a count is not
-measuring what its NAME says, it is measuring what its PREDICATE says.** A linked
-consequence: `measured` was `verdict_by LIKE 'model%'`, which is exact for *a model
-decided* and still not *an oracle was consulted* — at `/supervised` the guard speaks
-and a person decides, so that predicate silently dropped every row where the oracle
-was overruled. So there are five counts now, and the fifth is the old predicate under
-its own name (`CorpusCounts::model_decided`), which is also the one count that is
-exact on rows written before v10. Both `/gate corpus` and the config disclosure name
-all five.
+| | `gaps` | `behind` | `orphan` |
+|---|---|---|---|
+| **the wire lost them** | > 0 | — | — |
+| **not here yet** (hub queue, socket, this head's channel) | 0 | > 0 | — |
+| **delivered, no row to land on** | 0 | — | > 0 |
 
-## Two columns with no producer, said out loud
+`gaps == 0 && behind == 0 && orphan == 0` while the ledger is ahead is the one state
+these three cannot explain, and it would mean a fourth mechanism — which is worth
+knowing too.
 
-`p_allow` is NULL on every row because the oracle this build ships answers with a hard
-label and the logprob encoding that would give it a number is not built;
-`oracle_model` is left NULL **deliberately**, because the model is already named in
-full on `verdict_by` (`model oracle \`qwen-3.8-27b\` at 127.0.0.1:8080 (budget
-20000ms, verdict only)`) and splitting prose to recover a field is what this store's
-own comment refuses. Rather than leave two columns silently empty, `/gate corpus` now
-says both are producer-less and that a reader must not read their `NULL` as a
-measurement.
+## Why this is not a diagnostic
 
-## R15 — an edit card's label is the file, with no elided-array placeholder
-
-    ▸ Edited […] letibot/crates/harnessd/src/answers.rs · ok · 3ms · 10 lines
-
-The placeholder sat in the most valuable position on the row while the "more" it
-pointed at was **the diff directly underneath it**. The operator's ruling: *"`[…]`
-should be gone for Edit."* **Not moved — gone.**
-
-**Where the line is drawn: on the arguments, not on the tool.** A nested value is
-elided **only when the map has no scalar at all** — which keeps every case where the
-elision earns its keep (a label that would otherwise be *empty*) and stops spending a
-token on a row that already names something. It is on the arguments because the whole
-rule is derived, and a per-tool table is what `display_target` exists to avoid. **No
-seated tool in this tree has that shape today** — every one carries a scalar `path`,
-`pattern` or `cmd` — so that arm is reachable by a tool added later, and a card with
-no label at all still falls back to the call id rather than to a blank.
-
-**What was deliberately not changed:** the `SUBJECT_KEYS` prepend. It answers the
-other failure — the argument budget breaking *before* `path`, leaving a card that says
-nothing about which file — and reordering it was proposed and rejected in favour of
-removal: on an edit nothing else belongs first, so the row should not need a rule to
-put the file there.
+`TODO.md`'s §6 has carried *"neither head checks `seq` continuity"* as a footnote
+since the parity survey, and leticl assigns unconditionally as well. Tonight it was
+promoted, and this is the paragraph that does it: a head can be a full turn behind
+its own ledger with no indication, so **every** judgement made from that screen is
+unsafe — the operator's about whether to send another prompt, and the head's about its
+own session, which is the worse case of the two because the head cannot even see that
+it is the one being misread.
 
 ## Tests
 
-- `the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card` — the two
-  defects in one place: both halves come from the **advisor** (the fixture stamps its
-  brief with its own id, so a card cannot be mistaken for it), a person's answer files
-  **nothing** in either column, and the auto-admit path that used to file nothing now
-  files both.
-- `unsure_is_read_from_the_last_line_and_is_not_a_parse_failure` — the three `Unsure`s
-  asserted apart, including the whitespace a model really emits, and `ALLOWANCE`
-  still not reading as an `ALLOW`.
-- `the_oracles_brief_and_reply_round_trip_and_an_older_row_says_null` — the round
-  trip, and `NULL` for *"recorded before this was kept"* told apart from *"the oracle
-  said nothing"*.
-- `counts_separate_who_decided_from_what_was_measured` — the third axis, and the
-  fixture row where a `model_verdict` was written by the gate with nobody asked.
-- `a_nested_argument_is_elided_only_when_nothing_else_can_be_shown` (R15) replaces
-  `a_nested_argument_is_elided_rather_than_dumped`, whose asserted `"a.rs […]"` was
-  the defect rather than the expectation.
+- `a_gap_in_the_log_is_said_repaired_and_counted` — a jump is counted, said **with the
+  range**, and a resync is asked for; a second gap is a second line rather than the
+  first restated; and **ten contiguous events say nothing at all**, which is the
+  property that makes the line worth reading when it does appear.
+- `a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted` — the two numbers
+  that are not `gaps`: an orphan body is counted, named, and drawn nowhere (asserted:
+  the words are *not* in the conversation); an `Accepted` eight ahead sets `behind` to
+  8, moves `gaps` not at all, and asks for no resync; a redelivery at this head's own
+  seq is not a distance.
+- `a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached` — two frames
+  raised from 60 to 72 rows, because `/status` gained three rows. The comment says so.
 
-`cargo test`: letibot-tokencore 59, letibot-tools 610, letibot-harnessd 113,
-letibot-sessionlog 95, letibot-tui 297 (4 ignored). `cargo check --workspace
---all-targets` clean. Every touched file checked against rustfmt by diffing a
-temp-format rather than trusting a bulk `--check`, which reports pre-existing drift.
+`cargo test -p letibot-tui`: **299 passed, 0 failed, 4 ignored** (297 + these two).
+`cargo test -p letibot-tui` all targets: 3 + 3 passed.
+
+**`cargo check --workspace` does not currently run, and not because of this change**:
+the sibling tree `/home/dead/Projects/rano` has an unclosed delimiter in
+`src/syntax.rs` (`mod window_tests {` at 3801, still open at EOF) and `rano` is a path
+dependency of this workspace. It is somebody's edit in flight, in another repository,
+with its own dirty tree — left alone deliberately. `letibot-tui` linked and ran, which
+is the crate this change is in.
 
 ## Not in this commit
 
-**R12** — an oracle that ran out of budget is not one that could not be read. 11 of
-the 69 unreadable replies were truncated by `max_tokens 120`, which is a budget
-question and not a parsing one, and this is the next entry in the queue. The brief and
-the reply are now recorded, which is what makes that one measurable.
+**R16 is the same root cause and is next**: an echo retires on `TranscriptContent`
+matched by text (R2's rule, and it stays — B's comment records that matching any other
+way took the wrong prompt off first when two of different lengths were queued), but a
+compaction *replaces the transcript*, so the row the echo was waiting for is summarised
+away and the retiring event never arrives in the form it expects. The fix belongs where
+a binding is *superseded*, not where it is confirmed.
 
-**leticl's side of both.** R15 and R11 are requirements in both trees; this commit is
-the `letibot` head's. `oracle_model` is left producer-less on purpose (above), and
-making it live would need an id accessor on `AuthorisationOracle`.
+**The three blocked store queries are written down** in
+`~/Projects/blocked-queries-r11-r16.md`, with what each was for. They matter because
+the R16 test needs one of them: a prompt whose row text is only ever a *piece* of a
+longer row means the merged case in `retire_pending`'s own comment is live too, and
+that is a second mechanism producing the same furniture.

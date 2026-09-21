@@ -917,6 +917,58 @@ pub struct App {
     /// parsed, so there is no seq to ack, and inventing one would rewind this head's
     /// mark over frames it has already read.
     pub unreadable: u64,
+    /// **Events the daemon sent and this head never got** (R17).
+    ///
+    /// `seq` is dense and the daemon alone assigns it, so a received frame whose
+    /// seq is more than one past the last is proof that something between the two
+    /// is missing — not a guess, and not a rendering choice. Before this counter a
+    /// head assigned `self.seq = env.seq` unconditionally, which is exactly what
+    /// makes a delivered row and a dropped one indistinguishable.
+    ///
+    /// **Counted, said, and repaired**, and the count is the part that matters: a
+    /// gap repaired silently looks identical to a session that never had one, so
+    /// the operator learns nothing about a daemon, a socket or a compaction that is
+    /// losing rows. It is the sixth bucket of that family, beside `dropped`,
+    /// `scrubbed`, `filtered`, `resyncs` and `unreadable` — and the only one of the
+    /// six that is about a row the ledger has and this head does not.
+    ///
+    /// **It does not fire on a backlog.** Events waiting in the daemon's per-head
+    /// queue, on the socket, or in this head's own channel are simply not here yet —
+    /// this head is at its own tail and correct about it. `App::behind` is the other
+    /// number, and the two are different facts about different places.
+    pub gaps: u64,
+    /// **How far the daemon says it is ahead of this head**, in events, the last
+    /// time it said anything at all.
+    ///
+    /// A head that is *behind* has an **empty** queue and a **correct** screen: it
+    /// has drawn everything it was given and there is nothing more coming yet. That
+    /// is indistinguishable from *current* from inside, and it was measured from
+    /// outside on 2026-09-22 — a head whose last row was seq 339 while the ledger
+    /// held 375, with no scrolled-back seam and nothing the head could have said.
+    ///
+    /// So the number comes from the one frame that states the daemon's position
+    /// without being asked: an `Accepted` carries the seq at which the command's
+    /// effect is visible, and a `Rejected` carries the seq the daemon is actually at.
+    /// Either is the daemon saying *"I am here"*, and a head that compares that with
+    /// its own `seq` learns the distance. It is a lower bound — the daemon has moved
+    /// on since — and a lower bound is enough to say *"not current"*.
+    pub behind: u64,
+    /// **Bodies that arrived for rows this head does not hold.**
+    ///
+    /// A row is announced by id and its body follows on another event, and
+    /// [`App::record_item`] drops a body whose id it cannot find. That drop was
+    /// silent, and it is the third way a row the ledger has can be missing from the
+    /// screen: not lost on the wire ([`App::gaps`]), not waiting for its body
+    /// ([`App::outstanding`]), but **undrawable for ever** — the id is gone from
+    /// `items` and the body that would have filled it has been thrown away.
+    ///
+    /// It has one known cause and it is not a bug in this head: a snapshot replaces
+    /// `items` wholesale, and the daemon's view is bounded (2000 rows, 8 MB of
+    /// bodies), so a body for a row the snapshot had already trimmed arrives with
+    /// nowhere to go. Counted anyway, because "the daemon and I disagree about what
+    /// exists" is a fact an operator should not have to infer from a gap in a
+    /// conversation.
+    pub orphan_bodies: u64,
     /// Scroll offset from the bottom, in lines. 0 is "following the stream".
     pub scroll: usize,
     /// The composer. `letibot_ui::editor::Editor` — multi-line, with history, a
@@ -1654,6 +1706,9 @@ impl App {
             rendered: 0,
             filtered: 0,
             unreadable: 0,
+            gaps: 0,
+            behind: 0,
+            orphan_bodies: 0,
             scroll: 0,
             editor: Editor::new(),
             model: String::new(),
@@ -2328,6 +2383,42 @@ impl App {
                 Disposition::Control
             }
             ServerFrame::Event(env) => {
+                // **R17: `seq` is dense, so a jump is proof of a miss.**
+                //
+                // The daemon assigns it and nobody else does; a head that assigns
+                // unconditionally cannot tell a delivered row from a dropped one.
+                // Guarded on the session so a `Switch` — whose events may arrive on
+                // the same socket before the new `Hello` has been folded — cannot
+                // read the other session's numbering as a gap in this one's.
+                //
+                // Nothing is done about a `self.seq` of 0: that is a head with no
+                // mark yet, and the first thing it hears is not a gap.
+                if self.seq > 0 && env.session_id == self.session_id && env.seq > self.seq + 1 {
+                    let lost = env.seq - self.seq - 1;
+                    self.gaps += 1;
+                    // **Said in the conversation, once per gap, and the range is
+                    // named.** Two gaps have to be two lines; deduping on the code
+                    // would collapse a session's whole history of them into one.
+                    self.note(Note::Warned(Warned {
+                        code: "log_gap".into(),
+                        detail: format!(
+                            "{lost} event(s) never reached this head: seq {}..{} are \
+                             missing, and the conversation you are reading has a hole in \
+                             it. The daemon has them and this head does not — asking for a \
+                             resync rebuilds from the snapshot, and `/status` counts how \
+                             often this has happened.",
+                            self.seq + 1,
+                            env.seq - 1
+                        ),
+                        ts: 0,
+                    }));
+                    // **Repaired, and the repair is the daemon's to make.** A resync
+                    // is the one thing that can put the two back in step, and the head
+                    // cannot take a snapshot of a transcript it does not hold.
+                    if !self.queued.iter().any(|a| matches!(a, Action::Resync)) {
+                        self.queued.push(Action::Resync);
+                    }
+                }
                 self.seq = env.seq;
                 self.last_event_at = self.now_ms;
                 let ts = env.ts;
@@ -2339,7 +2430,7 @@ impl App {
                 }
                 d
             }
-            ServerFrame::Accepted { note, .. } => {
+            ServerFrame::Accepted { note, seq, .. } => {
                 // Telling the person who just pressed enter that their prompt was
                 // accepted is not information — and the old head left exactly that
                 // sitting on the input line for the rest of the session. Anything
@@ -2347,6 +2438,16 @@ impl App {
                 if note != letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED {
                     self.say(&note);
                 }
+                // **The daemon saying where it is** (R17). This is the only route by
+                // which a head learns it is *behind* rather than *at the end*: both
+                // look the same from inside — an empty queue and a screen that has
+                // drawn everything it was given — and on 2026-09-22 the difference
+                // was 36 rows that were in the ledger and not on the screen.
+                //
+                // A `seq` below this head's own is a redelivery, not a gap; only a
+                // greater one is a distance, and it is a lower bound, because the
+                // daemon has moved on since it answered.
+                self.behind = seq.saturating_sub(self.seq);
                 Disposition::Control
             }
             ServerFrame::Rejected {
@@ -2358,6 +2459,12 @@ impl App {
                 // Both numbers, so the operator can see what they were looking at.
                 // A peek answered with one of these also ends its waiting.
                 self.sub_out_pending = None;
+                // **And this is the daemon naming a seq this head has not reached**
+                // (R17) — the same fact `Accepted` carries, stated the other way round.
+                // A refusal "for a stale `expected_seq`" is exactly what being behind
+                // produces, so the head had better know the distance rather than
+                // apologising for the operator's screen.
+                self.behind = actual_seq.saturating_sub(self.seq);
                 self.say(&format!(
                     "rejected: {reason} (you saw {expected_seq}, the session is at {actual_seq})"
                 ));
@@ -5487,6 +5594,32 @@ impl App {
             self.retire_pending(&text);
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
+            // **A body with no row to land on — counted, never silent** (R17).
+            //
+            // This used to be a bare `return`, and it is the third way a row the
+            // ledger has can be missing from the screen: the announcement was
+            // replaced by a snapshot that no longer carries this id, so the words
+            // arrive with nowhere to go and are thrown away. Nothing said so, and
+            // nothing could — the row is not in `items`, so there is not even a
+            // placeholder to notice.
+            //
+            // It is counted rather than made to work because there is nothing to
+            // recover: an out-of-order body for a row nobody has is exactly the
+            // case a snapshot exists to resolve. What can be wrong here is the
+            // *frequency*, and a number is how that becomes visible.
+            self.orphan_bodies += 1;
+            self.note(Note::Warned(Warned {
+                code: "orphan_body".into(),
+                detail: format!(
+                    "a row's content arrived for `{item_id}`, which this head is not \
+                     holding — a snapshot replaced the rows and this one was not in it, \
+                     so its words have nowhere to land and are recorded only here. \
+                     `/status` counts how often this has happened; a body that arrives \
+                     for a row that is gone is not a rendering choice."
+                ),
+                ts: 0,
+            }));
+            self.redraw = true;
             return;
         };
         self.items[idx].item = Some(item);
@@ -8651,7 +8784,8 @@ impl App {
     /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
     /// border has something to say at all.
     fn alarmed(&self) -> bool {
-        self.dropped + self.scrubbed + self.resyncs + self.unreadable > 0
+        self.dropped + self.scrubbed + self.resyncs + self.unreadable + self.gaps + self.orphan_bodies
+            > 0
     }
 
     /// The alarm line for the **unboxed** composer — the degenerate short-screen
@@ -8697,6 +8831,18 @@ impl App {
             said.push_str(&format!(
                 " · unreadable {} (frames this head could not read)",
                 self.unreadable
+            ));
+        }
+        // **R17, and the reason it is on the border and not only on `/status`.** A gap
+        // is a hole in the conversation in front of the reader: rows are missing from
+        // the middle of what they are reading, and nothing else on the screen says so.
+        // The two whose absence is *not* an alarm are deliberately absent here —
+        // `behind` is an ordinary backlog, and `orphan` is a body for a row that is
+        // already gone — and both are on `/status` where the whole set is read.
+        if self.gaps > 0 {
+            said.push_str(&format!(
+                " · gaps {} (events that never arrived; a resync was asked for)",
+                self.gaps
             ));
         }
         said.push_str(" · /status");
@@ -8790,6 +8936,43 @@ impl App {
             self.resyncs.to_string(),
             "Times this head threw its state away and took a fresh snapshot, \
              because the gap since its read mark was past the daemon's bound.",
+        );
+        // **R17: the three numbers that tell a lost row from a late one** (R17).
+        //
+        // They are three rows rather than one because they are three different
+        // facts about three different places, and the whole reason this defect
+        // survived a night of measurement is that they looked the same:
+        //
+        // * `gaps` — the wire lost them.
+        // * `behind` — the daemon still has them; they are in a queue, on a socket,
+        //   or in this head's channel. Not lost, just not here. A head with a
+        //   non-zero `behind` and an empty frame queue is *correct* and *not
+        //   current*, which is the state nobody could name from outside.
+        // * `orphan` — the wire delivered them and there is no row to put them on.
+        row(
+            "gaps",
+            self.gaps.to_string(),
+            "Times the log's seq jumped, which means events the daemon sent never \
+             reached this head. Counted and said because a gap repaired in silence \
+             looks exactly like a session that never had one — and then nobody learns \
+             that a socket, a queue or a compaction is losing rows.",
+        );
+        row(
+            "behind",
+            self.behind.to_string(),
+            "How far the daemon last said it was ahead of this head, in events. A head \
+             that is behind has drawn everything it was given and has nothing to draw \
+             — the same screen as a head that is current. This is the number that tells \
+             the two apart, from the seq the daemon states on an `Accepted` or a \
+             `Rejected`.",
+        );
+        // **Present and zero, like every counter here.**
+        row(
+            "orphan",
+            self.orphan_bodies.to_string(),
+            "Bodies that arrived for rows this head is not holding. The words cannot be \
+             drawn — a snapshot replaced the rows and this one was not in it — so the \
+             count is the only trace they leave.",
         );
         // **Present and zero, like every other counter here.** §13.2b: an absent
         // field and a zero field must not look the same. A head that has never met a
@@ -12449,6 +12632,152 @@ mod tests {
         );
     }
 
+    /// **R17: a head knows whether it has every row the daemon says it has.**
+    ///
+    /// `seq` is the log's position, dense and assigned by the daemon alone — and this
+    /// head assigned it unconditionally (`self.seq = env.seq`), which is exactly what
+    /// makes a delivered row and a dropped one look the same. Measured 2026-09-22: a
+    /// prompt that was **in the ledger and acted on** never reached this head's screen,
+    /// and nothing in this head could have said so.
+    ///
+    /// Three obligations, and the third is why the second is not enough: **say** it (a
+    /// note in the conversation, not a transient line — this is a fact about the
+    /// session), **repair** it (`/resync` exists for precisely this), and **count** it.
+    /// A gap repaired silently is indistinguishable from a session that never had one,
+    /// so the operator learns nothing about a daemon, a socket or a compaction that is
+    /// losing rows — which is the same argument `/status`'s `unreadable` bucket makes,
+    /// and this is the sixth of that family.
+    #[test]
+    fn a_gap_in_the_log_is_said_repaired_and_counted() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        assert_eq!(a.gaps, 0, "a head that has missed nothing says zero");
+
+        // Two events are lost on the socket: 2 and 3 never arrive, and 4 does.
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::delta("t1", "the answer to a prompt this head never saw"),
+        )));
+        assert_eq!(a.gaps, 1, "the gap is counted");
+        assert_eq!(a.seq, 4, "and the read mark still follows what was read");
+        // **Said in the conversation**, where it scrolls with everything else, and
+        // naming the range so two gaps are two lines rather than one deduped one.
+        let notes = a.notes_lines().join("\n");
+        assert!(notes.contains("log_gap"), "nothing said the gap: {notes}");
+        assert!(notes.contains("2..3"), "the lost seqs are not named: {notes}");
+        // **And repaired.** A resync is the one thing that can put the head back in
+        // step, and the head cannot do it itself: the daemon owns the transcript.
+        assert!(
+            a.queued.iter().any(|x| matches!(x, Action::Resync)),
+            "the gap was noted and not repaired"
+        );
+
+        // A second gap is a second line, not the first one restated.
+        a.apply(ServerFrame::Event(env(9, testing::delta("t1", "later"))));
+        assert_eq!(a.gaps, 2);
+        let notes = a.notes_lines().join("\n");
+        assert!(notes.contains("5..8"), "{notes}");
+
+        // **Continuity is silent.** Ten events in a row say nothing at all, which is
+        // the property that makes the line worth reading when it does appear.
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        for seq in 1..=10 {
+            a.apply(ServerFrame::Event(env(seq, testing::turn_started("t1"))));
+        }
+        assert_eq!(a.gaps, 0);
+        assert!(a.notes.is_empty(), "{:?}", a.notes);
+        // And it is on the status screen, beside the five counters it belongs with.
+        // A tall frame: `/status` is a long list and the row has to be reached rather
+        // than scrolled for in a test.
+        a.command("status");
+        let status = a.screen(100, 100).join("\n");
+        assert!(status.contains("gaps"), "no gap row on /status: {status}");
+    }
+
+    /// **R17's other two numbers: a body with no row, and a daemon that is ahead.**
+    ///
+    /// `gaps` is the wire losing events. These are the two that look identical to it
+    /// from inside and are not it:
+    ///
+    /// * **`orphan_bodies`** — the row was announced, a snapshot replaced the rows
+    ///   without it, and its words arrive with nowhere to go. `record_item` used to
+    ///   `return` in silence, which is why the trailer of a lost row was that there
+    ///   was no trailer. The row is not in `items`, so there is not even a
+    ///   placeholder to notice; this count is the whole of what is left of it.
+    /// * **`behind`** — nothing is lost and nothing is orphaned, and the head is not
+    ///   current: the events are in a queue, on a socket, or in this head's own
+    ///   channel. This is the state the operator measured from outside on 2026-09-22
+    ///   and could not name, and it is the reason a screen cannot be trusted to say
+    ///   whether the session has gone quiet or the head has stopped being told.
+    #[test]
+    fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+
+        // A body for a row this head never had: counted, said, and drawn nowhere —
+        // there is nothing to draw it on.
+        a.record_item(
+            "s.gone",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "a prompt that fell out of a snapshot".into(),
+                }],
+            },
+        );
+        assert_eq!(a.orphan_bodies, 1);
+        let notes = a.notes_lines().join("\n");
+        assert!(notes.contains("orphan_body"), "{notes}");
+        assert!(
+            notes.contains("s.gone"),
+            "the note does not name the row: {notes}"
+        );
+        // **And it is not in the conversation**, because there is no row for it.
+        let screen = a.screen(100, 40).join("\n");
+        assert!(
+            !screen.contains("a prompt that fell out of a snapshot"),
+            "a body with no row was drawn anyway: {screen}"
+        );
+
+        // **A daemon that answers from further along than this head has read.** The
+        // head is at seq 1 and the command's effect is visible at 9, so eight events
+        // are in flight and none are lost — the head is behind, which is a different
+        // fact and is why it is a different number.
+        a.apply(ServerFrame::Accepted {
+            client_request_id: "r1".into(),
+            seq: 9,
+            note: letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED.into(),
+        });
+        assert_eq!(a.behind, 8, "the distance the daemon stated was not kept");
+        assert_eq!(a.gaps, 0, "being behind is not a gap, and must never move it");
+        assert!(
+            !a.queued.iter().any(|x| matches!(x, Action::Resync)),
+            "being behind is not a reason to resync"
+        );
+
+        // A redelivery — a seq at or below this head's own — is not a distance.
+        a.apply(ServerFrame::Accepted {
+            client_request_id: "r2".into(),
+            seq: 1,
+            note: letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED.into(),
+        });
+        assert_eq!(a.behind, 0);
+    }
+
     /// **A refusal the harness made is one dim line, not a wall in red.**
     ///
     /// The operator's report, about a `bash` one-liner the normaliser could not
@@ -13009,7 +13338,7 @@ mod tests {
             a.notes
         );
         a.command("status");
-        let status = a.screen(120, 60).join("\n");
+        let status = a.screen(120, 72).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
@@ -13067,7 +13396,10 @@ mod tests {
         assert!(!a.should_quit());
         // `/status` names the direction too, and has it after the note has scrolled away.
         a.command("status");
-        let status = a.screen(120, 60).join("\n");
+        // **Taller than it was**: `/status` gained three rows in R17 (gaps, behind,
+        // orphan), and a fixed-height frame that used to reach the bottom of the list
+        // no longer does.
+        let status = a.screen(120, 72).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
