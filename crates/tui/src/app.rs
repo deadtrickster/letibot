@@ -464,6 +464,67 @@ struct JobOut {
     error: Option<String>,
 }
 
+/// **The daemon connection, as far as this head can tell.**
+///
+/// A head's socket to its daemon goes away for ordinary reasons — the daemon is
+/// restarted, the box is shut down for a moment, a `--stop` lands — and the head's job
+/// is to keep drawing the session it already has, say that the link is down, and keep
+/// trying to get it back. It is **not** to exit: exiting takes the operator's view of a
+/// conversation that is still on disk and could still be served.
+///
+/// Two states, and the second is the whole point: `Reconnecting` is a *state the screen
+/// shows* rather than a moment between frames. It carries when the link went down, so
+/// the head can say how long it has been trying rather than "reconnecting…" for ever,
+/// and it carries the last thing known about why.
+///
+/// It is deliberately **not** the same thing as a `Bye`. A `Bye` is the daemon saying it
+/// is finished with this connection — a refusal, a version skew, a shutdown — and the
+/// head leaves with the reason on the screen. That is leticl's rule, and it was learned
+/// there the expensive way: it dropped only its `connected` flag on a `Bye` and
+/// re-attached two seconds later, for ever, so a refusal the daemon meant as the end of
+/// the conversation became a two-second loop under a head that never attached and never
+/// exited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Link {
+    Attached,
+    /// Down, and the caller is retrying. `attempts` counts the tries made since it went
+    /// down; `since_ms` is this head's own clock, so `now - since_ms` is how long the
+    /// operator has been without a daemon.
+    Reconnecting {
+        since_ms: u64,
+        attempts: u32,
+        /// The last thing known about why: the io error, the pump going away, or the
+        /// refusal from the last attempt to connect.
+        why: String,
+        /// No attempt before this, on the head's own clock. The backoff lives here
+        /// rather than in the caller so a test can drive it with `clock`.
+        next_try_ms: u64,
+    },
+}
+
+impl Link {
+    pub fn is_down(&self) -> bool {
+        matches!(self, Link::Reconnecting { .. })
+    }
+}
+
+/// How long between attempts to get back, in milliseconds.
+///
+/// **Flat, and the same number leticl uses.** A daemon that is coming back is back in
+/// well under a second, and one that is gone costs one connect to a socket path — one
+/// syscall — every two seconds. Growing the interval would be an optimisation of
+/// nothing, and it would make the thing the operator watches move less often than the
+/// thing they are waiting for.
+pub const RECONNECT_BACKOFF_MS: u64 = 2_000;
+
+/// When a head with no daemon stops saying `reconnecting` and starts saying how long,
+/// and what the operator can do about it.
+///
+/// Under it a drop is usually over before the sentence is read; over it the wait is not
+/// a moment, and a head that has been saying the same word at the operator for a minute
+/// has told them nothing they could not see for themselves.
+pub const LINK_IMPATIENT_MS: u64 = 15_000;
+
 /// line. See `crates/ui/DESIGN.md` §2.3.
 #[derive(Debug, Clone)]
 struct CallRow {
@@ -1146,6 +1207,12 @@ pub struct App {
     /// `sessionlog` rather than here because the sentence belongs to the protocol and
     /// every head has to say the same one.
     daemon_protocol: Option<u32>,
+    /// **The daemon connection, as far as this head can tell.** See [`Link`].
+    ///
+    /// Kept on the head rather than in the driver because it is a fact the *screen*
+    /// shows: a head with no daemon draws the conversation it has, plus a line saying
+    /// the connection is down and for how long.
+    link: Link,
     /// True between taking the screen and the daemon's `Hello` arriving.
     ///
     /// The `Hello` **carries the whole snapshot**, so `HeadClient::attach` is a round
@@ -1581,6 +1648,7 @@ impl App {
             last_event_at: 0,
             body_len: 0,
             attaching: false,
+            link: Link::Attached,
             daemon_protocol: None,
             attach_started_ms: 0,
             cursor: None,
@@ -1744,6 +1812,190 @@ impl App {
         Disposition::Control
     }
 
+    /// **The daemon connection has gone.** Called by the driver when a write fails or
+    /// when the pump's channel closes, and by the caller when a reconnect attempt
+    /// fails.
+    ///
+    /// Idempotent, and that matters: the two ways it is noticed arrive together — the
+    /// socket EOFs and the pump dies, so the reader sees `Disconnected` while a write
+    /// in the same pass fails too — and the elapsed time is measured from the *first*
+    /// report rather than from the last, so the sentence does not keep starting over.
+    ///
+    /// A head that is going away does not reconnect, and neither does one that is
+    /// already on its way out: a `Bye` and a `/quit` both arrive mid-pass, and turning
+    /// either into a two-second retry loop is how leticl made a refusal unescapable.
+    pub fn link_down(&mut self, why: &str) {
+        if self.quit || self.bye.is_some() {
+            return;
+        }
+        if self.link.is_down() {
+            // Already known: refresh the reason if this report has one and keep the
+            // clock. Both reports are true; the first is the more useful clock.
+            if let Link::Reconnecting { why: known, .. } = &mut self.link
+                && !why.is_empty()
+            {
+                *known = why.to_string();
+            }
+            return;
+        }
+        self.link = Link::Reconnecting {
+            since_ms: self.now_ms,
+            attempts: 0,
+            why: why.to_string(),
+            next_try_ms: self.now_ms.saturating_add(RECONNECT_BACKOFF_MS),
+        };
+        self.redraw = true;
+    }
+
+    /// **Whether the caller should try to get back now**: the link is down and the
+    /// backoff has passed.
+    ///
+    /// The timing lives on the head because the head has the clock, and because a
+    /// caller that kept its own would be a second copy of a rule about how often to
+    /// retry.
+    pub fn should_reconnect(&self) -> bool {
+        matches!(&self.link, Link::Reconnecting { next_try_ms, .. } if self.now_ms >= *next_try_ms)
+    }
+
+    /// **An attempt to get back is out.** Called by the caller the moment it has opened
+    /// a socket and sent its `ATTACH`, so the head does not try again while an answer is
+    /// in flight.
+    ///
+    /// This is not an optimisation, it is what stops the retry from eating its own
+    /// answer: an `ATTACH` goes out on a *live* socket and the `Hello` comes back a
+    /// moment later, and a loop that asked `should_reconnect` between those two would
+    /// open a second socket and — to open it — close the first, which is the one about
+    /// to be answered. Found by the end-to-end test, which deadlocked on it.
+    ///
+    /// It pushes the window out without counting an attempt: a socket that opened is not
+    /// a failure, and the `Hello` either arrives (the link goes up) or the backoff passes
+    /// and this tries again.
+    pub fn reconnect_sent(&mut self) {
+        if let Link::Reconnecting { next_try_ms, .. } = &mut self.link {
+            *next_try_ms = self.now_ms.saturating_add(RECONNECT_BACKOFF_MS);
+        }
+    }
+
+    /// An attempt to get back has failed, and this is the last thing it said. Counted,
+    /// so the sentence can say how many times the head has tried — a head that has tried
+    /// forty times and one that has tried once are in different situations, and "still
+    /// reconnecting…" says neither.
+    pub fn reconnect_failed(&mut self, why: &str) {
+        if let Link::Reconnecting {
+            attempts,
+            why: known,
+            next_try_ms,
+            ..
+        } = &mut self.link
+        {
+            *attempts += 1;
+            *known = why.to_string();
+            *next_try_ms = self.now_ms.saturating_add(RECONNECT_BACKOFF_MS);
+            self.redraw = true;
+        }
+    }
+
+    /// **The daemon is back** — the `Hello` is what says so, because it is the frame
+    /// that seats this connection.
+    ///
+    /// Returns the sentence rather than filing it, and the caller is why: this runs
+    /// inside the `Hello` arm, and the very next thing that arm does is fold in the
+    /// snapshot — which **replaces `self.notes` wholesale**, a snapshot's warnings being
+    /// the head's whole warning history. A note filed here would be thrown away, which is
+    /// how the first version of this said nothing at all. Same shape, same reason, as
+    /// `letibot_sessionlog::protocol_skew`'s sentence in the same arm.
+    ///
+    /// The sentence carries the seq the head asked from, so "where it picks up" is a
+    /// number and not a promise. `None` when nothing was down, so the `Hello` a `Switch`
+    /// produces says nothing.
+    fn link_up(&mut self) -> Option<String> {
+        let Link::Reconnecting {
+            since_ms, attempts, ..
+        } = self.link.clone()
+        else {
+            return None;
+        };
+        let out = self.now_ms.saturating_sub(since_ms);
+        // Only when there *were* failed attempts: the ordinary reconnect succeeds on
+        // its first try, and `(...4.4s ().)` with nothing in the brackets is a head
+        // saying a number where there is none.
+        let tries = if attempts == 0 {
+            String::new()
+        } else {
+            format!(
+                " ({} attempt{})",
+                attempts,
+                if attempts == 1 { "" } else { "s" }
+            )
+        };
+        self.link = Link::Attached;
+        self.redraw = true;
+        Some(format!(
+            "the daemon is back after {}{tries}. Resuming from seq {} — anything the \
+             daemon has for me in the gap arrives as events, or as a resync if it is \
+             larger than the daemon still holds.",
+            dur_human(out),
+            self.seq,
+        ))
+    }
+
+    /// A command the operator (or a frame) produced did not leave, because there is no
+    /// daemon to send it to. Said once per batch: the alternative is one sentence per
+    /// action, and the batch is usually one action.
+    pub fn refused_while_detached(&mut self) {
+        self.say("no daemon connection — that did not go out");
+        self.redraw = true;
+    }
+
+    /// Whether the link to the daemon is down. What the screen asks before it draws the
+    /// detached line, and what `submit` asks before it turns a line into a prompt.
+    pub fn detached(&self) -> bool {
+        self.link.is_down()
+    }
+
+    /// **The line a head with no daemon draws**, above the composer and under nothing.
+    ///
+    /// A resident line rather than a note, and the distinction is the requirement: a
+    /// note is anchored to a place in the conversation and scrolls away with it, while
+    /// this is a *state* — it is true until it is not, and a head that had said it once,
+    /// at the top of the scrollback, would be saying nothing about right now. That is
+    /// the same argument the stuck line makes, one level up: this is why the turn went
+    /// quiet.
+    ///
+    /// Past [`LINK_IMPATIENT_MS`] it stops saying `reconnecting` and starts saying how
+    /// long, how many tries, and what the operator can do — because at that point the
+    /// wait is not going to end on its own, and a person staring at a head that says
+    /// `reconnecting` has no way to tell a quarter of a second from an afternoon.
+    fn link_line(&self, w: usize) -> Vec<String> {
+        let Link::Reconnecting {
+            since_ms,
+            attempts,
+            why,
+            ..
+        } = &self.link
+        else {
+            return Vec::new();
+        };
+        let out = self.now_ms.saturating_sub(*since_ms);
+        let impatient = out >= LINK_IMPATIENT_MS;
+        let said = if impatient {
+            format!(
+                "the daemon connection is down — trying for {} ({} attempt{}). If the \
+                 daemon is gone: `letibot` starts one and `letibot --status` says what is \
+                 on the socket. This head keeps trying either way.",
+                dur_human(out),
+                attempts,
+                if *attempts == 1 { "" } else { "s" },
+            )
+        } else {
+            format!("the daemon connection is down — reconnecting. {why}")
+        };
+        wrap(&format!("⚠ {said}"), w)
+            .into_iter()
+            .map(|l| colour(&self.cfg, sgr::YELLOW, &l))
+            .collect()
+    }
+
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
@@ -1784,6 +2036,12 @@ impl App {
                 // head will report and skip, an older one means the next command the two
                 // do not share ends the session.
                 self.daemon_protocol = Some(protocol_version);
+                // **The `Hello` is what says the link is back.** It is the frame that
+                // seats this connection, so it is the only honest answer to "are we
+                // attached" — a socket that accepts and then says nothing is not.
+                // `link_up` is a no-op when nothing was down, which is every ordinary
+                // attach and the second `Hello` a `Switch` produces.
+                let reattached = self.link_up();
                 let mut skew_said = None;
                 if let Some(said) = letibot_sessionlog::protocol_skew(
                     protocol_version,
@@ -1838,6 +2096,13 @@ impl App {
                 if let Some(said) = skew_said {
                     self.note(Note::Warned(Warned {
                         code: "protocol_skew".into(),
+                        detail: said,
+                        ts: 0,
+                    }));
+                }
+                if let Some(said) = reattached {
+                    self.note(Note::Warned(Warned {
+                        code: "reattached".into(),
                         detail: said,
                         ts: 0,
                     }));
@@ -4213,6 +4478,33 @@ impl App {
             self.say("this ask offers no options — your line is held");
             return None;
         }
+        // **A line typed into a head with no daemon must not look sent.**
+        //
+        // This is the one place where a detached head could lie quietly. Everything else
+        // a key does is local — it moves a cursor, opens a pane, folds a block — but a
+        // submit is the head taking the operator's words on the promise that something
+        // will read them, and with no daemon nothing will. The failure mode without
+        // this guard is the worst of the three: `submit` pushes the echo into
+        // `pending_prompts`, the write fails, the conversation shows `queued · <their
+        // words>` and the operator believes it was sent — and it is not queued anywhere,
+        // so when the daemon comes back the sentence is simply gone, having been shown as
+        // held.
+        //
+        // So: **refused, with the words put back where they were.** `set_composer`
+        // restores the text the editor handed over on Enter — without it the refusal
+        // would clear the field, which loses the sentence just as thoroughly as sending
+        // it nowhere would — and pressing enter again once the daemon is back sends it
+        // unchanged. Nothing is pushed to `pending_prompts`, so nothing can be shown as
+        // queued and then evaporate.
+        if self.detached() {
+            self.set_composer(&text);
+            self.say(
+                "no daemon connection — your line is held here. It sends when the daemon \
+                 is back.",
+            );
+            self.redraw = true;
+            return None;
+        }
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
@@ -5355,6 +5647,11 @@ impl App {
             (None, None) => Vec::new(),
         };
         let dec_full = dec.len();
+        // **The link line.** Read here with the other chrome rather than in the body: it
+        // is a state of the connection, not a row of the conversation, and it belongs
+        // where the eye crosses on the way to the composer — the same place the stuck
+        // line and a stuck decision card sit.
+        let link = self.link_line(w);
         let stuck = self.stuck_line(w);
         let notice = self
             .notice
@@ -5384,6 +5681,7 @@ impl App {
                 + usize::from(show_stuck)
                 + usize::from(show_notice)
                 + usize::from(show_completions)
+                + link.len()
                 // Unboxed costs one row **only when there is an alarm to show**:
                 // the counters move off the border and back onto a line of their
                 // own, and a counter that has moved is not what a narrow screen
@@ -5415,6 +5713,11 @@ impl App {
 
         let (input_rows, caret_row, caret_col) = self.composer_rows(w, rows, boxed);
         let mut chrome: Vec<String> = Vec::new();
+        // **A head with no daemon says so first**, ahead of the `allow-all`
+        // confirmation and ahead of the decision card: it is the reason every other
+        // line on the screen is not moving, and a person who reads the card without
+        // it reads a question nothing is waiting on.
+        chrome.extend(link);
         // **The `allow-all` confirmation sits at the front of the chrome**, above
         // the decision card and the composer, because while it is up every key
         // belongs to it (see `key`) and a question that owns the keyboard has to be
@@ -5722,6 +6025,12 @@ impl App {
             // a third press now CLOSES it. A hint that names the wrong key is
             // worse than none.
             "1/2 or ↑↓ then enter · esc stays"
+        } else if self.detached() {
+            // **The one thing the keys cannot do while the link is down**, said where the
+            // keys are described: enter is held rather than sent. Everything else on this
+            // bar still works, which is the point of keeping the head up — reading the
+            // session, folding, scrolling, /status.
+            "no daemon connection · enter holds your line · this head keeps trying"
         } else if self.help || self.stats {
             "esc closes this"
         } else if self.picker {
@@ -12087,6 +12396,195 @@ mod tests {
             ));
         }
         assert_eq!(a.notes.len(), 1, "said three times: {:?}", a.notes);
+    }
+
+    /// **A head whose daemon goes away says so, keeps its screen, and does not exit.**
+    ///
+    /// The defect this is against: `client.ack(...)?` propagated out of the driver's
+    /// loop, through `main`, and the process was gone — the operator's view of a
+    /// conversation that was still on disk, taken with a socket that had merely been
+    /// closed. The half a test can hold on this side is the head's: the *state* is on
+    /// the head, the conversation is not cleared, the line says what happened, and a
+    /// prompt typed at it is refused rather than shown as sent.
+    #[test]
+    fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(testing::delta("t1", "the answer I already have"));
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        let before = a.screen(100, 24).join("\n");
+        assert!(before.contains("the answer I already have"), "{before}");
+
+        // The socket goes: the reader notices, and says what it can.
+        a.link_down("the daemon closed the connection");
+        assert!(a.detached());
+        assert!(
+            !a.should_quit(),
+            "a dropped socket is not a reason to leave"
+        );
+
+        // **The screen it had is still the screen it has.** The transcript is not
+        // cleared, the turn is not forgotten, and nothing is redrawn as if the session
+        // had ended — plus one line saying what is wrong, above the composer where the
+        // eye crosses on the way to typing.
+        let after = a.screen(100, 24).join("\n");
+        assert!(
+            after.contains("the answer I already have"),
+            "the conversation was taken away: {after}"
+        );
+        assert!(
+            after.contains("daemon connection is down"),
+            "nothing said the link was down: {after}"
+        );
+        assert!(after.contains("reconnecting"), "{after}");
+        // And the keys still work: this is a head, not a corpse.
+        assert!(!after.contains("esc closes this"), "{after}");
+
+        // **A line typed here must not look sent.** The trap is the echo: `submit`
+        // pushes it into `pending_prompts`, the screen draws `queued · <their words>`,
+        // and there is no queue anywhere — so when the daemon comes back the sentence is
+        // gone and it was on the screen as held the whole time.
+        typed(&mut a, "did that go anywhere?");
+        assert_eq!(a.key(Key::Enter), None, "nothing may leave a dead link");
+        assert!(
+            a.pending_prompts.is_empty(),
+            "shown as queued with no queue behind it: {:?}",
+            a.pending_prompts
+        );
+        let said = a.notice.clone().unwrap_or_default();
+        assert!(said.contains("no daemon connection"), "{said}");
+        // The words are still theirs, in the field they typed them into.
+        assert_eq!(a.input(), "did that go anywhere?");
+
+        // **The daemon comes back, and the recovery is the protocol's own.** The `Hello`
+        // is what says the link is up — it is the frame that seats the connection — and
+        // it says so into the conversation, with the seq it asked from, because the gap
+        // is about to be filled with events and unexplained events are noise.
+        a.clock(1_000 + 4_400);
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        assert!(!a.detached());
+        let back = a.screen(100, 24).join("\n");
+        assert!(!back.contains("daemon connection is down"), "{back}");
+        assert!(back.contains("daemon is back after 4.4s"), "{back}");
+        assert!(back.contains("Resuming from seq"), "{back}");
+        // The ordinary reconnect succeeds on its first try, so there is no attempt count
+        // to show — and the sentence must not show an empty one.
+        assert!(
+            back.contains("the daemon is back after 4.4s."),
+            "no empty brackets: {back}"
+        );
+    }
+
+    /// **`reconnecting…` is a state with a clock, not a word.**
+    ///
+    /// Under the impatient threshold the line says what happened; past it the operator is
+    /// told how long, how many attempts, and what they can do — because a head that has
+    /// been saying one word for a minute has told them nothing they could not see, and is
+    /// indistinguishable from a head that is about to come back.
+    #[test]
+    fn a_link_that_stays_down_stops_saying_reconnecting_and_starts_saying_how_long() {
+        let mut a = app();
+        a.clock(1_000);
+        a.link_down("the daemon closed the connection");
+
+        // Twelve seconds in: still "reconnecting", and no advice yet — under the
+        // threshold a drop is usually over before the sentence is read.
+        a.clock(13_000);
+        let soon = a.screen(120, 24).join("\n");
+        assert!(soon.contains("reconnecting"), "{soon}");
+        assert!(
+            !soon.contains("letibot --status"),
+            "advice nobody needs yet: {soon}"
+        );
+
+        // Past it: the elapsed time, the attempts, and the two commands that answer
+        // "is the daemon gone".
+        a.clock(1_000 + LINK_IMPATIENT_MS + 1);
+        a.reconnect_failed("connection refused");
+        a.reconnect_failed("connection refused");
+        let mut a2 = a;
+        a2.clock(1_000 + 72_000);
+        let long = a2.screen(120, 24).join("\n");
+        assert!(long.contains("trying for 1m12s"), "{long}");
+        assert!(long.contains("2 attempts"), "{long}");
+        assert!(long.contains("letibot --status"), "{long}");
+        assert!(
+            long.contains("keeps trying"),
+            "it must not read as having given up: {long}"
+        );
+
+        // And when it *does* get back after those two failures, the count is shown —
+        // once, in brackets, not an empty pair.
+        a2.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let up = a2.screen(120, 24).join("\n");
+        assert!(
+            up.contains("daemon is back after 1m12s (2 attempts)"),
+            "{up}"
+        );
+    }
+
+    /// **The backoff is the head's, and it is flat.** A caller asks once per pass and the
+    /// head answers whether the two seconds are up; two attempts inside one window would
+    /// be a busy loop against a socket that is not there.
+    #[test]
+    fn the_head_asks_for_a_reconnect_only_after_the_backoff() {
+        let mut a = app();
+        a.clock(1_000);
+        assert!(!a.should_reconnect(), "attached heads reconnect never");
+        a.link_down("the daemon closed the connection");
+        assert!(
+            !a.should_reconnect(),
+            "the first attempt waits out the same backoff"
+        );
+        a.clock(1_000 + RECONNECT_BACKOFF_MS);
+        assert!(a.should_reconnect());
+
+        // A failed attempt pushes the window out again and counts itself.
+        a.reconnect_failed("connection refused");
+        assert!(!a.should_reconnect());
+        a.clock(1_000 + RECONNECT_BACKOFF_MS + RECONNECT_BACKOFF_MS);
+        assert!(a.should_reconnect());
+        let drawn = a.screen(120, 24).join("\n");
+        assert!(drawn.contains("connection refused"), "{drawn}");
+    }
+
+    /// **A `Bye` is final and a dropped socket is not.** The daemon saying goodbye is the
+    /// end of the conversation — a refusal, a skew, a shutdown — and the head leaves with
+    /// the reason on it. Turning that into a retry is leticl's measured defect: a refusal
+    /// the daemon meant as final became a two-second loop under a head that never
+    /// attached and never exited.
+    #[test]
+    fn a_bye_leaves_and_never_looks_like_a_link_to_reconnect() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Bye {
+            reason: "protocol version 19, this daemon speaks 22".into(),
+        });
+        assert!(a.should_quit(), "a goodbye is the end");
+        assert_eq!(
+            a.farewell().map(str::to_string),
+            Some("protocol version 19, this daemon speaks 22".into()),
+            "and the reason outlives the screen"
+        );
+        // The pump dies right after the `Bye`, and the driver reports that as well: it
+        // must not turn a head that is leaving into one that is reconnecting.
+        a.link_down("the daemon closed the connection");
+        assert!(!a.detached(), "a head on its way out does not reconnect");
+        assert!(
+            a.screen(100, 24)
+                .join("\n")
+                .contains("daemon: protocol version")
+        );
     }
 
     #[test]
@@ -19503,4 +20001,3 @@ mod tests {
         assert!(a.jobs.is_empty(), "another session's table was folded in");
     }
 }
-

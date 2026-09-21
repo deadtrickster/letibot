@@ -546,6 +546,22 @@ impl HeadClient {
         self.writer.write(&ClientFrame::Detach)?;
         Ok(())
     }
+
+    /// **Make the reader's `read` return at once.**
+    ///
+    /// A reader blocked in `read` on a socket is woken by data, by EOF, or by nothing at
+    /// all — and a daemon that is merely idle sends none of those. So a caller that has
+    /// to *wait* for its reader thread has to end the read itself, or a `join` on a live
+    /// connection is a hang rather than a wait. Measured: `Link::close` did exactly that,
+    /// and the end-to-end reconnect test deadlocked on it.
+    ///
+    /// `Shutdown::Both` rather than `Read`: this leaves the socket unusable on purpose —
+    /// the caller is done with it — and shutting both directions is what makes the
+    /// reader's clone report EOF.
+    pub fn shut_down(&mut self) -> Result<(), ClientError> {
+        self.writer.get_mut().shutdown(std::net::Shutdown::Both)?;
+        Ok(())
+    }
 }
 
 /// What the pump hands a head: a frame, or a line this build could not read.

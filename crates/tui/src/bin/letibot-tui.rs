@@ -16,15 +16,14 @@
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, Unreadable, pump};
+use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::Envelope;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::default_socket_path;
-use letibot_sessionlog::wire::WireError;
 use letibot_sessionlog::{SessionBrief, testing};
 
 use letibot_tui::app::App;
-use letibot_tui::driver::tick;
+use letibot_tui::driver::Link;
 use letibot_tui::render::{Budget, RenderConfig};
 use letibot_tui::term::Terminal;
 
@@ -166,13 +165,6 @@ fn main() {
 /// with no screen telling them so. Long enough for a slow snapshot, short enough that a
 /// hung daemon is reported rather than endured.
 const ATTACH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// After this long with no answer, the waiting frame says how to get out.
-///
-/// Under it the cat is just a cat and the wait usually ends in a few hundred
-/// milliseconds; over it something is wrong and the operator should be told that the
-/// escape hatch exists rather than discovering it.
-const ATTACH_IMPATIENT: u64 = 2_000;
 
 /// **Is there a daemon here, and does it speak this build's protocol?**
 ///
@@ -564,55 +556,22 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     };
     // **The handshake goes to a thread, and the cat walks while it waits.**
     //
-    // `HeadClient::attach` blocks on a `Hello` that carries the whole snapshot, so on
-    // a big session this is a real wait. Doing it in the foreground is what made the
-    // whole attach invisible until it was over; on a thread, the screen is up
-    // immediately and the wait is *shown*.
+    // A `Hello` carries the whole snapshot, so on a big session this is a real wait.
+    // The reader thread starts inside `Link::open` and the first frame it hands over is
+    // the `Hello`, so the wait below is an ordinary read on an ordinary channel — which
+    // is also what makes a *re*-attach look like the first one: same frame, same path.
     //
     // The Attach is sent here rather than on the thread, so a refused attach — the
     // protocol-skew case the launcher refuses to route around — is known before
     // anything is drawn, and a head that cannot attach never claims the screen. A
     // *socket* error is still only discoverable on the connect, so this reports one.
-    let (mut client, mut reader) = HeadClient::start_attach(
+    let mut link = Link::open(
         &args.socket,
         &args.session,
         args.since,
         "tui",
         &args.identity,
-        Caps::default(),
     )?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    let hello_tx = tx.clone();
-    let pump_thread = std::thread::spawn(move || {
-        // The first frame is the `Hello`; hand it over and then keep pumping, so the
-        // channel's first message is the answer the caller is waiting for and the
-        // rest are the ordinary stream.
-        match reader.read::<ServerFrame>() {
-            Ok(h) => {
-                let bye = matches!(h, ServerFrame::Bye { .. });
-                if hello_tx.send(Inbound::Frame(h)).is_err() || bye {
-                    return;
-                }
-            }
-            // **A first frame that will not parse is said, not swallowed.** This used
-            // to be `Err(_) => return`, and the caller then reported *"the daemon
-            // closed the connection before answering"* — which was false: the
-            // connection was up and the daemon had answered, in a frame this build
-            // could not read. That is a version skew, and a head that names it is how
-            // the operator learns to restart the daemon rather than to file a bug
-            // against the wrong half.
-            //
-            // Fatal here and only here: without a `Hello` there is no session, so
-            // there is nothing to stay attached to. The `Unreadable` travels on the
-            // same channel as the frames, so the caller sees one message either way.
-            Err(WireError::Malformed { line, detail }) => {
-                let _ = hello_tx.send(Inbound::Unreadable(Unreadable { line, detail }));
-                return;
-            }
-            Err(_) => return,
-        }
-        pump(reader, hello_tx);
-    });
 
     if let Some(t) = &term {
         app.begin_attach_at(now_ms());
@@ -641,13 +600,13 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     // gives up, and the frame says so once the wait has gone on long enough to be worth
     // a sentence.
     let hello: Option<Inbound> = match &term {
-        None => rx.recv().ok(),
+        None => link.frames().recv().ok(),
         Some(t) => {
             let started = Instant::now();
             let deadline = started + ATTACH_WAIT;
             let mut got = None;
             loop {
-                match rx.recv_timeout(Duration::from_millis(120)) {
+                match link.frames().recv_timeout(Duration::from_millis(120)) {
                     Ok(f) => {
                         got = Some(f);
                         break;
@@ -694,7 +653,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     if let ServerFrame::Bye { reason } = &hello {
         return Err(ClientError::Refused(reason.clone()).into());
     }
-    client.seated_by(&hello);
+    link.seated_by(&hello);
 
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for
@@ -716,7 +675,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                     println!("{l}");
                 }
             };
-            tick(&mut app, &rx, &mut client, (100, 40), &[], &mut sink)?;
+            link.tick(&mut app, (100, 40), &[], &mut sink);
         }
         Some(term) => {
             let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
@@ -726,13 +685,33 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                 if app.take_redraw() {
                     term.invalidate();
                 }
-                tick(&mut app, &rx, &mut client, size, &keys, &mut draw)?;
+                link.tick(&mut app, size, &keys, &mut draw);
+                // **Getting back is this loop's job, because the socket is this
+                // layer's.** The head knows *that* the link is down and how long it
+                // has been; only here is there a socket path to open and a `Link` to
+                // replace. `app.seq` is the read mark, which is what makes the new
+                // `ATTACH` a resume: the daemon answers the gap with events, or with a
+                // `Resync` when the gap is larger than it still holds.
+                //
+                // The attempt is not waited on: the `ATTACH` goes out here and the
+                // `Hello` arrives on the pump like any other frame, so the head keeps
+                // drawing — and keeps taking keys — through the whole recovery.
+                if app.should_reconnect() {
+                    match link.reconnect(&args.socket, app.seq) {
+                        // **The attempt is out, so the head waits for its answer.** The
+                        // `ATTACH` is on a live socket and the `Hello` is a moment away;
+                        // asking again in the meantime would open a second socket and
+                        // close the first, which is the one about to be answered.
+                        Ok(()) => app.reconnect_sent(),
+                        // Said and counted, then tried again after the backoff. A
+                        // `Err` here is the socket nobody is listening on yet.
+                        Err(e) => app.reconnect_failed(&e.to_string()),
+                    }
+                }
             }
         }
     }
-    let _ = client.detach();
-    drop(client);
-    let _ = pump_thread.join();
+    link.detach();
     // **After the terminal is back**, because this is the one message that must
     // outlive the screen: the alternate screen has been torn down by now, so a
     // reason said into the transcript is gone and the head looks like it crashed.
