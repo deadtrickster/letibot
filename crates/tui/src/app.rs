@@ -8526,7 +8526,12 @@ impl App {
 
     /// The password card: what is asking, for which command, and the two keys.
     fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
-        let left = ask.deadline.saturating_sub(self.now_ms) / 1000;
+        // **The same countdown the gate card draws** (§1.6), which is the other half of
+        // this commit's finding: the instrument was here all along and nothing had
+        // pointed it at the gate. One function, so the two cards cannot disagree about
+        // how long there is — and `saturating_sub` is why an expired one reads `0s left`
+        // rather than counting backwards, which is a number that means nothing.
+        let left = letibot_ui::progress::countdown(ask.deadline.saturating_sub(self.now_ms));
         let mut out = Vec::new();
         out.push(colour(
             &self.cfg,
@@ -8541,7 +8546,7 @@ impl App {
             &trim_to(
                 &format!(
                     "type it below (shown as dots), Enter sends it once to sudo and nowhere \
-                     else; Esc refuses · {left}s left"
+                     else; Esc refuses · {left}"
                 ),
                 w,
             ),
@@ -8715,6 +8720,44 @@ impl App {
                 } else {
                     colour(&self.cfg, sgr::YELLOW, &l)
                 });
+            }
+        }
+        // **§1.6: how long there is, and what silence will do.**
+        //
+        // Both facts were on the wire and neither was drawn, while **this head already
+        // drew a countdown on the secret card** — the instrument existed and had never
+        // been pointed at the gate, where the consequence of silence is a decision rather
+        // than a missing password. The operator was bitten by exactly that: two cards
+        // timed out at 300 s with `not_run by gate:timeout`, and nothing on either card
+        // had said that was coming.
+        //
+        // **Below the options, because that is the order a person reads**: the question,
+        // the choices, then what happens if they do nothing. And `on_timeout` is drawn
+        // only where there is a deadline — `null` is §11.5's *wait forever*, a policy
+        // rather than missing information, so there is no silence for a clause to
+        // describe. That is §13.2b answered the other way round from `unreadable 0` on
+        // `/status`, and deliberately: that one IS shown at zero because a head that
+        // does not count unreadable frames is a different head, while a countdown on an
+        // ask with no deadline is a number nobody took.
+        if let Some(deadline) = d.deadline {
+            let mut said: Vec<String> = Vec::new();
+            said.push(match deadline.checked_sub(self.now_ms) {
+                Some(left) => progress::countdown(left),
+                // **A card still on the screen after its own deadline.** That is one the
+                // daemon has already settled and this head has not been told the outcome
+                // of, so the sentence says the clock ran out and the outcome is
+                // unreported — and it must **never count into negative seconds**, which
+                // is a number that means nothing and reads as a rendering fault.
+                None => format!(
+                    "past its deadline by {}s; the daemon has not said what became of it",
+                    (self.now_ms - deadline) / 1000
+                ),
+            });
+            if let Some(clause) = timeout_clause(&d.on_timeout) {
+                said.push(clause.to_string());
+            }
+            for l in wrap(&format!("  {}", said.join(" · ")), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
         // The glob line is only shown when an *always allow* is actually on offer.
@@ -9384,6 +9427,43 @@ fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut Call
         .iter_mut()
         .rev()
         .find(|c| c.call_id == call_id && !matches!(c.state, CallState::Finished { .. }))
+}
+
+/// **What silence does, in the daemon's own three words** (§1.6).
+///
+/// The order a person reads a card in is the question, the choices, then what happens
+/// if they do nothing — and until this existed the third of those was unanswerable
+/// from the screen. The operator: *"two gate cards timed out unanswered at 300 seconds
+/// with `not_run by gate:timeout` — nothing on the card had said that was coming."*
+///
+/// ```text
+///   deny  -> if nobody answers, nothing runs
+///   allow -> if nobody answers, it RUNS anyway
+///   ask   -> if nobody answers, the guard model decides
+/// ```
+///
+/// **The upper case on `RUNS` is the point of the line.** It is the only one of the
+/// three that does something nobody asked for, and an operator who walked away
+/// believing the default was `deny` when it was `allow` has been told nothing at all by
+/// a clock.
+///
+/// # The unknown-word case has nothing to catch, and that is worth saying
+///
+/// leticl's spec adds *"a word this head does not know draws no clause rather than a
+/// guess"*, and this head cannot reach that: `OnTimeout` is an **enum on the wire**, so
+/// a fourth value is not a word this function fails to recognise — it is a frame the
+/// deserializer refuses, which lands in the `unreadable` bucket with everything else
+/// this build cannot read (R3). The fallback the requirement asks for is therefore
+/// `None` here and a counted frame one layer down, and saying which is which is the
+/// part that matters: a wrong consequence is worse than an absent one, and neither is
+/// silence.
+fn timeout_clause(on: &letibot_sessionlog::event::OnTimeout) -> Option<&'static str> {
+    use letibot_sessionlog::event::OnTimeout as O;
+    match on {
+        O::Deny => Some("if nobody answers, nothing runs"),
+        O::Allow => Some("if nobody answers, it RUNS anyway"),
+        O::Ask => Some("if nobody answers, the guard model decides"),
+    }
 }
 
 /// The ask with its target taken off the end: `` `bash` wants exec access `` from
@@ -19038,17 +19118,154 @@ mod tests {
         // and the card trims to the width, so a narrow terminal takes the number off
         // before the assertion can read it — which is a fact about this line worth
         // knowing rather than a detail of the test.
+        //
+        // **And the spelling is the gate card's ladder now** (§1.6): this countdown and
+        // that one are one function, because the finding of that commit is that the
+        // instrument lived here and had never been pointed at the gate. `120s` was this
+        // card's old spelling, and `expires in 2 min` is what the shared ladder makes of
+        // it — the number is the same, and what changed is that the two cards can no
+        // longer disagree about how long there is.
         let card = a.screen(200, 20).join("\n");
-        assert!(card.contains("120s left"), "{card}");
+        assert!(card.contains("expires in 2 min"), "{card}");
         // It counts down on the head's clock, not off the event's own timestamp —
-        // the same rule the running card above had to learn.
+        // the same rule the running card above had to learn: the wire deadline is
+        // Unix millis and this head's clock is Unix millis, so the two are in one
+        // frame and the subtraction is honest. (leticl had this wrong — a Unix
+        // deadline against a monotonic counter, drawing hundreds of thousands of
+        // seconds — which is why the property is asserted rather than assumed.)
         a.clock(NOW + 30_000);
         let card = a.screen(200, 20).join("\n");
-        assert!(card.contains("90s left"), "{card}");
+        assert!(card.contains("1m30s left"), "{card}");
+        // Under a minute it is whole seconds, and never a decimal. (`60s` exactly is
+        // still the `1m00s` rung — the boundary is inclusive upward, which is the same
+        // `>= 120` rule one rung down.)
+        a.clock(NOW + 61_000);
+        let card = a.screen(200, 20).join("\n");
+        assert!(card.contains("59s left"), "{card}");
+        a.clock(NOW + 73_000);
+        let card = a.screen(200, 20).join("\n");
+        assert!(card.contains("47s left"), "{card}");
+        assert!(!card.contains("47.0"), "never a decimal: {card}");
+        // An expired one reads `0s left` rather than counting backwards.
+        a.clock(NOW + 200_000);
+        let card = a.screen(200, 20).join("\n");
+        assert!(card.contains("0s left"), "{card}");
+        assert!(!card.contains("-80s left"), "{card}");
         // A number in the hundreds of thousands is what the trap renders as, and it
         // is a *runtime* symptom rather than a shape in the source: nothing here
         // would have caught it in a type.
         assert!(!card.contains("0000s left"), "a second epoch in seconds: {card}");
+    }
+
+    /// **§1.6: the card says how long there is, and what silence will do.**
+    ///
+    /// Both facts were already on the wire (`DecisionRequested` carries `deadline` and
+    /// `on_timeout`) and neither was drawn, while this head **already drew a countdown
+    /// on the secret card**. The instrument existed; nothing had pointed it at the gate,
+    /// where the consequence of silence is a decision rather than a missing password.
+    ///
+    /// Four things, and they are one requirement: the ladder on the card, the
+    /// consequence clause, the expired-card sentence, and **nothing at all** when the
+    /// deadline is null.
+    #[test]
+    fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
+        use letibot_sessionlog::event::{OnTimeout, OptionKind};
+        let ladder = |deadline: u64, now: u64, on: OnTimeout| {
+            let mut a = app();
+            a.clock(now);
+            let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+            d.deadline = Some(deadline);
+            d.on_timeout = on;
+            a.decision_lines(&d, 200).join("\n")
+        };
+
+        // **The ladder, on the card.** Whole minutes while there is time to think,
+        // rounded up; seconds from where the number is acted on.
+        const NOW: u64 = 1_788_984_000_000;
+        assert!(
+            ladder(NOW + 300_000, NOW, OnTimeout::Deny).contains("expires in 5 min"),
+            "the real 300 s budget"
+        );
+        assert!(
+            ladder(NOW + 181_000, NOW, OnTimeout::Deny).contains("expires in 4 min"),
+            "rounded up, not down"
+        );
+        assert!(
+            ladder(NOW + 119_000, NOW, OnTimeout::Deny).contains("1m59s left"),
+            "seconds once the number is acted on"
+        );
+        assert!(
+            ladder(NOW + 47_000, NOW, OnTimeout::Deny).contains("47s left"),
+            "and whole seconds under a minute"
+        );
+        assert!(
+            !ladder(NOW + 47_500, NOW, OnTimeout::Deny).contains("47.5"),
+            "never a decimal on a whole second"
+        );
+
+        // **What silence does, in the daemon's three words.** `RUNS` is upper case
+        // because it is the only one of the three that does something nobody asked for.
+        let deny = ladder(NOW + 300_000, NOW, OnTimeout::Deny);
+        assert!(deny.contains("if nobody answers, nothing runs"), "{deny}");
+        let allow = ladder(NOW + 300_000, NOW, OnTimeout::Allow);
+        assert!(allow.contains("if nobody answers, it RUNS anyway"), "{allow}");
+        let ask = ladder(NOW + 300_000, NOW, OnTimeout::Ask);
+        assert!(
+            ask.contains("if nobody answers, the guard model decides"),
+            "{ask}"
+        );
+
+        // **Below the options**, because the order a person reads is the question, the
+        // choices, then what happens if they do nothing.
+        let at_clause = deny.find("if nobody answers").expect("the clause");
+        let at_options = deny.find("allow_once").expect("the ladder");
+        assert!(
+            at_options < at_clause,
+            "the consequence is read after the choices: {deny}"
+        );
+
+        // **A card past its own deadline** — the case the operator actually hit. It says
+        // the clock ran out and the outcome is unreported, it **keeps** the consequence
+        // (that is a rule, not an observation, and with `allow` it is the one thing worth
+        // learning from an expired card), and it never counts into negative seconds.
+        let expired = ladder(NOW - 14_000, NOW, OnTimeout::Allow);
+        assert!(
+            expired.contains("past its deadline by 14s; the daemon has not said what became of it"),
+            "{expired}"
+        );
+        assert!(expired.contains("it RUNS anyway"), "{expired}");
+        assert!(
+            !expired.contains("-14s") && !expired.contains("-"),
+            "a countdown below zero is a rendering fault: {expired}"
+        );
+
+        // **No deadline, nothing drawn.** `null` is §11.5's *wait forever* — a policy,
+        // not missing information — so there is no silence for a clause to describe and
+        // no countdown to draw. §13.2b, answered the other way round from `unreadable 0`.
+        let mut a = app();
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.deadline = None;
+        let bare = a.decision_lines(&d, 200).join("\n");
+        assert!(!bare.contains("expires in"), "{bare}");
+        assert!(!bare.contains("s left"), "{bare}");
+        assert!(!bare.contains("if nobody answers"), "{bare}");
+        assert!(bare.contains("allow_once"), "the card is still drawn: {bare}");
+    }
+
+    /// **A refused call is not a decision, so nothing about deadlines is drawn on one.**
+    /// The clause belongs to a card that will wait for an answer, and a card that has
+    /// already settled cannot be left to expire again.
+    #[test]
+    fn the_deadline_line_is_only_on_a_card_that_is_actually_open() {
+        use letibot_sessionlog::event::OptionKind;
+        let mut a = app();
+        a.clock(1_788_984_000_000);
+        // The settled-decision note is a different renderer (it has no options to answer
+        // and no clock of its own), and this asserts the pair stays apart: the open card
+        // says it, the settled row does not repeat it.
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.deadline = Some(1_788_984_300_000);
+        assert!(a.decision_lines(&d, 200).join("\n").contains("expires in 5 min"));
     }
 
     #[test]

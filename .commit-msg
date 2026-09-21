@@ -1,109 +1,143 @@
-write stops asking whether the session has read a file, and keeps asking whether the file moved
+the gate card says how long there is, and what silence will do
 
-R14. The operator, recalling an earlier decision: *"regarding 'trying to edit a file
-that the session didn't read' — long time ago we agreed to abandon it."*
+§1.6, **MISSING IN BOTH HEADS** — so this is not a port, it is the requirement
+implemented against leticl's `550bc94`, which is the reference for it because
+neither head had it and one of them had to go first. The operator was bitten the
+same night: *"two gate cards timed out unanswered at 300 seconds with `not_run by
+gate:timeout` — nothing on the card had said that was coming."*
 
-**On the agreement itself: I found no trace of it.** No user utterance in the store
-proposes or agrees to dropping the guard; the only hits for the phrase are subagents
-quoting the refusal back. The likely reason is the conversation it happened in was
-compacted away. So this is recorded as the operator's ruling, which is the authority,
-and noted as **not independently found** — so nobody later reads this entry as a
-citation for something nobody said.
+Both facts were already on the wire — `DecisionRequested` carries `deadline` and
+`on_timeout` (`event.rs:569-574`) — and this head drew neither. **And it already
+drew a countdown on the secret card**, which is the shape of the whole omission: the
+instrument existed in both trees and had never been pointed at the gate, where the
+consequence of silence is a decision rather than a missing password.
 
-## What the guard actually was, which is narrower than its reputation
+## The three rulings
 
-Read before changing anything, and each of the four points changes what abandoning it
-means:
+**1. A ladder, not a number.** The unit changes with the time left, so the reader gets
+the precision the moment is worth: a countdown that ticks for five minutes is
+furniture, and one that ticks for ten seconds is a pressure nobody asked for. Every
+value below is asserted in `letibot-ui`'s test, taken from the reference's own table
+rather than from my implementation, because two heads have to agree for the
+requirement to be met:
 
-- **It lived in `write.rs` alone.** `edit.rs` has **no** read-before-write check
-  and never did — so the rule remembered as being about *editing* has never applied
-  to `edit`. Nothing there to remove.
-- **It only fired on overwriting a file that already exists.** Creating one still
-  needs nothing.
-- **A refusal was not a dead end**: it returned the file's whole contents *and*
-  recorded it as read, so an identical retry proceeded. The cost was a wasted round
-  trip and the whole file in the context.
-- **There were TWO refusals in that arm and they are different questions** —
-  `None => "this session has not read it"`, and `Some(s) if s.digest != now => "it
-  changed since this session read it"`. The requirement says in as many words that
-  abandoning the first does not require abandoning the second, and that the commit
-  must say which.
+    300s -> "expires in 5 min"      whole minutes, changing once a minute
+    181s -> "expires in 4 min"      rounded UP
+    120s -> "expires in 2 min"      the boundary is inclusive upward
+    119s -> "1m59s left"            seconds from here
+     59s -> "59s left"              whole seconds — `47s`, never `47.0s`
 
-## Which one goes, and why the other **stays**
+**Minutes round up and seconds do not**, and the direction is the point: a card must
+never claim less time than there is. `3m00.001s` is closer to four minutes than to
+three, and a card that says three has told the person they have less than they do.
+**Getting that right needed a second pass**: my first cut floored to seconds and then
+divided, which loses the millisecond and with it the minute it belonged to — 180,001 ms
+read `3 min`. The rounding is on the milliseconds in one step
+(`remaining_ms.div_ceil(60_000)`), and the boundary case is now a test.
 
-**The not-read arm goes.** Its stated premise is that *"a write lands on content the
-model is remembering rather than reading, and everything it does not remember is
-silently deleted"* — and that premise does not hold for a path this session never
-saw: there is nothing to silently delete that anybody believed was there. The live
-case is better than the argument, and it is the operator's own: the guard fired
-minutes earlier, in leticl's session, on
-`/tmp/letibot-scratch-2906340/msg-r10.txt` — **a file another session had created
-seconds before, in a shared scratch directory.** The fleet is acquiring more shared
-surfaces, not fewer, and on a shared path *"has this session read it"* is the wrong
-question.
+**2. A card past its own deadline.** The case the operator actually hit. A card still
+on the screen after its own deadline is one the daemon has already settled and this
+head has not been told the outcome of, so it says so:
 
-**The changed-since arm stays, and it is not the same guard.** It does not ask what
-the model remembers; it asks whether **the file moved between this session's read and
-this session's write**, which is a fact about the file. A shared directory makes it
-*more* relevant rather than less, because a second writer is precisely the thing that
-changes a file under a read — and a write over somebody else's change would discard
-it with neither party seeing it. Abandoning that one would be a different decision,
-and it has not been taken.
+    past its deadline by 14s; the daemon has not said what became of it · if nobody answers, it RUNS anyway
 
-## The schema, which was promising a guard nobody would enforce
+**It never counts into negative seconds** — a number that means nothing and reads as a
+rendering fault — and it **keeps the consequence clause**, because that clause is a
+RULE and not an observation: an operator looking at an expired card with
+`on_timeout: allow` learns the one thing they most need to from it.
 
-`write`'s own description said *"Overwriting one that does exist requires that this
-session has read it"*. **A description that promises a guard nobody enforces is worse
-than either choice** — these strings are read as contracts, and the prompt-line budget
-work already established that. It now states what the code does in the same breath as
-what it refuses:
+**3. `deadline: null` draws nothing.** `null` is §11.5's *wait forever* — a policy,
+not missing information — so there is no silence for a clause to describe.
+**This is §13.2b answered in the other direction from `unreadable 0` on `/status`, and
+deliberately**: that count IS shown at zero, because a head that does not count frames
+it cannot read is a different head, while a countdown on an ask with no deadline is a
+number nobody took. Both are asserted — including that the card is still otherwise
+drawn, so "draws nothing" cannot be satisfied by drawing nothing at all.
 
-    Overwriting one that exists **lands** — an unread file is not refused, because a
-    shared path is not this session's to have seen. What is refused is a file
-    **changed since this session read it**: somebody else's write would be discarded
-    unseen, and their contents come back with the refusal.
+## What silence does, in the daemon's own words
 
-**It fitted the budget only after a trim.** The description lint caps every tool at
-800 bytes and the first version was 877, which
-`every_description_lints_clean_and_stays_under_the_budget` caught. That is worth a
-line in the commit because the budget is why the sentence is as short as it is — the
-contract is stated, the example that justified it (a shared scratch directory) is in
-this message rather than in the prompt.
+Below the options, because the order a person reads is the question, the choices, then
+what happens if they do nothing:
 
-## What replaces the guard: nothing, and that is the answer
+    deny  -> if nobody answers, nothing runs
+    allow -> if nobody answers, it RUNS anyway
+    ask   -> if nobody answers, the guard model decides
 
-The requirement's "what to keep when it goes" asks for the disclosure, and it is
-already the one this tree built: **the diff card and `changed_span`.** A write that
-destroys content still shows the operator exactly what was replaced, which is the
-half of this that was never about refusing anything. The new test asserts precisely
-that — an unread file is written, **and the pair comes back on the invocation**, with
-the replaced content on the before side.
+**The upper case on `RUNS` is the point of the line.** It is the only one of the three
+that does something nobody asked for, and an operator who walked away believing the
+default was `deny` when it was `allow` has been told nothing at all by a clock.
+
+**The "unknown word" arm has nothing to catch here, and saying which is which is the
+part that matters.** The reference adds *"a word this head does not know draws no
+clause rather than a guess"*; `OnTimeout` is an **enum on the wire** in this tree, so a
+fourth value is not a word this function fails to recognise — it is a frame the
+deserializer refuses, which lands in the `unreadable` bucket with everything else this
+build cannot read (R3). A wrong consequence is worse than an absent one, and neither is
+silence.
+
+## The two-clocks trap: checked, and this head does **not** have it
+
+leticl found a third instance of R13's trap while measuring the instrument it was sent
+to copy: its secret card subtracted a **Unix** deadline from a **monotonic** clock and
+had been drawing hundreds of thousands of seconds since it was written. The operator
+asked whether mine does the same, and the answer is no — `SecretRequested.deadline` is
+Unix millis and this head's clock is Unix millis (`bin::now_ms`, `driver::now_ms`,
+both `SystemTime::UNIX_EPOCH`), so the subtraction is in one frame.
+
+That was already asserted in `fe80602` rather than argued, and it is re-asserted here
+against the ladder's own spellings. **It also turned up the one real defect on that
+card**, which is worth recording: the countdown is the last field on that line and the
+card *trims to the width*, so on a ~96-column terminal the number is cut off before it
+can be read. Not fixed here — recorded, because a deadline a narrow screen cannot show
+is the same family as everything else this queue is about.
+
+## One instrument, which was the finding
+
+`secret_lines` now calls the same `progress::countdown` the gate card does. `120s left`
+was that card's old spelling and `expires in 2 min` is what the shared ladder makes of
+it — the same number, and the two cards can no longer disagree about how long there is.
+
+**And the repaint rate follows from the ladder rather than being chosen.** The finest
+rung is one whole second, so a countdown needs one frame a second and not the ten a
+spinner needs. The reference has a `live-frame-interval-ms` for this; **this head does
+not need one and must not grow one** — `term.keys()` returns after ~100 ms of quiet
+(`VMIN=0 VTIME=1`) and `Driver::tick` composes a frame unconditionally, which is the
+same property that disproved the R13 unification in `fe80602`. Two heads, one
+requirement, two mechanisms that are correct for different reasons — which is the
+argument for requirements rather than shared implementations, and the second time
+tonight it has earned its keep.
 
 ## Tests
 
-- `overwriting_a_file_this_session_has_not_read_lands_and_the_change_is_disclosed`
-  replaces `overwriting_an_unread_file_is_refused_and_the_contents_come_back`, which
-  asserted the defect. The new one asserts both halves of the ruling: the write
-  lands, and the before/after pair is still there for the card.
-- `a_stale_overwrite_is_refused_with_the_other_writer_s_content` is **unchanged**,
-  which is the statement that the changed-since arm was ruled separately and survived
-  — a test that keeps passing without an edit is the cheapest possible evidence for
-  that.
-- **Two clause tests were built on the refusal that went**, and they are rewritten
-  onto the one that stayed rather than deleted: `clause3_a_refused_write_is_never_ok…`
-  reaches its `Failed` through the changed-since path (an unread-file failure is no
-  longer reachable), and `clause5_a_write_tools_output_spills…` gets its 26 KB
-  refusal from a file that moved under the read. **The clause is not weakened** — the
-  payload is the same shape, a whole file quoted back — and clause 5's second half
-  (`nothing was written`) is a stricter thing to assert against this refusal than
-  against the old one.
+- `a_countdown_changes_unit_with_the_time_left_and_never_overstates_the_pressure` and
+  `the_minutes_rung_says_expires_and_the_seconds_rungs_say_left` in `letibot-ui` — the
+  ladder's table, both rounding boundaries, no decimal on a whole second, no negative.
+- `the_gate_card_says_how_long_there_is_and_what_silence_does` in `letibot-tui` — the
+  ladder on the card, all three consequence clauses, the order (consequence after the
+  choices), the expired sentence with its clause kept and `-` absent, and the null
+  deadline drawing neither countdown nor clause while the card itself is still drawn.
+- The secret card's test now asserts the shared spellings at four instants, including
+  `0s left` for an expired one rather than a number counting backwards.
 
-`cargo test -p letibot-tools`: **610 passed, 0 failed** on the lib, plus **27** in
-`clauses.rs`. The wider crates are running as this is written and the result is in
-the next commit's message if it is not green now; this change touches one function
-in `write.rs` and the schema string, and nothing outside `letibot-tools` reads
-either.
+`cargo test -p letibot-tui`: **304 passed, 0 failed, 4 ignored** (302 + 2).
+`cargo test -p letibot-ui`: **101 passed, 0 failed**. All targets green on both.
 
-**Not verified, and said rather than glossed:** `rustfmt --check` still cannot run —
-it writes a temp file and `bash` is closed for that direction by the circuit
-breaker, which only the operator lifts.
+**Not verified, and said rather than glossed:** `letibot-harnessd`, `-sessionlog`,
+`-tokencore` and `-turn` have not been run since `write.rs` changed in `65725ce` — a
+run of all four together was started and then contended on the cargo lock with my own
+concurrent builds, and it is still in flight as this is written. Nothing in this
+commit touches them; the outstanding question is only whether any of their tests
+depended on the refusal that `65725ce` removed, and `clauses.rs` — where that
+dependency actually lived — is green. `rustfmt --check` still cannot run: it writes a
+temp file and `bash` is closed for that direction by the circuit breaker, which only
+the operator lifts.
+
+## Not in this commit
+
+**§1.7 — a question can be answered.** The reference landed it alongside §1.6 because
+it was already in that tree. A's half is **checked, not assumed**, and it is what the
+requirement says rather than the crash leticl had: `OpenDecision::choices` is read by
+**nothing** in this head, and `match_option` iterates `options`, which is empty for a
+question — so a question draws no choices and a typed line under one is held with
+*"this ask offers no options"*. It does not TYPE-ERROR. It cannot be answered at all,
+which is the same requirement unmet by a different failure, and it is the next item.

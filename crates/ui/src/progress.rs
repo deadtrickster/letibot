@@ -292,9 +292,105 @@ pub fn duration(ms: u64) -> String {
     format!("{}h{:02}m", m / 60, m % 60)
 }
 
+/// **How long there is, as a ladder rather than a number** (§1.6).
+///
+/// A countdown that ticks for five minutes is furniture and one that ticks for ten
+/// seconds is a pressure nobody asked for; both are avoided by **changing the unit
+/// with the time left**, so the reader gets the precision the moment is worth:
+///
+/// ```text
+///  300s -> "expires in 5 min"      whole minutes, changing once a minute
+///  181s -> "expires in 4 min"      rounded UP: never claim less time than there is
+///  120s -> "expires in 2 min"      the boundary is inclusive
+///  119s -> "1m59s left"            seconds from here, where the number is acted on
+///   59s -> "59s left"              whole seconds under a minute — `47s`, never `47.0s`
+///    0s -> "0s left"
+/// ```
+///
+/// **Minutes round up and seconds do not.** A card must never claim less time than
+/// there is: `3m01s` rounded down to `3 min` is a card telling a person they have a
+/// second less than they do, which is the one direction this number may not be wrong
+/// in. Whole seconds are already a floor of the real value, and `47.0s` is a decimal
+/// on a number nobody measures to a tenth.
+///
+/// **It never goes negative**, and that is structural rather than a guard: the input
+/// is a remaining time, and a caller with a deadline in the past passes zero. See
+/// `letibot_tui`'s decision card for the case where a past deadline needs a sentence
+/// of its own rather than `0s left`.
+///
+/// **Why the ladder and not just a format**: it is also what makes a repainting
+/// countdown affordable. The finest rung is one whole second, so a card needs **one
+/// frame a second** and not the ten a spinner needs — the clock reason and the rate
+/// are one decision.
+pub fn countdown(remaining_ms: u64) -> String {
+    // **The minutes are rounded from the MILLISECONDS, not from the seconds.**
+    // `remaining_ms / 1000` first would floor 180,001 ms to 180 s and then call that
+    // three minutes — a card claiming a second less than there is, which is the one
+    // direction this number may not be wrong in. Rounded in one step it is four.
+    if remaining_ms >= 120_000 {
+        return format!("expires in {} min", remaining_ms.div_ceil(60_000));
+    }
+    let secs = remaining_ms / 1000;
+    if secs >= 60 {
+        return format!("{}m{:02}s left", secs / 60, secs % 60);
+    }
+    format!("{secs}s left")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The ladder's own table**, from the spec (§1.6, leticl `550bc94`) rather than
+    /// from this implementation: every row is a value the other head measured on the
+    /// glass, and the two heads have to agree or the requirement is not met in both.
+    #[test]
+    fn a_countdown_changes_unit_with_the_time_left_and_never_overstates_the_pressure() {
+        // Whole minutes while there is time to think, rounded UP.
+        assert_eq!(countdown(300_000), "expires in 5 min");
+        assert_eq!(countdown(181_000), "expires in 4 min");
+        assert_eq!(countdown(121_000), "expires in 3 min");
+        assert_eq!(countdown(120_000), "expires in 2 min");
+        // Seconds from where the number is acted on.
+        assert_eq!(countdown(119_000), "1m59s left");
+        assert_eq!(countdown(65_000), "1m05s left");
+        assert_eq!(countdown(60_000), "1m00s left");
+        assert_eq!(countdown(59_000), "59s left");
+        assert_eq!(countdown(47_000), "47s left");
+        assert_eq!(countdown(0), "0s left");
+
+        // **Rounding UP is the direction that matters.** A second short of four
+        // minutes must not read as three: `3m00.001s` is closer to four minutes than to
+        // three, and a card that says three is telling the person they have less time
+        // than they do. Asserted on the boundaries where it can go wrong, and the
+        // first of these is what caught the bug — rounding from the *seconds* floors
+        // the millisecond away and then cannot see the minute it belonged to.
+        assert_eq!(countdown(239_000), "expires in 4 min");
+        assert_eq!(countdown(180_001), "expires in 4 min");
+        assert_eq!(countdown(180_000), "expires in 3 min");
+
+        // **Never a decimal on a whole second** — `47.0s` is a measurement to a tenth
+        // of a rung that measures whole seconds.
+        for ms in [0u64, 1_000, 47_000, 59_999] {
+            assert!(!countdown(ms).contains('.'), "{}", countdown(ms));
+        }
+        // And never a negative number, however the caller got here.
+        assert!(countdown(u64::MAX).starts_with("expires in "));
+        for ms in [0u64, 1, 999, 1_000] {
+            assert!(!countdown(ms).contains('-'), "{}", countdown(ms));
+        }
+    }
+
+    /// **Every rung is a number a person can act on**, which is the whole reason the
+    /// minutes rung is not `to_string()` on the seconds: `expires in 5 min` is a
+    /// sentence about a wait, and `300s left` is a number about a stopwatch.
+    #[test]
+    fn the_minutes_rung_says_expires_and_the_seconds_rungs_say_left() {
+        assert!(countdown(600_000).starts_with("expires in "), "600s");
+        assert!(countdown(120_000).starts_with("expires in "), "120s");
+        assert!(countdown(119_000).ends_with(" left"), "119s");
+        assert!(countdown(59_000).ends_with(" left"), "59s");
+    }
 
     #[test]
     fn a_mostly_cached_prompt_reads_as_nearly_done_not_nearly_undone() {
