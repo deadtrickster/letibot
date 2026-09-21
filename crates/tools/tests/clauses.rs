@@ -491,8 +491,13 @@ fn clause3_a_refused_write_is_never_ok_and_never_an_abstention() {
         r.outcome
     );
 
-    // A tool-level refusal: the call ran and could not do what was asked.
+    // A tool-level refusal: the call ran and could not do what was asked. The
+    // refusal that reaches here is **the changed-since one** — the unread-file
+    // refusal was abandoned (R14), so the surviving way for a `write` to fail at
+    // the tool level is a file that moved under this session's read.
     let mut h = writable_harness();
+    h.call("read", r#"{"path":"README.md"}"#);
+    h.write_file("README.md", "somebody else got here first\n");
     let r = h.call("write", r#"{"path":"README.md","content":"x"}"#);
     assert!(
         matches!(r.outcome, ToolOutcome::Failed { .. }),
@@ -547,21 +552,31 @@ fn clause4_both_write_tools_declare_write_and_a_write_always_reaches_the_gate() 
 fn clause5_a_write_tools_output_spills_like_everything_else() {
     // The refusal that hands back a whole file is exactly the payload clause 5
     // exists for: bounded, recoverable, and never silently cut.
+    //
+    // **The refusal is the changed-since one**, because the unread-file refusal it
+    // used to be was abandoned (R14). That does not weaken the clause — it is the same
+    // shape of payload either way, a whole file quoted back at the model — and it is
+    // the stricter case to test, because this refusal has to arrive *and* the file has
+    // to be left alone.
     let mut h = writable_harness_with_budget(Spiller::new(
         Box::new(FixedBudget(900)),
         Box::new(MemoryStore::new()),
     ));
+    h.call("read", r#"{"path":"big.txt","limit":1300}"#);
+    // Somebody else's write lands between the read and this one.
+    let theirs: String = (0..2000).map(|i| format!("their line {i}\n")).collect();
+    h.write_file("big.txt", &theirs);
     let r = h.call("write", r#"{"path":"big.txt","content":"gone\n"}"#);
     let spill = r.spill.as_ref().expect("a 26 KB refusal must spill");
     assert!(spill.full_bytes > spill.inline_bytes);
 
     let back = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, spill.hash));
     assert!(
-        back.render().contains("filler line 1999"),
+        back.render().contains("their line 1999"),
         "the rest is fetchable"
     );
     // …and nothing was written, which is what the refusal said.
-    assert!(h.read_file("big.txt").contains("filler line 0"));
+    assert!(h.read_file("big.txt").contains("their line 0"));
 }
 
 #[test]

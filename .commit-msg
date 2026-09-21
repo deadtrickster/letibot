@@ -1,103 +1,109 @@
-a fork resolves the echoes it supersedes rather than orphaning them
+write stops asking whether the session has read a file, and keeps asking whether the file moved
 
-R16. The operator, 2026-09-22, on this head's own screen: **three rows still
-rendering `queued ·`** while the tree was clean, no turn was running, and the work
-those prompts asked for was committed in `452d7dd`. So they were delivered and acted
-on and the mark was lying.
+R14. The operator, recalling an earlier decision: *"regarding 'trying to edit a file
+that the session didn't read' — long time ago we agreed to abandon it."*
 
-**R2 says exactly why it can.** An echo binds to an announced row and retires on
-`TranscriptContent` **matched by text** — a deliberate rule that stays, because
-leticl's comment records that matching any other way took the wrong prompt off first
-when two of different lengths were queued. A compaction **replaces the transcript**:
-the row those echoes were waiting for was summarised away, so the retiring event
-never arrives in the form they expect and the mark stays for the life of the session.
+**On the agreement itself: I found no trace of it.** No user utterance in the store
+proposes or agrees to dropping the guard; the only hits for the phrase are subagents
+quoting the refusal back. The likely reason is the conversation it happened in was
+compacted away. So this is recorded as the operator's ruling, which is the authority,
+and noted as **not independently found** — so nobody later reads this entry as a
+citation for something nobody said.
 
-## Why it is not a stale word
+## What the guard actually was, which is narrower than its reputation
 
-R2's whole argument is that `queued` means *bound but unconfirmed*, and that keeping
-the mark is the honest rendering while the binding is unconfirmed. **That honesty
-depends on the mark being retired when it is confirmed.** A `queued` that never
-clears turns the one signal distinguishing *"the daemon has not taken this yet"* from
-*"the daemon has it"* into furniture — and an operator who has learnt that `queued` is
-unreliable cannot use it on the occasion it is telling the truth.
+Read before changing anything, and each of the four points changes what abandoning it
+means:
 
-## The fix: mark on the way in, resolve on the way out
+- **It lived in `write.rs` alone.** `edit.rs` has **no** read-before-write check
+  and never did — so the rule remembered as being about *editing* has never applied
+  to `edit`. Nothing there to remove.
+- **It only fired on overwriting a file that already exists.** Creating one still
+  needs nothing.
+- **A refusal was not a dead end**: it returned the file's whole contents *and*
+  recorded it as read, so an identical retry proceeded. The cost was a wasted round
+  trip and the whole file in the context.
+- **There were TWO refusals in that arm and they are different questions** —
+  `None => "this session has not read it"`, and `Some(s) if s.digest != now => "it
+  changed since this session read it"`. The requirement says in as many words that
+  abandoning the first does not require abandoning the second, and that the commit
+  must say which.
 
-The requirement is that a fork **resolves** the binding rather than orphaning it. It
-does not say *how*, and the naive answers are both wrong:
+## Which one goes, and why the other **stays**
 
-- **Retire every echo when the fork is announced.** Wrong, and measurably so: a prompt
-  typed *during* the summary turn is queued behind it and lands in the base the fork
-  produces. Retiring it takes a sentence off the screen that has not landed, which is
-  §4.2's swallowed prompt with a new cause.
-- **Retire on `compacted` alone, and hope.** The same defect, one prompt narrower.
+**The not-read arm goes.** Its stated premise is that *"a write lands on content the
+model is remembering rather than reading, and everything it does not remember is
+silently deleted"* — and that premise does not hold for a path this session never
+saw: there is nothing to silently delete that anybody believed was there. The live
+case is better than the argument, and it is the operator's own: the guard fired
+minutes earlier, in leticl's session, on
+`/tmp/letibot-scratch-2906340/msg-r10.txt` — **a file another session had created
+seconds before, in a shared scratch directory.** The fleet is acquiring more shared
+surfaces, not fewer, and on a shared path *"has this session read it"* is the wrong
+question.
 
-So the head takes a mark of **what was in the air when the fork began** and retires
-exactly that. Two moments are knowable and they are different facts about the same
-event:
+**The changed-since arm stays, and it is not the same guard.** It does not ask what
+the model remembers; it asks whether **the file moved between this session's read and
+this session's write**, which is a fact about the file. A shared directory makes it
+*more* relevant rather than less, because a second writer is precisely the thing that
+changes a file under a read — and a write over somebody else's change would discard
+it with neither party seeing it. Abandoning that one would be a different decision,
+and it has not been taken.
 
-    auto_compact   published BEFORE the fork  (`sessions.rs`: the warning, then
-                   `self.compact`) — the head can mark what is pending
-    compacted      published AFTER it         — the marked echoes are resolved
-    reseated       the same, for the other fork
+## The schema, which was promising a guard nobody would enforce
 
-**A manual `/compact` has no "before" warning**, because the daemon only says
-`compacted` once it has finished; the head sent that request itself, so `command`
-takes the mark on the way out (`/reseat` too). No daemon change is involved: both are
-bookkeeping on facts the head already has, which is the cheapest possible form of
-this fix and the one that cannot drift from the daemon's behaviour.
+`write`'s own description said *"Overwriting one that does exist requires that this
+session has read it"*. **A description that promises a guard nobody enforces is worse
+than either choice** — these strings are read as contracts, and the prompt-line budget
+work already established that. It now states what the code does in the same breath as
+what it refuses:
 
-`fork_pending` is a **clone rather than a flag** on purpose: echoes retire normally in
-between (a row that lands before the fork needs no help from this, and one still
-waiting does), and a flag could not tell those apart afterwards.
+    Overwriting one that exists **lands** — an unread file is not refused, because a
+    shared path is not this session's to have seen. What is refused is a file
+    **changed since this session read it**: somebody else's write would be discarded
+    unseen, and their contents come back with the refusal.
 
-## The measurement, and the control inside it
+**It fitted the budget only after a trim.** The description lint caps every tool at
+800 bytes and the first version was 877, which
+`every_description_lints_clean_and_stays_under_the_budget` caught. That is worth a
+line in the commit because the budget is why the sentence is as short as it is — the
+contract is stated, the example that justified it (a shared scratch directory) is in
+this message rather than in the prompt.
 
-The operator asked for the orphan to be shown before it was fixed, and the test does
-that in one place rather than in two runs: it drives a real `Hub` — a turn running,
-a prompt sent and echoed, then the fork's own three events (`auto_compact`,
-`compacted`, the new base's summary row) with **no `TranscriptContent` for the
-prompt**, which is the defect stated as the fixture.
+## What replaces the guard: nothing, and that is the answer
 
-**And its second half is the control.** A prompt sent *after* the fork is asserted to
-still render `queued · and now the next thing` — so the first half's absence is the
-resolution doing its work and not a renderer that has stopped drawing echoes at all.
-That half then goes through a second fork, which shows the mark is re-taken per fork
-rather than spent once; and a third case pins the manual path (`command("compact")`
-marks, and the `compacted` that follows resolves).
+The requirement's "what to keep when it goes" asks for the disclosure, and it is
+already the one this tree built: **the diff card and `changed_span`.** A write that
+destroys content still shows the operator exactly what was replaced, which is the
+half of this that was never about refusing anything. The new test asserts precisely
+that — an unread file is written, **and the pair comes back on the invocation**, with
+the replaced content on the before side.
 
 ## Tests
 
-- `a_compaction_resolves_the_echoes_it_supersedes` — the above: the orphan, the
-  resolution, the control, the second fork, and the manual mark.
-- `cargo test -p letibot-tui`: **302 passed, 0 failed, 4 ignored** (301 + 1).
-  All targets: 3 + 3 passed.
+- `overwriting_a_file_this_session_has_not_read_lands_and_the_change_is_disclosed`
+  replaces `overwriting_an_unread_file_is_refused_and_the_contents_come_back`, which
+  asserted the defect. The new one asserts both halves of the ruling: the write
+  lands, and the before/after pair is still there for the card.
+- `a_stale_overwrite_is_refused_with_the_other_writer_s_content` is **unchanged**,
+  which is the statement that the changed-since arm was ruled separately and survived
+  — a test that keeps passing without an edit is the cheapest possible evidence for
+  that.
+- **Two clause tests were built on the refusal that went**, and they are rewritten
+  onto the one that stayed rather than deleted: `clause3_a_refused_write_is_never_ok…`
+  reaches its `Failed` through the changed-since path (an unread-file failure is no
+  longer reachable), and `clause5_a_write_tools_output_spills…` gets its 26 KB
+  refusal from a file that moved under the read. **The clause is not weakened** — the
+  payload is the same shape, a whole file quoted back — and clause 5's second half
+  (`nothing was written`) is a stricter thing to assert against this refusal than
+  against the old one.
 
-**Not verified, and said rather than glossed:** `rustfmt --check` on this file still
-cannot run — the check writes a temp file and `bash` is closed for that direction by
-the circuit breaker, which only the operator lifts. `cargo test` compiled and ran the
-crate. `cargo check --workspace` cannot run either: `/home/dead/Projects/rano`, a path
-dependency, has an unclosed delimiter in `src/syntax.rs` — somebody else's edit in
-flight, unrelated to this tree.
+`cargo test -p letibot-tools`: **610 passed, 0 failed** on the lib, plus **27** in
+`clauses.rs`. The wider crates are running as this is written and the result is in
+the next commit's message if it is not green now; this change touches one function
+in `write.rs` and the schema string, and nothing outside `letibot-tools` reads
+either.
 
-## Not in this commit
-
-**Two more R16 shapes I found while reading the mechanism, neither fixed and neither
-measured, because a fix without a measurement is what this queue keeps punishing:**
-
-1. **The merged-echo direction.** `retire_pending` handles a landing row that is the
-   *front piece* of a coalesced echo. The opposite also looks possible: the engine
-   merges consecutive prompts into one row (`"a\nb"`) while the head holds two echoes
-   (`"a"`, `"b"`) — because `turn_running()` was false when one of them was sent — and
-   then the row's text matches neither echo and neither retires. The query that would
-   decide it (which prompt texts appear only *inside* a longer user row) is the one
-   written down in `~/Projects/blocked-queries-r11-r16.md`.
-2. **A snapshot that supersedes, rather than a fork.** `load` prunes `bound_prompts`
-   to the ids the snapshot still carries, and retires the echoes the snapshot's rows
-   prove landed — but an echo whose row a *snapshot* dropped (a trim, or a fork the
-   head reattached into) has the same orphaning shape and no `compacted` warning to
-   hang a mark on. R17's `orphan_bodies` counts the bodies that arrive for rows that
-   are gone; this would be the same facts from the other side.
-
-Then **R14**, **R12**, **§1.6** — for which leticl's `550bc94` is the reference, and
-whose secret-card two-clocks bug is checked in `fe80602`.
+**Not verified, and said rather than glossed:** `rustfmt --check` still cannot run —
+it writes a temp file and `bash` is closed for that direction by the circuit
+breaker, which only the operator lifts.

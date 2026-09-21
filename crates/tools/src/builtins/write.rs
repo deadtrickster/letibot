@@ -35,9 +35,10 @@ impl Tool for Write {
             "write",
             "Write a file's whole contents. Give `path` and `content`. Creating a file \
              that does not exist needs nothing else; missing parent directories are \
-             created. Overwriting one that does exist requires that this session has \
-             read it — a `write` over a file this session has not read, or that changed \
-             since it was read, is refused and the current contents come back with the \
+             created. Overwriting one that exists **lands** — an unread file is not \
+             refused, because a shared path is not this session's to have seen. What is \
+             refused is a file **changed since this session read it**: somebody else's \
+             write would be discarded unseen, and their contents come back with the \
              refusal. Content identical to what is already there is reported and the \
              file is left alone. To change part of a file, call `edit` instead.",
             serde_json::json!({
@@ -165,21 +166,27 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
         );
     }
 
+    // **The read-before-overwrite refusal is gone (R14), and the arm below is not it.**
+    //
+    // It refused to overwrite a file this session had not read, on the premise that
+    // *"a write lands on content the model is remembering rather than reading, and
+    // everything it does not remember is silently deleted"*. The premise does not hold
+    // for a path this session never saw: there is nothing to silently delete that
+    // anybody believed was there. Measured — the refusal fired on
+    // `/tmp/letibot-scratch-NNNN/msg-r10.txt`, **a file another session had created
+    // seconds earlier in a shared scratch directory**, which is exactly the shape the
+    // fleet is acquiring more of. "Has this session read it" is the wrong question
+    // there, and the operator ruled the guard abandoned.
+    //
+    // **What stays is a different question**, and it was ruled separately rather than
+    // deleted in the same diff: *did the file move between my read and my write?* That
+    // one is not about what the model remembers — it is a fact about the file, and a
+    // shared directory makes it **more** relevant rather than less, because a second
+    // writer is the thing that changes a file under a read. A write over somebody
+    // else's change would discard it with neither of them seeing it.
     let seen = ctx.files.seen(path);
     let now = crate::spill::content_hash(bytes);
     let refusal = match &seen {
-        None => Some((
-            format!("this session has not read `{path}`"),
-            format!(
-                "`write` replaces a file's whole contents, so it may only overwrite a \
-                 file this session has been shown — otherwise a write lands on content \
-                 the model is remembering rather than reading, and everything it does \
-                 not remember is silently deleted. `{path}` is {} bytes and is below, in \
-                 full; it is now recorded as read, so calling `write` again with the \
-                 same arguments will proceed.",
-                bytes.len()
-            ),
-        )),
         Some(s) if s.digest != now => Some((
             format!("`{path}` changed since this session read it"),
             format!(
@@ -191,7 +198,7 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
                 bytes.len()
             ),
         )),
-        Some(_) => None,
+        _ => None,
     };
 
     if let Some((reason, why)) = refusal {
@@ -305,19 +312,36 @@ mod tests {
         );
     }
 
+    /// **R14: an unread file is written, and the write is disclosed.**
+    ///
+    /// The refusal this replaces asked *has this session read it*, which is a question
+    /// about the session and not about the file — and it is the wrong question for a
+    /// shared surface. Measured: it fired on a file another session had created seconds
+    /// earlier in a scratch directory this one had never opened.
+    ///
+    /// What the row and the card must still show is that content was replaced, and that
+    /// is asserted with the diff: the guard goes, the disclosure stays.
     #[test]
-    fn overwriting_an_unread_file_is_refused_and_the_contents_come_back() {
+    fn overwriting_a_file_this_session_has_not_read_lands_and_the_change_is_disclosed() {
         let mut h = writable_harness();
-        let r = h.call("write", r#"{"path":"README.md","content":"gone\n"}"#);
-        assert!(!r.is_grounded());
-        let out = r.render();
-        assert!(out.contains("has not read"), "{out}");
-        assert!(out.contains("     1| letibot"), "{out}");
-        assert_eq!(h.read_file("README.md"), "letibot\na harness\n");
-
-        let r = h.call("write", r#"{"path":"README.md","content":"gone\n"}"#);
-        assert!(r.is_grounded(), "{}", r.render());
-        assert_eq!(h.read_file("README.md"), "gone\n");
+        let r = h.call("write", r#"{"path":"README.md","content":"mine now\n"}"#);
+        assert!(
+            r.is_grounded(),
+            "an unread file must be writable: {}",
+            r.render()
+        );
+        assert_eq!(h.read_file("README.md"), "mine now\n");
+        // **The disclosure survives the guard.** The operator still sees what was
+        // replaced — the diff pair, with the old contents on the before side — which is
+        // the half of this that was never about refusing anything.
+        let e = r.edit.as_ref().expect("the write carries its before/after pair");
+        assert!(
+            e.before.contains("letibot"),
+            "the replaced content is the before side: {:?}",
+            e.before
+        );
+        assert!(e.after.contains("mine now"), "{:?}", e.after);
+        assert!(!e.created, "this was an overwrite, not a creation");
     }
 
     #[test]
