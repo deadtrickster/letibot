@@ -1,130 +1,114 @@
-a head knows whether it has every row the daemon says it has
+a running call counts up while the daemon says nothing
 
-R17. Measured from outside this head on 2026-09-22, twice, and the second one is
-the argument:
+R13. The operator, 2026-09-21: *"when a tool call takes time — say `cargo build` —
+it is frozen at 0ms until it finishes. A live coarse timer would be nice, say
+1/10th of a second."*
 
-* Three prompts rendered `queued ·` on the screen while the tree was clean, no turn
-  was running, and the work they asked for was already committed. (**R16**, the
-  echo that outlives its fact — the same root cause, and it is next.)
-* At 22:52 this head's last row was a prompt at **seq 339** and the ledger held
-  **seq 375**: thirty-six rows of this head's own work, and **the head did not think
-  it was scrolled back** — there was no scrolled-back seam, so it believed it was at
-  the tail. Every judgement anybody makes from that screen is unsafe, including the
-  operator's about whether to send the next prompt, which they got wrong three times
-  in one night for exactly this reason.
+## First: this head's defect is NOT leticl's, and the difference is the whole case
 
-**So the requirement is not "a row can go missing". It is that nothing tells anyone
-it did.** `seq` is the log's position, dense, and assigned by the daemon alone — and
-this head assigned it unconditionally (`self.seq = env.seq`), which is precisely what
-makes a delivered row and a dropped one look the same. Three numbers, because the
-same screen is produced by three different faults in three different places.
+leticl measured its own half and reported that the **number was never the problem,
+the asking was**: its loop paints only when a frame or a key marks the head dirty,
+so anything computed from the clock was computed and never drawn. If that had been
+true here, this commit would be about the draw loop and my `0ms`, my spinner and
+`notice_ttl` would have been one defect with three symptoms.
 
-## `gaps` — the wire lost them
+**It is not true here, and that is checkable rather than arguable.** `term.keys()`
+returns after ~100 ms of quiet (`VMIN=0 VTIME=1`), and `Driver::tick` composes a
+frame on every pass — `let screen = app.screen(size.0, size.1);` is called
+unconditionally, after the drain and before the ack — so a quiet screen is still a
+frame every 100 ms and every clock-derived value in it is recomputed. That is also
+why `notice_ttl` is **not** one of the symptoms: it counts frames, and frames tick.
+(The spinner already read `App::now_ms` for the same reason; that its comment
+explains the switch off `t.last_ms` is the clue to the real defect.)
 
-`env.seq > self.seq + 1` is proof, not a guess. Counted, **said** in the conversation
-naming the range (`seq 2..3 are missing`), and **repaired** by asking for the resync
-that exists for exactly this. Counted and not merely repaired because a gap repaired
-in silence looks identical to a session that never had one — and then nobody learns
-that a socket, a queue or a compaction is losing rows.
+## The real defect: two clocks, two hundred lines apart, on one screen
 
-Guarded on the session, so a `Switch` — whose events can arrive on the same socket
-before the new `Hello` has been folded — cannot read the other session's numbering as
-a gap in this one's. And not on `self.seq == 0`, which is a head with no mark yet.
+    turn_status   →  self.now_ms          ← advanced every tick by the driver
+    call_card     →  TurnPane::last_ms    ← the last EVENT's timestamp
 
-## `behind` — the daemon still has them
+`last_ms` **stops** whenever the daemon stops saying things — which is precisely
+what a silent `cargo build` does. So a row carried a spinner that turned and a
+duration frozen at `0ms`, because they were reading different clocks: the border
+said `Responding · 30.0s` while the card directly above it said `0ms`. Both numbers
+were "measured"; only one of them was measuring anything.
 
-This is the state that was measured and could not be named. A head that is *behind*
-has an **empty queue and a correct screen**: it has drawn everything it was given and
-there is nothing more coming yet. From inside, that is indistinguishable from
-*current* — which is why the screen said nothing, and why the operator read a working
-agent as an idle one. A head cannot see the daemon's position unless the daemon states
-it, and there is already one frame that does so without being asked: an `Accepted`
-carries the seq at which the command's effect is visible, and a `Rejected` carries the
-seq the daemon is actually at. Either is the daemon saying *"I am here"*; compared
-with `self.seq` it is a distance, and a lower bound is enough to say *"not current"*.
+## The fix, and why it is an anchor rather than a substitution
 
-Deliberately not an alarm: an ordinary backlog is not a fault, so it is on `/status`
-and not on the border.
+Using `self.now_ms` for the running card is the obvious fix and it is wrong for one
+case: a `--replay` applies every frame **before** it ever sets a clock (`bin`:
+the envelopes are applied in a loop; `app.clock` is called only in the interactive
+loop after them), so its frames carry the recording's timestamps while `now_ms` is
+whatever the head was last told. Mixing the two would date a year-old call from
+today — the same class of error as the `Responding · 496940h16m` a snapshot used to
+render, which this file already has a guard for.
 
-## `orphan_bodies` — the wire delivered them and there is no row to put them on
+So `CallRow` gains `started_at`: **the head's own clock at the moment the call
+started, or 0 when the head had no clock then.** The elapsed is measured from that
+when it exists, and from the log's span when it does not, and the anchor is taken
+*when the event is handled* — not at render — for exactly the reason above: in a
+replay there is no clock to take yet, so the anchor records the absence honestly
+instead of guessing at render time.
 
-**Found by reading the two ends rather than guessing at one.** `App::record_item`
-ended `let Some(idx) = … else { return; }` — a body whose id is not in `items` was
-thrown away **in silence**, and there is not even a placeholder left to notice,
-because a body-less row renders as `Vec::new()`. That is a third way a row the ledger
-has can be absent from the screen, and it was invisible in a way the other two are
-not: for a lost event there is a jump in `seq` to look for, and for a missing body
-there is a row on screen, but for this there is nothing at all.
+**And it moves wherever `started_ms` moves**, which is the half that is easy to get
+wrong and was: `started_ms` restarts at `ToolStarted` because *"a call that waited
+on a decision did not spend that time running"*, so `started_at` restarts there too.
+My first cut anchored only at the proposal, which silently counted the guard's
+decision wait as running time — the exact sentence that comment exists to prevent,
+arrived at from the other side. Found by the test, whose first run read `200ms` where
+it wanted `1.0s`.
 
-Counted, and said with the id, because the words cannot be drawn — the row is gone.
-Its one known cause is not a bug in this head (a snapshot replaces `items` wholesale,
-and the daemon's view is bounded at 2000 rows / 8 MB of bodies, so a body for a row
-the snapshot already trimmed has nowhere to go); what can be wrong is the
-*frequency*, and a number is how that becomes visible.
+## R13's two-clocks trap, checked in the second place it could live
 
-## What I could not settle, and the instrument that settles it
+leticl found a second instance while building §1.6: its secret card subtracted a
+**Unix** deadline from a **monotonic** clock and had been drawing a number in the
+hundreds of thousands of seconds since it was written. The operator asked me to
+check the third possible one, and the answer is **this head does not have it** — the
+deadline on the wire is `letibot_sessionlog::event::now_ms()` (epoch), and the clock
+this head is handed (`bin::now_ms`, `driver::now_ms`) is the epoch too, so the
+subtraction is in one frame.
 
-The operator asked for the boring explanation to be ruled out first: did those rows
-**arrive and not get drawn**, or **never arrive**? I cannot answer that for the
-22:52 window from outside, and I will not pretend to: the three candidate causes were
-all live and only the head's own numbers separate them. What I *can* say from reading
-both ends is what each looks like, and that is now on `/status`:
-
-| | `gaps` | `behind` | `orphan` |
-|---|---|---|---|
-| **the wire lost them** | > 0 | — | — |
-| **not here yet** (hub queue, socket, this head's channel) | 0 | > 0 | — |
-| **delivered, no row to land on** | 0 | — | > 0 |
-
-`gaps == 0 && behind == 0 && orphan == 0` while the ledger is ahead is the one state
-these three cannot explain, and it would mean a fourth mechanism — which is worth
-knowing too.
-
-## Why this is not a diagnostic
-
-`TODO.md`'s §6 has carried *"neither head checks `seq` continuity"* as a footnote
-since the parity survey, and leticl assigns unconditionally as well. Tonight it was
-promoted, and this is the paragraph that does it: a head can be a full turn behind
-its own ledger with no indication, so **every** judgement made from that screen is
-unsafe — the operator's about whether to send another prompt, and the head's about its
-own session, which is the worse case of the two because the head cannot even see that
-it is the one being misread.
+That was a property nobody had asserted, which is the kind of thing that stops being
+true quietly, so it is a test now rather than a sentence. It also turned up a small
+fact worth keeping: the countdown is the **last** field on that line and the card
+*trims to the width*, so on a 96-column terminal the number is cut off before it can
+be read. Not fixed here — recorded, because a deadline a narrow screen cannot show is
+the same family as everything else this queue is about.
 
 ## Tests
 
-- `a_gap_in_the_log_is_said_repaired_and_counted` — a jump is counted, said **with the
-  range**, and a resync is asked for; a second gap is a second line rather than the
-  first restated; and **ten contiguous events say nothing at all**, which is the
-  property that makes the line worth reading when it does appear.
-- `a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted` — the two numbers
-  that are not `gaps`: an orphan body is counted, named, and drawn nowhere (asserted:
-  the words are *not* in the conversation); an `Accepted` eight ahead sets `behind` to
-  8, moves `gaps` not at all, and asks for no resync; a redelivery at this head's own
-  seq is not a distance.
-- `a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached` — two frames
-  raised from 60 to 72 rows, because `/status` gained three rows. The comment says so.
+- `a_running_call_counts_up_while_the_daemon_says_nothing` — the whole requirement,
+  and it asserts its own premise: `last_event_at` is captured and re-checked at both
+  assertions, so the test cannot pass because an event happened to arrive. 200 ms in
+  with nothing said the row reads `200ms`; thirty silent seconds later it reads
+  `30.0s`. The second half is the case that must **not** be lost: a head that was
+  never told the time keeps the log's own span (`assert_eq!(b.now_ms, 0)` first), so
+  the replay is pinned rather than assumed.
+- `the_password_cards_countdown_is_seconds_and_not_a_second_epoch` — the two-clocks
+  check above, with the daemon's own shape (`now_ms + PATIENCE`) and a countdown
+  asserted at two instants.
+- Three existing fixtures updated for the new field (`edit_row`, the snapshot
+  rebuild, and the secret card's own test, which asserts against a wide frame for the
+  reason above).
 
-`cargo test -p letibot-tui`: **299 passed, 0 failed, 4 ignored** (297 + these two).
-`cargo test -p letibot-tui` all targets: 3 + 3 passed.
+`cargo test -p letibot-tui`: **301 passed, 0 failed, 4 ignored** (299 + 2).
+All targets: 3 + 3 passed.
 
-**`cargo check --workspace` does not currently run, and not because of this change**:
-the sibling tree `/home/dead/Projects/rano` has an unclosed delimiter in
-`src/syntax.rs` (`mod window_tests {` at 3801, still open at EOF) and `rano` is a path
-dependency of this workspace. It is somebody's edit in flight, in another repository,
-with its own dirty tree — left alone deliberately. `letibot-tui` linked and ran, which
-is the crate this change is in.
+**Not verified, and said rather than glossed:** `rustfmt --check` on `crates/tui/src/
+app.rs` did **not** run this time — the check needs to write a temp file, and `bash`
+is closed for that direction by the circuit breaker (three earlier refusals, from the
+corpus reads; only the operator lifts it). `cargo test` compiled and ran the crate,
+so the code is valid; the formatting is written to rustfmt's shape by hand and has
+not been diffed. `cargo check --workspace` also cannot run: `/home/dead/Projects/
+rano` — a path dependency — has an unclosed delimiter in `src/syntax.rs`, somebody
+else's edit in flight, unrelated to this tree.
 
 ## Not in this commit
 
-**R16 is the same root cause and is next**: an echo retires on `TranscriptContent`
-matched by text (R2's rule, and it stays — B's comment records that matching any other
-way took the wrong prompt off first when two of different lengths were queued), but a
-compaction *replaces the transcript*, so the row the echo was waiting for is summarised
-away and the retiring event never arrives in the form it expects. The fix belongs where
-a binding is *superseded*, not where it is confirmed.
+**R16** is next and is the same root cause this file's `bound_prompts` started from:
+an echo retires on `TranscriptContent` matched by text, and a compaction *replaces*
+the transcript, so the event it waits for never arrives in the form it expects. Then
+**R14**, **R12**, **§1.6** — for which leticl's `550bc94` is the reference, and
+whose secret-card bug is the one checked above.
 
-**The three blocked store queries are written down** in
-`~/Projects/blocked-queries-r11-r16.md`, with what each was for. They matter because
-the R16 test needs one of them: a prompt whose row text is only ever a *piece* of a
-longer row means the merged case in `retire_pending`'s own comment is live too, and
-that is a second mechanism producing the same furniture.
+**leticl's half of R13** is its own tree's; its finding is recorded here because it
+is the reason this commit opens with "not leticl's defect" rather than with the loop.

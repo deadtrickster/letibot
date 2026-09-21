@@ -555,6 +555,21 @@ struct CallRow {
     /// invented from a clock the events were not measured against is worse than
     /// no duration, so that case renders as `card::Phase::Replayed`.
     started_ms: u64,
+    /// **The head's own clock when this call started, or 0 when the head had no
+    /// clock then** (R13).
+    ///
+    /// `started_ms` above is the *log's* clock — the `ts` the daemon stamped — and
+    /// for as long as a call runs, that number **stops**: no event means no new
+    /// timestamp, so the elapsed read off it sat at `0ms` for the whole of a
+    /// `cargo build` while the spinner two rows below it turned. The two clocks are
+    /// the same clock on this machine, so which one is used only matters for a head
+    /// that was never told the time — and the anchor is taken **at the moment the
+    /// call starts** rather than at render time for exactly that reason: a `--replay`
+    /// applies every frame before it ever sets a clock (`bin/letibot-tui.rs`: the
+    /// envelopes are applied in a loop, and `app.clock` is called only in the
+    /// interactive loop after them), so a replayed call has no anchor and renders
+    /// from the log's own span, which is the only honest measurement there.
+    started_at: u64,
     ended_ms: u64,
     /// The most recent `ToolProgress { note }`.
     note: Option<String>,
@@ -2688,6 +2703,10 @@ impl App {
                         target: c.target,
                         state: c.state,
                         started_ms: 0,
+                        // The same rule one field along: a snapshot carries no
+                        // timestamps, so there is no anchor to measure against
+                        // either.
+                        started_at: 0,
                         ended_ms: 0,
                         note: None,
                         decision: None,
@@ -2997,6 +3016,7 @@ impl App {
                         target,
                         state: CallState::Proposed,
                         started_ms: ts,
+                        started_at: self.now_ms,
                         ended_ms: 0,
                         note: None,
                         decision: None,
@@ -3013,6 +3033,12 @@ impl App {
                             // model asked for it: a call that waited on a decision
                             // did not spend that time running.
                             c.started_ms = ts;
+                            // **And the head's anchor moves with it** (R13): the two
+                            // clocks are the same clock, so a row anchored at the
+                            // *proposal* would count the decision wait as running
+                            // time — the exact sentence the line above exists to
+                            // avoid, arrived at from the other side.
+                            c.started_at = self.now_ms;
                             // **And the note from before it started is over.**
                             //
                             // `ToolProgress` notes are facts about right now, and
@@ -3043,6 +3069,12 @@ impl App {
                             target: String::new(),
                             state: CallState::Running,
                             started_ms: ts,
+                            // **The clock starts with the same event the log's
+                            // does** (R13): a call that waited on a decision did
+                            // not spend that time running, and the head's clock is
+                            // read here rather than at render so that a replay —
+                            // which has no clock yet — falls back to the log's.
+                            started_at: self.now_ms,
                             ended_ms: 0,
                             note: None,
                             decision: None,
@@ -7027,8 +7059,20 @@ impl App {
                 if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live.iter() {
+                        // **A running call is timed against the clock that was running
+                        // when it started** (R13). `now_ms` here is `t.last_ms` — the
+                        // log's clock — and that number **stops** when the daemon stops
+                        // saying things, which is exactly what a silent `cargo build`
+                        // does: the row read `0ms` for the whole build while the spinner
+                        // in the border below it turned, because the two were reading
+                        // different clocks two hundred lines apart. A call whose start
+                        // was recorded with this head's clock is measured against this
+                        // head's clock instead; one that was not — a `--replay`, whose
+                        // frames are applied before any clock is set — keeps the log's
+                        // own span, which is the only honest measurement there.
+                        let card_now = if c.started_at > 0 { self.now_ms } else { now_ms };
                         owned.extend(step_in(
-                            call_card(c, &cfg, now_ms, tool, self.diff_split),
+                            call_card(c, &cfg, card_now, tool, self.diff_split),
                             ind,
                         ));
                     }
@@ -10177,10 +10221,24 @@ fn call_card(
         CallState::Proposed => card::Phase::Proposed {
             note: c.note.clone(),
         },
-        CallState::Running => card::Phase::Running {
-            elapsed_ms: now_ms.saturating_sub(c.started_ms),
-            note: c.note.clone(),
-        },
+        CallState::Running => {
+            // **The clock the caller chose, and the anchor that goes with it**
+            // (R13). `call_card` is handed *one* clock: the head's when this call
+            // has an anchor, the log's when it does not (see the pane). Subtracting
+            // `started_ms` either way would mix the two frames — the log's start
+            // against the head's now — and report the time since the `ToolStarted`
+            // event rather than since the call started, which is a *smaller* number
+            // and so reads like progress.
+            let from = if c.started_at > 0 {
+                c.started_at
+            } else {
+                c.started_ms
+            };
+            card::Phase::Running {
+                elapsed_ms: now_ms.saturating_sub(from),
+                note: c.note.clone(),
+            }
+        }
         CallState::Finished {
             outcome,
             inline_bytes,
@@ -15693,6 +15751,130 @@ mod tests {
         assert!(screen.contains("7.5s"), "{screen}");
     }
 
+    /// **R13: the number beside a running call comes from a clock that keeps moving.**
+    ///
+    /// The operator: *"when a tool call takes time — say `cargo build` — it is frozen
+    /// at 0ms until it finishes. A live coarse timer would be nice, say 1/10th of a
+    /// second."*
+    ///
+    /// **And my head's defect is not leticl's, which is worth writing down because the
+    /// two look identical on a screen.** leticl's number was already read from its own
+    /// clock; what was frozen was the *asking*, because its loop painted only when a
+    /// frame or a key marked the head dirty. This head composes a frame on every tick
+    /// — `term.keys()` returns after ~100 ms of quiet under `VMIN=0 VTIME=1`, and
+    /// `App::screen` is called unconditionally after it — so the asking was never the
+    /// problem here. What was wrong is that **the row read a different clock from the
+    /// spinner two hundred lines below it**: the spinner is `App::now_ms`, which the
+    /// driver advances every tick, and the running card's elapsed was
+    /// `TurnPane::last_ms`, the last event's timestamp — a clock that *stops*
+    /// whenever the daemon stops talking, which is precisely what a silent build does.
+    ///
+    /// So the assertion is the pair: with no event in between, thirty seconds of
+    /// silence, the number moves and the spinner moves with it.
+    #[test]
+    fn a_running_call_counts_up_while_the_daemon_says_nothing() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo build\""),
+        )));
+        a.clock(2_000);
+        a.apply(ServerFrame::Event(env_at(
+            3,
+            2_000,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+
+        // **The premise: nothing else arrives.** Every assertion below is about a
+        // clock that moved with no event to carry it, so an event in between would
+        // make this test pass against a head that never fixed anything. (The head's
+        // clock and the events' `ts` are advanced together, the way a live session's
+        // are — same machine, same clock, one tick apart at most.)
+        let last_event = a.last_event_at;
+
+        // Two hundred milliseconds in, nothing said: the call counts from when it
+        // actually started, not from the last thing the daemon said.
+        a.clock(2_200);
+        let early = a.screen(120, 24).join("\n");
+        assert!(early.contains("Running \"cargo build\""), "{early}");
+        assert!(
+            early.contains("200ms"),
+            "a running call did not count up with the head's own clock: {early}"
+        );
+        assert_eq!(a.last_event_at, last_event, "the premise: no event arrived");
+
+        // And thirty seconds of a silent build, which is the case the operator was
+        // looking at. Coarse on purpose — tenths, because that is what a person reads.
+        a.clock(32_000);
+        let late = a.screen(120, 24).join("\n");
+        assert!(
+            late.contains("30.0s"),
+            "thirty silent seconds and the number did not move: {late}"
+        );
+        assert_eq!(a.last_event_at, last_event, "and still nothing arrived");
+
+        // **The spinner and the number are one clock now.** They were not before, and
+        // that is the whole of this defect: a row whose spinner turns while its
+        // duration sits still reads as a stalled turn with a working clock beside it.
+        assert!(
+            late.contains("Responding"),
+            "the border's own spinner is the comparison: {late}"
+        );
+
+        // **A call with no anchor keeps the log's clock**, and this is the half that
+        // must not be lost: a `--replay` applies every frame *before* it sets a
+        // clock, so there is no anchor to measure against and the recorded span is
+        // the only honest number. Here the log says the call ran 1.0s.
+        let mut b = app();
+        b.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
+        b.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo build\""),
+        )));
+        b.apply(ServerFrame::Event(env_at(
+            3,
+            2_000,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        assert_eq!(b.now_ms, 0, "the premise: nobody told this head the time");
+        b.apply(ServerFrame::Event(env_at(
+            4,
+            3_000,
+            SessionEvent::ToolProgress {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                note: "Compiling".into(),
+            },
+        )));
+        let replayed = b.screen(120, 24).join("\n");
+        assert!(
+            replayed.contains("1.0s"),
+            "a replayed call keeps the log's own span: {replayed}"
+        );
+    }
+
     #[test]
     fn a_call_from_a_snapshot_has_no_duration_rather_than_a_zero_one() {
         // A snapshot carries no timestamps. `0.0s` is a measurement that was never
@@ -18622,6 +18804,49 @@ mod tests {
         );
     }
 
+    /// **R13's two-clocks trap, checked in the second place it could live.**
+    ///
+    /// leticl found this while building §1.6: its secret card subtracted a Unix
+    /// deadline from a **monotonic** clock, so the number it had been drawing was
+    /// in the hundreds of thousands of seconds. The question that follows is whether
+    /// this head does the same, and the answer is **no** — the deadline the daemon
+    /// puts on the wire is `event::now_ms()`, which is the epoch, and the clock this
+    /// head is handed is the epoch too (`bin::now_ms`, `driver::now_ms`), so the
+    /// subtraction is in one frame. That is a property nobody had asserted, which is
+    /// exactly the kind of thing that stops being true quietly, so it gets a test
+    /// rather than a sentence.
+    #[test]
+    fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
+        let mut a = app();
+        // The shape the daemon builds it: `event::now_ms() + PATIENCE`.
+        const NOW: u64 = 1_788_984_000_000;
+        a.clock(NOW);
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-1".into(),
+                prompt: "[sudo] password for dead: ".into(),
+                command: "sudo true".into(),
+                deadline: NOW + 120_000,
+            },
+        )));
+        // **A wide frame on purpose.** The countdown is the last field on that line
+        // and the card trims to the width, so a narrow terminal takes the number off
+        // before the assertion can read it — which is a fact about this line worth
+        // knowing rather than a detail of the test.
+        let card = a.screen(200, 20).join("\n");
+        assert!(card.contains("120s left"), "{card}");
+        // It counts down on the head's clock, not off the event's own timestamp —
+        // the same rule the running card above had to learn.
+        a.clock(NOW + 30_000);
+        let card = a.screen(200, 20).join("\n");
+        assert!(card.contains("90s left"), "{card}");
+        // A number in the hundreds of thousands is what the trap renders as, and it
+        // is a *runtime* symptom rather than a shape in the source: nothing here
+        // would have caught it in a type.
+        assert!(!card.contains("0000s left"), "a second epoch in seconds: {card}");
+    }
+
     #[test]
     fn a_rounds_prose_moves_into_the_transcript_rather_than_being_copied_into_it() {
         let mut a = app();
@@ -20270,6 +20495,7 @@ mod tests {
                 edit,
             },
             started_ms: 1_000,
+            started_at: 0,
             ended_ms: 2_000,
             note: None,
             decision: None,
