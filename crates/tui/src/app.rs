@@ -772,6 +772,32 @@ pub struct App {
     /// A body that contradicts the binding ends it too, and then both correct: the
     /// row renders from its real content and the echo reappears at the tail.
     bound_prompts: std::collections::HashMap<String, String>,
+    /// **The echoes that were in the air when the conversation was about to be
+    /// replaced** (R16).
+    ///
+    /// A fork — `/compact`, `/reseat`, an automatic compaction at the wall —
+    /// **replaces the transcript**, and a prompt that was queued under the old one
+    /// had its row summarised away with it. `retire_pending` waits for
+    /// `TranscriptContent` matched by text, and that event is never coming, so the
+    /// echo said `queued` for the rest of the session: measured on this head
+    /// 2026-09-22, three prompts still rendering `queued ·` while the tree was clean
+    /// and the work they asked for was committed.
+    ///
+    /// So a fork **resolves** the binding instead of orphaning it, and the list here
+    /// is what makes that exact rather than approximate: it is the echoes that were
+    /// pending **when the fork began**, taken then and not inferred later. An echo
+    /// queued *after* the fork began belongs to the new transcript and is left alone
+    /// — which matters, because a prompt typed during the summary turn is queued
+    /// behind that turn and lands in the base the fork produced. Retiring it would be
+    /// §4.2's swallowed sentence with a new cause.
+    ///
+    /// **Taken at the two moments the head can know.** The automatic path publishes
+    /// `auto_compact` *before* it forks (`sessions.rs`: the warning, then
+    /// `self.compact`), so that is the mark; the manual path is one this head sent
+    /// itself, so `command` marks it on the way out. The fork then says
+    /// `compacted`/`reseated` **after** it has happened, and that is where the
+    /// marked echoes go — see the `Warning` arm.
+    fork_pending: Vec<String>,
     /// Set when this head asked for a session and is waiting to be told its id.
     want_new_session: bool,
     /// The last turn's `usage`, kept past the end of the turn so the header can
@@ -1687,6 +1713,7 @@ impl App {
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             bound_prompts: std::collections::HashMap::new(),
+            fork_pending: Vec::new(),
             want_new_session: false,
             usage: None,
             usage_cache_measured: true,
@@ -3466,6 +3493,18 @@ impl App {
                 // "I chose not to show this" different from "nothing happened".
                 if code == "turn_failed" {
                     return Disposition::Filtered;
+                }
+                // **R16, the two halves of a fork.** `auto_compact` is published
+                // *before* the fork and says the conversation is about to be
+                // replaced; `compacted`/`reseated` are published after it and say it
+                // has been. An echo in the air across those two lines was waiting for
+                // a row the fork summarised away, so it is resolved here rather than
+                // left saying `queued` for the rest of the session.
+                if code == "auto_compact" {
+                    self.mark_fork();
+                }
+                if code == "compacted" || code == "reseated" {
+                    self.resolve_fork();
                 }
                 // A slash LISTING opens the pane; a slash sentence stays a note.
                 // The daemon sends both under one code — `detail` is the command
@@ -5367,6 +5406,10 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
+                // **R16: the fork this head is asking for.** The daemon announces a
+                // manual compaction only when it has finished (`compacted`), so the
+                // mark has to be taken here, on the way out.
+                self.mark_fork();
                 Some(Action::Compact)
             }
             // **The tool list is in the prompt, and a prompt is fixed for a
@@ -5387,6 +5430,8 @@ impl App {
                     return None;
                 }
                 let summarise = cmd.ends_with("summarise") || cmd.ends_with("summarize");
+                // **R16: the same mark, for the other fork.**
+                self.mark_fork();
                 if summarise {
                     self.say(
                         "re-seating: summarising, so the summary replaces the conversation…",
@@ -5464,6 +5509,34 @@ impl App {
                 self.say(&format!("unknown command /{other} — try /help"));
                 None
             }
+        }
+    }
+
+    /// **The conversation is about to be replaced** (R16): remember what is in the
+    /// air, so the fork can resolve those echoes rather than orphan them.
+    ///
+    /// Clone rather than a flag, because the list has to survive the echoes being
+    /// retired normally in between — a prompt whose row lands before the fork needs
+    /// no help from this, and one still waiting does.
+    fn mark_fork(&mut self) {
+        self.fork_pending = self.pending_prompts.clone();
+    }
+
+    /// **The fork happened** (R16): retire the echoes that were waiting on a
+    /// transcript that no longer exists.
+    ///
+    /// The echo's prompt is in the ledger — a fork summarises everything said
+    /// before it, which is why the summary exists — so what is retired is the
+    /// *mark*, not the words: the conversation above already holds them, as prose
+    /// in the summary, and the row that would have carried them was replaced.
+    ///
+    /// **Only the marked ones.** An echo queued after the fork began belongs to the
+    /// new transcript and its row is still coming; retiring it would take a sentence
+    /// off the screen that has not landed, which is the defect `pending_prompts`
+    /// exists for.
+    fn resolve_fork(&mut self) {
+        for text in std::mem::take(&mut self.fork_pending) {
+            self.retire_pending(&text);
         }
     }
 
@@ -12834,6 +12907,137 @@ mod tests {
             note: letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED.into(),
         });
         assert_eq!(a.behind, 0);
+    }
+
+    /// **R16: an echo whose prompt landed under a transcript that was then replaced.**
+    ///
+    /// Measured on this head 2026-09-22: three prompts still rendering `queued ·`
+    /// while the tree was clean, no turn was running, and the work they asked for was
+    /// already committed. R2 says exactly why the mark can outlive the fact — an echo
+    /// binds to an announced row and retires on `TranscriptContent` **matched by
+    /// text** — and a compaction **replaces the transcript**, so the row those echoes
+    /// were waiting for was summarised away and the retiring event never arrives.
+    ///
+    /// The fix is at the fork and it is exact rather than approximate: the echoes that
+    /// were in the air **when the fork began** are resolved, and the ones queued after
+    /// it are left alone, because those belong to the new transcript and their rows
+    /// are still coming. Both halves are asserted here, and the second matters as much
+    /// as the first: retiring an echo whose row has not landed takes a sentence off
+    /// the screen, which is §4.2's defect with a new cause.
+    ///
+    /// **Why the shape is "mark on the way in, resolve on the way out".** A fork
+    /// announces itself twice — `auto_compact` *before* it happens and `compacted`
+    /// *after* — and only the first of those can say what was in the air. A manual
+    /// `/compact` has no "before" warning at all, so the head takes its own mark as
+    /// it sends the request. Both are the head's own bookkeeping on facts it already
+    /// has; no daemon change is involved.
+    #[test]
+    fn a_compaction_resolves_the_echoes_it_supersedes() {
+        let hub = Hub::new("s");
+        let att = hub.attach("tui", "test", Caps::default(), 0);
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", true)],
+            Hub::new("s").snapshot(),
+        ));
+        hub.publish(testing::turn_started("t1"));
+        feed(&mut a, &hub, &att.head_id);
+        assert!(a.turn_running(), "the premise: a turn is running");
+
+        // The operator types and sends. The hub takes the prompt as a follow-up user
+        // item and the head echoes it — the R2 window, and the only place the words
+        // exist until the step boundary.
+        typed(&mut a, "also fix the parser");
+        assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+        let queued = a.screen(100, 24).join("\n");
+        assert!(queued.contains("queued · also fix the parser"), "{queued}");
+
+        // **The fork, in the order the daemon publishes it.** `auto_compact` says the
+        // conversation is about to be replaced; `compacted` says it has been; and the
+        // new base arrives as rows. The prompt's own row was in the transcript that
+        // was summarised away, so no `TranscriptContent` for it ever comes — which is
+        // the defect, and it is this test's own premise.
+        hub.publish(SessionEvent::Warning {
+            code: "auto_compact".into(),
+            detail: "938065 of 999999 tokens resident — compacting now".into(),
+        });
+        hub.publish(SessionEvent::Warning {
+            code: "compacted".into(),
+            detail: "compacted: 940188 → 9181 tokens, on transcript s#t25".into(),
+        });
+        hub.publish(SessionEvent::TranscriptAppended {
+            item_id: "s#t25.0".into(),
+            kind: "system".into(),
+            ledger_head: String::new(),
+        });
+        hub.record_item(
+            "s#t25.0",
+            TranscriptItem::System {
+                text: "This conversation was compacted: everything said before this point \
+                       is replaced by the summary below…"
+                    .into(),
+                origin: letibot_transcript::SystemOrigin::Update,
+            },
+        );
+        feed(&mut a, &hub, &att.head_id);
+
+        // **The mark is gone, and it is gone because the fork resolved it.** The
+        // prompt's words are still in the conversation — as prose in the summary — and
+        // what left the screen is the claim that the daemon had not taken them yet.
+        let after = a.screen(100, 24).join("\n");
+        assert!(
+            !after.contains("queued ·"),
+            "the mark outlived the transcript it was waiting for: {after}"
+        );
+        assert!(
+            a.pending_prompts.is_empty(),
+            "the echo is still held: {:?}",
+            a.pending_prompts
+        );
+
+        // **And one queued after the fork is left alone**, because its row is still
+        // coming. This is the half that must not be lost, and the next fork is what
+        // takes it — proving the mark is re-taken per fork rather than spent once.
+        typed(&mut a, "and now the next thing");
+        assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+        let still = a.screen(100, 24).join("\n");
+        assert!(still.contains("queued · and now the next thing"), "{still}");
+
+        hub.publish(SessionEvent::Warning {
+            code: "auto_compact".into(),
+            detail: "compacting again".into(),
+        });
+        hub.publish(SessionEvent::Warning {
+            code: "compacted".into(),
+            detail: "compacted again".into(),
+        });
+        feed(&mut a, &hub, &att.head_id);
+        let last = a.screen(100, 24).join("\n");
+        assert!(
+            !last.contains("queued ·"),
+            "the second fork left its own echoes behind: {last}"
+        );
+
+        // **A manual fork takes its mark on the way out**, because the daemon only
+        // says `compacted` — after the fact — for one the head asked for.
+        let mut b = app();
+        b.session_id = "s".into();
+        b.pending_prompts.push("typed while the turn ran".into());
+        assert_eq!(b.command("compact"), Some(Action::Compact));
+        assert_eq!(
+            b.fork_pending,
+            vec!["typed while the turn ran".to_string()],
+            "a manual compaction marked nothing"
+        );
+        b.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "compacted".into(),
+                detail: "compacted".into(),
+            },
+        )));
+        assert!(b.pending_prompts.is_empty(), "the manual fork resolved nothing");
     }
 
     /// **A refusal the harness made is one dim line, not a wall in red.**

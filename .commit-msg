@@ -1,114 +1,103 @@
-a running call counts up while the daemon says nothing
+a fork resolves the echoes it supersedes rather than orphaning them
 
-R13. The operator, 2026-09-21: *"when a tool call takes time — say `cargo build` —
-it is frozen at 0ms until it finishes. A live coarse timer would be nice, say
-1/10th of a second."*
+R16. The operator, 2026-09-22, on this head's own screen: **three rows still
+rendering `queued ·`** while the tree was clean, no turn was running, and the work
+those prompts asked for was committed in `452d7dd`. So they were delivered and acted
+on and the mark was lying.
 
-## First: this head's defect is NOT leticl's, and the difference is the whole case
+**R2 says exactly why it can.** An echo binds to an announced row and retires on
+`TranscriptContent` **matched by text** — a deliberate rule that stays, because
+leticl's comment records that matching any other way took the wrong prompt off first
+when two of different lengths were queued. A compaction **replaces the transcript**:
+the row those echoes were waiting for was summarised away, so the retiring event
+never arrives in the form they expect and the mark stays for the life of the session.
 
-leticl measured its own half and reported that the **number was never the problem,
-the asking was**: its loop paints only when a frame or a key marks the head dirty,
-so anything computed from the clock was computed and never drawn. If that had been
-true here, this commit would be about the draw loop and my `0ms`, my spinner and
-`notice_ttl` would have been one defect with three symptoms.
+## Why it is not a stale word
 
-**It is not true here, and that is checkable rather than arguable.** `term.keys()`
-returns after ~100 ms of quiet (`VMIN=0 VTIME=1`), and `Driver::tick` composes a
-frame on every pass — `let screen = app.screen(size.0, size.1);` is called
-unconditionally, after the drain and before the ack — so a quiet screen is still a
-frame every 100 ms and every clock-derived value in it is recomputed. That is also
-why `notice_ttl` is **not** one of the symptoms: it counts frames, and frames tick.
-(The spinner already read `App::now_ms` for the same reason; that its comment
-explains the switch off `t.last_ms` is the clue to the real defect.)
+R2's whole argument is that `queued` means *bound but unconfirmed*, and that keeping
+the mark is the honest rendering while the binding is unconfirmed. **That honesty
+depends on the mark being retired when it is confirmed.** A `queued` that never
+clears turns the one signal distinguishing *"the daemon has not taken this yet"* from
+*"the daemon has it"* into furniture — and an operator who has learnt that `queued` is
+unreliable cannot use it on the occasion it is telling the truth.
 
-## The real defect: two clocks, two hundred lines apart, on one screen
+## The fix: mark on the way in, resolve on the way out
 
-    turn_status   →  self.now_ms          ← advanced every tick by the driver
-    call_card     →  TurnPane::last_ms    ← the last EVENT's timestamp
+The requirement is that a fork **resolves** the binding rather than orphaning it. It
+does not say *how*, and the naive answers are both wrong:
 
-`last_ms` **stops** whenever the daemon stops saying things — which is precisely
-what a silent `cargo build` does. So a row carried a spinner that turned and a
-duration frozen at `0ms`, because they were reading different clocks: the border
-said `Responding · 30.0s` while the card directly above it said `0ms`. Both numbers
-were "measured"; only one of them was measuring anything.
+- **Retire every echo when the fork is announced.** Wrong, and measurably so: a prompt
+  typed *during* the summary turn is queued behind it and lands in the base the fork
+  produces. Retiring it takes a sentence off the screen that has not landed, which is
+  §4.2's swallowed prompt with a new cause.
+- **Retire on `compacted` alone, and hope.** The same defect, one prompt narrower.
 
-## The fix, and why it is an anchor rather than a substitution
+So the head takes a mark of **what was in the air when the fork began** and retires
+exactly that. Two moments are knowable and they are different facts about the same
+event:
 
-Using `self.now_ms` for the running card is the obvious fix and it is wrong for one
-case: a `--replay` applies every frame **before** it ever sets a clock (`bin`:
-the envelopes are applied in a loop; `app.clock` is called only in the interactive
-loop after them), so its frames carry the recording's timestamps while `now_ms` is
-whatever the head was last told. Mixing the two would date a year-old call from
-today — the same class of error as the `Responding · 496940h16m` a snapshot used to
-render, which this file already has a guard for.
+    auto_compact   published BEFORE the fork  (`sessions.rs`: the warning, then
+                   `self.compact`) — the head can mark what is pending
+    compacted      published AFTER it         — the marked echoes are resolved
+    reseated       the same, for the other fork
 
-So `CallRow` gains `started_at`: **the head's own clock at the moment the call
-started, or 0 when the head had no clock then.** The elapsed is measured from that
-when it exists, and from the log's span when it does not, and the anchor is taken
-*when the event is handled* — not at render — for exactly the reason above: in a
-replay there is no clock to take yet, so the anchor records the absence honestly
-instead of guessing at render time.
+**A manual `/compact` has no "before" warning**, because the daemon only says
+`compacted` once it has finished; the head sent that request itself, so `command`
+takes the mark on the way out (`/reseat` too). No daemon change is involved: both are
+bookkeeping on facts the head already has, which is the cheapest possible form of
+this fix and the one that cannot drift from the daemon's behaviour.
 
-**And it moves wherever `started_ms` moves**, which is the half that is easy to get
-wrong and was: `started_ms` restarts at `ToolStarted` because *"a call that waited
-on a decision did not spend that time running"*, so `started_at` restarts there too.
-My first cut anchored only at the proposal, which silently counted the guard's
-decision wait as running time — the exact sentence that comment exists to prevent,
-arrived at from the other side. Found by the test, whose first run read `200ms` where
-it wanted `1.0s`.
+`fork_pending` is a **clone rather than a flag** on purpose: echoes retire normally in
+between (a row that lands before the fork needs no help from this, and one still
+waiting does), and a flag could not tell those apart afterwards.
 
-## R13's two-clocks trap, checked in the second place it could live
+## The measurement, and the control inside it
 
-leticl found a second instance while building §1.6: its secret card subtracted a
-**Unix** deadline from a **monotonic** clock and had been drawing a number in the
-hundreds of thousands of seconds since it was written. The operator asked me to
-check the third possible one, and the answer is **this head does not have it** — the
-deadline on the wire is `letibot_sessionlog::event::now_ms()` (epoch), and the clock
-this head is handed (`bin::now_ms`, `driver::now_ms`) is the epoch too, so the
-subtraction is in one frame.
+The operator asked for the orphan to be shown before it was fixed, and the test does
+that in one place rather than in two runs: it drives a real `Hub` — a turn running,
+a prompt sent and echoed, then the fork's own three events (`auto_compact`,
+`compacted`, the new base's summary row) with **no `TranscriptContent` for the
+prompt**, which is the defect stated as the fixture.
 
-That was a property nobody had asserted, which is the kind of thing that stops being
-true quietly, so it is a test now rather than a sentence. It also turned up a small
-fact worth keeping: the countdown is the **last** field on that line and the card
-*trims to the width*, so on a 96-column terminal the number is cut off before it can
-be read. Not fixed here — recorded, because a deadline a narrow screen cannot show is
-the same family as everything else this queue is about.
+**And its second half is the control.** A prompt sent *after* the fork is asserted to
+still render `queued · and now the next thing` — so the first half's absence is the
+resolution doing its work and not a renderer that has stopped drawing echoes at all.
+That half then goes through a second fork, which shows the mark is re-taken per fork
+rather than spent once; and a third case pins the manual path (`command("compact")`
+marks, and the `compacted` that follows resolves).
 
 ## Tests
 
-- `a_running_call_counts_up_while_the_daemon_says_nothing` — the whole requirement,
-  and it asserts its own premise: `last_event_at` is captured and re-checked at both
-  assertions, so the test cannot pass because an event happened to arrive. 200 ms in
-  with nothing said the row reads `200ms`; thirty silent seconds later it reads
-  `30.0s`. The second half is the case that must **not** be lost: a head that was
-  never told the time keeps the log's own span (`assert_eq!(b.now_ms, 0)` first), so
-  the replay is pinned rather than assumed.
-- `the_password_cards_countdown_is_seconds_and_not_a_second_epoch` — the two-clocks
-  check above, with the daemon's own shape (`now_ms + PATIENCE`) and a countdown
-  asserted at two instants.
-- Three existing fixtures updated for the new field (`edit_row`, the snapshot
-  rebuild, and the secret card's own test, which asserts against a wide frame for the
-  reason above).
+- `a_compaction_resolves_the_echoes_it_supersedes` — the above: the orphan, the
+  resolution, the control, the second fork, and the manual mark.
+- `cargo test -p letibot-tui`: **302 passed, 0 failed, 4 ignored** (301 + 1).
+  All targets: 3 + 3 passed.
 
-`cargo test -p letibot-tui`: **301 passed, 0 failed, 4 ignored** (299 + 2).
-All targets: 3 + 3 passed.
-
-**Not verified, and said rather than glossed:** `rustfmt --check` on `crates/tui/src/
-app.rs` did **not** run this time — the check needs to write a temp file, and `bash`
-is closed for that direction by the circuit breaker (three earlier refusals, from the
-corpus reads; only the operator lifts it). `cargo test` compiled and ran the crate,
-so the code is valid; the formatting is written to rustfmt's shape by hand and has
-not been diffed. `cargo check --workspace` also cannot run: `/home/dead/Projects/
-rano` — a path dependency — has an unclosed delimiter in `src/syntax.rs`, somebody
-else's edit in flight, unrelated to this tree.
+**Not verified, and said rather than glossed:** `rustfmt --check` on this file still
+cannot run — the check writes a temp file and `bash` is closed for that direction by
+the circuit breaker, which only the operator lifts. `cargo test` compiled and ran the
+crate. `cargo check --workspace` cannot run either: `/home/dead/Projects/rano`, a path
+dependency, has an unclosed delimiter in `src/syntax.rs` — somebody else's edit in
+flight, unrelated to this tree.
 
 ## Not in this commit
 
-**R16** is next and is the same root cause this file's `bound_prompts` started from:
-an echo retires on `TranscriptContent` matched by text, and a compaction *replaces*
-the transcript, so the event it waits for never arrives in the form it expects. Then
-**R14**, **R12**, **§1.6** — for which leticl's `550bc94` is the reference, and
-whose secret-card bug is the one checked above.
+**Two more R16 shapes I found while reading the mechanism, neither fixed and neither
+measured, because a fix without a measurement is what this queue keeps punishing:**
 
-**leticl's half of R13** is its own tree's; its finding is recorded here because it
-is the reason this commit opens with "not leticl's defect" rather than with the loop.
+1. **The merged-echo direction.** `retire_pending` handles a landing row that is the
+   *front piece* of a coalesced echo. The opposite also looks possible: the engine
+   merges consecutive prompts into one row (`"a\nb"`) while the head holds two echoes
+   (`"a"`, `"b"`) — because `turn_running()` was false when one of them was sent — and
+   then the row's text matches neither echo and neither retires. The query that would
+   decide it (which prompt texts appear only *inside* a longer user row) is the one
+   written down in `~/Projects/blocked-queries-r11-r16.md`.
+2. **A snapshot that supersedes, rather than a fork.** `load` prunes `bound_prompts`
+   to the ids the snapshot still carries, and retires the echoes the snapshot's rows
+   prove landed — but an echo whose row a *snapshot* dropped (a trim, or a fork the
+   head reattached into) has the same orphaning shape and no `compacted` warning to
+   hang a mark on. R17's `orphan_bodies` counts the bodies that arrive for rows that
+   are gone; this would be the same facts from the other side.
+
+Then **R14**, **R12**, **§1.6** — for which leticl's `550bc94` is the reference, and
+whose secret-card two-clocks bug is checked in `fe80602`.
