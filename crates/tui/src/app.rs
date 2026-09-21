@@ -51,7 +51,18 @@ pub enum Verbosity {
     Terse,
     /// Plus reasoning.
     Normal,
-    /// Plus warnings, head arrivals, and who issued which command.
+    /// Plus head arrivals and who issued which command.
+    ///
+    /// **And a warning is not on this ladder.** This doc used to promise that
+    /// *Loud* adds warnings, and the code never gated them — so the doc and the
+    /// head disagreed, and R10 asked which was wrong. The code was right and the
+    /// doc was: a warning is a fact the daemon chose to INTERRUPT with, and a
+    /// level that hides it makes the head the thing that decides the operator
+    /// should not have seen it. Worse in this shape than in most: `Verbosity` is
+    /// applied to the whole transcript at once, so switching to `terse` would
+    /// retroactively erase a warning that had already been read — which is not a
+    /// filter but a revision. What a reader has against a warning is `/notes
+    /// dismiss`, which is per-note, visible, and counted on `/status`.
     Loud,
 }
 
@@ -220,7 +231,10 @@ pub enum Key {
     Eof,
     /// Fold or unfold the model's reasoning.
     CtrlR,
-    /// Fold or unfold tool output.
+    /// **Open the rest of the newest long tool result**, or close that window.
+    ///
+    /// One row, and not the conversation: the whole-conversation unfold is the verb
+    /// `/t`. See the `CtrlT` arm in `App::key` for the ruling.
     CtrlT,
     /// Show or hide the raw, unparsed text of tool calls.
     CtrlX,
@@ -850,6 +864,26 @@ pub struct App {
     /// screen — and a settled decision was recorded and then never rendered at all,
     /// which is the silence §13.2b says a refusal must not become.
     notes: Vec<(usize, Note)>,
+    /// **The notes this reader has retired**, by [`note_key`] — the identity a
+    /// note keeps across a resync and a restart.
+    ///
+    /// R10: a note is a **disclosure, not a permanent record**. The session log
+    /// holds the durable fact; the note is how a head shows it ONCE. Nothing
+    /// removed one before — only the conversation growing past it — so on an idle
+    /// session the red wall stayed for ever, and a resync or a restart made it
+    /// *worse*: a snapshot's warnings are unanchored history, so the wall came
+    /// back at position 0 above the whole conversation.
+    ///
+    /// The keys live in `head.toml` rather than in the process, because a
+    /// restart is one of the two cases that used to replant the wall. They are
+    /// keyed per incident (see [`note_key`]), so two sessions do not share a
+    /// dismissal; the cap is a cap on *this reader's memory*, not on the log.
+    ///
+    /// **Retired is not deleted.** A note whose key is here is *hidden, counted
+    /// and findable*: it stays in `notes`, `/notes` lists it with its text, and
+    /// `/status` counts it. That is the rule `/status`'s own `filtered` counter
+    /// keeps — "I chose not to show this" must not look like "nothing happened".
+    dismissed: Vec<String>,
     /// How many of those are already in `hist_lines`.
     note_upto: usize,
     heads: usize,
@@ -1539,6 +1573,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("verbosity", "cycle the event-stream detail"),
     (
+        "notes",
+        "what this head has shown — and how to retire one",
+    ),
+    (
         "config",
         "every setting, the runtime-editable ones editable in place",
     ),
@@ -1606,6 +1644,7 @@ impl App {
             term_cols: 0,
             sel: 0,
             notes: Vec::new(),
+            dismissed: Vec::new(),
             heads: 0,
             hist_renders: 0,
             seq: 0,
@@ -3536,27 +3575,33 @@ impl App {
                 return None;
             }
             Key::CtrlT => {
-                self.tools = self.tools.flip();
-                // **Opening the fold also opens a payload view**, on the newest row that
-                // has one — because the fold alone was the bug: it raised the *budget*
-                // (which rows may be long) without giving any row an *offset*, so a
-                // payload past its first screenful stayed unreachable and the seam said
-                // `… +N lines` to a key that revealed none of them.
+                // **One row, not a switch — R10's ruling on the overload.**
                 //
-                // The newest, because that is the one a reader is looking at: rows are
-                // appended at the bottom and the fold is a global switch.
-                if self.tools.is_open() {
-                    if let Some(id) = self.newest_payload_row() {
-                        self.payload_sel = Some(id);
-                        self.payload_page = 0;
-                    }
-                } else {
-                    // Closing the fold closes the view with it: a page offset into a
-                    // payload that is no longer drawn is a cursor in a closed file.
+                // This used to flip the conversation-wide tool fold *and* seed a window
+                // on the newest long result, so one chord did two things: the wall, and
+                // one row's rest. The seam under the reader's eyes says `… +N lines ·
+                // ctrl-t opens it`, which reads per-row, and the operator's report is
+                // exactly that **what surprised them was that ctrl-t triggered the wall
+                // AT ALL**. A chord cannot be named by a per-row seam and mean the whole
+                // conversation, so it keeps the meaning a seam can honestly name and the
+                // conversation-wide unfold keeps `/t`, which is where it already lived
+                // (and where `/help` now points).
+                //
+                // The window follows the newest long result for the reason
+                // [`App::newest_payload_row`] gives, and the seam names this chord only
+                // on that row — every other row names `/t`, because a chord may only be
+                // named where it acts.
+                if self.payload_sel.is_some() {
                     self.payload_sel = None;
                     self.payload_page = 0;
+                } else if let Some(id) = self.newest_payload_row() {
+                    self.payload_sel = Some(id);
+                    self.payload_page = 0;
                 }
-                self.refold();
+                // **Not `refold`.** That is the fold's own: it resets the scroll and
+                // announces the fold state, and neither happened here.
+                self.invalidate_history();
+                self.redraw = true;
                 return None;
             }
             // Ctrl+X, and the reason it is not one of the obvious letters is worth
@@ -3909,21 +3954,26 @@ impl App {
         }
         // **Esc while parked in the scrollback means "follow the stream again"**,
         // which is what the scrollback banner says it means. Only then does Esc
-        // start arming an interrupt.
-        if matches!(k, Key::Esc) && self.scroll > 0 {
+        // start arming an interrupt — **and not while a payload window is open**: that
+        // window's own seam prints `esc closes`, and the surface carrying the promise is
+        // the one Esc has to keep it to. See the arm below.
+        if matches!(k, Key::Esc) && self.scroll > 0 && self.payload_sel.is_none() {
             self.scroll = 0;
             return None;
         }
-
         // **An open payload view owns the arrows and Esc**, and it sits here — ahead of
-        // the transcript's own scrolling — for the same reason the pane arm above does:
-        // the reader has said which row they are reading, and Up/Down must move *inside*
-        // it rather than moving the conversation underneath. Ahead of the decision
-        // ladder too, because a payload view is opened deliberately and a permission
-        // that arrives while it is open should not steal the arrows from under it.
+        // the transcript's own scrolling — for two reasons. The reader has said which row
+        // they are reading, so Up/Down must move *inside* it rather than moving the
+        // conversation underneath; and the seam it draws says `esc closes`, so Esc must
+        // mean that while it is up. It used to lose Esc to the scrollback arm above,
+        // which meant a reader who was parked in the history *and* had a window open got
+        // the transcript un-parked instead — a panel on the screen advertising a key that
+        // had just done something else. Ahead of the decision ladder too, because a
+        // payload view is opened deliberately and a permission that arrives while it is
+        // open should not steal the arrows from under it.
         //
-        // Esc closes the view rather than arming an interrupt, and the panel says so
-        // (`esc closes`), which is the same bargain the subagent-output pane makes.
+        // The same bargain the subagent-output pane makes, and the rule behind both:
+        // whichever surface prints `esc closes` owns Esc, and only one can be up.
         if self.payload_sel.is_some() {
             /// How far one press pages. The same unit the transcript scrolls by.
             const BY: usize = 10;
@@ -3958,7 +4008,6 @@ impl App {
                 _ => {}
             }
         }
-
         // **An open decision owns Up/Down and a bare Enter.**
         //
         // Before the composer, because while a prompt is on the screen those keys mean
@@ -5082,6 +5131,25 @@ impl App {
                 Some(Action::Quit)
             }
             "resync" => Some(Action::Resync),
+            // **`/notes` — the disclosures this head has shown** (R10), and
+            // `/dismiss` — the same action under the word a person types at a wall
+            // of red. Both land in `notes_command`, so the two spellings cannot
+            // disagree about what retired means.
+            //
+            // Placed before the one-word arms because it takes arguments: `rest`
+            // is everything after the verb, and `/notes` with nothing after it
+            // lists rather than acting.
+            _ if verb_arg(cmd, "notes")
+                .or_else(|| verb_arg(cmd, "dismiss"))
+                .is_some() =>
+            {
+                let (verb, rest) = if let Some(rest) = verb_arg(cmd, "notes") {
+                    ("notes", rest)
+                } else {
+                    ("dismiss", verb_arg(cmd, "dismiss").unwrap_or(""))
+                };
+                return self.notes_command(verb, rest);
+            }
             "help" | "h" | "?" => {
                 self.help = !self.help;
                 self.pane_scroll = 0;
@@ -5107,6 +5175,10 @@ impl App {
             // tools"*. The listing is the question worth a word; the fold keeps
             // its key, and `/t` keeps the old behaviour for the fingers that
             // learnt it.
+            // **`/t` unfolds every tool row at once and is the fold's only spelling**
+            // (R10 moved it off `ctrl-t`, which now opens one result's window — see
+            // `Key::CtrlT`). It used to be the legacy spelling of a chord that already
+            // did this, which made it a synonym nothing pointed at; now it is the name.
             "t" => {
                 self.tools = self.tools.flip();
                 self.refold();
@@ -5638,6 +5710,177 @@ impl App {
         }
     }
 
+    /// **Is this note one the reader has retired?**
+    ///
+    /// A retired note is not rendered, and nothing else about it changes: it stays
+    /// in `notes`, [`App::notes_lines`] lists it with its text, and
+    /// [`App::retired_notes`] counts it. See [`App::dismissed`].
+    fn is_retired(&self, n: &Note) -> bool {
+        self.dismissed.contains(&note_key(n))
+    }
+
+    /// How many of the notes this head holds are hidden right now.
+    ///
+    /// The number `/status` shows. Deliberately *computed from the notes* rather
+    /// than kept as a counter: a counter can disagree with the screen, and the one
+    /// thing a count of what is hidden may not do is be wrong.
+    fn retired_notes(&self) -> usize {
+        self.notes
+            .iter()
+            .filter(|(_, n)| self.is_retired(n))
+            .count()
+    }
+
+    /// **Retire a note, or all of them.** Returns how many were newly hidden.
+    ///
+    /// Written through one function so the two callers (`/notes dismiss` and
+    /// `/dismiss`) cannot disagree about the three things that have to happen
+    /// together: the key list, the rendered history, and the file.
+    fn retire(&mut self, keys: Vec<String>) -> usize {
+        let mut added = 0;
+        for k in keys {
+            if self.dismissed.contains(&k) {
+                continue;
+            }
+            self.dismissed.push(k);
+            added += 1;
+        }
+        if added == 0 {
+            return 0;
+        }
+        // Oldest out, `prefs::RETIRED_CAP` deep: the list is this reader's memory,
+        // and an unbounded one is a file that grows for the life of the box.
+        let over = self
+            .dismissed
+            .len()
+            .saturating_sub(crate::prefs::RETIRED_CAP);
+        if over > 0 {
+            self.dismissed.drain(..over);
+        }
+        // A note that was in `hist_lines` has to come out of it, and the walk is
+        // incremental: the only honest way to un-draw a line is to rebuild.
+        self.invalidate_history();
+        self.redraw = true;
+        added
+    }
+
+    /// **`/notes` — what this head has shown, and how to retire it.**
+    ///
+    /// R10. Three verbs in one, because they are one subject: nothing listed the
+    /// notes, nothing retired one, and a reader who has just retired the wall needs
+    /// a way back if they were wrong. `rest` is the text after the verb.
+    fn notes_command(&mut self, verb: &str, rest: &str) -> Option<Action> {
+        // `/dismiss` is the same action under the word the operator would type at a
+        // red wall; `/notes dismiss` is where it is documented.
+        let rest = if verb == "dismiss" && rest.is_empty() {
+            "all"
+        } else {
+            rest
+        };
+        match rest {
+            "" => {
+                let lines = self.notes_lines();
+                self.slash_out = Some(("/notes".to_string(), lines));
+                self.pane_scroll = 0;
+                self.redraw = true;
+                None
+            }
+            "restore" | "back" | "undismiss" => {
+                let back = self.dismissed.len();
+                self.dismissed.clear();
+                self.invalidate_history();
+                self.redraw = true;
+                let saved = self.save_prefs();
+                self.say(&if back == 0 {
+                    "nothing was retired, so nothing came back".to_string()
+                } else {
+                    format!(
+                        "{back} retired note(s) back on the screen — the log was never \
+                         the thing they were hidden from{saved}"
+                    )
+                });
+                None
+            }
+            other => {
+                // `dismiss` is the word itself: `/notes dismiss` and `/dismiss all`
+                // both land here.
+                let arg = other.strip_prefix("dismiss").map(str::trim).unwrap_or("");
+                let keys: Vec<String> = match arg {
+                    "" | "all" => self.notes.iter().map(|(_, n)| note_key(n)).collect(),
+                    n => {
+                        let Some(n) = n.parse::<usize>().ok().filter(|k| *k >= 1) else {
+                            self.say(&format!(
+                                "`{n}` is not a number — `/notes` lists them, and \
+                                 `/notes dismiss N` retires the Nth"
+                            ));
+                            return None;
+                        };
+                        match self.notes.get(n - 1) {
+                            Some((_, note)) => vec![note_key(note)],
+                            None => {
+                                self.say(&format!(
+                                    "there is no note {n} — `/notes` lists the {} this \
+                                     head holds",
+                                    self.notes.len()
+                                ));
+                                return None;
+                            }
+                        }
+                    }
+                };
+                let hidden = self.retire(keys);
+                let saved = self.save_prefs();
+                self.say(&format!(
+                    "retired {hidden} note(s) — hidden, still counted on /status, and \
+                     `/notes` shows them{saved}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// The `/notes` listing: every note this head holds, in the order the
+    /// conversation has them, numbered for `/notes dismiss N`.
+    fn notes_lines(&self) -> Vec<String> {
+        let n = self.notes.len();
+        let retired = self.retired_notes();
+        let mut out = if n == 0 {
+            vec![
+                "this head holds no notes. A note is a disclosure: a guard that fired, a \
+                 decision that settled, a sentence the daemon interrupted with. They are \
+                 in the session log whether or not this head is showing them."
+                    .to_string(),
+            ]
+        } else {
+            vec![format!(
+                "{n} note(s), {retired} retired — the log holds the durable fact; a note is \
+                 how a head shows it once"
+            )]
+        };
+        for (i, (_, note)) in self.notes.iter().enumerate() {
+            // **The same renderer the transcript uses, unfolded.** A listing that hid
+            // the tail of the very thing it exists to make findable would be the
+            // defect again, so the whole text is here.
+            let body = note_lines_unfolded(&self.cfg, note);
+            let mark = if self.is_retired(note) {
+                "[retired]"
+            } else {
+                ""
+            };
+            out.push(format!("{:>3}  {mark}", i + 1));
+            out.extend(body);
+        }
+        if n > 0 {
+            out.push(String::new());
+            out.push(
+                "/notes dismiss [N|all] retires one, or every one · /notes restore brings \
+                 them all back"
+                    .to_string(),
+            );
+        }
+        out
+    }
+
     /// One frame: `h` lines of at most `w` columns.
     ///
     /// # The cost of a frame does not grow with the session
@@ -6137,7 +6380,7 @@ impl App {
         } else if !self.open.is_empty() {
             "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
-            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t tool output · ctrl-q jobs · tab completes /commands · /help"
+            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t long output · ctrl-q jobs · tab completes /commands · /help"
         };
         // The separator belongs between two halves, not in front of one: with
         // the editor's half suppressed the bar used to open with a bare `·`.
@@ -6177,6 +6420,9 @@ impl App {
             .unwrap_or_default();
         // (class, lines) for each row, newest first as they are built.
         let mut built: Vec<(RowClass, Vec<String>)> = Vec::new();
+        // Read once, before the loop: the walk needs it per row and recomputing it there
+        // would be a scan of `items` for every row drawn.
+        let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
         let mut covered = |built: &[(RowClass, Vec<String>)]| {
             self.hist_lines.len() + built.iter().map(|(_, l)| l.len() + 1).sum::<usize>()
@@ -6207,6 +6453,7 @@ impl App {
                         .payload_sel
                         .as_deref()
                         .map(|id| (id, self.payload_page)),
+                    payload_newest: newest_payload.as_deref(),
                 },
             );
             if !rows.iter().all(|l| l.trim().is_empty()) {
@@ -6259,18 +6506,21 @@ impl App {
     /// than a line or two of text.
     ///
     /// "Newest" because that is the one the reader is looking at — rows are appended at
-    /// the bottom, and `ctrl-t` is one switch for all of them. Returning `None` leaves
-    /// the fold open with no view, which is right for a session whose last result is one
-    /// line long: there is nothing to page and nothing should be claimed.
+    /// the bottom — and because it is the **only** row a head with no cursor can
+    /// address: `ctrl-t` opens a window on this row and the arrows page it. Every other
+    /// long row's seam therefore names `/t` rather than the chord; see
+    /// [`ItemCtx::payload_newest`]. Returning `None` means no result is long enough to
+    /// have a rest, and then the chord opens nothing rather than claiming a window.
     fn newest_payload_row(&self) -> Option<String> {
-        self.items.iter().rev().find_map(|it| {
-            match it.item.as_ref() {
+        self.items
+            .iter()
+            .rev()
+            .find_map(|it| match it.item.as_ref() {
                 Some(TranscriptItem::ToolResult { payload, .. }) if payload.lines().count() > 2 => {
                     Some(it.item_id.clone())
                 }
                 _ => None,
-            }
-        })
+            })
     }
 
     /// **Scroll back by `by` lines, rendering whatever that needs.**
@@ -6367,6 +6617,10 @@ impl App {
             self.hist_floor = self.items.len();
             self.fill_backward(room + TAIL_SLACK);
         }
+        // **The one row `ctrl-t` can act on**, read once here rather than per row inside
+        // the walk below — and before the walk's own borrow of `self`, which is why it is
+        // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].
+        let newest_payload = self.newest_payload_row();
         // The rows the live pane is still drawing. An assistant row in this set
         // does **not** draw its own unsettled calls: the pane below is drawing
         // them, with a spinner and a running clock, and `→ Read foo.rs · no result`
@@ -6405,6 +6659,7 @@ impl App {
                 payload_sel,
                 payload_page,
                 bound_prompts,
+                dismissed,
                 ..
             } = self;
             let diff_split = *diff_split;
@@ -6413,11 +6668,19 @@ impl App {
                     .get(*note_upto)
                     .is_some_and(|(at, _)| *at <= *hist_upto);
                 if note_next {
-                    if !hist_lines.is_empty() {
-                        hist_lines.push(String::new());
+                    // **A retired note contributes nothing — not its text, and not
+                    // the blank line above it.** R10: the note is a disclosure, and
+                    // the reader has read it. Skipping the blank as well is what
+                    // makes the wall go rather than becoming a column of gaps; the
+                    // note itself is still in `notes`, still counted on `/status`,
+                    // and still listed by `/notes`.
+                    if !dismissed.contains(&note_key(&notes[*note_upto].1)) {
+                        if !hist_lines.is_empty() {
+                            hist_lines.push(String::new());
+                        }
+                        hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
+                        *hist_class = Some(RowClass::Other);
                     }
-                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
-                    *hist_class = Some(RowClass::Other);
                     *note_upto += 1;
                 // `hist_upto` is "every row at or below this index is accounted for".
                 // A tail walk sets it to the row count, so this does nothing until a
@@ -6494,6 +6757,7 @@ impl App {
                                 .as_deref()
                                 .filter(|id| !id.is_empty())
                                 .map(|id| (id, *payload_page)),
+                            payload_newest: newest_payload.as_deref(),
                         },
                     );
                     // A row that rendered nothing gets no separator either. An
@@ -7065,8 +7329,16 @@ impl App {
     /// tick the operator's boxes would let a plan edit its own backlog.
     /// Load the head's preferences from disk and apply them. Called once, before
     /// the first frame; the notes are what could not be read, said on the screen.
+    ///
+    /// **A path already named is kept.** `main` calls this before anything else and
+    /// names nothing, so in production this is still `prefs::path()` — the one file the
+    /// head writes. The reason it does not *replace* a path is that the retired notes
+    /// are read here and nowhere else, so a test that wants to prove a dismissal
+    /// survives a restart has to be able to point a head at the file it wrote; forcing
+    /// the reader to reach into `$HOME` would have made the round trip untestable and
+    /// left the property asserted nowhere.
     pub fn load_prefs(&mut self) {
-        self.prefs_path = crate::prefs::path();
+        self.prefs_path = self.prefs_path.clone().or_else(crate::prefs::path);
         let Some(path) = self.prefs_path.clone() else {
             return;
         };
@@ -7083,6 +7355,11 @@ impl App {
             Fold::Folded
         };
         self.raw_calls = p.raw_calls;
+        // **R10's retired notes come from the file, not from the process.** A head
+        // restart is one of the two things that used to replant the wall, so a
+        // dismissal that lived only in this run would be a dismissal that lasts
+        // until the next restart — which is the defect, not the fix.
+        self.dismissed = p.retired.clone();
         for n in notes {
             self.say(&n);
         }
@@ -7099,6 +7376,7 @@ impl App {
             thinking: fold_word(self.reasoning).into(),
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
+            retired: self.dismissed.clone(),
         }
     }
 
@@ -8466,6 +8744,24 @@ impl App {
             "Events this head chose not to show at the current verbosity. \
              /verbosity walks terse → normal → loud.",
         );
+        // **R10: the notes this head holds, and how many the reader has retired.**
+        //
+        // Present and at zero, like every other counter here (§13.2b): "the reader
+        // has retired nothing" and "this head does not count what it retired" must
+        // not look the same, and the second is what every head did before this.
+        // It is beside `filtered` because it is the same kind of number — a fact
+        // about what was chosen NOT to be shown — and a different one from
+        // `dropped`, which is a fact about what is gone.
+        row(
+            "notes",
+            format!("{} · {} retired", self.notes.len(), self.retired_notes()),
+            "What this head is holding: a guard that fired, a decision that settled, a \
+             sentence the daemon interrupted with. A retired note is HIDDEN, and still \
+             here — `/notes` lists every one with its text and `/notes restore` puts the \
+             retired ones back, which is the difference between a disclosure and a \
+             deletion. The session log holds them either way; a note is how a head shows \
+             a durable fact once.",
+        );
         row(
             "dropped",
             self.dropped.to_string(),
@@ -9478,7 +9774,16 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "go to a session by number, id or part of its name",
         ),
         ("ctrl-r", "fold or unfold the model's thinking"),
-        ("ctrl-t", "fold or unfold tool output"),
+        (
+            "ctrl-t",
+            "open the rest of the newest long tool result — ↓ pages it, esc closes. \
+             It is one row, not a switch: `/t` unfolds every tool row at once",
+        ),
+        (
+            "/notes",
+            "the disclosures this head has shown; /notes dismiss [N|all] retires one \
+             or every one, /notes restore brings them back",
+        ),
         (
             "ctrl-x",
             "show the raw <function=…> text of tool calls, as the model wrote it",
@@ -10308,6 +10613,16 @@ struct ItemCtx<'a> {
     /// silently closed, and it was: the first version did exactly that and the test
     /// caught it (the seam said `ctrl-t pages` while `ctrl-t` had been pressed).
     payload_view: Option<(&'a str, usize)>,
+    /// **The one row `ctrl-t` can act on**, or `None` when no result is long enough
+    /// to have a rest to read.
+    ///
+    /// The seam names a chord, and a chord may only be named where it acts. There is
+    /// no cursor in this head, so exactly one row can be addressed — the newest long
+    /// result — and it is *this* row; every other row's seam names `/t` instead,
+    /// which is the verb that does reach an older row's payload. R10's other half:
+    /// the chord used to flip the whole conversation's fold AND seed this one row's
+    /// window, so a seam that read per-row announced a wall.
+    payload_newest: Option<&'a str>,
 }
 
 /// The decision a settled call was gated by, in the dim register: the approval is
@@ -10451,8 +10766,10 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         drawn_live,
         elapsed_ms,
         payload_view,
+        payload_newest,
         bound,
     } = *ctx;
+    let newest = payload_newest == Some(it.item_id.as_str());
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
         // **A row with no body — unless this head has bound an echo to it.**
@@ -10906,7 +11223,10 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 let hidden = rows.len() - keep;
                 out.extend(rows.into_iter().take(keep).map(|l| format!("  {l}")));
                 if hidden > 0 {
-                    out.push(p.paint(Role::Faint, &format!("  … +{hidden} diff rows · ctrl-t")));
+                    out.push(p.paint(
+                        Role::Faint,
+                        &format!("  … +{hidden} diff rows · /t unfolds it"),
+                    ));
                 }
                 return (RowClass::Activity, step_in(out, ind));
             }
@@ -10923,7 +11243,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // be unfolded on one screen and a bare offset would page all of them.
             let window = payload_view.is_some_and(|(id, _)| id == it.item_id.as_str());
             let total = lines.len();
-            let shown_rows = if window && tools.is_open() {
+            // **The window is the row's own length, not the fold's.** This read
+            // `window && tools.is_open()`, so the only way to give one result its rest was
+            // to unfold every result in the conversation — which is what made `ctrl-t` a
+            // wall. See [`ItemCtx::payload_newest`].
+            let shown_rows = if window {
                 cfg.budget.body_lines.max(2)
             } else if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
@@ -10963,8 +11287,17 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     Role::Faint,
                     &if window {
                         format!("  … +{hidden} lines · ↓ pages down · esc closes")
+                    } else if newest {
+                        // **The chord, on the row it acts on.** `ctrl-t` opens the window
+                        // into the newest long result, and this is that row.
+                        format!("  … +{hidden} lines · ctrl-t opens it")
                     } else {
-                        format!("  … +{hidden} lines · ctrl-t pages")
+                        // **Not this chord.** `ctrl-t` acts on the newest long result and
+                        // there is no cursor in this head to point it at an older one, so
+                        // this row names the verb that does reach it: `/t` unfolds every
+                        // tool row, and the newest one's window can then be paged. A seam
+                        // that named `ctrl-t` here is what the operator met as a wall.
+                        format!("  … +{hidden} lines · /t unfolds it")
                     },
                 ));
             } else if window {
@@ -10976,7 +11309,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 // cut — so the affordance has to be here, or the rest of it would
                 // be hidden behind a chord nothing on the row mentions.
                 if why_folded {
-                    out.push(p.paint(Role::Faint, "  … the rest of the reason · ctrl-t"));
+                    out.push(p.paint(Role::Faint, "  … the rest of the reason · /t unfolds it"));
                 }
             }
             (
@@ -11029,7 +11362,77 @@ enum Note {
     Decided(SettledDecision),
 }
 
+/// **What a note is called when a reader wants to retire it.**
+///
+/// One identity per disclosure, and it has to survive the two things that used to
+/// replant the wall — a resync and a restart. So it is built from the note's own
+/// facts and from nothing about where it is on the screen:
+///
+/// * a warning is `(code, ts)` with the detail hashed. `ts` is the log's clock for
+///   the envelope that carried it, which is what [`App::note`] already uses to tell
+///   one announcement from a redelivery of the same one — the same identity, for
+///   the same reason.
+/// * a settled decision is its `req_id`, which is the id the daemon recorded the
+///   decision under and the one `/gate` takes.
+///
+/// **The detail is hashed**, and that is not decoration: a warning's detail can be
+/// paragraphs long, and the key is written into `head.toml` as one comma-separated
+/// value. `("code|ts|hash", …)` is a line a person can still read and edit. The
+/// hash is FNV-1a, which is not a security boundary here — it distinguishes an
+/// incident from its neighbours, and two notes that collide on code, second and
+/// hash are the same sentence at the same instant.
+fn note_key(n: &Note) -> String {
+    match n {
+        Note::Warned(w) => format!("w|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
+        Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
+        Note::Decided(d) => format!("d|{}", d.req_id),
+    }
+}
+
+/// FNV-1a, 64-bit: the offset basis and prime, and nothing else.
+///
+/// Hand-rolled rather than taken from `std`'s hasher, which is **not** stable
+/// across releases — and a key that changes when the head is rebuilt would resurrect
+/// every note the operator had retired, which is the exact defect this exists for.
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// **How many lines of a note the conversation shows before it is a wall.**
+///
+/// R10's other half, and the number comes from the operator's own screen rather
+/// than from taste: two gate timeouts rendered **27 red lines** (*"how to remove
+/// this red wall?"*), which is around thirteen lines each — a `denied:` detail with
+/// the whole rule in it. Three lines keeps the code, the first sentence and the
+/// fact that there is more, and puts the rest one verb away; `/notes` prints the
+/// whole thing, so this is a disclosure decision and never a cap on the record.
+///
+/// The instrument is the one every other long thing in this head already uses —
+/// `keep = 8` for a card's diff rows, a seam row naming where the rest is — because
+/// a warning is not more important for being longer.
+const NOTE_LINES: usize = 3;
+
+/// One note, as the transcript draws it: at most [`NOTE_LINES`] lines and a seam.
 fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+    let all = note_lines_unfolded(cfg, n);
+    if all.len() <= NOTE_LINES {
+        return all;
+    }
+    let hidden = all.len() - NOTE_LINES;
+    let mut out: Vec<String> = all.into_iter().take(NOTE_LINES).collect();
+    out.push(dim(cfg, &format!("  … +{hidden} lines · /notes")));
+    out
+}
+
+/// The whole note, with no fold — what `/notes` lists and what the transcript
+/// shows the head of. One renderer for both, so the listing cannot disagree with
+/// the screen about the text.
+fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     match n {
         Note::Warned(w) => wrap(&format!("! {} — {}", w.code, w.detail), cfg.width)
             .into_iter()
@@ -12172,6 +12575,204 @@ mod tests {
         (r, f)
     }
 
+    /// **R10: a note the operator has read can be retired, and it stays retired.**
+    ///
+    /// Four things, and they are one behaviour. A note is a **disclosure, not a
+    /// permanent record**: the session log holds the durable fact and the note is how a
+    /// head shows it once, so a reader must be able to retire one they have read. A
+    /// retired note must **stay** retired across a resync and a reattach — a snapshot
+    /// replanting what somebody just dismissed is the same defect as never letting them
+    /// dismiss it. And it must not **drop** the fact: hidden, counted and findable, which
+    /// is the rule `/status`'s own `filtered` counter already keeps.
+    #[test]
+    fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        hub.publish(SessionEvent::Warning {
+            code: "gate_timeout".into(),
+            detail: "denied: nobody answered before the deadline".into(),
+        });
+
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        let screen = a.screen(100, 30).join("\n");
+        assert!(screen.contains("gate_timeout"), "{screen}");
+
+        // **Retired, and the wall goes — including its blank line.** The sentence said
+        // `/notes`, so that is the verb; `/dismiss` is the same act under the word a
+        // person types at a red block.
+        typed(&mut a, "/dismiss");
+        assert_eq!(a.key(Key::Enter), None);
+        let hidden = a.screen(100, 30).join("\n");
+        assert!(
+            !hidden.contains("gate_timeout"),
+            "still on the screen: {hidden}"
+        );
+        assert!(!hidden.contains("nobody answered"), "{hidden}");
+
+        // **Hidden is not deleted.** The note is still this head's, `/status` counts it,
+        // and `/notes` lists it with its text under a marker — the rule `/status`'s own
+        // `filtered` counter keeps, which is what makes "I chose not to show this" a
+        // different statement from "nothing happened".
+        assert_eq!(a.notes.len(), 1, "the note was dropped, not retired");
+        assert_eq!(a.retired_notes(), 1);
+        a.command("status");
+        let stats = a.screen(120, 60).join("\n");
+        assert!(stats.contains("1 retired"), "{stats}");
+        a.key(Key::Esc);
+        typed(&mut a, "/notes");
+        a.key(Key::Enter);
+        let listed = a.screen(120, 60).join("\n");
+        assert!(listed.contains("nobody answered"), "{listed}");
+        assert!(listed.contains("[retired]"), "{listed}");
+        a.key(Key::Esc);
+
+        // **The two things that used to replant it.** A resync replaces the head's whole
+        // note list from a snapshot — *everything in a snapshot is history and none of it
+        // is anchored* — so before R10 the wall came back at position 0, above the whole
+        // conversation, on an operation the operator did not ask for. The identity is
+        // built from the log (code, ts, detail) and not from the screen, so the snapshot's
+        // copy is the same key and stays retired.
+        let key = note_key(&a.notes[0].1);
+        a.apply(ServerFrame::Resync {
+            reason: "queue overflow".into(),
+            dropped: 0,
+            snapshot: Box::new(hub.snapshot()),
+            scrubbed: Default::default(),
+        });
+        let after_resync = a.screen(100, 30).join("\n");
+        assert!(
+            !after_resync.contains("gate_timeout"),
+            "a resync replanted what was dismissed: {after_resync}"
+        );
+        // A reattach is the same event from the other direction: the same `Hello`, the
+        // same snapshot, a new window.
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        assert!(
+            !a.screen(100, 30).join("\n").contains("gate_timeout"),
+            "a reattach replanted it"
+        );
+
+        // **And a restart.** The dismissals live in `head.toml` and not in the process,
+        // because a head restart is the other half of the same defect.
+        let dir = std::env::temp_dir().join(format!("letibot-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                retired: vec![key.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut b = app();
+        b.prefs_path = Some(path.clone());
+        b.load_prefs();
+        b.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        assert!(
+            !b.screen(100, 30).join("\n").contains("gate_timeout"),
+            "a restart replanted it: dismissed={:?} key={key:?}",
+            b.dismissed
+        );
+
+        // **And back, if the reader was wrong.** Two ways, and both of them are the
+        // reader's: no dismissal is ever final in a way they cannot undo.
+        typed(&mut b, "/notes restore");
+        b.key(Key::Enter);
+        let back = b.screen(100, 30).join("\n");
+        assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A note that is a document folds to its head, and `/notes` still has all of it.**
+    ///
+    /// The other half of R10: the operator's wall was *two* gate timeouts at about
+    /// thirteen lines each — *"how to remove this red wall?"*. The instrument is the one
+    /// every other long thing on this screen already uses (a card's diff rows, an
+    /// elision row naming where the rest is), and the fold must not be a cap on the
+    /// record: the whole sentence is one verb away.
+    #[test]
+    fn a_note_that_is_a_document_folds_to_its_head_and_the_verb_has_the_rest() {
+        let mut a = app();
+        let long = format!(
+            "denied: the gate timed out before anybody answered, so the call did not run.\n{}",
+            (1..12)
+                .map(|i| format!("  line {i} of the rule it cites"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        a.note(Note::Warned(Warned {
+            code: "gate_timeout".into(),
+            detail: long.clone(),
+            ts: 7,
+        }));
+        let screen = a.screen(100, 40).join("\n");
+        // The head of it, and a seam that names the verb.
+        assert!(screen.contains("gate_timeout"), "{screen}");
+        assert!(screen.contains("anybody answered"), "{screen}");
+        assert!(screen.contains("· /notes"), "the seam is missing: {screen}");
+        assert!(
+            !screen.contains("line 11 of the rule it cites"),
+            "the whole document is on the screen: {screen}"
+        );
+        // **Twelve lines is three plus nine**, so the seam counts what it took out.
+        assert!(screen.contains("+9 lines"), "{screen}");
+        // And the record is whole where the seam points.
+        let listed = a.notes_lines().join("\n");
+        assert!(listed.contains("line 11 of the rule it cites"), "{listed}");
+        assert!(listed.contains("line 1 of the rule it cites"), "{listed}");
+    }
+
+    /// **R10's ruling on `ctrl-t`: one row, not the conversation.**
+    ///
+    /// The chord flips the tool fold for the **whole** conversation while the pager's
+    /// own seam advertises it as `… +N lines · ctrl-t`, which reads per-row. The
+    /// operator was surprised *"that ctrl-t triggered the wall AT ALL"*, and the fix is
+    /// to keep the meaning a per-row seam can honestly name: the chord opens one row's
+    /// window, and the conversation-wide unfold keeps the verb it already had.
+    #[test]
+    fn ctrl_t_opens_one_rows_window_and_the_whole_folds_are_the_verb() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        a_result_row(&mut a, 2, "i1", &long);
+
+        // **The seam names the chord on the row the chord reaches**, and it is the only
+        // long row here.
+        let folded = a.screen(100, 40).join("\n");
+        assert!(folded.contains("ctrl-t opens it"), "{folded:?}");
+
+        // The chord opens that row's window and **does not unfold the other rows**: the
+        // fold is the verb's, and one chord doing both is what made this a wall.
+        a.key(Key::CtrlT);
+        assert_eq!(a.payload_sel.as_deref(), Some("i1"));
+        assert!(
+            !a.tools.is_open(),
+            "ctrl-t unfolded the whole conversation as well"
+        );
+        let open = a.screen(100, 40).join("\n");
+        assert!(
+            open.contains("pages down"),
+            "the window did not open: {open:?}"
+        );
+
+        // Pressing it again closes the window and leaves everything else alone.
+        a.key(Key::CtrlT);
+        assert_eq!(a.payload_sel, None);
+        assert!(!a.tools.is_open());
+
+        // **And the conversation-wide unfold is `/t`**, which is where it already lived.
+        assert_eq!(a.command("t"), None);
+        assert!(a.tools.is_open(), "/t no longer unfolds tool output");
+        assert_eq!(
+            a.command("tools"),
+            None,
+            "`/tools` is the listing verb, not a second fold"
+        );
+    }
+
     #[test]
     fn a_recorded_session_renders_without_a_daemon() {
         // W8 is a leaf: give it a recorded log and it is built and demoed before a
@@ -12289,7 +12890,11 @@ mod tests {
         // and a zero field must not look the same, and a head that does not count
         // these at all is what every head was until now.
         a.command("status");
-        let zero = a.screen(120, 40).join("\n");
+        // **Taller than 40 rows on purpose.** `/status` is a scrolling pane, and R10
+        // added a row to it (the notes the reader has retired) — so a test that asserts
+        // a row is *on the screen* has to give the pane room for all of them rather than
+        // depend on where the list happens to end.
+        let zero = a.screen(120, 60).join("\n");
         let row = zero
             .lines()
             .find(|l| l.contains("unreadable"))
@@ -12312,7 +12917,7 @@ mod tests {
 
         // The sentence is in the conversation: what it was, that this is almost always
         // a newer daemon, and that this head is still attached.
-        let screen = a.screen(120, 40).join("\n");
+        let screen = a.screen(120, 60).join("\n");
         assert!(screen.contains("peeked_v2"), "{screen}");
         assert!(screen.contains("cannot read"), "{screen}");
         assert!(screen.contains("newer"), "{screen}");
@@ -12339,7 +12944,7 @@ mod tests {
         assert!(border.contains("unreadable 2"), "{border}");
         assert!(border.contains("/status"), "{border}");
         a.command("status");
-        let stats = a.screen(120, 40).join("\n");
+        let stats = a.screen(120, 60).join("\n");
         let unreadable_rows: Vec<&str> =
             stats.lines().filter(|l| l.contains("unreadable")).collect();
         assert!(
@@ -12386,7 +12991,7 @@ mod tests {
             a.notes
         );
         a.command("status");
-        let status = a.screen(120, 40).join("\n");
+        let status = a.screen(120, 60).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
@@ -12406,7 +13011,7 @@ mod tests {
         let said = a
             .notes
             .last()
-            .map(|(_, n)| note_lines(&a.cfg, n).join(" "))
+            .map(|(_, n)| note_lines_unfolded(&a.cfg, n).join(" "))
             .unwrap_or_default();
         assert!(said.contains(&newer.to_string()), "{said}");
         assert!(said.contains("NEWER"), "{said}");
@@ -12433,7 +13038,7 @@ mod tests {
         let said = a
             .notes
             .last()
-            .map(|(_, n)| note_lines(&a.cfg, n).join(" "))
+            .map(|(_, n)| note_lines_unfolded(&a.cfg, n).join(" "))
             .unwrap_or_default();
         assert!(said.contains("OLDER"), "{said}");
         assert!(
@@ -12444,7 +13049,7 @@ mod tests {
         assert!(!a.should_quit());
         // `/status` names the direction too, and has it after the note has scrolled away.
         a.command("status");
-        let status = a.screen(120, 40).join("\n");
+        let status = a.screen(120, 60).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
@@ -13252,6 +13857,7 @@ mod tests {
                 thinking: "open".into(),
                 tools: "open".into(),
                 raw_calls: true,
+                retired: vec!["w|gate|1|0000000000000000".into()],
             },
         )
         .unwrap();
@@ -14919,12 +15525,16 @@ mod tests {
         let before = a.scroll;
         assert!(before > 0, "scroll did not move at all to begin with");
 
-        // Expand tools. **This also opens a payload view** (see `payload_sel`), so the
-        // arrows now page the newest payload rather than moving the transcript — which
-        // is the intended contract and is asserted below rather than assumed.
+        // Expand the window on the newest long result. **This does not unfold the
+        // conversation** (R10 moved that to `/t`), so the arrows now page the newest
+        // payload rather than moving the transcript — which is the intended contract
+        // and is asserted below rather than assumed.
         a.key(Key::CtrlT);
         a.screen(80, 24);
-        assert!(a.payload_sel.is_some(), "ctrl-t did not open a payload view");
+        assert!(
+            a.payload_sel.is_some(),
+            "ctrl-t did not open a payload view"
+        );
 
         let at_refold = a.scroll;
         for _ in 0..5 {
@@ -14960,9 +15570,14 @@ mod tests {
             a.body_len
         );
 
-        // Collapse back, and it still scrolls.
+        // Close the window, and it still scrolls. **The chord toggles the window and
+        // nothing else now** (R10), so this is one press to open and one to close.
         a.key(Key::CtrlT);
         a.screen(80, 24);
+        assert!(a.payload_sel.is_some(), "ctrl-t did not open the window");
+        a.key(Key::CtrlT);
+        a.screen(80, 24);
+        assert_eq!(a.payload_sel, None, "ctrl-t did not close the window");
         let at_collapse = a.scroll;
         for _ in 0..5 {
             a.key(Key::Up);
@@ -15276,11 +15891,16 @@ mod tests {
         a_result_row(&mut a, 2, "i1", &body);
 
         // Folded: the head, a count, and the chord that is supposed to reveal the rest.
+        // **The newest long row names the chord; this is that row.** R10 moved the
+        // conversation-wide unfold to `/t`, so the seam says `opens it` — the window,
+        // not the whole conversation.
         let folded = a.screen(100, 60).join("\n");
         assert!(folded.contains("line 0"), "{folded:?}");
-        assert!(folded.contains("ctrl-t pages"), "{folded:?}");
+        assert!(folded.contains("ctrl-t opens it"), "{folded:?}");
 
-        // Ctrl-T opens the fold *and* a view on the newest payload row.
+        // Ctrl-T opens a view on the newest payload row. **It does not touch the fold**
+        // any more: one chord, one meaning, and this one is the per-row window the seam
+        // above just named.
         a.key(Key::CtrlT);
         assert!(a.payload_sel.is_some(), "ctrl-t opened no view");
         let head = a.screen(100, 60).join("\n");
@@ -15312,10 +15932,15 @@ mod tests {
             "the end must be reachable and said so: {end:?}"
         );
 
-        // And Esc closes the view, leaving the fold open.
+        // And Esc closes the view. **The fold is not touched either way**: R10 took the
+        // conversation-wide unfold off this chord and gave it to `/t`, so a window that
+        // opened and closed leaves every other row exactly as it was.
         a.key(Key::Esc);
         assert_eq!(a.payload_sel, None, "esc did not close the view");
-        assert!(a.tools.is_open(), "esc closed the fold as well");
+        assert!(
+            !a.tools.is_open(),
+            "a payload window must not unfold the whole conversation"
+        );
     }
 
     /// A payload that fits needs no view, and claiming one would be a lie: the seam

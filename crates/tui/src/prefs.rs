@@ -15,6 +15,16 @@
 
 use std::path::{Path, PathBuf};
 
+/// **How many retired notes one head remembers.**
+///
+/// A cap on *this reader's memory*, not on the log: the notes themselves are in
+/// the session log whatever is here, and `/notes` lists every one the head still
+/// holds. What falls off the end is a dismissal, so a note that fell off would
+/// come back on the next snapshot — which is why the number is far above what any
+/// session produces (R10's wall was 2 notes, and the head holds 64 in memory at
+/// a time) rather than tuned to it.
+pub const RETIRED_CAP: usize = 512;
+
 /// Everything the head persists. Each field is a runtime-editable row in the
 /// config pane; adding one here is adding a row there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +38,14 @@ pub struct HeadPrefs {
     pub tools: String,
     /// Show the model's `<function=…>` markup under each call.
     pub raw_calls: bool,
+    /// **The notes this reader has retired**, by key (R10).
+    ///
+    /// Written as one comma-separated value because a key is built to contain no
+    /// comma and no whitespace — see `app::note_key`, which hashes the detail
+    /// rather than quoting it, so a warning whose text runs to paragraphs does not
+    /// have to be escaped into this file. Order is oldest first, and the list is
+    /// truncated to [`RETIRED_CAP`] on the way in and on the way out.
+    pub retired: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +83,7 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
+            retired: Vec::new(),
         }
     }
 }
@@ -134,6 +153,20 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
+            // R10. An empty value is a real value — "nothing is retired" — and not
+            // a key this build does not know, so it is not reported as one.
+            "retired" => {
+                p.retired = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                let over = p.retired.len().saturating_sub(RETIRED_CAP);
+                if over > 0 {
+                    p.retired.drain(..over);
+                }
+            }
             other => notes.push(format!("head.toml: `{other}` is not a key this head knows")),
         }
     }
@@ -144,11 +177,14 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build — where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 4] = [
+    let ours: [(&str, String); 5] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
         ("raw_calls", p.raw_calls.to_string()),
+        // Quoted like the rest, and never multi-line: no key contains a comma or a
+        // space, which is what keeps a hand-edited file honest.
+        ("retired", format!("\"{}\"", p.retired.join(","))),
     ];
     let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -195,7 +231,15 @@ mod tests {
         let (prefs, notes) = load(&p);
         assert_eq!(prefs, HeadPrefs::default());
         assert!(notes.is_empty());
-        let changed = HeadPrefs { diff: DiffPref::Unified, thinking: "open".into(), tools: "folded".into(), raw_calls: true };
+        let changed = HeadPrefs {
+            diff: DiffPref::Unified,
+            thinking: "open".into(),
+            tools: "folded".into(),
+            raw_calls: true,
+            // R10's half of the round trip, in one key: the comma is the separator
+            // and the key contains none, which is what makes this one line.
+            retired: vec!["w|gate-timeout|1789000000000|5f2c9a0b1d3e4f67".into()],
+        };
         save(&p, &changed).unwrap();
         let (back, notes) = load(&p);
         assert_eq!(back, changed);
