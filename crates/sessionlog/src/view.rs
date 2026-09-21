@@ -712,6 +712,10 @@ impl SessionView {
             // for it, and the view carries no window state. It is ephemeral besides
             // (`scrub::is_interactive`), so a late head never replays one.
             SessionEvent::JobOutput { .. } => {}
+            // Nothing to fold: an import's progress is drawn by the head from the
+            // event itself and the view carries no counter. Ephemeral besides, so a
+            // late head never replays a tick.
+            SessionEvent::ImportProgress { .. } => {}
         }
     }
 

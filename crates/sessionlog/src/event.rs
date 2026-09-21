@@ -936,6 +936,26 @@ pub enum SessionEvent {
         /// the daemon knows how much of the ring survives.
         next: Option<u64>,
     },
+    /// **How far an import has got**, from the importer's own counter.
+    ///
+    /// R6. The head draws a counted line while an opencode conversation is read in,
+    /// and the counter has to be the **fact** — parts read — not a rendering of it. The
+    /// head *could* count the rows still lacking a body, and that is exactly what it
+    /// must not do: `FORK_STALLED` is three seconds (a body that has not come in three
+    /// seconds is not coming), so a healthy but slow import would have the head say
+    /// *"9,570 row(s) announced and never filled in"* three seconds in — false,
+    /// alarming, and it burns the one diagnostic that tells the operator something true
+    /// about their session. So the daemon counts what it read and publishes here.
+    ///
+    /// **Ephemeral**, like [`SessionEvent::JobOutput`]: a progress frame from four
+    /// minutes ago is a lie about now. The import's durable residue is the rows
+    /// themselves and the finish note; this is the line that walks while it fills.
+    ImportProgress {
+        /// Parts read so far.
+        done: u64,
+        /// Parts in the whole tree, known from one `count(*)` before the first row.
+        total: u64,
+    },
 }
 
 impl SessionEvent {
@@ -971,6 +991,7 @@ impl SessionEvent {
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
             SessionEvent::JobOutput { .. } => "JobOutput",
+            SessionEvent::ImportProgress { .. } => "ImportProgress",
         }
     }
 }

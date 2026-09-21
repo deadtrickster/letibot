@@ -1256,6 +1256,12 @@ pub struct App {
     /// counter wasnt moving - 0 always"*. See [`App::bodies_pending`], which asks
     /// the rows instead of remembering.
     bodies_peak: usize,
+    /// **How far an opencode import has got**, from the daemon's own counter (R6).
+    /// `Some((done, total))` while it is reading and `None` when it is not — cleared
+    /// the moment `done == total`, because the finish is a durable note, not a line
+    /// that stays. See [`import_line`] for why this is the importer's count and not
+    /// a count of the rows still lacking a body.
+    import: Option<(u64, u64)>,
 }
 
 /// A run of body lines: history is **borrowed** from the head's own buffer, the
@@ -1381,6 +1387,52 @@ fn rebasing_line(pending: usize, peak: usize, now_ms: u64, cfg: &RenderConfig) -
         cfg.palette().paint(
             Role::Faint,
             &"  carrying the conversation onto the new prompt".to_string(),
+        ),
+    ]
+}
+
+/// **The line that walks while an opencode conversation is read in (R6).**
+///
+/// The same shape as [`rebasing_line`], and for the same reason — the operator asked
+/// for the cat and the prefill bar rather than *"spanning me with grayness"* — but the
+/// numbers are the **importer's own**: parts read against the tree's part count, both
+/// handed over by the daemon in [`SessionEvent::ImportProgress`]. It is deliberately
+/// not derived from the rows still lacking a body: that is a rendering of the fact, and
+/// at [`FORK_STALLED`] (three seconds) a healthy but slow import would draw *"9,570
+/// row(s) announced and never filled in"* — false, alarming, and it would burn the one
+/// diagnostic that tells the operator something true about their session.
+///
+/// A free function for the same reason `rebasing_line` is: by the time the tail is
+/// assembled, `screen` has already borrowed `self` mutably.
+fn import_line(done: u64, total: u64, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
+    // `cache == processed == done`, the same three-valued bar the prefill draws, so the
+    // landed span reads green rather than as an expense — see `rebasing_line`.
+    let p = progress::Prefill {
+        total,
+        cache: done,
+        processed: done,
+        time_ms: 0,
+    };
+    let total_s = progress::thousands(total);
+    let counts = format!(
+        "{:>w$} of {total_s} parts",
+        progress::thousands(done),
+        w = total_s.chars().count()
+    );
+    let used = CAT_SLOT + counts.chars().count() + 6;
+    let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
+    vec![
+        String::new(),
+        format!(
+            "  {} {}  {}",
+            progress::bar(&p, bar_cols, cfg.palette()),
+            cfg.palette().paint(Role::Faint, &counts),
+            cfg.palette()
+                .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
+        ),
+        cfg.palette().paint(
+            Role::Faint,
+            &"  reading an opencode conversation into this session".to_string(),
         ),
     ]
 }
@@ -1655,6 +1707,7 @@ impl App {
             bodies_peak: 0,
             bodies_last: 0,
             bodies_moved_ms: 0,
+            import: None,
             bye: None,
         }
     }
@@ -2677,6 +2730,22 @@ impl App {
                     return Disposition::Rendered;
                 }
                 Disposition::Filtered
+            }
+            // **How far an import has got (R6).** The line is drawn from the daemon's
+            // own counter — parts read against the tree's part count — and nothing
+            // here derives it from the rows, which is the whole point: counting the
+            // rows still lacking a body would draw *"N rows announced and never
+            // filled in"* three seconds into a healthy import (`FORK_STALLED`), which
+            // is false, alarming, and burns the one diagnostic that is true.
+            //
+            // Ephemeral (`scrub::is_interactive`), so a late head never replays a
+            // tick. On the last one the line goes: the daemon's durable finish note
+            // is what says the import is done, and a bar left at `total of total`
+            // would sit on the screen for ever.
+            SessionEvent::ImportProgress { done, total } => {
+                self.import = (done < total).then_some((done, total));
+                self.redraw = true;
+                Disposition::Rendered
             }
             SessionEvent::TurnStarted {
                 turn_id,
@@ -6659,6 +6728,14 @@ impl App {
             } else {
                 rebasing_line(bodies_pending, bodies_peak, now_ms, &cfg)
             }));
+        }
+
+        // **An import in flight, as its own counted line (R6).** The same shape as the
+        // fork bar above, but fed the importer's counter from the daemon rather than a
+        // count of unfilled rows — see [`import_line`] for why that distinction is the
+        // whole requirement and not a detail.
+        if let Some((done, total)) = self.import {
+            segs.push(Seg::Owned(import_line(done, total, now_ms, &cfg)));
         }
 
         // **The wait, as a walking cat at the centre of the conversation.**
@@ -12474,6 +12551,60 @@ mod tests {
         assert!(
             back.contains("the daemon is back after 4.4s."),
             "no empty brackets: {back}"
+        );
+    }
+
+    /// **R6: the import's line is the importer's count, not a count of unfilled rows.**
+    ///
+    /// The whole of the ruling: an indicator must be the fact, not a rendering of the
+    /// fact. Counting the rows still lacking a body would draw *"N rows announced and
+    /// never filled in"* three seconds into a healthy import (`FORK_STALLED`), which is
+    /// false, alarming, and it burns the one diagnostic that is true. So the daemon
+    /// counts parts read and the head draws *that*.
+    #[test]
+    fn an_import_draws_the_importers_own_counter_and_clears_when_it_is_done() {
+        let mut a = app();
+        a.clock(1_000);
+        assert!(
+            !a.screen(100, 30).join("\n").contains("parts"),
+            "no import line before one is running"
+        );
+
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::ImportProgress {
+                done: 0,
+                total: 9_570,
+            },
+        )));
+        let start = a.screen(100, 30).join("\n");
+        assert!(start.contains("0 of 9570 parts"), "{start}");
+        assert!(start.contains("reading an opencode conversation"), "{start}");
+
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::ImportProgress {
+                done: 4_790,
+                total: 9_570,
+            },
+        )));
+        let mid = a.screen(100, 30).join("\n");
+        assert!(mid.contains("4790 of 9570 parts"), "{mid}");
+
+        // **The last tick clears the line.** The daemon's durable finish note is what
+        // says the import finished, and a bar left at `total of total` would sit on the
+        // screen for ever.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ImportProgress {
+                done: 9_570,
+                total: 9_570,
+            },
+        )));
+        let done = a.screen(100, 30).join("\n");
+        assert!(
+            !done.contains("parts"),
+            "the line goes when the import is done: {done}"
         );
     }
 

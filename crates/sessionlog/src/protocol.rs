@@ -229,7 +229,19 @@ use crate::view::Snapshot;
 /// second terminal and `letibot --stop`. The head now asks which, and the
 /// answer that stops the daemon travels over the protocol rather than a head
 /// reaching around it to signal a pid.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// # 23: an import says how far it has got
+///
+/// [`crate::SessionEvent::ImportProgress`] is a new event, so a version-22 head
+/// receiving one mid-session would fail to parse it — the version-4 argument, and
+/// the same ATTACH-time refusal. It exists because R6's import draws a **counted**
+/// line, and the only honest counter is parts read: the head cannot derive it from
+/// the rows still lacking a body without saying *"N rows announced and never filled
+/// in"* about a session that is filling correctly, because `FORK_STALLED` is three
+/// seconds. So the daemon counts what it read and publishes here, and the head draws
+/// the importer's counter rather than a rendering of it. Ephemeral — a tick from
+/// four minutes ago is a lie about now — so the import's durable residue is the rows
+/// and the finish note, not this.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
 /// head says, and `None` when they are the same.
@@ -1077,6 +1089,7 @@ mod tests {
                 | crate::SessionEvent::HeadDetached { .. }
                 | crate::SessionEvent::JobOutput { .. }
                 | crate::SessionEvent::JobSettled { .. }
+                | crate::SessionEvent::ImportProgress { .. }
                 | crate::SessionEvent::PromptProgress { .. }
                 | crate::SessionEvent::ScreenRequested { .. }
                 | crate::SessionEvent::SecretRequested { .. }
@@ -1101,8 +1114,8 @@ mod tests {
         let _ = client;
         let _ = event;
         assert_eq!(
-            PROTOCOL_VERSION, 22,
-            "the match above was last reconciled with the frame list at 22"
+            PROTOCOL_VERSION, 23,
+            "the match above was last reconciled with the frame list at 23"
         );
     }
 
