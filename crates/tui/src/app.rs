@@ -1133,6 +1133,19 @@ pub struct App {
     call_decisions: std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     body_len: usize,
+    /// **The protocol version the daemon last said it speaks**, from the `Hello`.
+    ///
+    /// `None` until a daemon has answered, which is a different statement from "it
+    /// speaks 0". Worth keeping rather than comparing inline on `Hello` for two reasons:
+    /// `/status` has to be able to say it *after* the fact — the handshake is one frame
+    /// and the question "which build is on the other end of this socket" is asked hours
+    /// later — and a head that switches sessions re-reads a `Hello` from the same
+    /// daemon, so this is a fact about the connection and not about the attach.
+    ///
+    /// The comparison itself is [`letibot_sessionlog::protocol_skew`], which is in
+    /// `sessionlog` rather than here because the sentence belongs to the protocol and
+    /// every head has to say the same one.
+    daemon_protocol: Option<u32>,
     /// True between taking the screen and the daemon's `Hello` arriving.
     ///
     /// The `Hello` **carries the whole snapshot**, so `HeadClient::attach` is a round
@@ -1568,6 +1581,7 @@ impl App {
             last_event_at: 0,
             body_len: 0,
             attaching: false,
+            daemon_protocol: None,
             attach_started_ms: 0,
             cursor: None,
             bodies_peak: 0,
@@ -1740,6 +1754,7 @@ impl App {
             // path is the best-tested path in this head, and a second one that
             // "also seats you somewhere" is a second one to keep in step.
             ServerFrame::Hello {
+                protocol_version,
                 session_id,
                 head_id,
                 dropped,
@@ -1753,6 +1768,35 @@ impl App {
                 // The daemon has answered, so whatever the head drew while it was
                 // asking is about to be replaced by the truth. See `attaching`.
                 self.attaching = false;
+                // **The version the daemon is TOLD to be, checked at the handshake.**
+                //
+                // This is the one moment a skew is cheap to say: nothing has been read
+                // yet, the direction is known, and the sentence can name both numbers
+                // while the operator is still looking at the head rather than at a frame
+                // that failed to parse. `protocol_skew` is `None` when they match — the
+                // normal case says nothing at all, so a line here is a fact and not
+                // furniture.
+                //
+                // **It does not exit.** A skew is usually survivable — that is R3's whole
+                // argument — so the head says which way round it is and carries on. What
+                // differs is what the operator should expect, and that is why the two
+                // directions get different sentences: a newer daemon means frames this
+                // head will report and skip, an older one means the next command the two
+                // do not share ends the session.
+                self.daemon_protocol = Some(protocol_version);
+                let mut skew_said = None;
+                if let Some(said) = letibot_sessionlog::protocol_skew(
+                    protocol_version,
+                    letibot_sessionlog::protocol::PROTOCOL_VERSION,
+                ) {
+                    // **Held until after the snapshot is folded in.** `load` replaces
+                    // `self.notes` wholesale — a snapshot's warnings are the head's whole
+                    // warning history — so a note filed before it is not "anchored at the
+                    // frame that revealed this", it is thrown away. Found by the test
+                    // that asserts the sentence exists, which is the only reason this is
+                    // not a silence nobody would have noticed.
+                    skew_said = Some(said);
+                }
                 // **Ask for the settings on attach.** The daemon answers
                 // `ClientFrame::Settings` and never sends the rows unprompted, so
                 // a head that had not opened `/mode` or `/config` had none — and
@@ -1784,6 +1828,19 @@ impl App {
                     // A resume served from the scrollback: no snapshot, and the
                     // state that is already here is this session's.
                     None => self.session_id = session_id,
+                }
+                // **Now it can be said.** A note rather than a `say`: this is a fact about
+                // the connection that outlives the next keystroke, and it belongs in the
+                // conversation with everything else that happened — anchored at the end of
+                // whatever the snapshot carried, which is where the reader is. `note`
+                // dedupes on `(code, detail, ts)`, so the second `Hello` a `Switch`
+                // produces does not say it twice.
+                if let Some(said) = skew_said {
+                    self.note(Note::Warned(Warned {
+                        code: "protocol_skew".into(),
+                        detail: said,
+                        ts: 0,
+                    }));
                 }
                 // A daemon that restarted has no turn state in the snapshot —
                 // `TurnFinished` is ephemeral, and a view rebuilt from the
@@ -8006,6 +8063,37 @@ impl App {
              border once it has happened; nothing is acked for one, because nothing \
              was read.",
         );
+        // **The version, always present.** §13.2b in the other direction from the
+        // counters: the question "which build is on the other end of this socket" has
+        // no answer anywhere else on the screen, and its answer is the first thing to
+        // check when a head behaves strangely. `None` reads as "not told yet", which is
+        // a different statement from a version number — the same distinction the empty
+        // transcript banner draws.
+        row(
+            "protocol",
+            match self.daemon_protocol {
+                None => "not told yet".to_string(),
+                Some(d) if d == letibot_sessionlog::protocol::PROTOCOL_VERSION => format!(
+                    "{d} · the same build as this head (protocol {})",
+                    letibot_sessionlog::protocol::PROTOCOL_VERSION
+                ),
+                Some(d) => format!(
+                    "{d} · this head speaks {} — {} build",
+                    letibot_sessionlog::protocol::PROTOCOL_VERSION,
+                    if d > letibot_sessionlog::protocol::PROTOCOL_VERSION {
+                        "NEWER"
+                    } else {
+                        "OLDER"
+                    }
+                ),
+            },
+            "The protocol both halves were built against, compared at the handshake. \
+             A NEWER daemon sends frames this build may not know: they are reported as \
+             they arrive and skipped. An OLDER one cannot read a command it has never \
+             heard of, and answers that by closing the connection — so a session with \
+             an older daemon can end on the next thing you type, and a restart of the \
+             daemon is the fix either way.",
+        );
         row(
             "verbosity",
             self.verbosity.as_str().to_string(),
@@ -11716,14 +11804,138 @@ mod tests {
         assert!(border.contains("/status"), "{border}");
         a.command("status");
         let stats = a.screen(120, 40).join("\n");
-        let unreadable_rows: Vec<&str> = stats
-            .lines()
-            .filter(|l| l.contains("unreadable"))
-            .collect();
+        let unreadable_rows: Vec<&str> =
+            stats.lines().filter(|l| l.contains("unreadable")).collect();
         assert!(
             unreadable_rows.iter().any(|l| l.contains('2')),
             "{unreadable_rows:?}"
         );
+    }
+
+    /// **The version the daemon is TOLD to be is checked at the handshake, and a skew is
+    /// said rather than fatal.**
+    ///
+    /// leticl does this on `Hello` and this head did not, which left the skew announcing
+    /// itself on the first frame that failed to parse — the expensive moment, one frame
+    /// late, and phrased as a decoder's complaint. The `Hello` is the cheap moment: nothing
+    /// has been read yet and the direction is known.
+    ///
+    /// Three things are asserted together, because they are one behaviour: a matching
+    /// version says **nothing at all** (a line here would be furniture), a differing one
+    /// says which way round it is in the transcript, and **the head stays attached** — a
+    /// skew is usually survivable, which is R3's whole argument, so exiting here would be
+    /// the failure framing the fix.
+    #[test]
+    fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
+        let hub = Hub::new("s");
+
+        // The normal case: both halves the same build, and nothing is said. §13.2b cuts
+        // both ways — a field that is always zero is no more readable than one that is
+        // absent, and a head that announces "versions match" on every attach teaches the
+        // operator that this line can be skipped.
+        let mut a = app();
+        a.apply(hello_at(
+            "s",
+            vec![brief("s", "one", false)],
+            hub.snapshot(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        ));
+        assert_eq!(
+            a.daemon_protocol,
+            Some(letibot_sessionlog::protocol::PROTOCOL_VERSION)
+        );
+        assert!(
+            a.notes.is_empty(),
+            "nothing to say, so nothing said: {:?}",
+            a.notes
+        );
+        a.command("status");
+        let status = a.screen(120, 40).join("\n");
+        let row = status
+            .lines()
+            .find(|l| l.contains("protocol"))
+            .unwrap_or_else(|| panic!("/status does not name the version: {status}"));
+        assert!(row.contains("same build"), "{row}");
+        a.key(Key::Esc);
+
+        // A NEWER daemon: a reading problem, and this head can survive it.
+        let newer = letibot_sessionlog::protocol::PROTOCOL_VERSION + 3;
+        let mut a = app();
+        a.apply(hello_at(
+            "s",
+            vec![brief("s", "one", false)],
+            hub.snapshot(),
+            newer,
+        ));
+        let said = a
+            .notes
+            .last()
+            .map(|(_, n)| note_lines(&a.cfg, n).join(" "))
+            .unwrap_or_default();
+        assert!(said.contains(&newer.to_string()), "{said}");
+        assert!(said.contains("NEWER"), "{said}");
+        assert!(said.contains("Restarting the daemon"), "{said}");
+        // It says what it will do about them, which is the part the operator needs to
+        // know before the first one arrives.
+        assert!(said.contains("skipped"), "{said}");
+        // And the head is still here, still drawing, still able to take a frame.
+        assert!(!a.should_quit());
+        assert_eq!(a.session_id, "s");
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        assert!(a.turn_running(), "the head kept working");
+
+        // An OLDER daemon: a writing problem, and quiet until it is fatal — so this is the
+        // sentence that matters most.
+        let older = letibot_sessionlog::protocol::PROTOCOL_VERSION - 1;
+        let mut a = app();
+        a.apply(hello_at(
+            "s",
+            vec![brief("s", "one", false)],
+            hub.snapshot(),
+            older,
+        ));
+        let said = a
+            .notes
+            .last()
+            .map(|(_, n)| note_lines(&a.cfg, n).join(" "))
+            .unwrap_or_default();
+        assert!(said.contains("OLDER"), "{said}");
+        assert!(
+            said.contains("closing the socket"),
+            "it must say the session can end on the next command, not merely that the \
+             daemon is old: {said}"
+        );
+        assert!(!a.should_quit());
+        // `/status` names the direction too, and has it after the note has scrolled away.
+        a.command("status");
+        let status = a.screen(120, 40).join("\n");
+        let row = status
+            .lines()
+            .find(|l| l.contains("protocol"))
+            .unwrap_or_else(|| panic!("{status}"));
+        assert!(row.contains("OLDER"), "{row}");
+        assert!(row.contains(&older.to_string()), "{row}");
+    }
+
+    /// **A `Switch` re-reads the same `Hello`, so the sentence is filed once.** The
+    /// daemon answers a switch with a second `Hello` on the same connection — that is the
+    /// whole of this head's switch path — and a skew announced twice would read as two
+    /// skews. `note` dedupes on `(code, detail, ts)`, which is what makes that true, and
+    /// this pins it rather than trusting it.
+    #[test]
+    fn a_version_skew_is_said_once_however_many_hellos_arrive() {
+        let hub = Hub::new("s");
+        let mut a = app();
+        let newer = letibot_sessionlog::protocol::PROTOCOL_VERSION + 1;
+        for _ in 0..3 {
+            a.apply(hello_at(
+                "s",
+                vec![brief("s", "one", false)],
+                hub.snapshot(),
+                newer,
+            ));
+        }
+        assert_eq!(a.notes.len(), 1, "said three times: {:?}", a.notes);
     }
 
     #[test]
@@ -15511,8 +15723,26 @@ mod tests {
     }
 
     fn hello(session: &str, sessions: Vec<SessionBrief>, snapshot: Snapshot) -> ServerFrame {
+        hello_at(
+            session,
+            sessions,
+            snapshot,
+            letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        )
+    }
+
+    /// The same, with the version the daemon claims. A separate helper rather than a
+    /// parameter on `hello` because every other test wants the honest value, and a default
+    /// argument that could be forgotten is how a test ends up asserting against a skew it
+    /// did not mean to create.
+    fn hello_at(
+        session: &str,
+        sessions: Vec<SessionBrief>,
+        snapshot: Snapshot,
+        protocol_version: u32,
+    ) -> ServerFrame {
         ServerFrame::Hello {
-            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            protocol_version,
             session_id: session.into(),
             head_id: "h1".into(),
             dropped: 0,

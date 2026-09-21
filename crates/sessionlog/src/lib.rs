@@ -73,7 +73,7 @@ pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, Sessio
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{Bell, CreateError, Registry, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
-pub use protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+pub use protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame, protocol_skew};
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{
     CallState, CallView, OpenDecision, SessionView, SettledDecision, Snapshot, SnapshotItem,

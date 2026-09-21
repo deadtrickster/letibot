@@ -231,6 +231,70 @@ use crate::view::Snapshot;
 /// reaching around it to signal a pid.
 pub const PROTOCOL_VERSION: u32 = 22;
 
+/// **How a daemon's protocol version compares with this build's** — as the one sentence a
+/// head says, and `None` when they are the same.
+///
+/// # Why a head checks this at all, when the daemon already refuses a mismatch
+///
+/// The daemon's ATTACH check (`server.rs`, exact equality) is the first line and it is the
+/// strict one. This is the second, and it exists because **the two halves are built and
+/// run separately**, which is the whole shape of the defect this pairs with: a head built
+/// against a newer protocol, a daemon started from a binary three weeks older, and
+/// `ReadJobOutput` sent to a daemon that had never heard of it (`872f8dd`).
+///
+/// The daemon's refusal is a `Bye` naming both versions, and a head that sees one says so
+/// — but it only fires if the daemon *has* that check, and a check is a thing a protocol
+/// gains at some version. So there are two live cases this catches and the daemon's cannot:
+/// a daemon older than the check's introduction, and a daemon whose check has been relaxed
+/// — which is the direction R3 argues for, since *"a skew is usually survivable"* is
+/// exactly why passing an unknown **event** through is right, and the same argument applies
+/// to the version number. A head must not be silent about a skew because it is trusting the
+/// other side to have mentioned it.
+///
+/// # The direction is not decoration: the two are different problems
+///
+/// **A newer daemon is a reading problem, and a head can survive it.** What arrives is a
+/// frame this build may not know — a variant added after it was built. R3 is the answer and
+/// it is already in: the line is kept, the head says what it could not read, counts it on
+/// `/status`, and reads on. Nothing is lost except what the unknown frame said, which is
+/// precisely the thing this build cannot use.
+///
+/// **An older daemon is a writing problem, and a head cannot survive it from its side.**
+/// Everything this head reads parses — the older half wrote it. What breaks is the other
+/// direction: a `ClientFrame` the daemon has never heard of fails *its* deserialiser, and
+/// its read loop answers that by sending a `Bye` and closing the socket. The head did
+/// nothing wrong, said nothing unusual, and the session ends on the next command the two
+/// do not share. **So the older case is the one worth reading twice**: it is quiet until it
+/// is fatal, and the operator is entitled to know that before they spend an hour in a
+/// session that is going to drop on them.
+///
+/// Both are said with `head` first and the direction explicit, because a bare pair of
+/// numbers makes the reader work out which side they are on, and the answer changes what
+/// they should do.
+pub fn protocol_skew(daemon: u32, head: u32) -> Option<String> {
+    if daemon == head {
+        return None;
+    }
+    Some(if daemon > head {
+        format!(
+            "this daemon speaks protocol {daemon} and this head speaks {head}: the daemon \
+             is from a NEWER build. Frames it sends that this build does not know are \
+             reported as they arrive, counted on /status, and skipped — the connection \
+             stays up and the rest of the stream is unaffected. Restarting the daemon so \
+             both halves are the same build is the way to stop seeing them."
+        )
+    } else {
+        format!(
+            "this daemon speaks protocol {daemon} and this head speaks {head}: the daemon \
+             is from an OLDER build. Everything this head reads is fine; what is not safe \
+             is what it sends — a command the daemon has never heard of fails its reader, \
+             and it answers by saying goodbye and closing the socket. The session can end \
+             on the next command the two do not share. Restarting the daemon is the way to \
+             make them the same build."
+        )
+    })
+}
+
 /// One setting, as the daemon resolved it for this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingRow {
@@ -1225,5 +1289,49 @@ mod tests {
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod skew_tests {
+    use super::protocol_skew;
+
+    /// **The sentence says nothing when the two match, and the direction when they do
+    /// not** — because the two directions are different answers to the same numbers.
+    ///
+    /// A matching version says nothing at all: every attach would otherwise carry a line
+    /// announcing the normal case, and an operator who learns to skip one line learns to
+    /// skip the one that matters. A newer daemon means frames this head may not know,
+    /// which it reports and skips — that is R3, and it is why this check does not exit. An
+    /// older one means the head's own frames are the hazard: a command the daemon has
+    /// never heard of fails *its* reader, and its answer is to say goodbye and close the
+    /// socket, so the session can end on the next thing typed.
+    #[test]
+    fn a_match_says_nothing_and_a_skew_names_its_direction() {
+        assert_eq!(protocol_skew(22, 22), None);
+
+        let newer = protocol_skew(24, 22).expect("a newer daemon is worth a sentence");
+        assert!(newer.contains("24") && newer.contains("22"), "{newer}");
+        assert!(newer.contains("NEWER"), "{newer}");
+        assert!(
+            newer.contains("skipped"),
+            "it must say what the head will do about the frames: {newer}"
+        );
+
+        let older = protocol_skew(20, 22).expect("an older daemon is worth a sentence");
+        assert!(older.contains("OLDER"), "{older}");
+        assert!(
+            older.contains("closing the socket"),
+            "the older case is quiet until it is fatal, so it has to say so: {older}"
+        );
+
+        // Two situations, two sentences — a test that only checked `!= None` would pass on
+        // a function that said the same wrong thing twice.
+        assert_ne!(newer, older);
+        // Neither of them tells anybody to leave. A skew is usually survivable; that is
+        // R3's whole argument, and exiting here would be the failure it argues against.
+        for s in [newer, older] {
+            assert!(!s.contains("quit"), "{s}");
+        }
     }
 }
