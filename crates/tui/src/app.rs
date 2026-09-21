@@ -648,7 +648,39 @@ pub struct App {
     /// hub's queue is not in a snapshot, and a `CommandIssued` carries no text, so
     /// a second head cannot show it — this is the one place the words are still
     /// held by the party that typed them.
+    ///
+    /// **Unless the row has been announced.** The two are not one channel: the
+    /// model's reply arrives as a `Delta` carrying its text and renders as it
+    /// streams, while a user row arrives as `TranscriptAppended` — an id and a kind,
+    /// no text — and only later as `TranscriptContent`. So the reply is always
+    /// faster to display than the prompt that caused it, and the echo below kept
+    /// saying `queued` while the words it stood for were already in the
+    /// conversation above it. See [`App::bound_prompts`].
     pending_prompts: Vec<String>,
+    /// **The echo in the transcript's own place, before its body lands.**
+    ///
+    /// `item_id` → the echo text this head optimistically bound to an announced
+    /// body-less user row. A prompt typed while a turn runs is appended by the
+    /// daemon at its next step boundary, and the *announcement* of that append is
+    /// what says where the row goes; the body follows on the next frame or shortly
+    /// after. Rendering the row from the echo the head already holds puts the prompt
+    /// above the reply it caused, which is where the transcript has it, instead of
+    /// leaving it below and tagged `queued` until the body catches up.
+    ///
+    /// **Optimistic, because not every `User` row is this head's prompt.** A
+    /// harness steering notice and a §5.7 salvage notice are the same shape
+    /// (`harnessd::harness` says so in as many words: *"a steering message and a
+    /// §5.7 notice are the same shape as a prompt"*), and so is another attached
+    /// head's prompt. The announcement carries nothing that tells them apart, so the
+    /// binding is a guess and the row keeps the `queued` shape until the body
+    /// confirms it: the word is exactly right for "bound but unconfirmed". The
+    /// **retire** still waits for content matched by text
+    /// ([`App::retire_pending`]) — never the announcement alone, or a notice would
+    /// silently swallow the echo of the prompt still sitting in the hub's queue.
+    ///
+    /// A body that contradicts the binding ends it too, and then both correct: the
+    /// row renders from its real content and the echo reappears at the tail.
+    bound_prompts: std::collections::HashMap<String, String>,
     /// Set when this head asked for a session and is waiting to be told its id.
     want_new_session: bool,
     /// The last turn's `usage`, kept past the end of the turn so the header can
@@ -1436,6 +1468,7 @@ impl App {
             completion: None,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
+            bound_prompts: std::collections::HashMap::new(),
             want_new_session: false,
             usage: None,
             usage_cache_measured: true,
@@ -1985,6 +2018,23 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // **A snapshot replaced every row, so the bindings are pruned to what is
+        // still there and still body-less.** Pruned rather than cleared: a resync
+        // mid-prompt is exactly when the reply is racing the prompt, and dropping
+        // the binding for one frame would put the echo back at the tail and take it
+        // away again on the next `TranscriptContent`. An id that is gone, or whose
+        // row now has its body, has nothing left for a binding to stand for — the
+        // row renders from its content, and the echo at the tail is the echo's own
+        // business again.
+        {
+            let bodyless: std::collections::HashSet<&str> = self
+                .items
+                .iter()
+                .filter(|it| it.item.is_none())
+                .map(|it| it.item_id.as_str())
+                .collect();
+            self.bound_prompts.retain(|id, _| bodyless.contains(id.as_str()));
+        }
         // The snapshot's turn carries its calls **with their edit excerpts**, and
         // the rows it appended in order — the same two facts the live hand-off
         // used when it moved a card's excerpt into `call_edits` as the row landed.
@@ -2697,6 +2747,16 @@ impl App {
                 }
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
+                }
+                // **A user row is drawn from the moment it is announced.** The body
+                // follows on its own channel and, behind a running turn, the reply
+                // streams in the meantime — so without this the prompt is invisible
+                // while the answer to it is already on the screen, and the echo
+                // underneath goes on saying `queued` about words that have landed.
+                // See `App::bound_prompts` for why this is a guess and what keeps it
+                // honest.
+                if kind == "user" {
+                    self.bind_echo(&item_id);
                 }
                 self.items.push(SnapshotItem {
                     item_id,
@@ -4704,6 +4764,14 @@ impl App {
     /// a notice landing between them splits the run, so a landing row may be a
     /// *piece* of a coalesced echo. A row that is the front piece of an echo
     /// strips itself off it, and the rest stays queued until its own rows land.
+    ///
+    /// **This is the only thing that retires an echo, and it takes content.** The
+    /// announcement of a user row says nothing about whose words it carries — a
+    /// harness notice and another head's prompt are the same item — so a head that
+    /// retired on [`SessionEvent::TranscriptAppended`] would lose the echo of a
+    /// prompt still sitting in the hub's queue, and the operator would watch their
+    /// own sentence vanish. See [`App::bound_prompts`] for the half that *is* drawn
+    /// from an announcement.
     fn retire_pending(&mut self, text: &str) {
         if let Some(at) = self.pending_prompts.iter().position(|p| *p == text) {
             self.pending_prompts.remove(at);
@@ -4722,6 +4790,64 @@ impl App {
                 self.pending_prompts[at] = rest;
             }
         }
+    }
+
+    /// **Bind the oldest unbound echo to a row that has just been announced.**
+    ///
+    /// Called for a body-less `user` row, which is the shape of this head's own
+    /// prompt *and* of a steering notice, a §5.7 salvage notice and another head's
+    /// prompt. The announcement cannot tell them apart, so this is a guess: what it
+    /// buys is that the row is drawn from the words the head already holds, at the
+    /// position the transcript gave it — above the reply it caused — instead of
+    /// being invisible until its body catches up while the reply streams above it.
+    ///
+    /// Oldest first, and never an echo already bound: several prompts in the air at
+    /// once is the normal case behind a running turn, and their rows are announced
+    /// in the order they were sent. The echo **stays in `pending_prompts`** — this
+    /// binds a drawing, it does not retire anything (see [`App::retire_pending`]).
+    ///
+    /// The order is: a `BTreeMap`-free [`HashMap`] lookup, one scan of the pending
+    /// list, and one clone of the text being bound. `pending_prompts` is one to a few
+    /// entries — behind a running turn the engine merges consecutive operator
+    /// messages, so it is ordinarily *one* — and this runs once per announced row,
+    /// so it is nothing next to the render it is feeding.
+    fn bind_echo(&mut self, item_id: &str) {
+        if self.pending_prompts.is_empty() {
+            return;
+        }
+        let taken: std::collections::HashSet<&str> =
+            self.bound_prompts.values().map(String::as_str).collect();
+        let Some(text) = self
+            .pending_prompts
+            .iter()
+            .find(|p| !taken.contains(p.as_str()))
+            .cloned()
+        else {
+            return;
+        };
+        self.bound_prompts.insert(item_id.to_string(), text);
+    }
+
+    /// The echo texts a **body-less row on screen is already drawing**, so the tail
+    /// must not draw them a second time.
+    ///
+    /// Owned rather than borrowed, because the caller holds it across the frame's
+    /// disjoint borrow of `self`. It is one entry per prompt in the air — ordinarily
+    /// one — and it is built once per frame.
+    ///
+    /// Derived from `items` on every frame rather than counted, for the reason
+    /// [`App::bodies_peak`] records: `items` is replaced wholesale by a snapshot, and
+    /// a tally that outlived it described rows that no longer exist. A binding whose
+    /// row has been trimmed out of the view, or replaced by a snapshot, draws nothing
+    /// — and this then draws the echo at the tail again, which is the honest answer:
+    /// the words are still this head's to show.
+    fn echoes_on_screen(&self) -> std::collections::HashSet<String> {
+        self.items
+            .iter()
+            .filter(|it| it.item.is_none())
+            .filter_map(|it| self.bound_prompts.get(&it.item_id))
+            .cloned()
+            .collect()
     }
 
     /// Post a transient line. It lives for a few frames and then gets out of the
@@ -4757,6 +4883,14 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
+        // **Content ends the binding, either way.** Confirmed: the row renders from
+        // its real body and the echo retires by text below. Contradicted: the row was
+        // never this head's prompt — a steering notice, a §5.7 salvage notice,
+        // another head's prompt — and the echo is still in `pending_prompts`, so it
+        // goes back to the tail where it belongs. Either way the guess has served its
+        // purpose, and neither branch may retire on the announcement instead — see
+        // `App::retire_pending`.
+        self.bound_prompts.remove(item_id);
         // A user row with body is the transcript taking a queued prompt over. The
         // steering path appends the operator's words verbatim
         // (`SteeringMessage::to_item`: "a plain `User` item with exactly its own
@@ -5538,6 +5672,10 @@ impl App {
                     elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
                     edit: self.call_edits.get(&self.items[k].item_id),
                     decision: self.call_decisions.get(&self.items[k].item_id),
+                    bound: self
+                        .bound_prompts
+                        .get(&self.items[k].item_id)
+                        .map(String::as_str),
                     diff_split,
                     payload_view: self
                         .payload_sel
@@ -5740,6 +5878,7 @@ impl App {
                 diff_split,
                 payload_sel,
                 payload_page,
+                bound_prompts,
                 ..
             } = self;
             let diff_split = *diff_split;
@@ -5818,6 +5957,9 @@ impl App {
                             elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
                             edit: call_edits.get(&items[*hist_upto].item_id),
                             decision: call_decisions.get(&items[*hist_upto].item_id),
+                            bound: bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str),
                             diff_split,
                             // Rebuilt per row inside the walk, so it cannot be hoisted
                             // out of this borrow — it reads two fields the walk is
@@ -5900,6 +6042,9 @@ impl App {
         // from the tail and `self` is not whole by then.
         let (bodies_peak, now_ms) = (self.bodies_peak, self.now_ms);
 
+        // Read before the disjoint borrow below, for the same reason: it asks the rows
+        // which announcements are already drawing an echo. See `App::bound_prompts`.
+        let echoes_on_screen = self.echoes_on_screen();
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
@@ -6024,9 +6169,20 @@ impl App {
         if !self.pending_prompts.is_empty() {
             let mut owned: Vec<String> = vec![String::new()];
             for q in &self.pending_prompts {
+                // **An echo a row on screen is already drawing is not drawn twice.**
+                // The row that announced it carries the words now — in the
+                // transcript's own place, above the reply — and this tail block is
+                // for the queue, which is what is *not* in the conversation yet.
+                if echoes_on_screen.contains(q) {
+                    continue;
+                }
                 owned.extend(queued_lines(q, &cfg));
             }
-            segs.push(Seg::Owned(owned));
+            // The leading blank is the block's own air, so it goes if the block is
+            // empty: a lone blank row at the tail is a row of nothing.
+            if owned.len() > 1 {
+                segs.push(Seg::Owned(owned));
+            }
         }
 
         // **A fork in flight, as one line rather than thousands.**
@@ -9388,6 +9544,11 @@ struct ItemCtx<'a> {
     /// The settled decision this row's call was gated by, when there was one.
     /// See `App::call_decisions`.
     decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
+    /// The echo this head bound to this row, when the row is a `user` row whose body
+    /// has not arrived. See `App::bound_prompts`: it is drawn **in the row's place**,
+    /// which is what puts the prompt above the reply it caused instead of below it
+    /// and tagged `queued`.
+    bound: Option<&'a str>,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
     /// How far into a row's payload the reader has paged, and which row that is.
@@ -9542,9 +9703,23 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         drawn_live,
         elapsed_ms,
         payload_view,
+        bound,
     } = *ctx;
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
+        // **A row with no body — unless this head has bound an echo to it.**
+        //
+        // The announcement carries an id and a kind and no text, and the body follows
+        // on its own channel. For a `user` row that is this head's own prompt the head
+        // already holds the words, so the row is drawn from them here — in the row's
+        // own place, which is above the reply the model is already streaming. See
+        // `App::bound_prompts` for why the binding is a guess and why the block keeps
+        // the echo's `queued` shape rather than taking the settled one: the
+        // announcement cannot say whether this row is this head's prompt at all, and
+        // `queued` is exactly the word for "bound, not yet confirmed by content".
+        if let Some(text) = bound {
+            return (RowClass::Speech, queued_lines(text, cfg));
+        }
         // **The announcement arrived and the body has not — so draw nothing.**
         //
         // This used to render `[kind — waiting for the body of s-…]`, one line per
@@ -10603,6 +10778,216 @@ mod tests {
             },
         );
         assert!(a.pending_prompts.is_empty());
+    }
+
+    /// **The prompt is on the screen before the reply to it — requirement R2.**
+    ///
+    /// Two channels with different latencies. Assistant text arrives as `Delta`,
+    /// carrying its text, and renders as it streams; a user row arrives as
+    /// `TranscriptAppended` — an id and a kind, **no text** — and only later as
+    /// `TranscriptContent`. So the reply is always faster to display than the prompt
+    /// that caused it: the operator watched their own sentence sit under the answer
+    /// to it, tagged `queued`, and then jump above it when the body finally landed.
+    ///
+    /// The row is drawn from the echo the head already holds, in the row's own place,
+    /// from the announcement.
+    #[test]
+    fn a_queued_prompt_is_drawn_in_the_transcript_the_moment_its_row_is_announced() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("also fix the parser".into()))
+        );
+        // Before anything lands: the echo, tagged as what it is.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("queued · also fix the parser"), "{screen}");
+
+        // The daemon appends the row at its step boundary and announces it. No text
+        // on the event — the head's own echo is all there is.
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.9", "user"))));
+        // And the model's reply starts streaming, which is what used to reach the
+        // screen first.
+        a.apply(ServerFrame::Event(env(3, testing::delta("t1", "I'll fix the parser."))));
+
+        let screen = a.screen(100, 24).join("\n");
+        let prompt = screen
+            .find("also fix the parser")
+            .unwrap_or_else(|| panic!("the prompt is not on the screen: {screen}"));
+        let reply = screen
+            .find("I'll fix the parser")
+            .unwrap_or_else(|| panic!("the reply is not on the screen: {screen}"));
+        assert!(
+            prompt < reply,
+            "the reply is above the prompt that caused it: {screen}"
+        );
+        // **And once.** The row is carrying the words now, so the tail echo must not
+        // draw them a second time.
+        assert_eq!(
+            screen.matches("also fix the parser").count(),
+            1,
+            "the prompt is on the screen twice: {screen}"
+        );
+
+        // The body arrives and confirms the binding: the row becomes a settled user
+        // block, in place, and the echo goes with it.
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::content("s.9", "also fix the parser"),
+        )));
+        assert!(a.pending_prompts.is_empty(), "confirmed, so the echo retires");
+        assert!(a.bound_prompts.is_empty(), "and the binding is spent");
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            !screen.contains("queued"),
+            "the row is settled and still says queued: {screen}"
+        );
+        assert_eq!(screen.matches("also fix the parser").count(), 1, "{screen}");
+        // Still above the reply, now from its own body.
+        assert!(
+            screen.find("also fix the parser").unwrap() < screen.find("I'll fix the parser").unwrap(),
+            "{screen}"
+        );
+    }
+
+    /// **Not every announced `User` row is this head's prompt — the hazard.**
+    ///
+    /// A harness steering notice and a §5.7 salvage notice are the same item shape as
+    /// a prompt (`harnessd::harness` says so in as many words), and so is another
+    /// attached head's prompt. The announcement carries nothing that tells them apart,
+    /// so the binding is a guess and **the retire waits for content matched by text**:
+    /// a head that retired on the announcement would lose the echo of a prompt still
+    /// sitting in the hub's queue, and the operator would watch their own sentence
+    /// vanish off the screen.
+    #[test]
+    fn a_notice_announced_while_a_prompt_is_queued_does_not_retire_its_echo() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "also fix the parser");
+        a.key(Key::Enter);
+
+        // A steering notice is appended — the SAME shape as a prompt, and it steals
+        // the optimistic binding, because the announcement cannot say it is not ours.
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.9", "user"))));
+        assert!(
+            a.bound_prompts.contains_key("s.9"),
+            "the guess is made; there is nothing else to guess from"
+        );
+        // Content arrives and contradicts it: this row was never this head's words.
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::content("s.9", "the spec changed - RFC 2812 rather than 1459"),
+        )));
+        assert_eq!(
+            a.pending_prompts,
+            vec!["also fix the parser".to_string()],
+            "the announcement retired an echo whose prompt is still queued"
+        );
+        assert!(a.bound_prompts.is_empty(), "the wrong guess is dropped");
+        // And both correct themselves: the notice renders from its own content, and
+        // the operator's words are back at the tail, still saying `queued`, which is
+        // still true.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("RFC 2812"), "{screen}");
+        assert!(
+            screen.contains("queued · also fix the parser"),
+            "the operator's own words left the screen: {screen}"
+        );
+        assert_eq!(screen.matches("also fix the parser").count(), 1, "{screen}");
+    }
+
+    /// **Two prompts in the air bind two rows, in the order they were sent.**
+    ///
+    /// Oldest-first, and never an echo already bound: two rows announced while both
+    /// are queued must not both wear the first prompt's words. Idle submits land each
+    /// as their own entry (`queued_prompts_behind_a_running_turn_are_one_message`
+    /// covers the coalesced case), and both rows are in flight until their bodies
+    /// arrive.
+    #[test]
+    fn two_queued_prompts_bind_the_two_announcements_in_order() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        typed(&mut a, "first");
+        a.key(Key::Enter);
+        typed(&mut a, "second");
+        a.key(Key::Enter);
+        assert_eq!(
+            a.pending_prompts,
+            vec!["first".to_string(), "second".to_string()]
+        );
+
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.10", "user"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.11", "user"))));
+        assert_eq!(a.bound_prompts.get("s.10").map(String::as_str), Some("first"));
+        assert_eq!(a.bound_prompts.get("s.11").map(String::as_str), Some("second"));
+        let screen = a.screen(100, 24).join("\n");
+        assert_eq!(screen.matches("queued · first").count(), 1, "{screen}");
+        assert_eq!(screen.matches("queued · second").count(), 1, "{screen}");
+        assert!(
+            screen.find("first").unwrap() < screen.find("second").unwrap(),
+            "the rows are drawn in the order they were announced: {screen}"
+        );
+    }
+
+    /// **A binding dies with the row it was for.** A snapshot replaces every row, and
+    /// a binding whose row is gone has nothing left to stand for — otherwise the echo
+    /// would be suppressed at the tail for ever, on the strength of a row nobody has
+    /// any more.
+    #[test]
+    fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "still queued");
+        a.key(Key::Enter);
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.9", "user"))));
+        assert!(a.bound_prompts.contains_key("s.9"));
+
+        // A resync of the same session whose rows do not include that one.
+        let mut snap = Hub::new("s").snapshot();
+        snap.seq = 5;
+        snap.items.push(letibot_sessionlog::view::SnapshotItem {
+            item_id: "s.10".into(),
+            kind: "user".into(),
+            ledger_head: "beef".into(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "from the snapshot".into(),
+                }],
+            }),
+        });
+        a.apply(hello("s", vec![brief("s", "one", false)], snap));
+        assert!(a.bound_prompts.is_empty(), "a row that is gone takes its guess with it");
+        assert_eq!(
+            a.pending_prompts,
+            vec!["still queued".to_string()],
+            "and the words are still this head's to show"
+        );
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            screen.contains("queued · still queued"),
+            "the echo is suppressed by a binding nothing can see: {screen}"
+        );
     }
 
     /// **A refusal the harness made is one dim line, not a wall in red.**
