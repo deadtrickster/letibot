@@ -16,7 +16,7 @@
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use letibot_sessionlog::client::{ClientError, HeadClient};
+use letibot_sessionlog::client::{ClientError, HeadClient, Inbound};
 use letibot_sessionlog::protocol::{Ack, ServerFrame};
 
 use crate::app::{Action, App, Disposition, Key};
@@ -34,7 +34,7 @@ pub type Draw<'a> = dyn FnMut(&[String], Caret) + 'a;
 /// to a `Vec<String>`.
 pub fn tick(
     app: &mut App,
-    rx: &Receiver<ServerFrame>,
+    rx: &Receiver<Inbound>,
     client: &mut HeadClient,
     size: (usize, usize),
     keys: &[Key],
@@ -48,7 +48,7 @@ pub fn tick(
     let mut last_seq = 0u64;
     loop {
         match rx.try_recv() {
-            Ok(frame) => {
+            Ok(Inbound::Frame(frame)) => {
                 if let ServerFrame::Event(env) = &frame {
                     // The read mark, taken from what was *read*. There is no
                     // "last rendered seq" variable here, on purpose.
@@ -59,6 +59,16 @@ pub fn tick(
                     Disposition::Filtered => filtered += 1,
                     Disposition::Control => {}
                 }
+            }
+            // **A frame this head cannot read is said, counted, and stepped over.**
+            // It carries no seq — nothing was parsed, so there is nothing to ack —
+            // so it moves neither of the two counters the `Ack` carries and it does
+            // not touch `last_seq`. What it does is reach the transcript and the
+            // `unreadable` counter, so a daemon whose frames this head does not
+            // understand is distinguishable from a quiet one. The connection is
+            // still up; see `Inbound`.
+            Ok(Inbound::Unreadable(u)) => {
+                app.unreadable(u);
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => break,

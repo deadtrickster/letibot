@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
@@ -72,7 +72,8 @@ fn the_head_answers_with_the_exact_rows_it_drew() {
     let answering = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Ok(ServerFrame::Event(env)) = rx.recv_timeout(Duration::from_millis(200))
+            if let Ok(ServerFrame::Event(env)) =
+                rx.recv_timeout(Duration::from_millis(200)).map(Inbound::frame)
                 && let SessionEvent::ScreenRequested { req_id } = &env.event
             {
                 client.screen(req_id, 96, 3, drawn()).unwrap();

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
@@ -116,7 +116,7 @@ fn read_to_end(path: &std::path::Path, since: u64) -> (String, u64, usize) {
     let mut rendered = 0u64;
     let mut filtered = 0u64;
     while Instant::now() < deadline {
-        let Ok(frame) = rx.recv_timeout(Duration::from_secs(5)) else {
+        let Ok(frame) = rx.recv_timeout(Duration::from_secs(5)).map(Inbound::frame) else {
             break;
         };
         match frame {
@@ -334,7 +334,9 @@ fn a_reattaching_head_is_never_re_asked_a_settled_question() {
     let mut saw_outcome = false;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        let Ok(ServerFrame::Event(env)) = rx.recv_timeout(Duration::from_millis(300)) else {
+        let Ok(ServerFrame::Event(env)) =
+            rx.recv_timeout(Duration::from_millis(300)).map(Inbound::frame)
+        else {
             break;
         };
         match env.event {

@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
@@ -59,7 +59,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
 
 /// Read frames until `f` says stop, or time out with what was seen.
 fn until(
-    rx: &std::sync::mpsc::Receiver<ServerFrame>,
+    rx: &std::sync::mpsc::Receiver<Inbound>,
     mut f: impl FnMut(&ServerFrame) -> bool,
 ) -> Vec<ServerFrame> {
     let mut seen = Vec::new();
@@ -67,6 +67,7 @@ fn until(
     while Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(frame) => {
+                let frame = frame.frame();
                 let done = f(&frame);
                 seen.push(frame);
                 if done {

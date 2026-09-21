@@ -307,7 +307,7 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
 /// same connection, with the turn's own boundary events around it.
 #[test]
 fn a_head_prompts_over_the_socket_and_sees_the_turn() {
-    use letibot_sessionlog::client::{HeadClient, pump};
+    use letibot_sessionlog::client::{HeadClient, Inbound, pump};
     use letibot_sessionlog::event::SessionEvent;
     use letibot_sessionlog::protocol::{Caps, ServerFrame};
     use letibot_harnessd::{Daemon, Sessions};
@@ -354,7 +354,7 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
         let mut finished = false;
         let deadline = Instant::now() + Duration::from_secs(180);
         while Instant::now() < deadline && !finished {
-            let Ok(frame) = rx.recv_timeout(Duration::from_secs(120)) else {
+            let Ok(frame) = rx.recv_timeout(Duration::from_secs(120)).map(Inbound::frame) else {
                 break;
             };
             if let ServerFrame::Event(env) = frame {

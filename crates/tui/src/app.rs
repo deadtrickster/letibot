@@ -26,6 +26,7 @@
 //! rejects is counted. That is what makes the counter meaningful rather than
 //! decorative: there is a key that changes it, so the number moves.
 
+use letibot_sessionlog::client::Unreadable;
 use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, Timings, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring, short_id};
@@ -807,6 +808,20 @@ pub struct App {
     pub resyncs: u64,
     pub rendered: u64,
     pub filtered: u64,
+    /// **Frames this build could not read, and did not die of.**
+    ///
+    /// The requirement is *survive AND count*: a head that exits on an unparseable
+    /// frame says nothing and takes the session down with it, and a head that steps
+    /// over one in silence is the same failure more quietly — *"this daemon is
+    /// sending me something I do not understand"* becomes indistinguishable from
+    /// quiet. `ServerFrame` and `SessionEvent` are internally tagged, so an unknown
+    /// tag is what a daemon one version ahead looks like from here, and this is the
+    /// number that says so. On `/status`, and on the border once it has moved.
+    ///
+    /// The read mark is deliberately not touched by one of these: nothing was
+    /// parsed, so there is no seq to ack, and inventing one would rewind this head's
+    /// mark over frames it has already read.
+    pub unreadable: u64,
     /// Scroll offset from the bottom, in lines. 0 is "following the stream".
     pub scroll: usize,
     /// The composer. `letibot_ui::editor::Editor` — multi-line, with history, a
@@ -1501,6 +1516,7 @@ impl App {
             resyncs: 0,
             rendered: 0,
             filtered: 0,
+            unreadable: 0,
             scroll: 0,
             editor: Editor::new(),
             model: String::new(),
@@ -1675,6 +1691,43 @@ impl App {
 
     pub fn open_decisions(&self) -> &[OpenDecision] {
         &self.open
+    }
+
+    /// **A frame this head could not read: said, and counted.**
+    ///
+    /// The requirement is *survive AND count*. Dying on an unparseable frame takes the
+    /// session down and says nothing; stepping over one in silence is the same failure
+    /// more quietly, because *"this daemon is sending me something I do not
+    /// understand"* then looks exactly like quiet. So this is the one entry point the
+    /// driver has for `Inbound::Unreadable`: it says what it was, in the transcript,
+    /// and it moves a counter that `/status` carries and the border names once it has
+    /// moved.
+    ///
+    /// # What it deliberately does not do
+    ///
+    /// It does not touch `seq`, and nothing about it is acked. No frame was parsed, so
+    /// there is no seq to report — and inventing one would rewind this head's read mark
+    /// over frames it has already read, which is the one thing a mark must never do.
+    /// `Ack`'s `filtered` is "events I chose not to show" and this is not that either,
+    /// so it moves neither counter the daemon reads back.
+    ///
+    /// It is `Control` rather than `Rendered` for the same reason a `Hello` is: the
+    /// counter it moves is on a screen this head does not reach for, and the sentence
+    /// is filed as a note like every other thing that happened between rows — anchored
+    /// where it arrived, so it scrolls away like the rest of the conversation instead
+    /// of sitting above the composer for ever.
+    pub fn unreadable(&mut self, u: Unreadable) -> Disposition {
+        self.unreadable += 1;
+        // `ts` is 0: this happened on the socket rather than on the session's log, and
+        // the log's clock is not this. A note with no timestamp renders without one,
+        // which is the honest shape — see `clock_time`.
+        self.note(Note::Warned(Warned {
+            code: "unreadable_frame".into(),
+            detail: u.said(),
+            ts: 0,
+        }));
+        self.redraw = true;
+        Disposition::Control
     }
 
     /// Apply one frame. Never sends anything; see the module note on acking.
@@ -7795,7 +7848,7 @@ impl App {
     /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
     /// border has something to say at all.
     fn alarmed(&self) -> bool {
-        self.dropped + self.scrubbed + self.resyncs > 0
+        self.dropped + self.scrubbed + self.resyncs + self.unreadable > 0
     }
 
     /// The alarm line for the **unboxed** composer — the degenerate short-screen
@@ -7830,16 +7883,21 @@ impl App {
             return String::new();
         }
         let p = self.cfg.palette();
-        trim_to(
-            &p.paint(
-                Role::Attention,
-                &format!(
-                    "⚠ dropped {} · scrubbed {} · resync {} · /status",
-                    self.dropped, self.scrubbed, self.resyncs
-                ),
-            ),
-            w,
-        )
+        let mut said = format!(
+            "⚠ dropped {} · scrubbed {} · resync {}",
+            self.dropped, self.scrubbed, self.resyncs
+        );
+        // **Named, not only counted.** The other three are facts about what this head
+        // did with what it was given; this one is a fact about the wire, and it is
+        // the only one that means "you are running two different builds".
+        if self.unreadable > 0 {
+            said.push_str(&format!(
+                " · unreadable {} (frames this head could not read)",
+                self.unreadable
+            ));
+        }
+        said.push_str(" · /status");
+        trim_to(&p.paint(Role::Attention, &said), w)
     }
 
     /// `/status`: this head's own instrumentation, with what each number means.
@@ -7911,6 +7969,20 @@ impl App {
             self.resyncs.to_string(),
             "Times this head threw its state away and took a fresh snapshot, \
              because the gap since its read mark was past the daemon's bound.",
+        );
+        // **Present and zero, like every other counter here.** §13.2b: an absent
+        // field and a zero field must not look the same. A head that has never met a
+        // frame it could not read says `0`, which is a different statement from a
+        // head that does not count them at all — and the second is what every head
+        // did before this bucket existed.
+        row(
+            "unreadable",
+            self.unreadable.to_string(),
+            "Frames that arrived and could not be parsed. Almost always a daemon \
+             newer than this head: the frames the two share read fine, and the first \
+             one they do not is this. The head stays attached and says so on the \
+             border once it has happened; nothing is acked for one, because nothing \
+             was read.",
         );
         row(
             "verbosity",
@@ -11228,6 +11300,87 @@ mod tests {
         assert!(
             border.contains("/status"),
             "and says where the rest is: {border}"
+        );
+    }
+
+    /// **A frame this head cannot read is said, counted, and not fatal.**
+    ///
+    /// Requirement R3, and the two failures it sits between: a head that exits on an
+    /// unparseable frame takes the session down and says nothing, and a head that steps
+    /// over one in silence is the same failure more quietly — *"this daemon is sending
+    /// me something I do not understand"* becomes indistinguishable from quiet. So:
+    /// the sentence is in the transcript, the counter moves, `/status` has the bucket
+    /// at zero **and** after, and nothing about it touches the read mark.
+    #[test]
+    fn an_unreadable_frame_is_said_counted_and_survived() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **The bucket exists before anything lands in it.** §13.2b: an absent field
+        // and a zero field must not look the same, and a head that does not count
+        // these at all is what every head was until now.
+        a.command("status");
+        let zero = a.screen(120, 40).join("\n");
+        let row = zero
+            .lines()
+            .find(|l| l.contains("unreadable"))
+            .unwrap_or_else(|| panic!("/status has no bucket for this: {zero}"));
+        assert!(row.contains('0'), "{row}");
+        a.key(Key::Esc);
+        assert_eq!(a.status_line(200), "", "a clean head has a clean border");
+
+        // A daemon one version ahead sends a frame from the future.
+        let before = (a.seq, a.rendered, a.filtered);
+        a.unreadable(Unreadable {
+            line: r#"{"frame":"peeked_v2","rows":[]}"#.into(),
+            detail: "unknown variant `peeked_v2`, expected one of `hello`, `bye`".into(),
+        });
+        assert_eq!(a.unreadable, 1);
+        // **Nothing was parsed, so nothing is claimed.** The read mark is untouched
+        // and neither ack counter moved: `filtered` is "events I chose not to show",
+        // and inventing a seq here would rewind the mark over frames already read.
+        assert_eq!((a.seq, a.rendered, a.filtered), before);
+
+        // The sentence is in the conversation: what it was, that this is almost always
+        // a newer daemon, and that this head is still attached.
+        let screen = a.screen(120, 40).join("\n");
+        assert!(screen.contains("peeked_v2"), "{screen}");
+        assert!(screen.contains("cannot read"), "{screen}");
+        assert!(screen.contains("newer"), "{screen}");
+        assert!(
+            screen.contains(&format!(
+                "protocol {}",
+                letibot_sessionlog::protocol::PROTOCOL_VERSION
+            )),
+            "{screen}"
+        );
+
+        // And the head is still running: the next frame applies as though nothing had
+        // happened, which is the whole point of surviving one.
+        a.apply(ServerFrame::Event(env(9, testing::turn_started("t1"))));
+        assert!(a.turn_running(), "the head kept working");
+
+        // A second one counts twice, and the border names it now that it has moved.
+        a.unreadable(Unreadable {
+            line: r#"{"frame":"another"}"#.into(),
+            detail: "unknown variant `another`".into(),
+        });
+        assert_eq!(a.unreadable, 2);
+        let border = a.status_line(200);
+        assert!(border.contains("unreadable 2"), "{border}");
+        assert!(border.contains("/status"), "{border}");
+        a.command("status");
+        let stats = a.screen(120, 40).join("\n");
+        let unreadable_rows: Vec<&str> = stats
+            .lines()
+            .filter(|l| l.contains("unreadable"))
+            .collect();
+        assert!(
+            unreadable_rows.iter().any(|l| l.contains('2')),
+            "{unreadable_rows:?}"
         );
     }
 
@@ -18627,3 +18780,4 @@ mod tests {
         assert!(a.jobs.is_empty(), "another session's table was folded in");
     }
 }
+

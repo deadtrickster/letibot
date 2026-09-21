@@ -16,10 +16,11 @@
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{ClientError, HeadClient, pump};
+use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, Unreadable, pump};
 use letibot_sessionlog::event::Envelope;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::default_socket_path;
+use letibot_sessionlog::wire::WireError;
 use letibot_sessionlog::{SessionBrief, testing};
 
 use letibot_tui::app::App;
@@ -223,6 +224,16 @@ fn probe(args: &Args) -> i32 {
         Err(ClientError::Refused(reason)) => {
             // The same line `live` prints, because the launcher greps for it.
             eprintln!("letibot-tui: the daemon refused the attach: {reason}");
+            1
+        }
+        // **A daemon that is here and cannot be talked to is exit 1, not 2.** The
+        // launcher reads 2 as *no daemon* and starts one, which unlinks the socket of
+        // the daemon that is very much there — which is the hazard this whole probe
+        // exists for, and a version skew is exactly the shape of it. A `Hello` this
+        // build cannot parse, or an answer that is not a `Hello` at all, both mean
+        // "somebody is on this socket and it is not this build".
+        Err(e @ ClientError::Protocol(_)) => {
+            eprintln!("letibot-tui: {e}");
             1
         }
         Err(e) => {
@@ -497,7 +508,7 @@ fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::E
 /// arriving on the same channel, and an interrupt in progress makes it loud.
 fn ask_sessions(
     client: &mut HeadClient,
-    rx: &std::sync::mpsc::Receiver<ServerFrame>,
+    rx: &std::sync::mpsc::Receiver<Inbound>,
     deadline: Instant,
 ) -> Result<Vec<SessionBrief>, Box<dyn std::error::Error>> {
     client.list_sessions()?;
@@ -506,8 +517,14 @@ fn ask_sessions(
             return Err("timed out waiting for the session list".into());
         }
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(ServerFrame::Sessions { sessions, .. }) => return Ok(sessions),
-            Ok(_) => continue,
+            Ok(Inbound::Frame(ServerFrame::Sessions { sessions, .. })) => return Ok(sessions),
+            // A frame this head cannot read is not a reason to lose the round trip:
+            // the answer may be the very next one. Said and counted like any other.
+            Ok(Inbound::Unreadable(u)) => {
+                eprintln!("letibot-tui: {}", u.said());
+                continue;
+            }
+            Ok(Inbound::Frame(_)) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("the daemon closed the connection".into());
@@ -573,9 +590,24 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         match reader.read::<ServerFrame>() {
             Ok(h) => {
                 let bye = matches!(h, ServerFrame::Bye { .. });
-                if hello_tx.send(h).is_err() || bye {
+                if hello_tx.send(Inbound::Frame(h)).is_err() || bye {
                     return;
                 }
+            }
+            // **A first frame that will not parse is said, not swallowed.** This used
+            // to be `Err(_) => return`, and the caller then reported *"the daemon
+            // closed the connection before answering"* — which was false: the
+            // connection was up and the daemon had answered, in a frame this build
+            // could not read. That is a version skew, and a head that names it is how
+            // the operator learns to restart the daemon rather than to file a bug
+            // against the wrong half.
+            //
+            // Fatal here and only here: without a `Hello` there is no session, so
+            // there is nothing to stay attached to. The `Unreadable` travels on the
+            // same channel as the frames, so the caller sees one message either way.
+            Err(WireError::Malformed { line, detail }) => {
+                let _ = hello_tx.send(Inbound::Unreadable(Unreadable { line, detail }));
+                return;
             }
             Err(_) => return,
         }
@@ -608,7 +640,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     // three are fixed here: keys are read and handled, a wait that outlives its budget
     // gives up, and the frame says so once the wait has gone on long enough to be worth
     // a sentence.
-    let hello: Option<ServerFrame> = match &term {
+    let hello: Option<Inbound> = match &term {
         None => rx.recv().ok(),
         Some(t) => {
             let started = Instant::now();
@@ -652,8 +684,11 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
             got
         }
     };
-    let Some(hello) = hello else {
-        return Err("the daemon closed the connection before answering".into());
+    // **A first frame this build cannot read is a skew, and it is named.**
+    let hello = match hello {
+        Some(Inbound::Frame(f)) => f,
+        Some(Inbound::Unreadable(u)) => return Err(u.said().into()),
+        None => return Err("the daemon closed the connection before answering".into()),
     };
     // A refusal arrives as a `Bye`, exactly as `HeadClient::attach` treats it.
     if let ServerFrame::Bye { reason } = &hello {
@@ -761,5 +796,33 @@ mod probe_tests {
         p.push(format!("letibot-probe-absent-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&p);
         assert_eq!(probe(&args_for(p)), 2);
+    }
+
+    /// **A peer that answers with a frame this build cannot read is a daemon that is
+    /// here and is not this build — which is a `1`, and it must never be a `2`.**
+    ///
+    /// The launcher reads `2` as *no daemon* and starts one, which unlinks the socket
+    /// the live daemon is listening on. A version skew is exactly the shape of
+    /// anyway-there, so the exit code is the load-bearing part here; the sentence on
+    /// stderr is `Unreadable::said`, which names both builds.
+    #[test]
+    fn a_hello_this_build_cannot_read_is_a_one_not_a_two() {
+        let path = socket_path("skew");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let peer = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().expect("accept");
+            // Read the Attach line, then answer in a dialect from the future.
+            let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut r, &mut line).expect("the Attach");
+            assert!(line.contains("attach"), "{line}");
+            use std::io::Write;
+            s.write_all(b"{\"frame\":\"hello_v2\",\"session_id\":\"s\"}\n")
+                .expect("write");
+        });
+        let code = probe(&args_for(path.clone()));
+        peer.join().unwrap();
+        assert_eq!(code, 1, "the launcher must not start a second daemon here");
+        let _ = std::fs::remove_file(&path);
     }
 }

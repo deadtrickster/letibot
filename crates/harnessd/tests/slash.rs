@@ -80,7 +80,9 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
         loop {
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(frame) => {
-                    if let letibot_sessionlog::protocol::ServerFrame::Event(env) = frame
+                    if let letibot_sessionlog::client::Inbound::Frame(
+                        letibot_sessionlog::protocol::ServerFrame::Event(env),
+                    ) = frame
                         && let SessionEvent::Warning { code, detail } = env.event
                         && code.starts_with("slash")
                     {

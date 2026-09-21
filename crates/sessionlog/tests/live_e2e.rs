@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use letibot_backend::BackendCaps;
 use letibot_dialect::StablePrefix;
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::lift::LogSink;
@@ -208,6 +208,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     while Instant::now() < deadline {
         let f = a_rx
             .recv_timeout(Duration::from_secs(120))
+            .map(Inbound::frame)
             .expect("head A must receive the stream");
         if let ServerFrame::Event(env) = &f {
             a_last_seq = env.seq;
@@ -251,11 +252,11 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     let b_from = snap.seq;
 
     // Drain both heads to the end of the turn.
-    let drain = |rx: &std::sync::mpsc::Receiver<ServerFrame>, seen: &mut Seen| -> u64 {
+    let drain = |rx: &std::sync::mpsc::Receiver<Inbound>, seen: &mut Seen| -> u64 {
         let mut last = 0;
         let deadline = Instant::now() + Duration::from_secs(300);
         while Instant::now() < deadline {
-            let Ok(f) = rx.recv_timeout(Duration::from_secs(120)) else {
+            let Ok(f) = rx.recv_timeout(Duration::from_secs(120)).map(Inbound::frame) else {
                 break;
             };
             if let ServerFrame::Event(env) = &f {
@@ -392,7 +393,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
         "the engine emits progress frames and a replay must strip them"
     );
     let mut saw_progress = false;
-    while let Ok(f) = c_rx.recv_timeout(Duration::from_millis(500)) {
+    while let Ok(f) = c_rx.recv_timeout(Duration::from_millis(500)).map(Inbound::frame) {
         if let ServerFrame::Event(env) = f
             && matches!(env.event, SessionEvent::PromptProgress { .. })
         {

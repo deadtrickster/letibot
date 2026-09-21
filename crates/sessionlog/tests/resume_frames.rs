@@ -36,7 +36,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::client::{HeadClient, pump};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::hub::CommandKind;
 use letibot_sessionlog::protocol::{
     Caps, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
@@ -117,13 +117,14 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
 }
 
 fn until(
-    rx: &std::sync::mpsc::Receiver<ServerFrame>,
+    rx: &std::sync::mpsc::Receiver<Inbound>,
     mut f: impl FnMut(&ServerFrame) -> bool,
 ) -> ServerFrame {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(frame) => {
+                let frame = frame.frame();
                 if f(&frame) {
                     return frame;
                 }

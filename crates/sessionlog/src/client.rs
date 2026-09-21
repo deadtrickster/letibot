@@ -83,7 +83,18 @@ impl HeadClient {
             identity: identity.to_string(),
             caps,
         })?;
-        let hello: ServerFrame = reader.read()?;
+        let hello: ServerFrame = reader.read().map_err(|e| match e {
+            // **A first frame this build cannot read is a skew, and it is named as
+            // one.** The alternative was `ClientError::Wire`, which prints
+            // `malformed frame (unknown variant \`peeked_v2\`): {"frame":…}` — a
+            // decoder's complaint about a line, with nothing in it about two builds.
+            // Same words the pump's path says, so a head that fails at the handshake
+            // and one that survives a skew later describe the same thing the same way.
+            WireError::Malformed { line, detail } => {
+                ClientError::Protocol(Unreadable { line, detail }.said())
+            }
+            other => ClientError::Wire(other),
+        })?;
         match &hello {
             ServerFrame::Hello { head_id, .. } => {
                 let head_id = head_id.clone();
@@ -537,20 +548,197 @@ impl HeadClient {
     }
 }
 
-/// Drive a reader on this thread, pushing every frame into `tx`.
+/// What the pump hands a head: a frame, or a line this build could not read.
+///
+/// # Why an unreadable line is not the end of a connection
+///
+/// `ServerFrame` and `SessionEvent` are **internally tagged** — `{"frame": "event",
+/// …}`, `{"event": "delta", …}` — so a tag this build does not know fails the whole
+/// line. That is exactly what a daemon one version ahead looks like from here: the
+/// frames the two share parse, the first one they do not does not, and the fact that
+/// was learned is about two builds and not about the stream.
+///
+/// The pump used to discard the error and return, which killed the channel: the head
+/// drew one more frame and exited, and `the daemon closed the connection` is the
+/// closest it ever came to saying why. The daemon's own read loop had the same shape
+/// (`Err(e) => break Err(e)`, so a frame it could not read hung up in silence) and
+/// was fixed on 2026-09-20 by sending a `Bye` that names both protocol versions. This
+/// is the head's half of that, and it is a *different* answer on purpose: the daemon
+/// can only lose the connection, while a head reading a stream it mostly understands
+/// should keep the stream and say what it could not read.
+#[derive(Debug)]
+pub enum Inbound {
+    Frame(ServerFrame),
+    /// One line of the stream that did not parse, kept so the head can say what it
+    /// was. The connection is still up.
+    Unreadable(Unreadable),
+}
+
+impl Inbound {
+    /// The frame, or a panic naming the line.
+    ///
+    /// For a caller that owns both ends of the socket — the tests — where an
+    /// unreadable line is a bug in the test rather than a skew to report.
+    pub fn frame(self) -> ServerFrame {
+        match self {
+            Inbound::Frame(f) => f,
+            Inbound::Unreadable(u) => panic!("unreadable frame: {u:?}"),
+        }
+    }
+}
+
+/// One line of the stream that did not parse, **with the line**.
+///
+/// The line is the whole reason this type exists. A decoder that reports "bad
+/// frame" without the frame turns a precise complaint into a shrug, and the first
+/// question anybody asks about a skew is *which frame*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreadable {
+    /// The line, as it came off the wire. Kept whole; truncated at the point of
+    /// display, where the width is known.
+    pub line: String,
+    /// serde's own complaint — `unknown variant \`job_output\`, expected one of …` —
+    /// which is what names the skew when the tag is one this build has never heard
+    /// of.
+    pub detail: String,
+}
+
+impl Unreadable {
+    /// **The sentence the operator reads.** What it was, why it is almost always a
+    /// daemon newer than this head, and that the head is still here.
+    ///
+    /// One function so a head cannot say this three ways — a head that exits, a head
+    /// that shrugs and a head that counts have to agree about what happened, and the
+    /// only way to guarantee that is one string.
+    pub fn said(&self) -> String {
+        // Truncated here rather than kept short: the line is the evidence and the
+        // first 200 columns of it are what identifies the frame.
+        let shown: String = self.line.chars().take(200).collect();
+        let ellipsis = if self.line.chars().count() > 200 {
+            "…"
+        } else {
+            ""
+        };
+        format!(
+            "the daemon sent a frame this head cannot read ({detail}). This head speaks \
+             protocol {PROTOCOL_VERSION}; a daemon built against a newer one will do \
+             this on the first frame the two do not share, and it is almost always \
+             that rather than a corrupt stream. The connection is still up. The line \
+             was: {shown}{ellipsis}",
+            detail = self.detail,
+        )
+    }
+}
+/// Drive a reader on this thread, pushing everything it reads into `tx`.
 ///
 /// Returns when the daemon closes or the channel's receiver is gone. Detach is
 /// **not** an error: a head that closed its own connection is the normal exit.
-pub fn pump(mut reader: FrameReader<UnixStream>, tx: Sender<ServerFrame>) {
+///
+/// **A line this build cannot read is handed over, not swallowed, and is not the end
+/// of the connection.** See [`Inbound`]: the old `Err(_) => return` here killed the
+/// channel, so a head met a daemon it could not parse by drawing one more frame and
+/// exiting — `the daemon closed the connection` being the closest it ever came to
+/// saying why.
+pub fn pump(mut reader: FrameReader<UnixStream>, tx: Sender<Inbound>) {
     loop {
         match reader.read::<ServerFrame>() {
             Ok(f) => {
                 let bye = matches!(f, ServerFrame::Bye { .. });
-                if tx.send(f).is_err() || bye {
+                if tx.send(Inbound::Frame(f)).is_err() || bye {
                     return;
                 }
             }
-            Err(_) => return,
+            // **One unreadable line is a fact about two builds, not about the
+            // stream.** The next line is very likely one this head reads perfectly,
+            // so the connection stays up and the complaint travels to the head,
+            // which counts it. A `Malformed` costs the reader nothing: the line has
+            // already been consumed, and the frame after it is the next one read.
+            Err(WireError::Malformed { line, detail }) => {
+                if tx
+                    .send(Inbound::Unreadable(Unreadable { line, detail }))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            // The stream is over. `Eof` is detach and says nothing; an io error is
+            // the socket, not a frame, and there is nothing left to read either way.
+            Err(WireError::Eof) | Err(WireError::Io(_)) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// **One line this build cannot read does not end the connection, and it keeps
+    /// the line.** A daemon one version ahead sends a tag this build has never heard
+    /// of; the frames the two share are fine, and the pump used to throw the error
+    /// away and return — which killed the channel and left the head exiting with
+    /// *"the daemon closed the connection"* about a daemon that was still talking.
+    #[test]
+    fn an_unreadable_line_is_handed_over_and_the_stream_carries_on() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pumping = std::thread::spawn(move || pump(FrameReader::new(client), tx));
+        {
+            let mut w = server;
+            // A frame from the future, then a frame this build knows, then close.
+            w.write_all(b"{\"frame\":\"from_the_future\",\"payload\":1}\n")
+                .unwrap();
+            let mut live = FrameWriter::new(w);
+            live.write(&ServerFrame::Bye {
+                reason: "still here".into(),
+            })
+            .unwrap();
+        }
+        pumping.join().unwrap();
+
+        let first = rx.recv().expect("the unreadable line is handed over");
+        let Inbound::Unreadable(u) = first else {
+            panic!("the first message must be the complaint: {first:?}");
+        };
+        assert!(u.line.contains("from_the_future"), "{u:?}");
+        assert!(u.detail.contains("from_the_future"), "{u:?}");
+        // The line was consumed and the pump read on: the frame after it arrived.
+        let second = rx.recv().expect("the next line is read");
+        assert!(
+            matches!(
+                second,
+                Inbound::Frame(ServerFrame::Bye { ref reason }) if reason == "still here"
+            ),
+            "{second:?}"
+        );
+    }
+
+    /// **The sentence names the skew.** What the operator reads has to say what
+    /// arrived, that it is almost always a newer daemon, and that the head is still
+    /// attached — a head that exits and a head that shrugs are the two failures this
+    /// middle path exists between.
+    #[test]
+    fn the_complaint_names_the_frame_the_skew_and_the_version() {
+        let u = Unreadable {
+            line: r#"{"frame":"peeked_v2","rows":[]}"#.into(),
+            detail: "unknown variant `peeked_v2`, expected one of `hello`, `bye`".into(),
+        };
+        let said = u.said();
+        assert!(said.contains("peeked_v2"), "{said}");
+        assert!(said.contains("newer"), "{said}");
+        assert!(
+            said.contains(&PROTOCOL_VERSION.to_string()),
+            "the version it speaks, so the two can be compared: {said}"
+        );
+        assert!(said.contains("still up"), "{said}");
+        // A long line is truncated with the ellipsis, so the sentence cannot be a
+        // megabyte of somebody else's JSON.
+        let long = Unreadable {
+            line: "x".repeat(5_000),
+            detail: "d".into(),
+        }
+        .said();
+        assert!(long.chars().count() < 500, "{}", long.len());
+        assert!(long.ends_with('…'), "{long}");
     }
 }
