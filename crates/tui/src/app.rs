@@ -4116,13 +4116,35 @@ impl App {
         // is how a permission arriving mid-typing turned Enter into "send the
         // half-thought" (the operator, 2026-09-17).
         if let Some(d) = self.open.first().cloned() {
-            if let Some((opt, pattern, note)) = match_option(&d, text.trim()) {
-                return Some(Action::Answer {
-                    req_id: d.req_id,
-                    option_id: opt,
+            match match_option(&d, text.trim()) {
+                OptionChoice::One {
+                    option_id,
                     pattern,
                     note,
-                });
+                } => {
+                    return Some(Action::Answer {
+                        req_id: d.req_id,
+                        option_id,
+                        pattern,
+                        note,
+                    });
+                }
+                // **A name that fits several options answers nothing.** The line goes
+                // back to the composer so it can be finished, the card stays up so the
+                // arrows still work, and the sentence names every candidate — because a
+                // refusal with no next step is a head that has stopped listening, and
+                // answering the marked row here would be the very defect this refusal
+                // is against: a grant the operator did not choose, written to the audit
+                // under a name they can see they did not type.
+                OptionChoice::Ambiguous { word, candidates } => {
+                    self.set_composer(&text);
+                    self.say(&ambiguous_option_line(&word, &candidates));
+                    self.redraw = true;
+                    return None;
+                }
+                // Nothing on the card answers to the line: the mid-typing courtesy,
+                // below.
+                OptionChoice::Unnamed => {}
             }
             self.set_composer(&text);
             if let Some(a) = self.answer_marked() {
@@ -8009,57 +8031,188 @@ impl App {
     }
 }
 
-/// The option a typed line names, and the glob the operator put after it.
+/// **The option a typed line names** — the answer, or why there is not one.
+///
+/// # Three outcomes, not an `Option`
+///
+/// *"nothing answers to that name"* and *"several things do"* are different answers and
+/// the caller has to treat them differently: the first is the mid-typing courtesy (hold
+/// the words, answer the marked row, because a permission that arrives under somebody's
+/// half-thought must not turn their Enter into a wasted keystroke), and the second is a
+/// refusal that must answer **nothing at all**.
+///
+/// # The glob, and where it may ride
 ///
 /// > *"please add globbing to my answers somehow too"*
 ///
-/// `allow_always crates/**/tests/*.rs` answers the permission AND says what the
-/// rule should cover, instead of accepting the pattern the gate derives from the
-/// one call in front of you. The two halves split on the first space; everything
-/// after it is the pattern, verbatim and un-lowercased — a glob is a path and
-/// `Cargo.toml` is not `cargo.toml`.
+/// `allow_always crates/**/tests/*.rs` answers the permission AND says what the rule
+/// should cover, instead of accepting the pattern the gate derives from the one call in
+/// front of you. The two halves split on the first space; everything after it is the
+/// pattern, verbatim and un-lowercased — a glob is a path and `Cargo.toml` is not
+/// `cargo.toml`.
 ///
-/// A pattern is only meaningful with `allow_always`, which is the only option that
-/// writes a rule. Typed after anything else it is **refused** rather than dropped:
-/// somebody who wrote `allow_once src/**` meant the rule to cover `src/**`, and
-/// silently granting one call instead is the answer they did not give. Returning
-/// `None` leaves the line in the composer, where they can see it.
-fn match_option(d: &OpenDecision, typed: &str) -> Option<(String, Option<String>, Option<String>)> {
+/// A pattern is only meaningful with `allow_always`, which is the only option that writes
+/// a rule. Typed after anything else it is **refused** rather than dropped: somebody who
+/// wrote `allow_once src/**` meant the rule to cover `src/**`, and silently granting one
+/// call instead is the answer they did not give.
+///
+/// # A name that fits several options is refused, not resolved
+///
+/// The prefix path in [`match_option`] is a courtesy for how people actually type
+/// (`deny` for `deny_and_tell`), and it stops at one: **a prefix that begins more than
+/// one option id is refused, and the candidates are named.** This was
+/// `.find(starts_with)`, which took the first hit in list order, so `allow` silently
+/// answered `allow_once` out of `allow_once`, `allow_session`, `allow_always` — and
+/// which of three grants the operator gave is the entire content of the answer. Where an
+/// option sits in a list is not something they said. This is a gate: a grant invented by
+/// list position is an answer nobody gave, and the audit row it writes names an option
+/// the operator cannot see on the card.
+///
+/// The reference implementation can afford first-match only because its fallback for a
+/// line that names nothing is to answer the marked row anyway — once that fallback
+/// declines, as this one does (it holds the words and says so), first-match stops being
+/// a convenience and becomes a different answer from the one that was typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OptionChoice {
+    /// Exactly one option answers to the line. This is the operator's answer, and the
+    /// caller sends it.
+    One {
+        option_id: String,
+        pattern: Option<String>,
+        note: Option<String>,
+    },
+    /// The first word of the line begins more than one option id, so the operator has
+    /// not said which one they mean. Refused, with the candidates named.
+    Ambiguous {
+        /// What they typed, echoed back so the sentence reads as a reply.
+        word: String,
+        /// The option ids it could have meant, in card order.
+        candidates: Vec<String>,
+    },
+    /// Nothing on the card answers to this line.
+    Unnamed,
+}
+
+/// The options whose id **begins with** `t`, as indices into the card — all of them.
+///
+/// All of them, and not the first: naming the candidates is the whole of the refusal in
+/// [`OptionChoice::Ambiguous`], and a helper that returned the first hit is the exact
+/// shape of the bug this exists against. Case-folded, because an id is typed by a person
+/// and `allow_once` is spelled the same way in every case.
+///
+/// An empty `t` has no candidates: an empty line is the composer's, and every id starts
+/// with the empty string, which would make every card ambiguous.
+fn option_candidates(d: &OpenDecision, t: &str) -> Vec<usize> {
+    if t.is_empty() {
+        return Vec::new();
+    }
+    d.options
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.option_id.to_ascii_lowercase().starts_with(t))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// **The sentence an ambiguous prefix gets.** The candidates by name, and the two ways
+/// out — finish typing, or use the arrows — because a refusal that does not say what to
+/// do next is a head that has stopped listening.
+///
+/// The same shape `App::pick` and `App::pick_mode` give the same problem for their own
+/// lists ("{n} sessions match …; type the number on the left instead"): this file's answer
+/// to an ambiguous name, in the place the operator is already reading.
+fn ambiguous_option_line(word: &str, candidates: &[String]) -> String {
+    /// Enough to name the difference, few enough to stay on one line. A card past this
+    /// says how many there are, which is the fact that matters when the list is long.
+    const SHOWN: usize = 6;
+    let shown = candidates
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if candidates.len() > SHOWN {
+        ", …"
+    } else {
+        ""
+    };
+    format!(
+        "`{word}` starts {} options here: {shown}{more} — finish typing, or ↑↓ then enter",
+        candidates.len(),
+    )
+}
+
+fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
     let line = typed.trim();
     let (word, rest) = match line.split_once(char::is_whitespace) {
         Some((w, r)) => (w, r.trim()),
         None => (line, ""),
     };
     let t = word.to_ascii_lowercase();
-    let id = d
-        .options
-        .iter()
-        .find(|o| o.option_id.eq_ignore_ascii_case(&t) || o.label.to_ascii_lowercase() == t)
-        .or_else(|| {
-            d.options
-                .iter()
-                .find(|o| o.option_id.to_ascii_lowercase().starts_with(&t) && !t.is_empty())
-        })?;
+    // **An exact name is an answer, and it is checked first.** An equality cannot be
+    // ambiguous, so it is never the case this requirement is about: `allow_once` is the
+    // spelling the card prints beside every option, and a label that is one word
+    // (`Deny`) resolves from the same rule. Only the *prefix* path can be ambiguous.
+    let exact = d.options.iter().position(|o| {
+        o.option_id.eq_ignore_ascii_case(&t) || (!t.is_empty() && o.label.to_ascii_lowercase() == t)
+    });
+    let at = match exact {
+        Some(i) => i,
+        None => {
+            // **A prefix that fits more than one option is refused, not resolved.**
+            //
+            // This was `.or_else(|| …find(|o| o.option_id.starts_with(&t)))`, which took
+            // the first hit in list order — so `allow` silently answered `allow_once`
+            // out of `allow_once`, `allow_session`, `allow_always`. **Which of three
+            // grants the operator gave is the whole content of the answer**, and where
+            // an option sits in a list is not something they said. A head may take a
+            // prefix that names exactly one option (that is how people actually type);
+            // it may not choose among several.
+            let candidates = option_candidates(d, &t);
+            match candidates.as_slice() {
+                [] => return OptionChoice::Unnamed,
+                [only] => *only,
+                _ => {
+                    return OptionChoice::Ambiguous {
+                        word: word.to_string(),
+                        candidates: candidates
+                            .into_iter()
+                            .map(|i| d.options[i].option_id.clone())
+                            .collect(),
+                    };
+                }
+            }
+        }
+    };
+    let id = &d.options[at];
     if rest.is_empty() {
-        return Some((id.option_id.clone(), None, None));
+        return OptionChoice::One {
+            option_id: id.option_id.clone(),
+            pattern: None,
+            note: None,
+        };
     }
     match id.kind {
         // A glob, for the option that writes a rule.
-        letibot_sessionlog::event::OptionKind::AllowAlways => {
-            Some((id.option_id.clone(), Some(rest.to_string()), None))
-        }
+        letibot_sessionlog::event::OptionKind::AllowAlways => OptionChoice::One {
+            option_id: id.option_id.clone(),
+            pattern: Some(rest.to_string()),
+            note: None,
+        },
         // **The reason, for the option that promised one.** `deny_and_tell` is
         // labelled *"Deny, and tell the model why"* and typing the why used to
         // land here and be refused — the line stayed in the composer and nothing
         // was answered at all. The operator: *"deny and tell doesnt work - there
         // is no input for the 'tell' part"*.
-        letibot_sessionlog::event::OptionKind::RejectAlways => {
-            Some((id.option_id.clone(), None, Some(rest.to_string())))
-        }
+        letibot_sessionlog::event::OptionKind::RejectAlways => OptionChoice::One {
+            option_id: id.option_id.clone(),
+            pattern: None,
+            note: Some(rest.to_string()),
+        },
         // Everything else refuses trailing words rather than dropping them:
         // somebody who typed them meant them, and answering as though they had
         // not is the answer they did not give.
-        _ => None,
+        _ => OptionChoice::Unnamed,
     }
 }
 
@@ -10472,28 +10625,206 @@ mod tests {
         // The bare id still answers, and asks for no pattern.
         assert_eq!(
             match_option(&d, "allow_once"),
-            Some(("allow_once".into(), None, None))
+            OptionChoice::One {
+                option_id: "allow_once".into(),
+                pattern: None,
+                note: None
+            }
         );
-        // A prefix still answers, which is how people actually type.
-        assert_eq!(match_option(&d, "d"), Some(("deny".into(), None, None)));
+        // A prefix still answers when it names exactly one option, which is how
+        // people actually type.
+        assert_eq!(
+            match_option(&d, "d"),
+            OptionChoice::One {
+                option_id: "deny".into(),
+                pattern: None,
+                note: None
+            }
+        );
 
         // And the glob rides after it, verbatim: a pattern is a path, so it is not
         // lowercased the way the option id is.
         assert_eq!(
             match_option(&d, "allow_always crates/**/Cargo.toml"),
-            Some((
-                "allow_always".into(),
-                Some("crates/**/Cargo.toml".into()),
-                None
-            ))
+            OptionChoice::One {
+                option_id: "allow_always".into(),
+                pattern: Some("crates/**/Cargo.toml".into()),
+                note: None
+            }
         );
 
         // **A glob on anything but `allow_always` is refused, not dropped.**
         // Somebody who typed `allow_once src/**` meant the rule to cover `src/**`;
-        // granting one call instead is an answer they did not give. `None` leaves
+        // granting one call instead is an answer they did not give. `Unnamed` leaves
         // the line in the composer where they can see it.
-        assert_eq!(match_option(&d, "allow_once src/**"), None);
-        assert_eq!(match_option(&d, "deny src/**"), None);
+        assert_eq!(match_option(&d, "allow_once src/**"), OptionChoice::Unnamed);
+        assert_eq!(match_option(&d, "deny src/**"), OptionChoice::Unnamed);
+    }
+
+    /// **An ambiguous prefix is refused, and the candidates are named.**
+    ///
+    /// Typing `allow` used to answer `allow_once` — silently, out of
+    /// `allow_once`/`allow_session`/`allow_always`, because `.find(starts_with)` takes the
+    /// first hit in list order. Which of three grants the operator gave is the whole
+    /// content of the answer, and list position is not something they said. This is a
+    /// gate: a grant invented by position is an answer nobody gave, and it writes an
+    /// audit row naming an option the operator can see they did not type.
+    ///
+    /// Refused means **nothing is answered** — not the typed prefix's first guess, and not
+    /// the marked row either. The line stays in the composer to be finished, the card
+    /// stays up, and the sentence says both ways out.
+    #[test]
+    fn an_ambiguous_option_prefix_is_refused_with_the_candidates_named() {
+        use letibot_sessionlog::event::OptionKind;
+        let d = decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::AllowSession,
+            OptionKind::AllowAlways,
+            OptionKind::RejectOnce,
+        ]);
+        assert_eq!(
+            match_option(&d, "allow"),
+            OptionChoice::Ambiguous {
+                word: "allow".into(),
+                candidates: vec![
+                    "allow_once".into(),
+                    "allow_session".into(),
+                    "allow_always".into()
+                ]
+            }
+        );
+        // One character further and it is an answer again — and the case fold does not
+        // decide which of these is ambiguous.
+        assert_eq!(
+            match_option(&d, "allow_a"),
+            OptionChoice::One {
+                option_id: "allow_always".into(),
+                pattern: None,
+                note: None
+            }
+        );
+        assert_eq!(
+            match_option(&d, "ALLOW_S"),
+            OptionChoice::One {
+                option_id: "allow_session".into(),
+                pattern: None,
+                note: None
+            }
+        );
+        // An exact id is never ambiguous, however many of its siblings start the same
+        // way, and neither is a line that names nothing at all.
+        assert_eq!(
+            match_option(&d, "allow_once"),
+            OptionChoice::One {
+                option_id: "allow_once".into(),
+                pattern: None,
+                note: None
+            }
+        );
+        assert_eq!(match_option(&d, "nope"), OptionChoice::Unnamed);
+        assert_eq!(match_option(&d, ""), OptionChoice::Unnamed);
+
+        // The sentence names them and says what to do next.
+        let said = ambiguous_option_line(
+            "allow",
+            &[
+                "allow_once".into(),
+                "allow_session".into(),
+                "allow_always".into(),
+            ],
+        );
+        for id in ["allow_once", "allow_session", "allow_always"] {
+            assert!(said.contains(id), "{said}");
+        }
+        assert!(said.contains("`allow`"), "{said}");
+        assert!(said.contains("finish typing"), "{said}");
+        assert!(said.contains('↑'), "{said}");
+        // A card long enough to overflow the line says how many there are instead of
+        // silently dropping half the candidates.
+        let many: Vec<String> = (0..9).map(|i| format!("opt_{i}")).collect();
+        let long = ambiguous_option_line("opt", &many);
+        assert!(long.contains("9 options"), "{long}");
+        assert!(long.contains('…'), "{long}");
+    }
+
+    /// **And the refusal answers nothing, in the head rather than in the matcher.**
+    ///
+    /// The matcher saying `Ambiguous` is not enough: `submit` is what turns a keypress
+    /// into an `Action`, and a refusal that still answered the marked row would hand the
+    /// daemon a grant the operator never chose. So: no action, the words still in the
+    /// composer, the ask still open, and the candidates on the notice line.
+    #[test]
+    fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
+        use letibot_sessionlog::event::{OnTimeout, OptionKind};
+        let mut a = app();
+        a.open.push(decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::AllowSession,
+            OptionKind::AllowAlways,
+            OptionKind::RejectOnce,
+        ]));
+        a.open[0].on_timeout = OnTimeout::Deny;
+        let pushed = a.open.len();
+
+        assert_eq!(
+            a.submit("allow".into()),
+            None,
+            "an ambiguous name must answer nothing at all"
+        );
+        // The card is still open, the words are still theirs, and the notice names the
+        // three they might have meant — rather than the courtesy line, which would mean
+        // the marked row had been answered for them.
+        assert_eq!(a.open.len(), pushed, "the ask was answered anyway");
+        assert_eq!(a.input(), "allow");
+        let said = a.notice.clone().unwrap_or_default();
+        for id in ["allow_once", "allow_session", "allow_always"] {
+            assert!(said.contains(id), "{said}");
+        }
+        assert!(
+            !said.contains("answered the ask"),
+            "the marked row was answered under an ambiguous name: {said}"
+        );
+
+        // Finishing the word answers it. The ask stays in `open` until the daemon says
+        // it settled — the head does not remove it on the strength of its own submit.
+        a.set_composer("allow_session");
+        assert_eq!(
+            a.submit("allow_session".into()),
+            Some(Action::Answer {
+                req_id: "d1".into(),
+                option_id: "allow_session".into(),
+                pattern: None,
+                note: None
+            })
+        );
+    }
+
+    /// **A line that names nothing is still the mid-typing courtesy.** The refusal above
+    /// must not swallow the case it was built beside: a permission that arrives under
+    /// somebody's half-thought holds their words and answers the marked row, so their
+    /// Enter is not a keystroke thrown away.
+    #[test]
+    fn a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row() {
+        use letibot_sessionlog::event::OptionKind;
+        let mut a = app();
+        a.open.push(decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::RejectOnce,
+        ]));
+        let action = a.submit("why did the cache miss?".into());
+        assert!(
+            matches!(action, Some(Action::Answer { ref option_id, .. }) if option_id == "allow_once"),
+            "the marked row is the answer: {action:?}"
+        );
+        assert_eq!(a.input(), "why did the cache miss?", "the words are held");
+        assert!(
+            a.notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("answered the ask"),
+            "and it says which of the two things just happened: {:?}",
+            a.notice
+        );
     }
 
     /// **`deny_and_tell` can be told something.** Its label is *"Deny, and tell
@@ -10518,27 +10849,38 @@ mod tests {
         // is not lowercased the way the option id is.
         assert_eq!(
             match_option(&d, "deny_always Use the scratch dir, not /tmp."),
-            Some((
-                "deny_always".into(),
-                None,
-                Some("Use the scratch dir, not /tmp.".into())
-            ))
+            OptionChoice::One {
+                option_id: "deny_always".into(),
+                pattern: None,
+                note: Some("Use the scratch dir, not /tmp.".into())
+            }
         );
         // Bare still answers, and carries nothing rather than claiming a reason.
         assert_eq!(
             match_option(&d, "deny_always"),
-            Some(("deny_always".into(), None, None))
+            OptionChoice::One {
+                option_id: "deny_always".into(),
+                pattern: None,
+                note: None
+            }
         );
         // The two trailing-word options do not borrow each other's field: a glob
         // is a rule and a reason is a sentence, and putting one where the other
         // goes would be a rule nobody wrote or a sentence nobody reads.
         assert_eq!(
             match_option(&d, "allow_always src/**"),
-            Some(("allow_always".into(), Some("src/**".into()), None))
+            OptionChoice::One {
+                option_id: "allow_always".into(),
+                pattern: Some("src/**".into()),
+                note: None
+            }
         );
         // And everything else still refuses trailing words rather than dropping
         // them.
-        assert_eq!(match_option(&d, "allow_once because I said so"), None);
+        assert_eq!(
+            match_option(&d, "allow_once because I said so"),
+            OptionChoice::Unnamed
+        );
 
         // The card says where to type it, which it never did.
         let a = app();
