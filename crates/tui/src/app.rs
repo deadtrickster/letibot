@@ -404,6 +404,26 @@ fn without_control(line: &str) -> String {
         .collect()
 }
 
+/// **The same, for content whose newlines are structure rather than noise.**
+///
+/// One function because `\n` **is a control character** — `char::is_control` is true for
+/// every C0 code including it — so passing a document to [`without_control`] does not
+/// sanitise it, it *collapses it onto a single line*: every paragraph, every list item
+/// and every fenced block gone. That is exactly what my first cut of §3.1 did to model
+/// prose, and the reason this exists as a named function rather than a second `.map`:
+/// the mistake is invisible on a one-line fixture and destroys every long message.
+///
+/// Line by line, joined by the newline it split on, so the renderer receives the same
+/// lines it would have received with the control characters spaced out inside them.
+/// Tabs become spaces like everything else, which is the trade the single-line version
+/// already makes: a dropped character silently reflows the line, a spaced one does not.
+fn without_control_lines(s: &str) -> String {
+    s.split('\n')
+        .map(without_control)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One row of the config pane.
 #[derive(Debug, Clone)]
 struct ConfigRow {
@@ -3011,6 +3031,21 @@ impl App {
                 }
                 match target {
                     DeltaTarget::Text => {
+                        // **§3.1: model prose is content this head did not author**, and
+                        // this is where it enters — every streamed chunk that becomes the
+                        // answer goes through here and ends up as a row `paint_full`
+                        // writes verbatim. A control byte the model emits (or copies out
+                        // of a file it read) is an instruction to the operator's
+                        // terminal: `ESC ] 0 ; … BEL` sets the window title, `ESC [ 2 J`
+                        // clears the screen.
+                        //
+                        // Sanitised here rather than at the renderer because
+                        // `IncrementalMarkdown` is a frozen-prefix lexer (§13.3): a
+                        // control byte that reaches it is frozen into the stable half
+                        // and cannot be removed later without re-lexing. The trade is
+                        // `without_control`'s own — one space per control byte, so the
+                        // character count `out_chars` keeps is unchanged.
+                        let text = without_control_lines(&text);
                         t.out_chars += text.chars().count();
                         t.text.push(&text);
                         Disposition::Rendered
@@ -3021,7 +3056,10 @@ impl App {
                                 t.think_started_ms = ts;
                             }
                             t.think_last_ms = ts;
-                            t.reasoning.push(&text);
+                            // The same rule as the answer above, for the same reason:
+                            // reasoning is the model's own text and it reaches the glass
+                            // through the markdown renderer.
+                            t.reasoning.push(&without_control_lines(&text));
                             Disposition::Rendered
                         } else {
                             Disposition::Filtered
@@ -3029,7 +3067,9 @@ impl App {
                     }
                     // Never `t.text`. This is the markup, and the whole point of
                     // the channel is that the default view does not show it — see
-                    // `letibot_sessionlog::event::DeltaTarget`.
+                    // `letibot_sessionlog::event::DeltaTarget`. It *is* reachable
+                    // through `ctrl-x`, so it is sanitised where it is drawn
+                    // (`raw_call_lines`) rather than here.
                     DeltaTarget::ToolCall => {
                         t.raw_call.push_str(&text);
                         t.writing_call = true;
@@ -9683,7 +9723,12 @@ fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
                     ..
                 } => {
                     out.push(format!("· {name} — {}", outcome_word(outcome)));
-                    for line in payload.lines() {
+                    // **§3.1: a subagent's scrollback is content this head did not
+                    // author** — it is another session's tool payloads and prose, read
+                    // back over a `Peek` and drawn into this head's frame. Sanitised
+                    // here, at the one builder, rather than in `sub_out_lines`, so the
+                    // spill file gets the same text the pane draws.
+                    for line in without_control_lines(payload).lines() {
                         out.push(format!("  {line}"));
                     }
                     out.push(String::new());
@@ -9691,7 +9736,7 @@ fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
                 // The answer, in the order it was given, so a subagent that
                 // worked and then reported reads as the one conversation it was.
                 TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
-                    for line in text.lines() {
+                    for line in without_control_lines(text).lines() {
                         out.push(line.to_string());
                     }
                     out.push(String::new());
@@ -10431,6 +10476,13 @@ fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
 fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     let p = cfg.palette();
     let mut out = vec![p.paint(Role::Faint, "┌─ raw tool call · ctrl-x")];
+    // **Sanitised at the draw, because this is the only place it is drawn** (§3.1).
+    // `ctrl-x` shows the model's own markup — `<function=…><parameter=…>` — and a
+    // parameter's value is a string the model chose, so this is one more surface where
+    // content this head did not author would otherwise reach the terminal. Kept out of
+    // the `Delta` arm on purpose: `raw_call` is accumulated for the whole turn and
+    // nothing else reads it, so the one renderer is the right seam.
+    let raw = without_control_lines(raw);
     for l in raw.lines() {
         for w in wrap(l, cfg.width.saturating_sub(2)) {
             out.push(format!(
@@ -10547,14 +10599,19 @@ fn call_card(
             intra_line: false,
             max_rows: 60,
         };
+        // **§3.1: a diff's two sides are a file's bytes, and this head did not
+        // write them.** The excerpt is read off disk — a build artefact, somebody
+        // else's source, a file another process is writing — and `paint_full`
+        // writes the row verbatim, so an escape in the file is an escape on the
+        // operator's terminal. Sanitised **before the diff is taken**, not after it
+        // is rendered, so the two sides the differ compares are the two sides the
+        // reader sees; a `\r` left in would move the cursor inside a row the
+        // renderer had already measured.
+        let path = without_control_lines(&e.path);
+        let before = without_control_lines(&e.before);
+        let after = without_control_lines(&e.after);
         body = sidediff::render_edit_view(
-            &e.path,
-            &e.before,
-            &e.after,
-            e.before_start,
-            e.after_start,
-            &dcfg,
-            view,
+            &path, &before, &after, e.before_start, e.after_start, &dcfg, view,
         );
         if e.truncated {
             body.push(cfg.palette().paint(
@@ -11206,8 +11263,22 @@ fn verb_arg<'a>(cmd: &'a str, verb: &str) -> Option<&'a str> {
 /// Returns wrapped, unpainted lines; each caller indents and paints its own way.
 fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
     let mut out = Vec::new();
+    // **§3.1, and this is the last of the untrusted free text on a row.** Three
+    // sentences here are somebody else's: the ask the daemon wrote, the DECIDER's
+    // basis (a person's words, or a policy rule), and the guard model's verdict with
+    // the operator's phrases it cites. All of them end up in a row `paint_full`
+    // writes verbatim, so all of them are sanitised before they are wrapped.
+    //
+    // One `without_control_lines` per line rather than per field, because the
+    // `format!` is where the string is built and therefore where the escaping has to
+    // happen — sanitising the inputs would leave the separators unguarded and reads
+    // as if the format string were trusted, which is the habit this whole item is
+    // against.
     if !d.summary.is_empty() {
-        out.extend(wrap(&format!("asked: {}", d.summary), w));
+        out.extend(wrap(
+            &without_control_lines(&format!("asked: {}", d.summary)),
+            w,
+        ));
     }
     if !d.basis.is_empty() {
         // Named by the decider's own kind, so "decided:" never stands in for a
@@ -11217,21 +11288,24 @@ fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
         } else {
             &d.by.kind
         };
-        out.extend(wrap(&format!("{who}: {}", d.basis), w));
+        out.extend(wrap(
+            &without_control_lines(&format!("{who}: {}", d.basis)),
+            w,
+        ));
     }
     match &d.advice {
         Some(a) => {
             // **The same distinction the card draws**: a verdict from an oracle that was
             // asked, and layer A's answer from one that was not.
             out.extend(wrap(
-                &if a.consulted {
+                &without_control_lines(&if a.consulted {
                     format!(
                         "oracle ({}, {}ms) would {}: {}",
                         a.by, a.latency_ms, a.would, a.basis
                     )
                 } else {
                     format!("no model verdict — {}", a.basis)
-                },
+                }),
                 w,
             ));
             // **Empty cites is loud.** An authorisation the oracle could not ground
@@ -11245,7 +11319,10 @@ fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
                 ));
             } else {
                 for c in &a.cites {
-                    out.extend(wrap(&format!("oracle cited: {c}"), w));
+                    out.extend(wrap(
+                        &without_control_lines(&format!("oracle cited: {c}")),
+                        w,
+                    ));
                 }
             }
         }
@@ -11310,7 +11387,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
     match item {
         TranscriptItem::System { text, origin } => {
             let mut out = vec![dim(cfg, &format!("system ({origin:?})"))];
-            out.extend(wrap(text, cfg.width).into_iter().map(|l| dim(cfg, &l)));
+            out.extend(
+                wrap(&without_control_lines(text), cfg.width)
+                    .into_iter()
+                    .map(|l| dim(cfg, &l)),
+            );
             (RowClass::Other, out)
         }
         TranscriptItem::User { parts } => {
@@ -11323,9 +11404,23 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            (RowClass::Speech, user_block(&text, it.ts, cfg))
+            // **The operator's own words, sanitised like everybody else's.** Not because
+            // they are distrusted but because the *paste* is the risk: a control byte
+            // copied out of a terminal, a log or a file arrives here as theirs, and
+            // rendered straight it is an instruction to the terminal they are reading
+            // it on (§3.1). Their own keystrokes cannot contain one — the decoder hands
+            // back `Key::Char` — so nothing a person typed is changed by this.
+            (RowClass::Speech, user_block(&without_control_lines(&text), it.ts, cfg))
         }
         TranscriptItem::Reasoning { text, .. } => {
+            // **The model's reasoning is text this head did not author** (§3.1), and it
+            // reaches the terminal through the markdown renderer with the head's own
+            // escapes around it — so a control byte in it is a control byte on the
+            // glass. Sanitised BEFORE the lexer, so what is lexed and what is measured
+            // are the same string: the escape becomes one space, which is what keeps the
+            // column arithmetic honest (`without_control`'s whole argument).
+            let text = without_control_lines(text);
+            let text = text.as_str();
             // A settled row: `Thought`, with no duration. The head can compute one
             // for a *live* turn from the delta timestamps, and a transcript row
             // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
@@ -11345,6 +11440,19 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         TranscriptItem::Assistant {
             text, tool_calls, ..
         } => {
+            // **Model prose is content this head did not author** (§3.1). It is the
+            // largest unsanitised surface in this file: it goes through the markdown
+            // lexer and comes out as rows the head paints, and `paint_full` writes a row
+            // verbatim — so a control byte the model emitted (or copied out of a file it
+            // read) was an instruction to the operator's terminal. `ESC ] 0 ; … BEL` sets
+            // the window title and `ESC [ 2 J` clears the screen.
+            //
+            // Sanitised **before** the lexer rather than after the renderer, so the
+            // lexer, the wrapper and the width arithmetic all work on one string: a
+            // control byte becomes a space, which keeps every column count the same and
+            // is the same trade `without_control`'s doc records for tool payloads.
+            let text = without_control_lines(text);
+            let text = text.as_str();
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
@@ -11616,7 +11724,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // tail. Never folded, never truncated, and in the outcome's own role:
             // a call that abstained or was refused said *why*, and that sentence
             // is the whole content of the row.
-            let why = outcome_why(outcome);
+            let why = outcome_why(outcome).map(|w| without_control_lines(&w));
             // **A reason that is a DOCUMENT is not a sentence.**
             //
             // This printed the reason in full, unfoldable, on the argument that a
@@ -11702,10 +11810,17 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     max_rows: 60,
                 };
                 let view = sidediff::edit_view(diff_split);
+                // **The same rule as the live card's** (§3.1): a diff is a file's
+                // bytes and this head did not author them. Sanitised before the
+                // diff is taken so the two sides compared are the two sides
+                // shown.
+                let path = without_control_lines(&e.path);
+                let before = without_control_lines(&e.before);
+                let after = without_control_lines(&e.after);
                 let mut rows = sidediff::render_edit_view(
-                    &e.path,
-                    &e.before,
-                    &e.after,
+                    &path,
+                    &before,
+                    &after,
                     e.before_start,
                     e.after_start,
                     &dcfg,
@@ -11938,15 +12053,23 @@ fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
 /// shows the head of. One renderer for both, so the listing cannot disagree with
 /// the screen about the text.
 fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+    // **§3.1: a note carries text from elsewhere.** A `Warning`'s detail is the
+    // daemon's or a guard's sentence, a `Decided`'s summary and basis are the ask and
+    // the decider's own words — and all of it lands in rows `paint_full` writes
+    // verbatim, so all of it is sanitised here. This is the renderer for both the
+    // transcript row and `/notes`, which is why it is one place and not two.
     match n {
-        Note::Warned(w) => wrap(&format!("! {} — {}", w.code, w.detail), cfg.width)
-            .into_iter()
-            .map(|l| warn_line(cfg, &l))
-            .collect(),
+        Note::Warned(w) => wrap(
+            &without_control_lines(&format!("! {} — {}", w.code, w.detail)),
+            cfg.width,
+        )
+        .into_iter()
+        .map(|l| warn_line(cfg, &l))
+        .collect(),
         // No `!`, no red, no request id: nothing here is answerable, and the id is
         // only useful to somebody typing a grant. The detail that was cut is not
         // lost — the model's own tool result carries it, folded, one row above.
-        Note::NotRun(w) => wrap(&format!("· {}", w.detail), cfg.width)
+        Note::NotRun(w) => wrap(&without_control_lines(&format!("· {}", w.detail)), cfg.width)
             .into_iter()
             .map(|l| dim(cfg, &l))
             .collect(),
@@ -11975,7 +12098,7 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
                 ""
             };
             wrap(
-                &format!(
+                &without_control_lines(&format!(
                     "? {} — {word}, by {who}{}{late}",
                     d.summary,
                     if d.basis.is_empty() {
@@ -11983,7 +12106,7 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
                     } else {
                         format!(" ({})", d.basis)
                     }
-                ),
+                )),
                 cfg.width,
             )
             .into_iter()
@@ -16127,6 +16250,233 @@ mod tests {
             "past tense once it is done: {screen}"
         );
         assert!(screen.contains("7.5s"), "{screen}");
+    }
+
+    /// **§3.1: content this head did not write must not reconfigure the terminal.**
+    ///
+    /// The exposure is real and it is this head's specifically, not a shared habit:
+    /// leticl composes styled segments into a **cell grid** and `screen-put-string`
+    /// writes only cluster text, so it *cannot* emit an escape it did not author. This
+    /// head composes ANSI-bearing strings and `paint_full` writes each row verbatim, so
+    /// an escape in model prose went straight to whatever terminal was attached.
+    ///
+    /// The sequence used is the one an operator can **watch happen**: `ESC ] 0 ; x BEL`
+    /// is the window-title request, so a rendered one renames the window they are
+    /// working in. It contains `ESC` and `BEL`, which after `without_control_lines`
+    /// become two spaces — so the *literal* sequence cannot appear in any row, which is
+    /// what this asserts rather than "the row looks fine".
+    ///
+    /// Every surface §3.1 names is walked: model prose (settled and live), reasoning,
+    /// the operator's own paste, the system row, a tool payload and its failure reason,
+    /// the raw markup behind `ctrl-x`, and both sides of a diff read off disk.
+    const EVIL: &str = "\u{1b}]0;pwned\u{7}";
+    const EVIL_HEAD: &str = "\u{1b}]0;";
+
+    fn render_one(item: letibot_transcript::TranscriptItem) -> String {
+        use letibot_transcript::ToolEditExcerpt;
+        let cfg = RenderConfig {
+            width: 120,
+            color: false,
+            ..RenderConfig::default()
+        };
+        let targets = std::collections::HashMap::new();
+        let answered = std::collections::HashSet::new();
+        // A file whose bytes carry the sequence, because the diff is the one surface
+        // where the content is neither the model's nor the daemon's — it is whatever
+        // is on disk.
+        let excerpt = ToolEditExcerpt {
+            path: format!("src/{EVIL}thing.rs"),
+            created: false,
+            before_start: 1,
+            after_start: 1,
+            before_lines: 2,
+            after_lines: 2,
+            truncated: false,
+            before: format!("let a = 1;{EVIL}\nlet b = 2;\n"),
+            after: format!("let a = 3;{EVIL}\nlet b = 2;\n"),
+        };
+        let edit = item_kind_is_edit(&item).then_some(&excerpt);
+        let it = SnapshotItem {
+            item_id: "s.1".into(),
+            kind: "row".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(item),
+        };
+        let ctx = ItemCtx {
+            cfg: &cfg,
+            think: Fold::Open,
+            tools: Fold::Open,
+            raw: true,
+            targets: &targets,
+            answered: &answered,
+            drawn_live: false,
+            elapsed_ms: None,
+            edit,
+            decision: None,
+            bound: None,
+            diff_split: true,
+            payload_view: None,
+            payload_newest: None,
+        };
+        item_lines(&it, &ctx).1.join("\n")
+    }
+
+    fn item_kind_is_edit(i: &letibot_transcript::TranscriptItem) -> bool {
+        use letibot_transcript::TranscriptItem as T;
+        matches!(i, T::ToolResult { name, .. } if matches!(name.as_str(), "edit" | "write"))
+    }
+
+    #[test]
+    fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
+        use letibot_transcript::{
+            ReasoningField, SystemOrigin, ToolCall, ToolOutcome, TranscriptItem as T, UserPart,
+        };
+        let rows: Vec<(&str, String)> = vec![
+            (
+                "model prose, settled",
+                render_one(T::Assistant {
+                    text: format!("an answer {EVIL} with a sequence in it\nand a second line"),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            ),
+            (
+                "model reasoning",
+                render_one(T::Reasoning {
+                    text: format!("thinking {EVIL} about it\nsecond line"),
+                    field: ReasoningField::ReasoningContent,
+                    truncated: false,
+                }),
+            ),
+            (
+                "the operator's own paste",
+                render_one(T::User {
+                    parts: vec![UserPart::Text {
+                        text: format!("I pasted {EVIL} out of a log\nsecond line"),
+                    }],
+                }),
+            ),
+            (
+                "a system row",
+                render_one(T::System {
+                    text: format!("bootstrap {EVIL}\nsecond line"),
+                    origin: SystemOrigin::Bootstrap,
+                }),
+            ),
+            (
+                "a tool payload",
+                render_one(T::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "bash".into(),
+                    outcome: ToolOutcome::Ok,
+                    payload: format!("$ ls\n{EVIL}\nfile.rs"),
+                    edit: None,
+                }),
+            ),
+            (
+                "a tool's failure reason",
+                render_one(T::ToolResult {
+                    call_id: "call_1".into(),
+                    name: "bash".into(),
+                    outcome: ToolOutcome::Failed {
+                        reason: format!("the command wrote {EVIL} to stderr"),
+                    },
+                    payload: "$ false".into(),
+                    edit: None,
+                }),
+            ),
+            (
+                "the raw markup behind ctrl-x",
+                render_one(T::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_2".into(),
+                        name: "read".into(),
+                        arguments: format!("{{\"path\":\"{EVIL}\"}}"),
+                    }],
+                    truncated: false,
+                }),
+            ),
+            (
+                "both sides of a diff read off disk",
+                render_one(T::ToolResult {
+                    call_id: "call_3".into(),
+                    name: "edit".into(),
+                    outcome: ToolOutcome::Ok,
+                    payload: "1 replacement".into(),
+                    edit: None,
+                }),
+            ),
+        ];
+        for (what, row) in rows {
+            assert!(
+                !row.contains(EVIL_HEAD),
+                "{what}: a window-title request reached the row: {row:?}"
+            );
+            assert!(
+                !row.contains('\u{7}'),
+                "{what}: a BEL survived into the row: {row:?}"
+            );
+            // …and the row is still a row: the escape became a space rather than
+            // the whole line being dropped, which is what keeps the column
+            // arithmetic honest (`without_control`'s own trade).
+            assert!(
+                row.contains("]0;pwned"),
+                "{what}: the text should survive with the control byte spaced: {row:?}"
+            );
+        }
+    }
+
+    /// **The half of §3.1 that is easy to get wrong, and that I DID get wrong.**
+    ///
+    /// `\n` is a control character — `char::is_control` is true of every C0 code,
+    /// including it — so passing a document to the single-line `without_control` does
+    /// not sanitise it, it **collapses it onto one line**: every paragraph, every list
+    /// item and every fenced block gone. My first cut of this item did exactly that to
+    /// model prose, and the mistake is invisible on a one-line fixture while it
+    /// destroys every long message.
+    ///
+    /// So the newline is asserted to survive, and the other control bytes are asserted
+    /// not to — that pair is the whole function.
+    #[test]
+    fn sanitising_a_document_keeps_its_lines_and_loses_its_controls() {
+        let doc = "first paragraph\n\nsecond \u{1b}[31mred\u{1b}[0m and a tab\there\nthird\n";
+        let safe = without_control_lines(doc);
+        // **The newlines are the document**, so they are counted rather than eyeballed:
+        // three of them in, three out. (`lines()` is 4 for the same string — a trailing
+        // newline ends a line without starting one — which is why the assertion is on
+        // the newlines themselves.)
+        assert_eq!(
+            safe.matches('\n').count(),
+            doc.matches('\n').count(),
+            "the line structure is the document: {safe:?}"
+        );
+        assert_eq!(safe.lines().count(), 4, "{safe:?}");
+        assert_eq!(safe.lines().next(), Some("first paragraph"));
+        assert_eq!(safe.lines().last(), Some("third"));
+        assert!(
+            safe.contains("second  [31mred [0m and a tab here"),
+            "controls become spaces: {safe:?}"
+        );
+        // **Every control byte except the newline is gone**, which is the property —
+        // asserted as a sweep rather than as a list of four, so a C1 byte or a `\u{0}`
+        // added to the document later is caught by the same line.
+        for c in safe.chars() {
+            assert!(
+                c == '\n' || !c.is_control(),
+                "{c:?} survived: {safe:?}"
+            );
+        }
+        assert!(safe.ends_with('\n'), "a trailing newline is structure too");
+        // And the single-line version is unchanged, because a tool payload's lines are
+        // already split by its caller (`payload.lines()`), so each call sees one line.
+        assert_eq!(without_control("a\tb"), "a b");
+        assert_eq!(
+            without_control("a\nb"),
+            "a b",
+            "the one-line form still flattens — its callers split first"
+        );
     }
 
     /// **R13: the number beside a running call comes from a clock that keeps moving.**

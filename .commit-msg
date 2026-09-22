@@ -1,111 +1,104 @@
-a frame that half-wrote leaves no record of itself
+content this head did not write can no longer reconfigure the terminal
 
-This is leticl's finding, put to me as a question — *"ask what YOUR paint does after a
-partial failure"* — and the answer is **the same defect, in the same shape**:
+§3.1. **The exposure is real and it is this head's specifically, not a shared habit.**
+leticl composes styled segments into a **cell grid** — `screen-put-string` writes only
+cluster text and every SGR comes from the interned style table — so it *cannot* emit an
+escape it did not author. This head composes ANSI-bearing strings and `paint_full`
+writes each row **verbatim**, so an escape in model prose reached whatever terminal was
+attached. The parity document's own summary of the two: *"B cannot emit an escape it
+did not author. A can."*
 
-    paint_full(shown: &mut Vec<String>, …) -> String   // and inside it:
-        shown[i] = l.clone();                          // ← recorded while BUILDING
+**And it is not hypothetical.** Tool payloads were already sanitised (that is the fix
+for the mouse-wheel bug), and §3.1 names the rest: model prose, reasoning, the user's
+own message, the system row, fence bodies, diff excerpts read from disk. Every one of
+those reached the glass raw.
 
-    let _ = out.write_all(s.as_bytes());                // ← error discarded
+## The bug I wrote while fixing it, which is why it gets its own function
 
-The memory of the glass was updated *while the bytes were being built*, and the write
-that followed threw its error away. So a frame that died part-way left this head
-believing rows were on the glass that it had never written. The next frame skipped
-them, on the entirely legitimate rule that a row whose text has not changed need not be
-sent (`if shown[i] == *l { continue; }`), so **the hole was permanent** — and the only
-things that could clear it were the two that force a full repaint: Ctrl-L, and **a
-resize**.
+`\n` **is a control character** — `char::is_control` is true of every C0 code,
+including it. So the obvious move, passing model prose to the existing single-line
+`without_control`, does not sanitise a document: it **collapses it onto one line**,
+and every paragraph, list item and fenced block in every long message disappears. My
+first cut of this did exactly that.
 
-## That last word is the operator's own report, and it is why this is worth a commit
+The mistake is invisible on the one-line fixture a hurried test would use and destroys
+content on every real message, so it is a named function with its own doc rather than a
+second `.map` at the call site:
 
-> *"when i expand tools with Ct scroll stops working, even after collapsing back. i
-> have to switch byobu windows back and forth"*
+    without_control_lines(s)   // per line, joined by the newline it split on
+    without_control(line)      // unchanged: one line, controls become spaces
 
-The explanation that went into the log for that was **escapes in a tool payload**
-turning off mouse reporting — real, and fixed by `without_control`, with a test. But a
-window switch *resizes*, and a resize is one of the two things that clears a bad glass
-memory. `scroll_still_works_after_ctrl_t` even writes the symptom down in its own doc —
-*"a window switch is a resize, which forces the frame this was waiting for"* — and then
-does not follow it. **So this is the other half of that report, and it is the half that
-explained the repair.**
+**A space, not a deletion**, which is the trade the payload path already made: dropping
+a character silently reflows the line, and the wrapper about to measure it counts
+columns.
 
-## The fix: separate what a frame *intends* from what the glass *is*
+## Everything sanitised, and where the seam is for each
 
-`paint`/`paint_full` no longer mutate their input. They return **the bytes and the
-glass-state those bytes would leave behind**, and the caller adopts it — which is the
-only place that knows whether it went out:
+| surface | seam | why there |
+|---|---|---|
+| model prose, live | the `Delta { Text }` arm | the answer enters here; `IncrementalMarkdown` is a frozen-prefix lexer (§13.3), so a control byte that reaches it is frozen into the stable half and cannot be removed later without re-lexing |
+| model prose, settled | `TranscriptItem::Assistant` | before the lexer, so what is lexed and what is measured are one string |
+| reasoning, live and settled | the same two | it renders through the markdown renderer as well |
+| the operator's own paste | `TranscriptItem::User` | not distrust — a control byte copied out of a log arrives *as theirs*, and their own keystrokes cannot contain one (the decoder hands back `Key::Char`) |
+| the system row | `TranscriptItem::System` | the bootstrap text is the harness's, not this head's |
+| raw tool markup (`ctrl-x`) | `raw_call_lines` | accumulated for the whole turn and read by nothing else, so the one renderer is the right seam |
+| a diff's two sides and its path | both `render_edit_view` call sites, **before the diff is taken** | a file's bytes are the one surface that is neither the model's nor the daemon's. Sanitising after the diff would leave a `\r` moving the cursor inside a row the renderer had already measured |
+| a tool's failure reason | `outcome_why` | a command's stderr is arbitrary text |
+| `decision_detail` | at each `format!` | three sentences there are somebody else's: the daemon's ask, the decider's basis, the guard's verdict and the operator's phrases it cites |
+| notes, warned and decided | `note_lines_unfolded` | one renderer for both the transcript row and `/notes`, so one place covers both |
+| a subagent's peeked scrollback | `subagent_out_lines` | another session's payloads and prose, read over a `Peek` and drawn here; sanitised at the builder so the spill file matches the pane |
 
-- **A write that succeeded** adopts the new memory. One statement later than it was, and
-  that statement is the whole fix.
-- **A write that failed** clears the memory and sets `full`, so the next frame is a
-  whole-screen repaint.
-- **A frame that needed no bytes** adopts the new memory without writing, because a
-  frame that needed no bytes is one whose memory is already true (and taking it keeps
-  `shown` the same length as the frame, which matters for a frame that got taller).
+That is the list §3.1 asked for, and the two that were **already** done are named for
+completeness rather than credit: the settled tool payload and the job-output pane.
 
-**Why "forget" and not "work out how much landed".** A `write_all` that fails may have
-written any prefix, so the head cannot know which rows are up. It could parse its own
-output for cursor moves and count what fitted — and a mistake there puts the hole back,
-silently, which is the entire class of defect being fixed here. One extra frame after a
-failure, and no way to be wrong instead.
+## The half neither of us had done: a test that would catch a regression
 
-**And the counters follow the same rule.** Bytes, row rewrites and clears are counted
-only on the write that carried them: a frame that failed is a frame *attempted*, and
-`WriteStats::bytes` claiming bytes that never reached the glass is the same defect as
-`shown` claiming rows that never reached it.
+The requirement says leticl has two tests here and this head has none, and that is the
+part worth reading as a criticism rather than as a to-do — **a guard nobody tests is
+the state that let this sit.** So:
 
-## The seam, because the interesting half needs no pty
+- `content_this_head_did_not_write_cannot_reconfigure_the_terminal` walks **every
+  surface in the table above** with one sequence: `ESC ] 0 ; x BEL`, the window-title
+  request, which is the one an operator can *watch happen*. It asserts the literal
+  `ESC ] 0 ;` cannot occur in any rendered row, that no `BEL` survives, and — so the
+  test cannot be satisfied by dropping the whole line — that the text is still there
+  with the control byte spaced. The diff case is exercised through the real
+  `render_edit_view`, so if the sanitisation were removed from either side the literal
+  sequence appears and the test fails.
+- `sanitising_a_document_keeps_its_lines_and_loses_its_controls` asserts the pair that
+  is the whole function: the newline count is unchanged, and a sweep finds no control
+  character other than `\n`. It also pins the single-line form's flattening behaviour,
+  because "these two are not the same function" is the thing a later tidy-up would
+  merge.
 
-`draw_with_cursor` is now `paint_to(&mut stdout(), …)`, and `paint_to` takes the writer.
-That is what makes the failure testable at all: `Terminal::enter` needs a real terminal
-and nothing about the diff, the cursor or the failure policy does. The test uses a
-writer that **fails on its second call** on purpose — by then the frame's opening bytes
-really are on the glass, so "commit nothing" and "commit everything" are both wrong and
-the assertion has to be about *what the head knows* rather than what it sent.
+## What is deliberately **not** here
 
-## A test that cannot fail guards nothing — this tree's instance of it
+**The structural fix is a cell grid, and this is not that.** leticl cannot emit an
+escape it did not author because it has no strings-with-escapes to emit; this commit
+makes the same escapes impossible by sanitising the text that carries them. The parity
+document's own caveat applies and is worth repeating: **leticl's immunity is incidental
+to its painter, not a guard** — its own comment says so — and it would not survive a
+change of painter. Neither would this survive a new renderer that forgets to call the
+sanitiser, which is exactly why the test above is the durable half of it.
 
-The operator's second point, and this tree has an instance, so it is named rather than
-left for the next reader:
-
-`scroll_still_works_after_ctrl_t` **cannot catch the defect it is named for.** It asserts
-`a.scroll` and `a.payload_page` — *head* state — and the defect was in `shown`, *glass*
-state. The head's scroll counter was moving perfectly the whole time; the screen was
-not repainting. It would pass with the bug present, which is what it did.
-
-It is left in place, because it does guard the thing it can see: that the arrows belong
-to the payload while a window is open and come back on Esc, and that `ctrl-t` no longer
-moves the transcript. What it cannot see is the glass, and no test in `app.rs` can —
-`app.rs` never composes bytes. **The guard for the glass is
-`a_paint_that_dies_part_way_leaves_no_record`, in the file that owns the encoder**, and
-its first assertion is that the premise holds (bytes really went out before the failure),
-so it is not a test that arranges its signal the way the bug did not.
-
-## Tests
-
-- `a_paint_that_dies_part_way_leaves_no_record` — a good frame, then one whose write dies
-  after the opener: the head claims **nothing** (not the old frame, not the new one), the
-  next frame is a `full` repaint carrying every row, and the byte counters are zero.
-- Five existing paint tests were rewritten for the new shape, and **two of them got
-  stronger**: `an_unchanged_frame_writes_nothing_at_all` now also asserts the memory is
-  adopted every time (a `paint` that returned its input would answer `""` by never having
-  learned anything), and the height test keeps the glass honest across a grow *and* a
-  shrink.
-
-`cargo test -p letibot-tui`: **307 passed, 0 failed, 4 ignored** (306 + 1).
+`cargo test -p letibot-tui`: **309 passed, 0 failed, 4 ignored** (307 + 2).
+`cargo test -p letibot-ui`: **101 passed, 0 failed**.
 
 **Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
 a temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts. One cargo at a time from here on: a five-crate run started earlier
-sat at 0 % CPU for twenty-six minutes because three of my own `cargo` invocations were
-contending on `target/`, which is why every run named above is one crate.
+the operator lifts. One cargo at a time, as the last commit's note says; every run above
+is one crate pair.
 
 ## Not in this commit
 
-**§3.1, and this defect is one route into it.** A raw escape in *model prose* still
-reaches the glass verbatim — tool payloads are neutralised by `without_control`, and
-nothing else is. That is the same class as this commit's: `shown` can diverge from the
-glass without any write failing, because a `\r` or a mode set inside a text row moves
-the cursor in ways the head's model of the row does not describe. leticl is a proof that
-this matters (it composes into a cell grid and cannot emit an escape it did not author),
-and it has two tests where this tree has none — that is the next item.
+**`letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn` are still unrun since
+`65725ce`.** Two attempts to run them contended on the cargo lock with my own builds and
+sat at 0 % CPU; the honest statement is that I do not have their result rather than that
+they fail. The only cross-crate dependency that commit could have had is a test built on
+the removed refusal, and that lived in `clauses.rs`, which is green.
+
+**R12 is blocked on a grant, not on a decision** — recorded with the exact query in
+`~/Projects/blocked-overnight-2026-09-22.md`, because the store is outside this
+session's view and every read of it opens a card that times out with nothing run.
+
+**§2.7 (list nesting) is next**, then the rest of §6's missing-in-A list.
