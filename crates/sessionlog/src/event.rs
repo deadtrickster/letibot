@@ -277,15 +277,48 @@ pub struct Decider {
     pub identity: String,
 }
 
-/// How much of a tool call's arguments may travel to a head, in bytes.
+/// **How many bytes of a tool call's arguments may travel to a head — a wire-safety
+/// limit, not a display decision (R25).**
 ///
-/// `crates/ui/DESIGN.md` §4.1 asks for *"a short, tool-supplied, already-truncated
-/// display string … capped at something like 120 bytes"*. The cap is **here**,
-/// where `TurnEvent` becomes `SessionEvent`, because here is where the fan-out
-/// starts: below this line an argument is one in-process string, above it it is a
-/// copy per attached head. A head that truncated for itself would also give two
-/// heads two different renderings of one call.
-pub const TARGET_MAX_BYTES: usize = 120;
+/// `crates/ui/DESIGN.md` §4.1 asked for *"a short, tool-supplied, already-truncated display
+/// string … capped at something like 120 bytes"*, and 120 is what this was. **That number was
+/// a viewport guess made in a layer that cannot see a viewport**, and the cost is exactly what
+/// the operator measured on 2026-09-22: a 227-column pane showing a headline cut at 121
+/// characters, so **~100 columns went unused on every tool row** — *"some commands head lines
+/// like 'Ran blabla' truncate too early, they dont use the whole conversation history viewport,
+/// unlike say thinking."* Thinking rows carry no such cap, which is why they look right beside
+/// it. The cap is **here**, where `TurnEvent` becomes `SessionEvent`, because here is where the
+/// fan-out starts: below this line an argument is one in-process string, above it it is a copy
+/// per attached head.
+///
+/// **Why the number moved and the *unit* did not.** §3.3 ruled *bytes in a daemon, columns in
+/// a head, move neither*, which is right about the unit and was wrong about the number, and
+/// its own text named this cost: moving it means the daemon sends the field untrimmed and each
+/// head cuts it, "a protocol decision rather than a rounding one". The argument that settles
+/// it is not aesthetics: **more than one head may be attached to one session, at different
+/// widths, at the same time — so any single number this layer picks is wrong for all but one
+/// of them.** The only layer that knows a viewport is the one that owns it.
+///
+/// **What it is sized against.** A viewport, with headroom: the widest terminal this box has
+/// attached is 227 columns; an 8K display at a small monospace font is ~960. 2048 covers the
+/// latter with 2× to spare, so **no plausible head is starved**, and it stays a bound — an
+/// untrimmed command line can be arbitrarily long, and a field that fans out per head per live
+/// call has to have one. Both ends are still bounded; only the layer that does the display
+/// cut has changed.
+///
+/// **The elision is still disclosed, and still where it happens.** [`truncate_target`] keeps
+/// appending `…` for the wire cut, and the head keeps appending its own when it cuts to its own
+/// width ([`letibot_ui::width::truncate`], which has done exactly that all along). Two cuts,
+/// two marks, each at the layer that made it.
+///
+/// **A stored corpus row is unaffected, and that is worth stating rather than assuming.**
+/// There is no `target` column: `display_target` is derived at lift time from
+/// `arguments_json`, which the store holds **whole**. So raising this number changes what a
+/// *future* session sends and therefore what a future row's head shows; it cannot make a
+/// replay richer than the session it replays, because the replay derives the same field from
+/// the same stored bytes under the same rule. The corpus is measured across time and this is
+/// the half of it that does not move.
+pub const TARGET_MAX_BYTES: usize = 2048;
 
 /// The keys that name a call's subject, in preference order.
 ///
@@ -1290,10 +1323,15 @@ mod tests {
         // broke before `path` landed — the card opened with eighty bytes of
         // old_string and could not answer *which file*. The subject the order
         // left out is prepended; the content head follows it.
+        //
+        // **The content is sized off the cap, not off a literal (R25).** This used 200-byte
+        // strings, which broke a 120-byte budget and stopped breaking anything the moment the
+        // wire limit moved — a test whose premise is a number the code no longer has. The rule
+        // it tests is unchanged; what it takes to reach it is now a genuinely long argument.
         let args = format!(
             r#"{{"old_string":"{}","new_string":"{}","path":"crates/tui/src/app.rs"}}"#,
-            "x".repeat(200),
-            "y".repeat(200),
+            "x".repeat(TARGET_MAX_BYTES + 100),
+            "y".repeat(TARGET_MAX_BYTES + 100),
         );
         let t = display_target(&args);
         assert!(t.starts_with("crates/tui/src/app.rs"), "{t}");
@@ -1307,10 +1345,38 @@ mod tests {
 
     #[test]
     fn a_target_never_exceeds_the_cap_and_says_when_it_was_cut() {
-        let long = "x".repeat(400);
+        // **Sized off the constant, not off 400** (R25). The old literal was written when the
+        // cap was 120 and quietly stopped testing anything the moment the cap moved past it —
+        // a test whose premise is a number the code no longer has is a green test about
+        // nothing.
+        let long = "x".repeat(TARGET_MAX_BYTES + 100);
         let t = display_target(&format!(r#"{{"path":"{long}"}}"#));
         assert!(t.len() <= TARGET_MAX_BYTES, "{} bytes", t.len());
         assert!(t.ends_with('…'), "{t}");
+    }
+
+    /// **A realistic long command reaches a head whole, and it is the head that cuts it** (R25).
+    ///
+    /// The operator's measurement was a 227-column pane showing a headline cut at 121
+    /// characters, so ~100 columns went unused on every tool row. The wire limit is not a
+    /// viewport, so a command of a few hundred characters must arrive intact and be cut — with
+    /// its own `…` — by the layer that knows the width.
+    #[test]
+    fn a_command_of_a_few_hundred_characters_survives_the_wire_whole() {
+        let cmd = format!(
+            "cd /opt/secure_auth && gcc -o test_auth {} -Wl,-rpath,/opt/secure_auth/lib && ./test_auth --selftest",
+            "-Iinclude ".repeat(10)
+        );
+        assert!(cmd.len() > 120, "the premise is a command the OLD cap would have cut");
+        assert!(cmd.len() < TARGET_MAX_BYTES, "and one the new cap may not");
+        let t = display_target(&format!(r#"{{"command":{}}}"#, serde_json::to_string(&cmd).unwrap()));
+        // A string with whitespace is quoted, so `grep "two words" src` cannot be misread as
+        // three arguments — that is `scalar`'s rule and the quoted form is the right one.
+        assert_eq!(t, format!("{cmd:?}"), "the wire cut a command it had no reason to touch");
+        assert!(!t.ends_with('…'), "and it did not claim to: {t}");
+        // The whole tail survives, which is the operator's complaint in one assertion: the
+        // end of a long command is what a 120-byte cut used to take.
+        assert!(t.contains("--selftest"), "{t}");
     }
 
     #[test]

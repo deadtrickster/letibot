@@ -388,7 +388,49 @@ difference is worth recording:
   switched into the session. Without that, every tool line older than the attach
   read `Read (call_0)`, which is the decorative version of the feature.
 
-The original note follows, because the shape it argued for is still the shape.
+### 4.1b R25 — the cap is a wire limit, and the head does the display cut
+
+**Overturned 2026-09-22, on the operator's measurement.** `TARGET_MAX_BYTES` was **120
+bytes** and it cut the target *before it was sent*. Their pane is **227 columns** and a
+real headline measured **121 characters** — the cut plus its elision mark — so **~100
+columns went unused on every tool row**, while thinking rows, which carry no such cap,
+looked right beside them.
+
+**§3.3 ruled *bytes in a daemon, columns in a head, move neither*.** That is right about
+the **unit** and was wrong about the **number**, and §3.3's own text named the cost:
+moving it means A sends the field untrimmed and the head cuts it, *"a protocol decision
+rather than a rounding one"* — recommended against because *"it buys a difference nobody
+has complained about."* A complaint arrived.
+
+**The argument that settles it is not the aesthetics: more than one head may be attached
+to one session, at different widths, at the same time — so any single number the daemon
+picks is wrong for all but one of them.** The only layer that knows a viewport is the one
+that owns it, which is §3.3's own reasoning applied to the number as well as the unit.
+
+What moved, and what did not:
+
+- **The daemon's limit is now a wire-safety bound: 2048 bytes**, sized against a viewport
+  rather than a preference — the widest terminal this box has attached is 227 columns and
+  an 8K display at a small monospace font is ~960, so 2048 covers the latter with 2× to
+  spare. It still *exists*: an untrimmed field on the wire is a hazard, not a feature, and
+  a command line can be arbitrarily long.
+- **Each head cuts to its own viewport.** That is not a new behaviour and needs no new
+  code: `Card::header` already ends in `width::truncate(&s, cfg.width)` when the target and
+  its tail cannot both fit, and `width::truncate` **works in columns and appends `…`**. It
+  was simply never reached, because the field arrived already cut. 227 shows 227; 80 shows
+  80; neither number is in the daemon.
+- **The elision stays DISCLOSED where it happens.** Two cuts, two marks, each at the layer
+  that made it. A target that fits is marked not at all — a `…` on a complete command is
+  the same class of lie as hiding a cut.
+- **A stored corpus row is unaffected.** There is no `target` column; `display_target` is
+  derived at lift time from `arguments_json`, which the store holds **whole**. Raising the
+  cap changes what a *future* session sends and therefore what a future row's head shows;
+  it cannot make a replay richer than the session it replays, because the replay derives
+  the same field from the same stored bytes under the same rule.
+
+The original note follows, because the shape it argued for is still the shape — but its
+number is gone, and *"capped at something like 120 bytes"* below is the sentence R25
+repeals.
 
 ### 4.1a The original note
 

@@ -806,6 +806,68 @@ mod tests {
         assert_eq!(out[0], "Thought");
     }
 
+    /// **R25: the head cuts the target to ITS OWN viewport, and 227 shows more than 80.**
+    ///
+    /// The daemon's cut is a wire-safety limit now, not a display decision — so this is the
+    /// layer that decides what a reader sees, and it is the *only* layer that can, because
+    /// **more than one head may be attached to one session at different widths at the same
+    /// time.** The operator's measurement was a 227-column pane showing a headline cut at 121
+    /// characters, ~100 columns unused on every tool row.
+    ///
+    /// The elision is disclosed here rather than silently: `width::truncate` appends `…`, and
+    /// §3.3's rule is that the mark belongs to the layer that made the cut. Two cuts, two
+    /// marks — the daemon's is only reached by a command past 2048 bytes.
+    #[test]
+    fn the_head_cuts_a_long_target_to_its_own_viewport_and_says_so() {
+        // Longer than every viewport in the test, so both widths have something to cut — the
+        // operator's own shape, where the command was longer than his 227 columns. (A target
+        // that FITS is not marked at all, which the second half of this test pins.)
+        let target = format!(
+            "cd /opt/secure_auth && gcc -o test_auth test_auth.c {} \
+             -Llib -lsecure_auth -Wl,-rpath,/opt/secure_auth/lib && ./test_auth --selftest",
+            "-Iinclude ".repeat(12)
+        );
+        assert!(target.len() > 227, "the premise is a target longer than the viewport");
+        let c = Card::new("bash", "call_00000007")
+            .target(&target)
+            .phase(Phase::Finished {
+                outcome: Outcome::Ok,
+                elapsed_ms: Some(900),
+            });
+
+        let wide = c.header(&CardConfig { width: 227, ..cfg() });
+        let narrow = c.header(&CardConfig { width: 80, ..cfg() });
+        for (w, h) in [(227usize, &wide), (80, &narrow)] {
+            assert!(width::width(h) <= w, "{w} columns overflowed: {h:?}");
+        }
+        // **227 shows 227, 80 shows 80, and neither number is in the daemon.**
+        assert!(
+            width::width(&wide) > width::width(&narrow),
+            "227 showed no more than 80:\n{wide}\n{narrow}"
+        );
+        assert!(
+            width::width(&wide) > 120,
+            "a 227-column card used {} columns — the daemon's old cut is still the limit",
+            width::width(&wide)
+        );
+        // The cut is disclosed where it happened, at both widths.
+        assert!(wide.ends_with('…'), "the wide cut is not disclosed: {wide}");
+        assert!(narrow.ends_with('…'), "the narrow cut is not disclosed: {narrow}");
+
+        // **And a target that fits is shown whole and marked not at all** — a card that put a
+        // `…` on a complete command would be telling the reader something was cut when nothing
+        // was, which is the same class of lie as hiding a cut.
+        let short = Card::new("bash", "c1")
+            .target("cargo test --workspace")
+            .phase(Phase::Finished {
+                outcome: Outcome::Ok,
+                elapsed_ms: Some(900),
+            });
+        let fits = short.header(&CardConfig { width: 227, ..cfg() });
+        assert!(fits.contains("cargo test --workspace"), "{fits}");
+        assert!(!fits.contains('…'), "a complete target was marked as cut: {fits}");
+    }
+
     #[test]
     fn nothing_a_card_renders_ever_exceeds_the_width() {
         let c = Card::new("edit", "c1")
