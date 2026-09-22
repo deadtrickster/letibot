@@ -407,6 +407,7 @@ mod tests {
             req_id: "r2".into(),
             kind: "exec".into(),
             call_id: None,
+            access: String::new(),
             summary: "run it".into(),
             target: String::new(),
             detail: String::new(),

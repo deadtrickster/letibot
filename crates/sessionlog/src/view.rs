@@ -83,6 +83,12 @@ pub struct OpenDecision {
     pub req_id: String,
     pub kind: String,
     pub call_id: Option<String>,
+    /// The tool's declared access — `read | write | exec | network` — so a head can
+    /// say WHY the card is asking when it is the declaration that asks. See
+    /// [`crate::event::SessionEvent::DecisionRequested`] for the argument; empty from a
+    /// daemon older than the field, and empty draws no clause.
+    #[serde(default)]
+    pub access: String,
     pub summary: String,
     /// The one thing being decided about — the command, the path, the URL — so a
     /// head can put it on its own line. See the event for why it is not left inside
@@ -458,6 +464,7 @@ impl SessionView {    // (the free function `body_of` at the foot of this file i
                 req_id,
                 kind,
                 call_id,
+                access,
                 summary,
                 target,
                 detail,
@@ -473,6 +480,7 @@ impl SessionView {    // (the free function `body_of` at the foot of this file i
                     req_id: req_id.clone(),
                     kind: kind.clone(),
                     call_id: call_id.clone(),
+                    access: access.clone(),
                     summary: summary.clone(),
                     target: target.clone(),
                     detail: detail.clone(),

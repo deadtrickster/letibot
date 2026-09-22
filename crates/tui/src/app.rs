@@ -3272,6 +3272,7 @@ impl App {
                 req_id,
                 kind,
                 call_id,
+                access,
                 summary,
                 target,
                 detail,
@@ -3291,6 +3292,7 @@ impl App {
                     req_id,
                     kind,
                     call_id,
+                    access,
                     summary,
                     target,
                     detail,
@@ -8928,6 +8930,31 @@ impl App {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
+        // **§11.7: the one sentence that joins the two statements above.**
+        //
+        // The headline says what the tool **declares** — `wants exec access` — and the
+        // line above it is layer A's reading of the **action** — `auto (a read inside
+        // the boundary)` — and nothing joined them, so *"the classifier decided this
+        // needed no asking"* read as being argued with by the card going up anyway. That
+        // is the most expensive shape a card can have: an operator who is asleep cannot
+        // tell it apart from a question they should have been asked, and it cost three
+        // 300-second refusals in one night (`head-parity` R18).
+        //
+        // **The missing clause is the access, and it is said only where the declaration
+        // is what asks.** A `read` call is asked about because of a rule, a path or a
+        // mode, and a sentence about its declaration would be false on the very card
+        // carrying it — which is what `because: workspace: /` was (a fact named after one
+        // thing and read from another), and the mistake this wording exists not to
+        // repeat. An empty `access` is a daemon older than the field: no clause, because
+        // the head does not know and will not guess.
+        const ACCESS_ASKS: &str = "the access is what asks: a tool declared to `exec` is \
+                                   asked about on its declaration, and the line above is a \
+                                   reading of this action";
+        if d.access == "exec" && d.kind != "question" {
+            for l in wrap(&format!("  {ACCESS_ASKS}"), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+        }
         // **Why it is asking, in the words of whoever is stuck.**
         //
         // `because` is the one sentence on this card that is not the harness's: on a
@@ -12387,6 +12414,7 @@ mod tests {
             req_id: "d1".into(),
             kind: "permission".into(),
             call_id: None,
+            access: String::new(),
             summary: "edit a file".into(),
             target: String::new(),
             detail: String::new(),
@@ -12872,6 +12900,84 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("intents [execute_code]")),
             "the deterministic reading was dropped rather than demoted: {lines:#?}"
+        );
+    }
+
+    /// **§11.7: the card says why it is asking, when the declaration is the reason.**
+    ///
+    /// The card printed two statements that looked like a contradiction — the headline's
+    /// `wants exec access` (the tool's declared access) and the dim line under it, layer
+    /// A's reading of the *action* (`auto (a read inside the boundary)`) — and nothing
+    /// joined them, so *"the classifier decided this needed no asking"* read as being
+    /// argued with by the card going up anyway. That shape cost three 300-second
+    /// refusals in one night (`head-parity` R18); the missing clause is the access.
+    ///
+    /// **And it is absent where the access is not what asks**, which is the half that
+    /// keeps it worth reading: a `read` call is asked about because of a rule, a path or
+    /// a mode, so a sentence about its declaration would be false on the very card
+    /// carrying it. An empty `access` is a daemon older than the field, and the head does
+    /// not guess.
+    #[test]
+    fn the_card_says_the_declared_access_is_what_asks() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+        let says = |access: &str| {
+            let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+            d.summary = "`bash` wants exec access to `cargo test`".into();
+            d.target = "cargo test".into();
+            d.detail = "auto — intents [read_file] — auto (a read inside the boundary)".into();
+            d.access = access.into();
+            a.decision_lines(&d, 200).join("\n")
+        };
+
+        let exec = says("exec");
+        assert!(exec.contains("the access is what asks"), "{exec}");
+        assert!(
+            exec.contains("a tool declared to `exec`"),
+            "the clause names the declaration the headline already named: {exec}"
+        );
+        // Under the two statements it joins, because that is what it joins.
+        let at_clause = exec.find("the access is what asks").unwrap();
+        let at_detail = exec.find("intents [read_file]").unwrap();
+        assert!(at_detail < at_clause, "{exec}");
+        // …and in their register: evidence beside the question, not a second question.
+        let painted = App::new(RenderConfig {
+            width: 200,
+            color: true,
+            ..RenderConfig::default()
+        });
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.access = "exec".into();
+        let line = painted
+            .decision_lines(&d, 200)
+            .into_iter()
+            .find(|l| l.contains("the access is what asks"))
+            .expect("the row");
+        assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
+
+        // **Absent where the access is not what asks** — a read call, a write call, a
+        // network call, and a daemon that did not say.
+        for other in ["read", "write", "network", ""] {
+            let drawn = says(other);
+            assert!(
+                !drawn.contains("the access is what asks"),
+                "an access of {other:?} is not why anything is being asked: {drawn}"
+            );
+            // The card is still a card.
+            assert!(drawn.contains("allow_once"), "{drawn}");
+        }
+        // And a question never carries it: nothing is consulted for one, and its `access`
+        // is whatever the ask's class happens to be rather than a declaration anyone
+        // decided on.
+        let mut q = decision_with(&[]);
+        q.kind = "question".into();
+        q.access = "exec".into();
+        q.choices = vec!["a".into()];
+        assert!(
+            !a.decision_lines(&q, 200)
+                .join("\n")
+                .contains("the access is what asks"),
+            "a question is not a gate and says nothing about declarations"
         );
     }
 
@@ -14634,6 +14740,7 @@ mod tests {
                 req_id: "r1".into(),
                 kind: "permission".into(),
                 call_id: Some("c1".into()),
+                access: String::new(),
                 summary: "run rm -rf build/".into(),
                 target: String::new(),
                 detail: String::new(),

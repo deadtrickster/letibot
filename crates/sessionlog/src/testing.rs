@@ -86,6 +86,10 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
         // still answered by option id.
         kind: "permission".into(),
         call_id: Some("c1".into()),
+        // The fixture's tool is a shell, so the declaration is `exec` — the one access a
+        // card draws the joining clause for. See
+        // `SessionEvent::DecisionRequested::access`.
+        access: "exec".into(),
         summary: summary.into(),
         target: String::new(),
         detail: String::new(),
@@ -116,6 +120,8 @@ pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> Sessi
         req_id: req_id.into(),
         kind: "question".into(),
         call_id: Some("c1".into()),
+        // A question is not a gate, and nothing about a declaration asks for it.
+        access: String::new(),
         summary: text.into(),
         target: String::new(),
         detail: String::new(),

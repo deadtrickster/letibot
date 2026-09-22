@@ -377,6 +377,12 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
             RequestKind::Question => "question".into(),
         },
         call_id: Some(req.call_id.clone()),
+        // **The tool's declared access, so the card can say why it is asking.** §11.7:
+        // the headline names the declaration (`wants exec access`) and `detail` is layer
+        // A's reading of the *action*, and nothing joined them. The request has carried
+        // this as `ActionClass::access` all along; it had simply never been put on the
+        // wire, so a head could only have got it by parsing its own sentence.
+        access: req.class.access.as_str().to_string(),
         // The one line a person decides from, and then what layer A read, because a
         // permission the operator cannot evaluate is one they will approve out of
         // fatigue — which is the mechanism behind the 67% in §1.

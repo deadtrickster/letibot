@@ -503,6 +503,25 @@ pub enum SessionEvent {
         /// that difference made concrete rather than left to a head to infer.
         kind: String,
         call_id: Option<String>,
+        /// **The tool's declared access** — `read | write | exec | network`, from the
+        /// tool's schema. Empty from a daemon older than this field.
+        ///
+        /// **Added because the card printed two statements that looked like a
+        /// contradiction and nothing joined them** (§11.7). The *headline* is what the
+        /// tool **declares** — `wants exec access` — and [`Self::detail`] is layer A's
+        /// reading of the **action** — `auto — a read inside the boundary` — so *"the
+        /// classifier decided this needed no asking"* read as being argued with by the
+        /// card going up anyway. The sentence that joins them is the head's (A's
+        /// wording); the fact it needs is this one, which the request has carried as
+        /// `ActionClass::access` all along and simply never put on the wire.
+        ///
+        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing
+        /// variant, the precedent `ModelAdvice::consulted` set. An older head ignores
+        /// it and renders exactly what it rendered before, and empty says *nobody told
+        /// me* rather than *read*, which is the difference between a card that draws no
+        /// clause and a card that draws the wrong one.
+        #[serde(default)]
+        access: String,
         summary: String,
         /// **The one thing being decided about**, on its own: the command a `bash`
         /// call would run, the path a write would take, the URL a fetch would reach.
