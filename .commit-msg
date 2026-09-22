@@ -1,79 +1,46 @@
-an unknown verb is the daemon's to refuse, not this head's
+a 300-line paste says 300 lines
 
-§6: *"unknown verbs forwarded to the daemon rather than refused against an allowlist"*.
+§6: *"the truthful paste line count where you report 301 lines for a 300-line paste"*.
 
-The fallthrough of `command` held a **twelve-name allowlist** of daemon verbs and
-answered anything outside it with `unknown command /x — try /help`. That is a second
-copy of the daemon's verb table, and the failure mode is the worst kind this file
-recognises: a verb added on the other side is **unreachable until this head is
-rebuilt**, and the operator is told the command does not exist *by the half that does
-not own the list*. The head then lies about its own daemon.
+The count was `s.matches('\n').count() + 1`. That is right for text with no final
+newline and wrong for text with one, and **almost every real paste has one**: a file
+dragged out of an editor ends `…\n`, a stack trace copied out of a terminal ends in a
+newline, a `git diff` ends in one. So the number the composer shows was one larger than
+the number of lines it stood for.
 
-**The comment four lines above already said the right thing** — *"the head does not know
-them and does not need to: the line goes over as typed and the answer comes back on the
-session log"* — and then the code refused the ones it had not heard of. This commit makes
-the code agree with its own sentence.
+`lines()` is the count a reader would make: `"a\nb\n"` and `"a\nb"` are both two lines,
+and an empty paste is zero — which is below the threshold and therefore not collapsed,
+which is the right answer for a paste of nothing.
 
-## Why forwarding loses nothing
+## The same off-by-one from the other side, and it is the half that changes behaviour
 
-`harnessd/src/slash.rs` answers an unrecognised verb **by name**:
+The count and the threshold read the same string, so a paste of **four lines ending in a
+newline** used to count five and collapse, while the same four lines without the final
+newline did not. Two pastes that are the same four lines behaved differently on a
+difference nobody can see — which is the honest reason this is not merely a wrong label.
+Both directions are pinned now.
 
-    /{verb} is not a daemon verb; /help lists the head's
+## Tests
 
-So the question is settled by the half that owns the table, and a typo gets a *better*
-sentence than this head could write — the daemon's says whose verbs those are, which is
-the fact a person who mistyped needs. Nothing is swallowed and nothing is guessed.
+- `the_paste_count_is_the_lines_a_reader_would_count` — 300 lines with and without the
+  final newline both read `~300 lines`; four lines stay ordinary typed text and five
+  collapse.
+- `a_large_paste_becomes_a_placeholder_and_expands_on_submit` asserted `~41 lines` for a
+  40-line fixture, which was the defect written down as the expectation. It says `~40`
+  now, and that edit is the point rather than a chore: **a test that encodes the bug is a
+  test that would fail on the fix**, which is worth noticing when the fix is this small.
 
-## This is the same mistake, a third time
+`cargo test -p letibot-ui`: **102 passed, 0 failed** (101 + 1).
+`cargo test -p letibot-tui`: **312 passed, 0 failed, 4 ignored**.
 
-Two other comments in this file record the head keeping a copy of a daemon-owned list and
-getting it wrong: the `mode` settings row (*"a second copy of a list is a copy that
-drifts"* — it offered `supervised`, which is not a mode, and not `automode-edits`, which
-is), and the jobs pane building its own table before the daemon published one. An
-allowlist of verbs is the same shape, so it goes for the same reason rather than because
-this particular instance had been observed to rot — it had not, because the daemon has
-not gained a verb since. **The argument is about which half owns the fact**, and the
-honest note is that this was a latent defect rather than a reported one.
-
-## What the arms above still own, which is what makes the fallthrough safe
-
-Every head-side verb returns before the fallthrough, and the test asserts three of them
-so the boundary is pinned rather than assumed:
-
-- `/status` opens a pane and returns `None` — nothing is forwarded.
-- `/quit` is `Action::Quit`.
-- `/models` with **no argument** is the picker, not a daemon round trip: it asks
-  `Action::Settings` and opens the menu. (`/models NAME` still goes over as typed, which
-  is what `--once` and `--key` need — that arm is above the fallthrough and unchanged.)
-
-And the one thing the fallthrough still guards is the session: an unattached head says
-*"not attached to a session yet"* rather than sending a line to a daemon it has no
-session on.
-
-## Test
-
-`a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged` — `/import foo.json`
-becomes `Action::Slash { line: "import foo.json" }` **and the head adds no verdict of its
-own** (the composer is empty, so the line was sent rather than held); then the three
-head-side verbs above, so "the arms above the fallthrough keep their verbs" is asserted
-and not merely true today.
-
-`cargo test -p letibot-tui`: **312 passed, 0 failed, 4 ignored** (311 + 1).
-
-**Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
-a temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts. `letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn` are still
-unrun since `65725ce`, for the lock reasons recorded in the last three commits. Nothing
-here touches them — this is one arm in `crates/tui/src/app.rs` and one test — but the
-statement is that I do not have their result.
+**Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes a
+temp file and `bash` is closed for that direction by the circuit breaker, which only the
+operator lifts. The four crate suites outside these two are still unrun since `65725ce`,
+for the lock reasons the last four commits record.
 
 ## Not in this commit
 
-**The rest of §6's list**, one item per commit: `/todos`, `/subagents`, `/peek`,
-`/resume`, `/promote`, `q` closing any pane, `ctrl-o` into a subagent, clicks reaching
-five panes instead of two, SGR mouse motion decoded, the composer draft preserved across
-a history walk, the truthful paste line count (this head reports 301 lines for a
-300-line paste), and the tail-origin scroll sign for the peek and job-output panes.
-
-**R12 stays blocked on a grant, not a decision** — the query and the reason are in
-`~/Projects/blocked-overnight-2026-09-22.md`.
+The rest of §6's list, one item per commit: `/todos`, `/subagents`, `/peek`, `/resume`,
+`/promote`, `q` closing any pane, `ctrl-o` into a subagent, clicks reaching five panes
+instead of two, SGR mouse motion decoded, the composer draft preserved across a history
+walk, and the tail-origin scroll sign for the peek and job-output panes.

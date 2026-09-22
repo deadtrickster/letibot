@@ -559,7 +559,19 @@ impl Editor {
         // a bracketed paste, and a naive `\r\n` replace leaves those behind as
         // control characters that a terminal renders as a carriage return.
         let s = raw.replace("\r\n", "\n").replace('\r', "\n");
-        let lines = s.matches('\n').count() + 1;
+        // **Lines, which is not newlines-plus-one when the paste ends in a newline.**
+        //
+        // This was `s.matches('\n').count() + 1`, and almost every real paste is a
+        // whole file dragged out of an editor — which ends `…\n` — so a 300-line paste
+        // announced itself as **301**, and a 40-line stack trace as 41. The reader's
+        // one use for this number is deciding whether the placeholder holds their whole
+        // paste, and an off-by-one there is the number disagreeing with the thing it
+        // counts.
+        //
+        // `lines()` is the count a reader would make: `"a\nb\n"` and `"a\nb"` are both
+        // two lines, and an empty paste is zero (which is below the threshold and so is
+        // not collapsed — the right answer for a paste of nothing).
+        let lines = s.lines().count();
         if lines >= PASTE_LINES || s.len() > PASTE_BYTES {
             let n = self.pastes.len() + 1;
             let placeholder = format!("[Pasted #{n} ~{lines} lines]");
@@ -857,7 +869,10 @@ mod tests {
         type_str(&mut e, "look at this: ");
         let trace = (0..40).map(|i| format!("  at frame {i}\n")).collect::<String>();
         e.key(Key::Paste(trace.clone()), 0);
-        assert!(e.text().contains("[Pasted #1 ~41 lines]"), "{}", e.text());
+        // **Forty lines, not forty-one** (§6): the pasted text ends in a newline and
+        // the old count added one to the newline total, so every whole file dragged
+        // out of an editor over-reported by a line.
+        assert!(e.text().contains("[Pasted #1 ~40 lines]"), "{}", e.text());
         assert!(e.text().len() < 60, "the composer stayed small");
         let out = match e.key(Key::Enter, 0) {
             Reaction::Submit(s) => s,
@@ -865,6 +880,43 @@ mod tests {
         };
         assert!(out.contains("at frame 39"), "the real text must be sent");
         assert!(!out.contains("[Pasted"), "the placeholder must not be sent");
+    }
+
+    /// **§6: the count is the number of lines, and a paste that ends in a newline is
+    /// not one line longer for it.**
+    ///
+    /// The operator's own case: this head announced a 300-line file as `~301 lines`,
+    /// because a file dragged out of an editor ends `…\n` and the old count was the
+    /// newline total plus one. The reader's whole use for this number is deciding
+    /// whether the placeholder holds their paste.
+    #[test]
+    fn the_paste_count_is_the_lines_a_reader_would_count() {
+        // A 300-line paste, as an editor gives it to you.
+        let mut e = ed();
+        let file = (0..300).map(|i| format!("line {i}\n")).collect::<String>();
+        e.key(Key::Paste(file), 0);
+        assert!(e.text().contains("~300 lines"), "{}", e.text());
+
+        // …and the same text without the final newline counts the same, because it is
+        // the same number of lines.
+        let mut e = ed();
+        let no_eol = (0..300)
+            .map(|i| format!("line {i}\n"))
+            .collect::<String>()
+            .trim_end_matches('\n')
+            .to_string();
+        e.key(Key::Paste(no_eol), 0);
+        assert!(e.text().contains("~300 lines"), "{}", e.text());
+
+        // **And the threshold is on lines.** Four is four and stays put; five is five
+        // and collapses — the boundary moved by one with the count, which is the same
+        // off-by-one seen from the other side.
+        let mut e = ed();
+        e.key(Key::Paste("a\nb\nc\nd\n".into()), 0);
+        assert_eq!(e.text(), "a\nb\nc\nd\n", "four lines are ordinary typed text");
+        let mut e = ed();
+        e.key(Key::Paste("a\nb\nc\nd\ne\n".into()), 0);
+        assert!(e.text().contains("~5 lines"), "{}", e.text());
     }
 
     #[test]
