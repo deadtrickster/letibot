@@ -723,6 +723,63 @@ impl Widening {
     }
 }
 
+/// **Why a verdict did not come back as a verdict** — R12's third outcome, named.
+///
+/// The operator's own words: *"an oracle that ran out of budget is not an oracle that could
+/// not be read"*. Three of these are ways an oracle **answered** and one is a way it did
+/// not, and collapsing them cost the corpus a fact: the sentence the seam wrote for all of
+/// them was *"gave no verdict this seam could read"*, so a generation cut off at its ceiling
+/// and a reply that was never a verdict were one row. The measure: of 175 rows recording
+/// that sentence, **134 were the model answering `UNSURE`** (the defect R11 fixed) and **38
+/// end mid-clause** — the ceiling's signature.
+///
+/// **[`UnsureKind::as_str`] is the label the corpus stores.** It is a token and not prose for
+/// the reason `verdict` is a token beside `model_verdict`: *re-parsing prose to recover a
+/// label is how a corpus rots* (`tokencore::store`), and *the rate of each* is a question
+/// only a column can answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsureKind {
+    /// The model **answered** `UNSURE`. The question, answered. The baseline stands and
+    /// the person is asked.
+    CouldNotDecide,
+    /// Two scores landed between the thresholds, so the thresholds decided. An answer with
+    /// a number beside it.
+    BetweenThresholds,
+    /// The bytes are not a verdict at all.
+    Unreadable,
+    /// **The generation stopped at its own ceiling before it reached a verdict.** The one
+    /// case whose response is a *budget* rather than a person: raise the ceiling, or take
+    /// the call again, and the reply is an answer. Told apart from [`Self::Unreadable`] by
+    /// the server's own `finish_reason`, which is the only thing that can tell them apart —
+    /// a reply cut at the ceiling and a reply that stopped are the same bytes.
+    OutOfRoom,
+}
+
+impl UnsureKind {
+    /// The label, as the corpus stores it. Stable: a column of tokens is something a
+    /// `GROUP BY` can count, and a sentence is not.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UnsureKind::CouldNotDecide => "could_not_decide",
+            UnsureKind::BetweenThresholds => "between_thresholds",
+            UnsureKind::Unreadable => "unreadable",
+            UnsureKind::OutOfRoom => "out_of_room",
+        }
+    }
+
+    /// The inverse, for a reader of the store. `None` for anything else, so a corpus with
+    /// a token this build does not know says so instead of guessing.
+    pub fn parse(s: &str) -> Option<UnsureKind> {
+        match s {
+            "could_not_decide" => Some(UnsureKind::CouldNotDecide),
+            "between_thresholds" => Some(UnsureKind::BetweenThresholds),
+            "unreadable" => Some(UnsureKind::Unreadable),
+            "out_of_room" => Some(UnsureKind::OutOfRoom),
+            _ => None,
+        }
+    }
+}
+
 /// What an oracle may answer. Three variants, and **none of them denies**.
 ///
 /// A denial is layer A's or a human's. The oracle either finds an authorisation or
@@ -739,8 +796,13 @@ pub enum OracleAnswer {
     },
     /// The oracle cannot tell. Same effect, different row — and the difference
     /// matters to the corpus, because "wrong" and "unsure" are different labels.
+    ///
+    /// **`kind` is which of the four it was** (R12), and `why` is the sentence a person
+    /// reads. Both, because they answer different questions: the sentence is how the
+    /// operator finds out what happened, and the label is how a `GROUP BY` counts it.
     Unsure {
         why: String,
+        kind: UnsureKind,
     },
 }
 
@@ -1852,6 +1914,16 @@ pub struct CorpusRow {
     /// regex over `model_verdict`'s prose — which the doc on `verdict_basis` warns
     /// against in as many words.
     pub consulted: bool,
+    /// **Which `Unsure` the oracle's answer was** (R12), as [`UnsureKind::as_str`] — and
+    /// `None` for an answered verdict and for every row where no model spoke.
+    ///
+    /// The operator's own distinction: *an oracle that ran out of budget is not an oracle
+    /// that could not be read.* Before this, all four readings wrote one sentence into
+    /// `model_verdict`, so a generation cut off at its ceiling and a reply that was never a
+    /// verdict were the same row — and "the rate of each" was not a question the corpus could
+    /// answer. A column for the reason `verdict` is one beside `model_verdict`:
+    /// *re-parsing prose to recover a label is how a corpus rots*.
+    pub oracle_reading: Option<&'static str>,
 
     // --- what happened, and the label --------------------------------------
     /// What the gate did.
@@ -2165,6 +2237,23 @@ impl ModelAdjudicator {
         would: &'static str,
         cites: Vec<String>,
     ) -> AdjudicationDecision {
+        self.note_kind(d, consulted, would, cites, None)
+    }
+
+    /// [`Self::note`] where the answer was an `Unsure`, so the **reason** travels with it
+    /// (R12) instead of being recoverable only from the sentence.
+    ///
+    /// One body, two entry points, because the label is the only thing that differs and a
+    /// second copy of this struct literal is a second place for `consulted` or `cites` to be
+    /// filled in differently.
+    fn note_kind(
+        &self,
+        d: AdjudicationDecision,
+        consulted: bool,
+        would: &'static str,
+        cites: Vec<String>,
+        unsure: Option<crate::authorise::UnsureKind>,
+    ) -> AdjudicationDecision {
         if let Ok(mut g) = self.last_advice.lock() {
             *g = Some(crate::adjudicate::ModelAdvice {
                 consulted,
@@ -2187,6 +2276,7 @@ impl ModelAdjudicator {
                 // of my words authorised this* is the words.
                 cites,
                 latency_ms: d.latency_ms,
+                unsure,
             });
         }
         d
@@ -2418,7 +2508,7 @@ impl Adjudicator for ModelAdjudicator {
             // case: the gate says it cannot tell, the person is asked anyway, and
             // that goes to the corpus too. `consulted` is true — an oracle answered,
             // and "I do not know" is an answer.
-            OracleAnswer::Unsure { why } => self.note(
+            OracleAnswer::Unsure { why, kind } => self.note_kind(
                 AdjudicationDecision {
                     request_id: req.id.clone(),
                     outcome: DecisionOutcome::Escalate {
@@ -2432,6 +2522,7 @@ impl Adjudicator for ModelAdjudicator {
                 true,
                 "ask",
                 Vec::new(),
+                Some(kind),
             ),
         }
     }
@@ -2982,6 +3073,7 @@ mod tests {
     fn a_budget_is_a_property_of_the_oracle_and_is_visible() {
         let o = ScriptedOracle::new("fast", |_: &mut ModelBrief| OracleAnswer::Unsure {
             why: "n".into(),
+            kind: UnsureKind::CouldNotDecide,
         })
         .with_budget(Duration::from_millis(120));
         assert_eq!(o.budget(), Duration::from_millis(120));
@@ -3348,6 +3440,7 @@ mod tests {
             decision_ms: 312,
             brief_format: crate::adjudicate::BRIEF_FORMAT,
             consulted: false,
+            oracle_reading: None,
             effect: "refuse",
             asked: false,
             operator: Some(OperatorOverride::Granted {

@@ -137,6 +137,10 @@ impl CorpusSink for StoreCorpus {
             // `ModelAdvice::consulted`, so this column is the fact rather than a regex
             // over prose — and `CorpusCounts::measured` counts it.
             consulted: Some(row.consulted),
+            // **R12's label, beside the flag**: which of the four `Unsure`s the answer was,
+            // so *how often does the guard run out of room* is a `GROUP BY` and not a regex
+            // over `model_verdict`.
+            oracle_reading: row.oracle_reading.map(str::to_string),
             reply: row.reply.clone(),
             effect: row.effect.to_string(),
             asked: row.asked,

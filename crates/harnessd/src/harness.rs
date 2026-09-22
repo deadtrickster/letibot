@@ -6738,6 +6738,12 @@ pub(crate) fn model_adjudicator(
         .unwrap_or_else(|| cfg.model.clone());
     let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget)
         .with_question(cfg.oracle_question);
+    // **The ceiling, when the operator named one** (R12). The default is the measured one;
+    // what this makes possible is acting on the one reading that is a budget — a reply cut
+    // off before its verdict says so, and `--oracle-max-tokens` is the wheel it names.
+    if let Some(n) = cfg.oracle_max_tokens {
+        oracle = oracle.with_max_tokens(n);
+    }
     if let Some(scope) = &cfg.oracle_scope {
         oracle = oracle.with_scope(scope.clone());
     }

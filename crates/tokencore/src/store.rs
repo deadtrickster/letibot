@@ -130,6 +130,13 @@ pub struct StoredAdjudication {
     /// column existed — "not recorded" — which is a different statement from
     /// `Some(false)`, "recorded, and nobody asked a model".
     pub consulted: Option<bool>,
+    /// **Which of the four `Unsure`s the answer was** (R12, v11), verbatim as stored.
+    /// `None` means either an answered verdict or a row from before the column — the first
+    /// is `consulted = 1` with a `verdict_basis` that is not an unsure sentence, and the
+    /// second says so in `corpus_version`. Read with
+    /// [`letibot_tools::authorise::UnsureKind::parse`], which refuses a token this build
+    /// does not know rather than guessing.
+    pub oracle_reading: Option<String>,
     /// **What the oracle answered, verbatim** (R11, v9). `None` means either that
     /// no oracle was consulted — `verdict_by` says which — or that one was asked and
     /// nothing came back inside its budget.
@@ -243,6 +250,9 @@ pub struct NewAdjudication {
     /// *nobody asked a model*. Without it the only way to ask was a regex over
     /// `model_verdict`'s prose.
     pub consulted: Option<bool>,
+    /// **Which of the four `Unsure`s the answer was** (R12), or `None` for an answered
+    /// verdict. `CorpusRow::oracle_reading`, which is `UnsureKind::as_str`.
+    pub oracle_reading: Option<String>,
     /// **What the oracle answered, verbatim** (R11). `None` when none was consulted,
     /// or when the one that was did not answer inside its budget — `verdict_by`
     /// tells those apart, and these are the bytes the verdict was read out of.
@@ -269,10 +279,11 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-/// **10** since the corpus records whether an oracle was consulted, and what it answered
-/// (R11) — a column and a flag, both additive, both described at their migration arms
-/// below. **9** added `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 10;
+/// **11** since the corpus records **which of the four `Unsure`s** an oracle's answer was
+/// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
+/// records whether an oracle was consulted and what it answered (R11), and **9** added
+/// `oracle_reply` for the same requirement.
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -444,6 +455,14 @@ CREATE TABLE IF NOT EXISTS adjudication (
     -- question was a regex over `model_verdict` prose, which this file's own comments
     -- warn against (`re-parsing prose to recover a label is how a corpus rots`).
     consulted      INTEGER,
+    -- **R12: which of the four `Unsure`s the answer was** — `could_not_decide`,
+    -- `between_thresholds`, `unreadable`, `out_of_room` (`UnsureKind::as_str`), and NULL
+    -- for an answered verdict and for every row where no model spoke. The distinction the
+    -- operator asked for in as many words: *an oracle that ran out of budget is not an
+    -- oracle that could not be read.* Same reasoning as the column above, one requirement
+    -- later — the sentence that carries it is prose, and "the rate of each" is a question
+    -- only a token can be counted in.
+    oracle_reading TEXT,
     effect         TEXT NOT NULL,
     -- **Was a human actually asked?** The operator named this case directly: an
     -- UNSURE the gate surfaced and the operator answered anyway is a corpus row,
@@ -1036,6 +1055,27 @@ impl Store {
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN consulted INTEGER")?;
             }
         }
+        if from < 11 {
+            // v11: **which of the four `Unsure`s** (R12), as a token. NULL-able and NULL on
+            // everything written before it, which is the honest reading: those rows recorded
+            // the reason in a sentence and not in a column, and the two are not
+            // interchangeable — that is the whole finding. A row with `consulted = 1` and no
+            // `oracle_reading` is an answered verdict or an old row, and
+            // `verdict_basis`/`model_verdict` is where a reader of the old ones goes.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('adjudication') \
+                     WHERE name = 'oracle_reading'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn.execute_batch(
+                    "ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT",
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -1601,10 +1641,11 @@ impl Store {
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
                 trail_json, shown, oracle_reply, tool, arguments_json, mode, options_json, agent,
                 model_verdict, verdict, verdict_by, verdict_basis, p_allow, oracle_ms,
-                oracle_model, shape, shape_class, brief_sha, consulted, effect, asked,
-                corpus_version)
+                oracle_model, shape, shape_class, brief_sha, consulted, oracle_reading,
+                effect, asked, corpus_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
+                     ?30)",
             rusqlite::params![
                 a.request_id,
                 a.session_id,
@@ -1632,6 +1673,7 @@ impl Store {
                 a.shape_class,
                 a.brief_sha,
                 a.consulted.map(|c| c as i64),
+                a.oracle_reading,
                 a.effect,
                 a.asked as i64,
                 CORPUS_VERSION,
@@ -1699,7 +1741,7 @@ impl Store {
                     tier, trail_json, shown, oracle_reply, tool, arguments_json, mode,
                     options_json,
                     agent, model_verdict, verdict, verdict_by, verdict_basis, p_allow,
-                    oracle_ms, oracle_model, brief_sha, consulted, effect, asked,
+                    oracle_ms, oracle_model, brief_sha, consulted, oracle_reading, effect, asked,
                     operator_kind,
                     operator_note, operator_latency_ms, corpus_version";
         let sql = if only_labelled {
@@ -1738,12 +1780,13 @@ impl Store {
                     oracle_model: r.get(21)?,
                     brief_sha: r.get(22)?,
                     consulted: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
-                    effect: r.get(24)?,
-                    asked: r.get::<_, i64>(25)? != 0,
-                    operator_kind: r.get(26)?,
-                    operator_note: r.get(27)?,
-                    operator_latency_ms: r.get(28)?,
-                    corpus_version: r.get(29)?,
+                    oracle_reading: r.get(24)?,
+                    effect: r.get(25)?,
+                    asked: r.get::<_, i64>(26)? != 0,
+                    operator_kind: r.get(27)?,
+                    operator_note: r.get(28)?,
+                    operator_latency_ms: r.get(29)?,
+                    corpus_version: r.get(30)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2790,6 +2833,164 @@ mod corpus_tests {
             row.shown.is_some(),
             "the brief survives a reply that was never recorded"
         );
+    }
+
+    /// **R12: which of the four `Unsure`s it was, as a column.**
+    ///
+    /// The operator: *an oracle that ran out of budget is not an oracle that could not be
+    /// read.* The sentence that distinguished them was already on the row — in
+    /// `model_verdict`, as prose — and a sentence is not something a `GROUP BY` can count.
+    /// That is exactly the argument `verdict` has beside `model_verdict`, and this is the
+    /// same move one requirement later.
+    ///
+    /// Three assertions, and the middle one is the requirement: the four values round trip;
+    /// **the rate of each is a query**; and a row from before the column reads `NULL`, which
+    /// is a different statement from any of the four.
+    #[test]
+    fn the_reading_of_an_unsure_is_a_column_and_the_rate_of_each_is_a_query() {
+        let s = store();
+        let session = a_session(&s);
+        for (i, kind) in ["could_not_decide", "between_thresholds", "unreadable", "out_of_room"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut d = a_decision(&format!("adj-r12-{i}"), &session);
+            d.consulted = Some(true);
+            d.oracle_reading = Some(kind.into());
+            assert!(s.record_adjudication(&d).unwrap());
+        }
+        // An answered verdict: consulted, and no reading — which is what a row looks like
+        // when the oracle did its job.
+        let mut answered = a_decision("adj-r12-answered", &session);
+        answered.consulted = Some(true);
+        assert!(s.record_adjudication(&answered).unwrap());
+
+        let rows = s.corpus(false, 20).unwrap();
+        let mut seen: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.request_id.starts_with("adj-r12-") && r.request_id != "adj-r12-answered")
+            .map(|r| r.oracle_reading.as_deref().expect("a reading"))
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            ["between_thresholds", "could_not_decide", "out_of_room", "unreadable"]
+        );
+        let answered = rows
+            .iter()
+            .find(|r| r.request_id == "adj-r12-answered")
+            .expect("the answered row");
+        assert_eq!(answered.consulted, Some(true));
+        assert_eq!(answered.oracle_reading, None, "an answered verdict has no reading");
+
+        // **The rate of each**, which is the thing the column exists for: one query, and
+        // the answer is a count per token rather than a regex over a sentence.
+        let mut stmt = s
+            .conn
+            .prepare(
+                "SELECT oracle_reading, COUNT(*) FROM adjudication
+                  WHERE oracle_reading IS NOT NULL GROUP BY 1 ORDER BY 1",
+            )
+            .unwrap();
+        let counts: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            counts,
+            [
+                ("between_thresholds".to_string(), 1),
+                ("could_not_decide".to_string(), 1),
+                ("out_of_room".to_string(), 1),
+                ("unreadable".to_string(), 1),
+            ]
+        );
+
+        // And a row written before the column — `NULL`, which is not any of the four. A
+        // reader of the old ones goes to `model_verdict`/`verdict_basis`, and `corpus_version`
+        // is what says the row is older than the question.
+        s.conn
+            .execute(
+                "UPDATE adjudication SET oracle_reading = NULL WHERE request_id = 'adj-r12-3'",
+                [],
+            )
+            .unwrap();
+        let row = s
+            .corpus(false, 20)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request_id == "adj-r12-3")
+            .unwrap();
+        assert_eq!(row.oracle_reading, None);
+    }
+
+    /// **A store written before R12 gains the column and says so.**
+    ///
+    /// The v11 arm is `pragma_table_info`-guarded like every other one, and the thing worth
+    /// asserting is not that the `ALTER` runs — it is that a store from the version before
+    /// comes back with the column and with its old rows **`NULL`**, which is a different
+    /// statement from any of the four readings. The old rows recorded their reason in a
+    /// sentence (`model_verdict`), and that is where a reader of them goes.
+    #[test]
+    fn an_older_store_gains_the_reading_and_its_rows_say_null() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-store-v11-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        let session;
+        {
+            let s = Store::open(&path).unwrap();
+            session = a_session(&s);
+            let mut d = a_decision("adj-before-v11", &session);
+            d.consulted = Some(true);
+            assert!(s.record_adjudication(&d).unwrap());
+        }
+        {
+            // Back to a store that predates the column, the way one on disk from an older
+            // daemon is.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("ALTER TABLE adjudication DROP COLUMN oracle_reading", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 10", [])
+                .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        // The column is there, the old row survived, and its reading is `NULL` — which is
+        // what *"this row is older than the question"* looks like. It is still readable as
+        // a row; what it cannot say is which of the four it was.
+        let row = s.corpus(false, 10).unwrap().remove(0);
+        assert_eq!(row.request_id, "adj-before-v11");
+        assert_eq!(row.consulted, Some(true));
+        assert_eq!(row.oracle_reading, None);
+
+        // And a row written now can carry one, in the same store.
+        let mut d = a_decision("adj-after-v11", &session);
+        d.consulted = Some(true);
+        d.oracle_reading = Some("out_of_room".into());
+        assert!(s.record_adjudication(&d).unwrap());
+        let rows = s.corpus(false, 10).unwrap();
+        let fresh = rows.iter().find(|r| r.request_id == "adj-after-v11").unwrap();
+        assert_eq!(fresh.oracle_reading.as_deref(), Some("out_of_room"));
     }
 
     /// **The warm start is exactly as wide as the session that earned it.**

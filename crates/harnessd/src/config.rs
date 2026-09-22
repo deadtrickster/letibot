@@ -414,6 +414,18 @@ pub struct Config {
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
     pub oracle_budget: std::time::Duration,
+    /// **How many output tokens the guard may spend on its answer** (R12).
+    ///
+    /// `None` is [`crate::oracle::DEFAULT_MAX_TOKENS`], which is the same value this
+    /// shipped with. It exists because of the one case where the answer is a *budget* and
+    /// not a person: a reply cut off at the ceiling before it reached a verdict is
+    /// `UnsureKind::OutOfRoom`, it says so on the card and on the corpus row, and the
+    /// thing to do about it is to raise this. Without the knob the sentence would be
+    /// telling the operator to turn a wheel that is welded on.
+    ///
+    /// Raising it costs latency on every gated call that uses the words, so it is typed
+    /// rather than inferred — `--oracle-budget-ms`'s rule, one knob along.
+    pub oracle_max_tokens: Option<usize>,
     /// What the guard is asked: a verdict, or two scores the thresholds turn
     /// into one. See `crate::oracle::Question`.
     pub oracle_question: crate::oracle::Question,
@@ -904,6 +916,7 @@ impl Config {
             oracle_model: None,
             oracle_scope: None,
             oracle_budget: std::time::Duration::from_millis(400),
+            oracle_max_tokens: None,
             oracle_question: crate::oracle::Question::Verdict,
             supervise: false,
             intent_prose: false,
@@ -1132,6 +1145,18 @@ impl Config {
             "oracle.budget",
             format!("{:.1}s", self.oracle_budget.as_secs_f64()),
             "--oracle-budget",
+            "",
+        ));
+        out.push(row(
+            "oracle.max_tokens",
+            // **The ceiling** (R12). Shown rather than implied, because a reply cut off at
+            // it is a *budget* rather than an unreadable answer and this is the number to
+            // raise — and a number an operator cannot see is a number they cannot act on.
+            match self.oracle_max_tokens {
+                None => format!("{} (default)", crate::oracle::DEFAULT_MAX_TOKENS),
+                Some(n) => n.to_string(),
+            },
+            "--oracle-max-tokens",
             "",
         ));
         out.push(row(

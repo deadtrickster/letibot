@@ -104,6 +104,11 @@ fn usage() -> String {
      \x20 --oracle-question verdict what the guard is asked: `verdict` (ALLOW/DENY/\n\
      \x20                           UNSURE) or `scores` (FIT and CLAIM 0-10, the\n\
      \x20                           thresholds derive the verdict; TraceGuard §4)\n\
+     \x20 --oracle-max-tokens 120   how many output tokens the guard may spend on its\\n\
+     \x20                           answer. A reply stopped at this ceiling before its\\n\
+     \x20                           verdict is reported as *ran out of room* and NOT as\\n\
+     \x20                           an unreadable answer -- it is the one unsure whose\\n\
+     \x20                           response is this number\\n\
      \x20 --oracle-budget-ms 400    how long the gate waits for that answer before\n\
      \x20                           giving up and failing closed. 400 was measured\n\
      \x20                           against a 4B on THIS box's CPU and says nothing\n\
@@ -385,6 +390,17 @@ fn run() -> Result<i32, String> {
             // What the guard is asked: `verdict` (its own ALLOW/DENY/UNSURE) or
             // `scores` (FIT and CLAIM 0-10, TraceGuard arXiv 2604.03968 §4; the
             // thresholds derive the verdict). Plan §3; `--compare` measures both.
+            // **The guard's output ceiling** (R12). One of the four readings of an unsure
+            // answer is a *budget*: a reply stopped at `max_tokens` before it reached a
+            // verdict. That is the one whose response is a knob rather than a person, and
+            // this is the knob.
+            "--oracle-max-tokens" => {
+                let v = next()?;
+                cfg.oracle_max_tokens = Some(
+                    v.parse()
+                        .map_err(|e| format!("--oracle-max-tokens: {e}"))?,
+                );
+            }
             "--oracle-question" => {
                 let v = next()?;
                 cfg.oracle_question = letibot_harnessd::oracle::Question::parse(&v)

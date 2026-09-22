@@ -52,6 +52,7 @@ use std::sync::Mutex;
 use letibot_transcript::ToolOutcome;
 use serde_json::Value;
 
+use crate::authorise::UnsureKind;
 use crate::runtime::{Gate, GateCall, GateDecision};
 use crate::schema::Access;
 
@@ -864,6 +865,18 @@ pub struct ModelAdvice {
     pub cites: Vec<String>,
     /// How long it took, against the budget.
     pub latency_ms: u64,
+    /// **Which `Unsure` this was, when it was one** (R12), and `None` for every other
+    /// verdict.
+    ///
+    /// `basis` already says it in the operator's words; this says it in a token, so the
+    /// corpus can answer *how often does the guard run out of room* with a `GROUP BY`
+    /// rather than a regex over prose — which is exactly what `store.rs` warns about
+    /// (*re-parsing prose to recover a label is how a corpus rots*) and exactly why
+    /// `verdict` exists as a token beside `model_verdict`.
+    ///
+    /// **Only consulted answers carry it.** A `kind` on a row where no model spoke would be
+    /// the same manufactured signal `consulted` exists to refuse.
+    pub unsure: Option<UnsureKind>,
 }
 
 impl ModelAdvice {
@@ -1548,6 +1561,15 @@ impl AdjudicationRow {
             // — and `consulted: false` inside a `Some` is the model adjudicator saying
             // it short-circuited. Both mean no oracle spoke.
             consulted: self.advice.as_ref().is_some_and(|a| a.consulted),
+            // **The reading, not a reading of the prose** (R12). `None` on every answered
+            // verdict, and on every row where the advice is a short-circuit rather than a
+            // model's answer — a label there would name a reply nobody made.
+            oracle_reading: self
+                .advice
+                .as_ref()
+                .filter(|a| a.consulted)
+                .and_then(|a| a.unsure)
+                .map(UnsureKind::as_str),
             effect: self.effect,
             asked: self.asked,
             operator: self.operator.clone(),
@@ -2434,6 +2456,10 @@ impl AdjudicatedGate {
             basis: d.basis,
             cites: Vec::new(),
             latency_ms: d.latency_ms,
+            // No oracle reported an advice, so there is no reading to label — `None` for
+            // the same reason `consulted` is `false`: a `kind` here would be a reading of a
+            // reply that does not exist.
+            unsure: None,
         }))
     }
 
@@ -4235,6 +4261,7 @@ mod tests {
                 let Some(w) = brief.adjudicable() else {
                     return OracleAnswer::Unsure {
                         why: "no witness".into(),
+                        kind: UnsureKind::CouldNotDecide,
                     };
                 };
                 OracleAnswer::Authorised(Widening::new(
@@ -4577,6 +4604,7 @@ mod tests {
                 basis: "because".into(),
                 cites: Vec::new(),
                 latency_ms: 1,
+                unsure: None,
             })
         }
         fn describe(&self) -> String {
@@ -4858,6 +4886,7 @@ mod tests {
                     basis: "yes".into(),
                     cites: Vec::new(),
                     latency_ms: 1,
+                    unsure: None,
                 })
             }
             fn describe(&self) -> String {
@@ -5109,6 +5138,7 @@ mod tests {
                     basis: "counted".into(),
                     cites: Vec::new(),
                     latency_ms: 1,
+                    unsure: None,
                 })
             }
             fn describe(&self) -> String {
@@ -5203,6 +5233,7 @@ mod tests {
                     basis: "`sudo` is on the always-ask list; no oracle was consulted".into(),
                     cites: Vec::new(),
                     latency_ms: 0,
+                    unsure: None,
                 })
             }
             fn describe(&self) -> String {

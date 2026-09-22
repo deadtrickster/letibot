@@ -28,6 +28,8 @@ fn adj(request_id: &str, session_id: &str) -> NewAdjudication {
         reply: Some("It follows from what was asked.\nALLOW 0".into()),
         // R11: the flag the counts read. This fixture's oracle spoke.
         consulted: Some(true),
+        // R12: this row's answer was a verdict and not an unsure, so there is no reading.
+        oracle_reading: None,
         tool: "bash".into(),
         arguments_json: "{}".into(),
         mode: "automode-edits".into(),
@@ -79,6 +81,12 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     assert!(store.record_adjudication(&oracle).expect("oracle row"), "oracle row was not written");
 
     let mut human = adj("adj-s-gate-0226", &session_id);
+    // **A person decided this one, so no model was asked.** `adj()`'s default is `true`
+    // because the ORACLE row is the one that fixture is about; carried over to these two it
+    // made `measured` count every row in the session, which is the assertion below's whole
+    // subject (`counts_are_per_session_and_any_widens_to_everything` — *"one oracle
+    // answered"*). Found while adding R12's column to this file.
+    human.consulted = Some(false);
     human.tool = "write".into();
     human.verdict = Some("deny".into());
     human.verdict_by = Some("human:dead".into());
@@ -88,6 +96,7 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     assert!(store.record_adjudication(&human).expect("human row"), "human row was not written");
 
     let mut boundary = adj("adj-s-gate-0227", &session_id);
+    boundary.consulted = Some(false);
     boundary.tool = "bash".into();
     boundary.verdict = Some("deny".into());
     boundary.verdict_by = Some("boundary:flow".into());

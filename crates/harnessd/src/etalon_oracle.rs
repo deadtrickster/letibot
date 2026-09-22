@@ -156,6 +156,9 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
             // A row replayed from a corpus that has no `consulted` flag: `None` is
             // "not recorded", which is what an etalon row honestly is.
             consulted: None,
+            // And none has R12's reading either, for the same reason: these rows were
+            // written by a build that recorded the reason (if at all) in a sentence.
+            oracle_reading: None,
             effect: if r.outcome == "refused" { "refuse".into() } else { "admit".into() },
             // Every row here is asked: the point is what the guard says.
             asked: true,
