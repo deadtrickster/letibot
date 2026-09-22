@@ -3303,6 +3303,7 @@ impl<'a> Harness<'a> {
                     .unwrap_or_default(),
                 state: j.state.word(),
                 running: j.state.is_running(),
+                never_ran: j.state.never_ran(),
                 produced: j.produced,
                 elapsed_ms: j
                     .ran_for
@@ -5265,6 +5266,10 @@ pub struct JobWindow {
     pub dropped: u64,
     /// The job's own word — `exited 0`, `running`, `killed by …`.
     pub state: String,
+    /// **Whether anything was ever executed for this job** — `true` only for the one
+    /// state where the wrapper could not join the cgroup, so a head with an empty
+    /// window can say *never ran* rather than *wrote nothing* (A.2, §11.6).
+    pub never_ran: bool,
     /// The window, split into lines **here**, so two heads cannot disagree about
     /// where a line ends.
     pub lines: Vec<String>,
@@ -5301,6 +5306,7 @@ impl<'a> Harness<'a> {
             produced: slice.produced,
             dropped: slice.dropped,
             state: view.state.word(),
+            never_ran: view.state.never_ran(),
             lines: slice.text().lines().map(str::to_string).collect(),
             next: next_job_offset(&slice),
         })

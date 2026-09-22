@@ -412,6 +412,16 @@ pub struct JobEntry {
     /// Deliberately not "ok"/"error": a non-zero exit is the command's answer.
     pub state: String,
     pub running: bool,
+    /// **Whether anything was ever executed for this job** — the same fact
+    /// [`crate::SessionEvent::JobOutput`] carries, on the row instead of the window.
+    ///
+    /// A job that never ran has no duration, and the row's tail claimed one anyway:
+    /// `not run (could not join its scope) · 0 B out · ran 0.0s`, where *ran* is the one
+    /// word the state beside it had just denied. Defaulted `false` and no
+    /// `PROTOCOL_VERSION` bump, like every other added field: an older daemon said
+    /// nothing, and "assume a process ran" renders exactly what those daemons rendered.
+    #[serde(default)]
+    pub never_ran: bool,
     pub produced: u64,
     pub elapsed_ms: u64,
 }

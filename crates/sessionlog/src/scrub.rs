@@ -356,6 +356,7 @@ mod tests {
             produced: 10,
             dropped: 0,
             state: "exited 0".into(),
+            never_ran: false,
             lines: vec!["hello".into()],
             next: None,
         });

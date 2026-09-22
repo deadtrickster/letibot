@@ -1596,6 +1596,7 @@ impl<'a> Sessions<'a> {
                             produced: w.produced,
                             dropped: w.dropped,
                             state: w.state,
+                            never_ran: w.never_ran,
                             lines: w.lines,
                             next: w.next,
                         }),

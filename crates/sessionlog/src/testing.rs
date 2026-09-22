@@ -294,6 +294,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             produced: 24,
             dropped: 0,
             state: "exited 0".into(),
+            never_ran: false,
             lines: vec!["building".into(), "done".into()],
             next: None,
         },

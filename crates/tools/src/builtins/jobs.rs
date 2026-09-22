@@ -366,6 +366,13 @@ impl Tool for JobOutput {
         // A job that has written nothing is not an empty answer about its output —
         // it is a job that has written nothing, and whether it is still running
         // decides what that means. §2.2's zero-denominator rule, in its exec form.
+        //
+        // **Three cases, not two** (§11.6). `NotScoped` wrote nothing because nothing
+        // ran — the wrapper could not join its cgroup — and *"`j9` not run (could not
+        // join its scope) and wrote nothing at all"* is the same contradiction the job
+        // pane drew: a command described as having written nothing when there was never
+        // a command. The state says which case it is and this is the subject line's own
+        // half of that ruling.
         if slice.produced == 0 {
             let why = if view.state.is_running() {
                 format!(
@@ -376,6 +383,13 @@ impl Tool for JobOutput {
                      job=\"{id}\" is there if you must have the result before you can do \
                      anything else; otherwise carry on.",
                     secs(view.elapsed)
+                )
+            } else if view.state.never_ran() {
+                format!(
+                    "`{id}` never ran — {} — so there is no output and nothing to read: \
+                     not an empty result, an absent run. The command was not started at \
+                     all, so nothing here is a measurement of what it would have done.",
+                    view.state.word()
                 )
             } else {
                 format!("`{id}` {} and wrote nothing at all.", view.state.word())

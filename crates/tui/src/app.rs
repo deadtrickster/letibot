@@ -462,6 +462,17 @@ struct JobOut {
     /// The daemon's word for where the job is — `running`, `exited 0`, … Empty
     /// until the first answer arrives.
     state: String,
+    /// **Whether anything was ever executed for this job** (A.2, §11.6).
+    ///
+    /// The daemon's answer, not the head's inference: an empty window is the shape of
+    /// *ran and wrote nothing* and of *never ran*, and until this field existed the head
+    /// had one sentence for both — so a card whose header read `not run (could not join
+    /// its scope)` went on to say `it wrote nothing at all` about a command that was
+    /// never started.
+    ///
+    /// `false` until the answer arrives, which is the reading that renders what every
+    /// daemon before this field produced.
+    never_ran: bool,
     /// The offsets of the window actually loaded: `from..to` of `produced`.
     from: u64,
     to: u64,
@@ -2929,6 +2940,12 @@ impl App {
                     row.running = false;
                     row.produced = produced;
                     row.elapsed_ms = elapsed_ms;
+                    // `never_ran` is deliberately **not** taken from this event: the
+                    // settlement carries no such fact, and it cannot be stale here — a
+                    // job that never ran never started, so it was never listed as a
+                    // running one, and the `never_ran` the row already holds came from
+                    // the daemon's own listing (`JobEntry`). A job that ran is never
+                    // settled as one that did not.
                 }
                 self.redraw = true;
                 Disposition::Filtered
@@ -2944,6 +2961,7 @@ impl App {
                 produced,
                 dropped,
                 state,
+                never_ran,
                 lines,
                 next,
             } => {
@@ -2954,6 +2972,7 @@ impl App {
                     && v.job == job
                 {
                     v.state = state;
+                    v.never_ran = never_ran;
                     v.from = from;
                     v.to = to;
                     v.produced = produced;
@@ -4650,6 +4669,7 @@ impl App {
                     self.job_out = Some(JobOut {
                         job: job.clone(),
                         state: String::new(),
+                        never_ran: false,
                         from: 0,
                         to: 0,
                         produced: 0,
@@ -8464,14 +8484,34 @@ impl App {
         // tests `exited 0` literally: the head renders the daemon's vocabulary and
         // keeps no second copy of the enum.
         if v.lines.is_empty() && !v.loading {
-            out.push(dim(
-                &self.cfg,
-                if v.state == "running" {
-                    "    it is running and has written nothing yet."
-                } else {
-                    "    it wrote nothing at all."
-                },
-            ));
+            // **§11.6 — an empty window is three cases, and the third was an
+            // inversion of the operator's own rule.** A job whose scope could not be
+            // joined *never ran*, so its window is empty because there is no process
+            // behind it, and the card said
+            //
+            //     not run (could not join its scope)      ← the header
+            //     it wrote nothing at all.                ← and it never started
+            //
+            // which is R17 read backwards: *a row with no output must not look like a
+            // row whose output is empty*. The case is chosen by the **state** — the
+            // daemon's `never_ran`, one fact the window's emptiness cannot carry — and
+            // not by `lines.is_empty()` alone.
+            //
+            // `running` is still read off the state word, which is the daemon's own
+            // spelling of the state it holds (`JobState::word`); that fact has no field
+            // of its own on this frame.
+            let said = if v.never_ran {
+                // **The one sentence of this fix that is not derived from the wire**, and
+                // it is written in full so the two heads cannot hold two different
+                // sentences about one state: §11.6's ruling is *A rules the words; both
+                // heads render the same string*, and leticl renders this one verbatim.
+                "    it never ran, so there is nothing it could have written."
+            } else if v.state == "running" {
+                "    it is running and has written nothing yet."
+            } else {
+                "    it wrote nothing at all."
+            };
+            out.push(dim(&self.cfg, said));
         }
         let max_scroll = v.lines.len().saturating_sub(visible);
         v.scroll = v.scroll.min(max_scroll);
@@ -8525,8 +8565,22 @@ impl App {
                 j.id,
                 without_control_lines(&j.command)
             ));
+            // **A job that never ran has no duration, and the row must not claim one**
+            // (A.2, §11.6). It read
+            //
+            //     not run (could not join its scope) · 0 B out · ran 0.0s
+            //
+            // — the state word denying *ran* two fields before the row said it. The
+            // byte count stays: it is a measurement that exists (nothing was produced),
+            // and the word beside it is what says why.
             let tail = if j.running {
                 format!("running · {} out so far", bytes_human(j.produced))
+            } else if j.never_ran {
+                format!(
+                    "{} · {} out",
+                    without_control_lines(&j.state),
+                    bytes_human(j.produced),
+                )
             } else {
                 format!(
                     "{} · {} out · ran {}.{:01}s",
@@ -16686,6 +16740,7 @@ mod tests {
                 produced: 60,
                 dropped: 0,
                 state: "exited 0".into(),
+                never_ran: false,
                 lines,
                 next: None,
             },
@@ -23010,6 +23065,7 @@ mod tests {
                 "exited 0".into()
             },
             running,
+            never_ran: false,
             produced: 155,
             elapsed_ms: 14_600,
         }
@@ -23337,6 +23393,78 @@ mod tests {
         );
     }
 
+    /// **§11.6 — a job that never ran is not a job that wrote nothing.**
+    ///
+    /// The card drew `not run (could not join its scope)` as its header and then
+    /// `it wrote nothing at all.` under it, which is R17 read backwards: *a row with no
+    /// output must not look like a row whose output is empty*. Three states, three
+    /// sentences, and the case chosen by the **daemon's** `never_ran` rather than by
+    /// `lines.is_empty()` alone.
+    ///
+    /// The words are asserted literally because the other half of this ruling is a
+    /// second head — §11.6, *A rules the words; both heads render the same string* — so
+    /// the literal is the whole of what the two have to agree about. The `JobState`
+    /// words this head chooses against are pinned on the other side of the wire, in
+    /// `letibot-tools`' own `every_state_says_whether_a_process_ever_ran`: a reword
+    /// there breaks that assertion, and a reword here breaks this one.
+    ///
+    /// A pinned list rather than a property, deliberately: a new state a head has never
+    /// heard of arrives as an unfamiliar word, falls to the `wrote nothing` arm, and
+    /// this list is what makes that a visible choice rather than an accident — the same
+    /// reason the tools test names all five variants.
+    #[test]
+    fn a_job_that_never_ran_does_not_read_as_one_that_wrote_nothing() {
+        let cases: [(&str, bool, &str); 6] = [
+            (
+                "running",
+                false,
+                "it is running and has written nothing yet.",
+            ),
+            ("exited 0", false, "it wrote nothing at all."),
+            ("exited 1", false, "it wrote nothing at all."),
+            ("signalled 9", false, "it wrote nothing at all."),
+            ("killed by job_kill", false, "it wrote nothing at all."),
+            (
+                "not run (could not join its scope)",
+                true,
+                "it never ran, so there is nothing it could have written.",
+            ),
+        ];
+        for (state, never_ran, want) in cases {
+            let mut a = App::new(plain_cfg(100));
+            a.session_id = "s1".into();
+            a.apply(jobs_frame(
+                "s1",
+                vec![daemon_job("j3", "cargo build", false)],
+            ));
+            a.key(Key::CtrlQ);
+            a.key(Key::Enter);
+            a.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::JobOutput {
+                    job: "j3".into(),
+                    from: 0,
+                    to: 0,
+                    produced: 0,
+                    dropped: 0,
+                    state: state.into(),
+                    never_ran,
+                    lines: Vec::new(),
+                    next: None,
+                },
+            )));
+            let drawn = a.screen(100, 24).join("\n");
+            assert!(drawn.contains(want), "{state}: want {want:?} in\n{drawn}");
+            if never_ran {
+                assert!(
+                    !drawn.contains("wrote nothing"),
+                    "{state}: the contradiction is back — a window described as one that \
+                     wrote nothing, under a header saying it never started:\n{drawn}"
+                );
+            }
+        }
+    }
+
     /// **The window lands in the pane.** The `JobOutput` event the daemon publishes
     /// for a `ReadJobOutput` fills the overlay the jobs pane opened, offsets and
     /// all, and the overlay pages with → and ← without ever touching the
@@ -23367,6 +23495,7 @@ mod tests {
                 produced: 30,
                 dropped: 0,
                 state: "exited 0".into(),
+                never_ran: false,
                 lines: vec!["line one".into(), "line two".into()],
                 next: Some(10),
             },

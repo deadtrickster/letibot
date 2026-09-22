@@ -96,6 +96,36 @@ impl JobState {
             JobState::NotScoped => "not run (could not join its scope)".into(),
         }
     }
+
+    /// **Whether nothing was ever executed for this job**, as opposed to a process
+    /// that ran and wrote nothing.
+    ///
+    /// The companion to [`JobState::word`], and it exists because the word alone cannot
+    /// answer the question every reader of an empty job is asking: *is this command's
+    /// output empty, or is there no command?* `NotScoped` is the second — the wrapper
+    /// could not put the process in its cgroup, so nothing started — and an empty output
+    /// window looks identical either way.
+    ///
+    /// **The operator's own rule, inverted.** R17: *a row with no output must not look
+    /// like a row whose output is empty.* Both heads drew
+    ///
+    /// ```text
+    /// not run (could not join its scope)      ← the header
+    /// it wrote nothing at all.                ← and it never started
+    /// ```
+    ///
+    /// because the sentence was chosen by `lines.is_empty()` and nothing on the wire
+    /// separated the two — the window's emptiness is the same fact in both. So the fact
+    /// travels: `never_ran` is the daemon's answer, it rides the job's row and the job's
+    /// window, and a head chooses its line by it rather than by emptiness alone.
+    ///
+    /// **A bool and not a sentence** because the fact is a bool and the two readers
+    /// differ: one draws a line under a state word, the other suppresses a duration it
+    /// has no right to claim. The words are A's ruling, written down once on each side
+    /// and paired by the tests on both sides of the wire (§11.6).
+    pub fn never_ran(&self) -> bool {
+        matches!(self, JobState::NotScoped)
+    }
 }
 
 /// A ring over a job's output, plus the two numbers that make a slice of it a
@@ -438,5 +468,52 @@ mod tests {
         );
         assert!(JobState::NotScoped.word().contains("not run"));
         assert!(JobState::Signalled { signal: 9 }.word().contains("9"));
+    }
+
+    /// **Every state is classified, and every word is pinned here** — A.2's ruling
+    /// (§11.6), and the half of it that only this crate can say.
+    ///
+    /// Two things are asserted and they are not the same thing. `never_ran` must place
+    /// every variant on the right side of the empty/never-ran line, which is what stops a
+    /// sixth state from falling through to a head's `wrote nothing` sentence. And each
+    /// word must be the literal, because the other half of the pairing is a head's test
+    /// that maps these strings to those sentences: a reword here breaks that test, and
+    /// that is the only thing that keeps a reword from silently re-introducing the
+    /// defect on one side of the wire.
+    #[test]
+    fn every_state_says_whether_a_process_ever_ran() {
+        for st in [
+            JobState::Running,
+            JobState::Exited { code: 0 },
+            JobState::Signalled { signal: 9 },
+            JobState::Killed {
+                by: "job_kill".into(),
+            },
+        ] {
+            assert!(
+                !st.never_ran(),
+                "{:?} ran a process and must not be drawn as one that did not ({:?})",
+                st,
+                st.word()
+            );
+        }
+        assert!(
+            JobState::NotScoped.never_ran(),
+            "the one state where nothing was executed"
+        );
+        assert_eq!(JobState::Running.word(), "running");
+        assert_eq!(JobState::Exited { code: 0 }.word(), "exited 0");
+        assert_eq!(JobState::Signalled { signal: 9 }.word(), "signalled 9");
+        assert_eq!(
+            JobState::Killed {
+                by: "job_kill".into()
+            }
+            .word(),
+            "killed by job_kill"
+        );
+        assert_eq!(
+            JobState::NotScoped.word(),
+            "not run (could not join its scope)"
+        );
     }
 }

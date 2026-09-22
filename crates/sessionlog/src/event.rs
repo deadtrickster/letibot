@@ -985,6 +985,27 @@ pub enum SessionEvent {
         dropped: u64,
         /// The job's own word — `exited 0`, `running`, `killed by …`.
         state: String,
+        /// **Whether anything was ever executed for this job.**
+        ///
+        /// `false` on every ending of a process that ran — including one that ran and
+        /// wrote nothing, which is the ordinary empty case. `true` for the one state
+        /// where the wrapper could not join the process's cgroup and **nothing started**
+        /// (`JobState::NotScoped` in the tool crate's exec layer — this crate is the
+        /// protocol and must not depend on that one, so the name is prose).
+        ///
+        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing
+        /// variant, exactly like [`ModelAdvice::consulted`]. An older head ignores it and
+        /// renders what it rendered before, and `false` is the honest reading of silence —
+        /// a daemon from before this field had only one answer for an empty window.
+        ///
+        /// It is on the wire because *"the window is empty"* is two different facts and
+        /// the head had one sentence for both: `it wrote nothing at all.` under a header
+        /// reading `not run (could not join its scope)` — the operator's own R17 rule
+        /// inverted, *a row with no output must not look like a row whose output is
+        /// empty*. The words each head writes for it are A's ruling (§11.6); this is the
+        /// fact that rules out choosing them by `lines.is_empty()` alone.
+        #[serde(default)]
+        never_ran: bool,
         /// The window, split into lines by the daemon so two heads cannot disagree about
         /// where a line ends.
         lines: Vec<String>,
