@@ -215,6 +215,15 @@ impl Palette {
     /// Wrap `s` in the role. A no-op for [`Palette::None`] and for
     /// [`Role::Plain`], so neither costs bytes.
     pub fn paint(self, r: Role, s: &str) -> String {
+        // **The text is sanitised here, once, for every painted string** (§3.1).
+        //
+        // A palette's argument is *text* by definition — the head's own sequences are
+        // the ones `open`/`close` supply — so a control byte in `s` is somebody else's
+        // bytes being painted as though they were words. Doing it here rather than at
+        // each caller is the difference between a rule and a habit: this crate draws
+        // every card and had **no** sanitiser at all, and a tool-progress note reached a
+        // card's tail raw because the guard lived in the head instead.
+        let s = &crate::text::without_control(s);
         let o = self.open(r);
         if o.is_empty() {
             return s.to_string();

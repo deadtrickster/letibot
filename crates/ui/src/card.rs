@@ -403,10 +403,19 @@ impl Card {
         s.push_str(&p.paint(Role::Strong, self.verb.label(running)));
         if !self.target.is_empty() {
             s.push(' ');
-            s.push_str(&p.paint(Role::Plain, &self.target));
+            // **§3.1: a card is text this head did not author.** Target, call id, note
+            // and outcome reason all come from a tool call or from the daemon, and this
+            // row is written to the terminal verbatim. The sanitiser lives in
+            // `crate::text` because **this crate had none** — the falsification test in
+            // `letibot-tui` found a tool-progress note reaching a card's tail raw, which
+            // is exactly the hole a per-head helper leaves.
+            s.push_str(&p.paint(Role::Plain, &crate::text::without_control_lines(&self.target)));
         }
         if cfg.show_id {
-            s.push_str(&p.paint(Role::Faint, &format!(" ({})", self.call_id)));
+            s.push_str(&p.paint(
+                Role::Faint,
+                &format!(" ({})", crate::text::without_control_lines(&self.call_id)),
+            ));
         }
 
         // The right-hand side: state, timing, disclosure.
@@ -416,13 +425,13 @@ impl Card {
                 // The reason beats the state: "proposed" says what it is, and the
                 // note says why nothing is happening yet, which is the question the
                 // operator actually has while looking at it.
-                Some(n) => tail.push(n.clone()),
+                Some(n) => tail.push(crate::text::without_control_lines(n)),
                 None => tail.push("proposed".into()),
             },
             Phase::Running { elapsed_ms, note } => {
                 tail.push(crate::progress::duration(*elapsed_ms));
                 if let Some(n) = note {
-                    tail.push(n.clone());
+                    tail.push(crate::text::without_control_lines(n));
                 }
             }
             Phase::Finished {
@@ -435,7 +444,7 @@ impl Card {
                 if !matches!(outcome, Outcome::Ok) {
                     tail.push(outcome.word().to_string());
                     if let Some(r) = outcome.reason() {
-                        tail.push(r.to_string());
+                        tail.push(crate::text::without_control_lines(r));
                     }
                 }
             }
@@ -443,7 +452,7 @@ impl Card {
                 if !matches!(outcome, Outcome::Ok) {
                     tail.push(outcome.word().to_string());
                     if let Some(r) = outcome.reason() {
-                        tail.push(r.to_string());
+                        tail.push(crate::text::without_control_lines(r));
                     }
                 }
             }
@@ -505,7 +514,11 @@ impl Card {
             ),
         };
         for l in body {
-            out.push(width::truncate(&format!("  {l}"), cfg.width));
+            // The body too — a tool's payload, a diff row, a note. See the header.
+            out.push(width::truncate(
+                &format!("  {}", crate::text::without_control_lines(&l)),
+                cfg.width,
+            ));
         }
         out
     }

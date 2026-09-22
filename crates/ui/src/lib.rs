@@ -50,4 +50,7 @@ pub mod highlight;
 pub mod progress;
 pub mod sidediff;
 pub mod style;
+/// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
+/// in a head, because this crate draws every card and had no sanitiser at all.
+pub mod text;
 pub mod width;

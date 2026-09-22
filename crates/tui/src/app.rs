@@ -392,37 +392,12 @@ struct SubagentState {
 /// file, because a cap on the pane must not be a cap on the record.
 /// **A subprocess's bytes must not drive the operator's terminal.**
 ///
-/// `/job ID` hands back what a command wrote, and a command writes whatever it
-/// likes — colour, cursor moves, a scroll region, a title change. Rendered
-/// straight, those are instructions to the terminal the head is drawing on, from
-/// a process the head does not control. Control characters become a space, which
-/// keeps the column count the wrapper is about to rely on: dropping them instead
-/// would silently reflow the line.
-fn without_control(line: &str) -> String {
-    line.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
-}
-
-/// **The same, for content whose newlines are structure rather than noise.**
-///
-/// One function because `\n` **is a control character** — `char::is_control` is true for
-/// every C0 code including it — so passing a document to [`without_control`] does not
-/// sanitise it, it *collapses it onto a single line*: every paragraph, every list item
-/// and every fenced block gone. That is exactly what my first cut of §3.1 did to model
-/// prose, and the reason this exists as a named function rather than a second `.map`:
-/// the mistake is invisible on a one-line fixture and destroys every long message.
-///
-/// Line by line, joined by the newline it split on, so the renderer receives the same
-/// lines it would have received with the control characters spaced out inside them.
-/// Tabs become spaces like everything else, which is the trade the single-line version
-/// already makes: a dropped character silently reflows the line, a spaced one does not.
-fn without_control_lines(s: &str) -> String {
-    s.split('\n')
-        .map(without_control)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+/// The two functions now live in `letibot_ui::text`, because the *UI crate* — which
+/// draws every card — had no sanitiser at all, and a per-head helper is exactly how
+/// that happened: the falsification test below found a tool-progress note reaching a
+/// card's tail raw. Re-exported here so the ~twenty call sites in this file keep the
+/// short names they use, with one definition behind them.
+use letibot_ui::text::{without_control, without_control_lines};
 
 /// One row of the config pane.
 #[derive(Debug, Clone)]
@@ -6617,8 +6592,21 @@ impl App {
             .max(1);
         let mut out = if let Some((echo, lines)) = self.slash_out.clone() {
             let p = self.cfg.palette();
-            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
-            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+            // **§3.1: a listing is a reply, and a reply is somebody else's text.** The
+            // echo is the command as the daemon read it and the rows are the answer — a
+            // `/job` log, a `/gate` table, a guard's paragraph — none of which this head
+            // wrote. Sanitised at the render rather than at the producers, so the next
+            // verb that answers with a listing cannot be the leaky one; the
+            // falsification test sweeps this pane for exactly that reason.
+            let mut rows = vec![
+                p.paint(Role::Strong, &without_control_lines(&echo)),
+                String::new(),
+            ];
+            rows.extend(
+                lines
+                    .iter()
+                    .flat_map(|l| wrap(&without_control_lines(l), w)),
+            );
             rows.push(String::new());
             rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
             self.pane_window(rows, room)
@@ -7769,7 +7757,10 @@ impl App {
 
         let mut left = String::new();
         left.push_str(&p.paint(Role::UserAccent, "▌ "));
-        left.push_str(&p.paint(Role::Strong, &name));
+        left.push_str(&p.paint(
+            Role::Strong,
+            &without_control_lines(&name),
+        ));
         let mut left_cols = 2 + visible_width(&name);
         // The workspace fills whatever is left, shortened from its *left*: the end
         // of a path is the part that identifies it.
@@ -8072,7 +8063,7 @@ impl App {
             );
             let line = trim_to(&line, w.saturating_sub(2));
             out.push(if i == sel {
-                format!("{}{}{}", sgr::REVERSE, line, sgr::RESET)
+                colour(&self.cfg, sgr::REVERSE, &line)
             } else {
                 line
             });
@@ -8170,7 +8161,11 @@ impl App {
                 letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
                 letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
             };
-            out.push(format!("    {} {}", mark.painted(&self.cfg), t.content));
+            out.push(format!(
+                "    {} {}",
+                mark.painted(&self.cfg),
+                without_control_lines(&t.content)
+            ));
         }
         out.push(String::new());
         out.push(dim(
@@ -8255,10 +8250,10 @@ impl App {
                 "{} {} {}",
                 if picked { "▸" } else { " " },
                 colour(&self.cfg, state_colour, mark),
-                s.prompt
+                without_control_lines(&s.prompt)
             );
             let left = if picked {
-                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+                colour(&self.cfg, sgr::REVERSE, &left)
             } else {
                 left
             };
@@ -8268,8 +8263,8 @@ impl App {
                 &format!(
                     "       {} · role {} · {}{}",
                     short_id(&s.session_id),
-                    s.role,
-                    s.state,
+                    without_control_lines(&s.role),
+                    without_control_lines(&s.state),
                     if s.state == "opening" {
                         " — not attachable yet"
                     } else {
@@ -8471,20 +8466,23 @@ impl App {
                 if picked { "\u{25b8}" } else { " " },
                 colour(&self.cfg, state_colour, mark),
                 j.id,
-                j.command
+                without_control_lines(&j.command)
             ));
             let tail = if j.running {
                 format!("running · {} out so far", bytes_human(j.produced))
             } else {
                 format!(
                     "{} · {} out · ran {}.{:01}s",
-                    j.state,
+                    without_control_lines(&j.state),
                     bytes_human(j.produced),
                     j.elapsed_ms / 1000,
                     (j.elapsed_ms % 1000) / 100,
                 )
             };
-            out.push(dim(&self.cfg, &format!("         {} · {}", j.how, tail)));
+            out.push(dim(
+                &self.cfg,
+                &format!("         {} · {}", without_control_lines(&j.how), tail),
+            ));
         }
         out.push(String::new());
         out.push(dim(
@@ -8524,10 +8522,13 @@ impl App {
             let left = format!(
                 "{mark} {:>2}  {}",
                 i + 1,
-                p.paint(if here { Role::Strong } else { Role::Plain }, &name),
+                p.paint(
+                    if here { Role::Strong } else { Role::Plain },
+                    &without_control_lines(&name),
+                ),
             );
             let left = if picked {
-                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+                colour(&self.cfg, sgr::REVERSE, &left)
             } else {
                 left
             };
@@ -8718,7 +8719,7 @@ impl App {
                 String::new()
             };
             let left = if picked {
-                format!("{}{}{}", sgr::REVERSE, left, sgr::RESET)
+                colour(&self.cfg, sgr::REVERSE, &left)
             } else {
                 left
             };
@@ -8950,7 +8951,7 @@ impl App {
                     // Inverse video rather than another colour: the prompt is already
                     // yellow, and a highlight that is a second hue reads as a second
                     // kind of thing rather than as "this one".
-                    format!("{}{}{}", sgr::REVERSE, l, sgr::RESET)
+                    colour(&self.cfg, sgr::REVERSE, &l)
                 } else {
                     colour(&self.cfg, sgr::YELLOW, &l)
                 });
@@ -10847,7 +10848,11 @@ fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
 ///   showing no duration.
 fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
-    let text: &str = folded.as_deref().unwrap_or(text);
+    // **The renderer sanitises its own input** (§3.1), so a caller cannot forget. The
+    // operator's own keystrokes cannot carry a control byte — the decoder hands back
+    // `Key::Char` — but a *paste* can, and it arrives here as theirs.
+    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
+    let text: &str = &clean;
     let p = cfg.palette();
     let w = cfg.width.max(20);
     let bar = p.paint(Role::UserAccent, "▌");
@@ -10936,7 +10941,12 @@ fn queued_lines(text: &str, cfg: &RenderConfig) -> Vec<String> {
     // `queued` line on the screen for the rest of the session. Measured — the fold
     // belongs to the rendering, not to what was sent.
     let folded = fold_cells(text);
-    let text: &str = folded.as_deref().unwrap_or(text);
+    // **And sanitised here rather than at the two callers** (§3.1), which is the fix
+    // for a hole the falsification test found: this echo reached the screen raw while
+    // `user_block` — the settled row it becomes — was already guarded. Two callers and
+    // one of them forgetting is the same shape as every other leak in this family.
+    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
+    let text: &str = &clean;
     let p = cfg.palette();
     let w = cfg.width.max(20);
     let bar = p.paint(Role::UserAccent, "▌");
@@ -11538,7 +11548,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // rendered straight it is an instruction to the terminal they are reading
             // it on (§3.1). Their own keystrokes cannot contain one — the decoder hands
             // back `Key::Char` — so nothing a person typed is changed by this.
-            (RowClass::Speech, user_block(&without_control_lines(&text), it.ts, cfg))
+            (RowClass::Speech, user_block(&text, it.ts, cfg))
         }
         TranscriptItem::Reasoning { text, .. } => {
             // **The model's reasoning is text this head did not author** (§3.1), and it
@@ -16726,10 +16736,20 @@ mod tests {
     const EVIL_HEAD: &str = "\u{1b}]0;";
 
     fn render_one(item: letibot_transcript::TranscriptItem) -> String {
+        item_rows(false, item).join("\n")
+    }
+
+    /// The rows one transcript item renders to, at a chosen colour setting.
+    ///
+    /// Colour is a parameter because the falsification test below needs both: with no
+    /// colour the head emits **no escapes at all**, which makes "not one ESC" a precise
+    /// assertion over the text; with colour it emits its own, so the assertion narrows
+    /// to the sequences it never writes.
+    fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<String> {
         use letibot_transcript::ToolEditExcerpt;
         let cfg = RenderConfig {
             width: 120,
-            color: false,
+            color: colour,
             ..RenderConfig::default()
         };
         let targets = std::collections::HashMap::new();
@@ -16772,12 +16792,307 @@ mod tests {
             payload_view: None,
             payload_newest: None,
         };
-        item_lines(&it, &ctx).1.join("\n")
+        item_lines(&it, &ctx).1
     }
 
     fn item_kind_is_edit(i: &letibot_transcript::TranscriptItem) -> bool {
         use letibot_transcript::TranscriptItem as T;
         matches!(i, T::ToolResult { name, .. } if matches!(name.as_str(), "edit" | "write"))
+    }
+
+    /// **The store's own vocabulary of hostile bytes.**
+    ///
+    /// Every family below was found in the operator's store — 44 `tool_result` rows
+    /// carry an escape and 20 carry a mode string — so this is the corpus's vocabulary
+    /// and not a list invented for a test. SGR and reset are in it because they are
+    /// what a coloured command emits; the rest are the things a terminal *does* rather
+    /// than shows.
+    const HOSTILE: &str = " A\u{1b}[31mred\u{1b}[0m \u{1b}[8m(hidden) \u{1b}[2J \
+        \u{1b}[?1002h \u{1b}[?1006h \u{1b}[?1049h \u{1b}[?2004h \u{1b}[?2026h \
+        \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f} end";
+
+    /// **Sequences a frame body never contains**, whatever the palette is doing.
+    ///
+    /// The ambiguous ones are deliberately absent: an SGR pair in model prose is
+    /// **indistinguishable in the byte stream from this head's own red** — the palette
+    /// emits `ESC[31m` itself — so asserting its absence there would be either false or
+    /// meaningless. It is caught by the colourless check instead, where the head emits
+    /// no escapes at all and "not one ESC" is a precise statement about the text.
+    ///
+    /// What is left is unambiguous: finding one of these is proof that somebody else's
+    /// bytes reached the terminal.
+    const NEVER_IN_A_FRAME: &[(&str, &str)] = &[
+        ("an OSC window title", "\u{1b}]"),
+        ("mouse tracking", "\u{1b}[?1002"),
+        ("SGR mouse", "\u{1b}[?1006"),
+        ("the alternate screen", "\u{1b}[?1049"),
+        ("bracketed paste", "\u{1b}[?2004"),
+        ("synchronised update", "\u{1b}[?2026"),
+        ("conceal", "\u{1b}[8m"),
+        ("a screen clear", "\u{1b}[2J"),
+        ("a C1 CSI", "\u{9b}"),
+        ("a C1 ST", "\u{9c}"),
+        ("a DEL", "\u{7f}"),
+    ];
+
+    /// The first thing in these rows a terminal would act on and this head did not
+    /// write — or `None` when the rows are clean.
+    fn unauthored(rows: &[String]) -> Option<String> {
+        for r in rows {
+            for (what, seq) in NEVER_IN_A_FRAME {
+                if r.contains(seq) {
+                    return Some(format!("{what}: {seq:?} in {r:?}"));
+                }
+            }
+            if let Some(c) = r.chars().find(|c| *c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(c)) {
+                return Some(format!("a C1/DEL byte {c:?} in {r:?}"));
+            }
+        }
+        None
+    }
+
+    /// **§3.1's falsification half, and the reason it exists is that this head had the
+    /// fix and none of the tests.**
+    ///
+    /// The operator: *"leticl has two that would catch a regression and you have none,
+    /// so nothing proves YOUR sanitising would notice if it stopped working."* So this
+    /// feeds the real vocabulary through **every** surface that renders text this head
+    /// did not author and asserts what a terminal would be handed.
+    ///
+    /// # Why the colourless half is the sharper one
+    ///
+    /// With `color: false` the head emits **no escapes at all** — that is the
+    /// `--replay`/pipe/CI case and it is asserted elsewhere — so any `ESC` in a row is
+    /// proof that somebody else's text got through, SGR pair and all. With colour on,
+    /// the head's own sequences are present by design and the assertion narrows to the
+    /// ones it never writes.
+    #[test]
+    fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
+        use letibot_transcript::{
+            ReasoningField, SystemOrigin, ToolCall, ToolOutcome, TranscriptItem as T, UserPart,
+        };
+
+        // ---- the transcript surfaces, colourless: not one ESC may survive ----
+        let rows: Vec<(&str, Vec<String>)> = vec![
+            (
+                "model prose",
+                item_rows(
+                    false,
+                    T::Assistant {
+                        text: format!("an answer{HOSTILE}\nand a second line"),
+                        tool_calls: Vec::new(),
+                        truncated: false,
+                    },
+                ),
+            ),
+            (
+                "a fence body",
+                item_rows(
+                    false,
+                    T::Assistant {
+                        text: format!("before\n\n```rust\nlet x = 1;{HOSTILE}\n```\n\nafter"),
+                        tool_calls: Vec::new(),
+                        truncated: false,
+                    },
+                ),
+            ),
+            (
+                "model reasoning",
+                item_rows(
+                    false,
+                    T::Reasoning {
+                        text: format!("thinking{HOSTILE}\nsecond line"),
+                        field: ReasoningField::ReasoningContent,
+                        truncated: false,
+                    },
+                ),
+            ),
+            (
+                "the operator's own paste",
+                item_rows(
+                    false,
+                    T::User {
+                        parts: vec![UserPart::Text {
+                            text: format!("I pasted{HOSTILE} out of a log"),
+                        }],
+                    },
+                ),
+            ),
+            (
+                "a system row",
+                item_rows(
+                    false,
+                    T::System {
+                        text: format!("bootstrap{HOSTILE}"),
+                        origin: SystemOrigin::Bootstrap,
+                    },
+                ),
+            ),
+            (
+                "a tool payload",
+                item_rows(
+                    false,
+                    T::ToolResult {
+                        call_id: "call_0".into(),
+                        name: "bash".into(),
+                        outcome: ToolOutcome::Ok,
+                        payload: format!("$ ls{HOSTILE}\nfile.rs"),
+                        edit: None,
+                    },
+                ),
+            ),
+            (
+                "a tool's failure reason",
+                item_rows(
+                    false,
+                    T::ToolResult {
+                        call_id: "call_1".into(),
+                        name: "bash".into(),
+                        outcome: ToolOutcome::Failed {
+                            reason: format!("the command wrote{HOSTILE} to stderr"),
+                        },
+                        payload: "$ false".into(),
+                        edit: None,
+                    },
+                ),
+            ),
+            (
+                "the raw markup behind ctrl-x",
+                item_rows(
+                    false,
+                    T::Assistant {
+                        text: String::new(),
+                        tool_calls: vec![ToolCall {
+                            id: "call_2".into(),
+                            name: "read".into(),
+                            arguments: format!("{{\"path\":\"{HOSTILE}\"}}"),
+                        }],
+                        truncated: false,
+                    },
+                ),
+            ),
+            (
+                "both sides of a diff and its path",
+                item_rows(
+                    false,
+                    T::ToolResult {
+                        call_id: "call_3".into(),
+                        name: "edit".into(),
+                        outcome: ToolOutcome::Ok,
+                        payload: "1 replacement".into(),
+                        edit: None,
+                    },
+                ),
+            ),
+        ];
+        for (what, r) in &rows {
+            assert!(
+                !r.iter().any(|l| l.contains('\u{1b}')),
+                "{what}: an ESC reached a row with no colour configured: {r:?}"
+            );
+            assert_eq!(unauthored(r), None, "{what}");
+        }
+
+        // ---- and the stateful surfaces: panes, chrome, and the live stream ----
+        let mut a = app();
+        a.session_id = "s1".into();
+        // A live turn streaming the payload, which is the one surface that never goes
+        // through `item_lines`.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", HOSTILE),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::reasoning("t1", HOSTILE),
+        )));
+        // A running call's progress note — the channel the gate's own sentence rides.
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed("t1", "c1", "bash"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::tool_progress("c1", HOSTILE),
+        )));
+        // A prompt this head is holding, which renders at the tail until its row lands.
+        a.pending_prompts.push(format!("queued{HOSTILE}"));
+        let live = a.screen(160, 40);
+        assert_eq!(unauthored(&live), None, "a live turn");
+        assert!(
+            !live.iter().any(|l| l.contains('\u{1b}')),
+            "a live turn emitted an escape with no colour configured"
+        );
+
+        // The panes: each renders a fact from the daemon or the model.
+        let mut b = App::new(plain_cfg(120));
+        b.session_id = "s1".into();
+        b.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j1", &format!("cargo test{HOSTILE}"), false)],
+        ));
+        b.jobs_pane = true;
+        b.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "sub-1".into(),
+                state: "running".into(),
+                prompt: format!("summarise{HOSTILE}"),
+                role: "coder".into(),
+            },
+        )));
+        b.subagents_pane = true;
+        b.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TodosUpdated {
+                todos: vec![letibot_sessionlog::event::TodoEntry {
+                    content: format!("tidy up{HOSTILE}"),
+                    status: letibot_sessionlog::event::TodoStatus::Pending,
+                }],
+            },
+        )));
+        b.todos_pane = true;
+        b.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::SessionRenamed {
+                title: format!("my session{HOSTILE}"),
+            },
+        )));
+        b.slash_out = Some(("/notes".into(), vec![format!("row{HOSTILE}")]));
+        // **One pane at a time, because `screen` draws one.** The first version of this
+        // loop set four panes at once and said "the jobs pane" for all four, while
+        // `slash_out` won the screen every time — a label that described the loop rather
+        // than the frame, which is the same defect the test exists to catch.
+        for (name, only) in [
+            ("jobs", 0usize),
+            ("subagents", 1),
+            ("todos", 2),
+            ("slash listing", 3),
+        ] {
+            b.jobs_pane = only == 0;
+            b.subagents_pane = only == 1;
+            b.todos_pane = only == 2;
+            b.slash_out = (only == 3).then(|| ("/notes".into(), vec![format!("row{HOSTILE}")]));
+            // The header carries the renamed session's title whatever pane is up, so
+            // every one of these frames also exercises the title.
+            let shown = b.screen(160, 40);
+            assert_eq!(unauthored(&shown), None, "the {name} pane");
+            assert!(
+                !shown.iter().any(|l| l.contains('\u{1b}')),
+                "the {name} pane emitted an escape with no colour configured"
+            );
+            // **And the pane really was on the screen**, or the assertion above is about
+            // a frame that never drew it — the mistake this loop made first time.
+            let flat = shown.join("\n");
+            let drawn = match only {
+                0 => flat.contains("background jobs"),
+                1 => flat.contains("subagents"),
+                2 => flat.contains("todos"),
+                _ => flat.contains("esc closes"),
+            };
+            assert!(drawn, "the {name} pane was not drawn at all:\n{flat}");
+        }
     }
 
     #[test]
