@@ -4135,6 +4135,10 @@ impl App {
             // appears to do nothing invites a second press. One line, routine register, taken
             // down by any key including this one.
             Key::CtrlN => {
+                // **Read the durable list before counting what is left.** Another head
+                // may have retired one of these since this one loaded the file, and the
+                // count is what decides between the verb and the honest empty answer.
+                self.refresh_retired();
                 // **"Nothing to retire" means nothing LEFT to retire**, not "no notes held".
                 //
                 // A retired note stays in `notes` on purpose (R10: retired is not deleted), so
@@ -6467,6 +6471,11 @@ impl App {
     /// notes, nothing retired one, and a reader who has just retired the wall needs
     /// a way back if they were wrong. `rest` is the text after the verb.
     fn notes_command(&mut self, verb: &str, rest: &str) -> Option<Action> {
+        // **The listing is the moment to find out what the file says.** `load_prefs` ran
+        // once, at startup, and a head up for hours has a `dismissed` that only ever grew
+        // from its own presses — so without this, `/notes` shows a note retired on disk as
+        // live on the screen, which is the operator's 2026-09-22 report read one way round.
+        self.refresh_retired();
         // `/dismiss` is the same action under the word the operator would type at a
         // red wall; `/notes dismiss` is where it is documented.
         let rest = if verb == "dismiss" && rest.is_empty() {
@@ -8180,13 +8189,46 @@ impl App {
     /// Write the head's choices. Returns the suffix for the confirmation line:
     /// where it went, or why it did not — a change that silently failed to
     /// persist would be found at the next start, as a surprise.
+    ///
+    /// **`retired` is merged with the file, never replaced by it.** The file is one
+    /// file for every head on the box and each head loads it once, so a plain write
+    /// discards the dismissals another head made since. See [`crate::prefs::merge_retired`]
+    /// for the measurement; the union is what makes "I dismissed it" survive a second
+    /// head's save, which is the operator's report of 2026-09-22.
     fn save_prefs(&self) -> String {
         match &self.prefs_path {
             None => " (not saved: no $HOME or $XDG_CONFIG_HOME)".into(),
-            Some(path) => match crate::prefs::save(path, &self.prefs()) {
-                Ok(()) => String::new(),
-                Err(e) => format!(" (not saved: {e})"),
-            },
+            Some(path) => {
+                let mut p = self.prefs();
+                p.retired = crate::prefs::merge_retired(path, &self.dismissed);
+                match crate::prefs::save(path, &p) {
+                    Ok(()) => String::new(),
+                    Err(e) => format!(" (not saved: {e})"),
+                }
+            }
+        }
+    }
+
+    /// **Take back what the file says is retired, not only what this head wrote.**
+    ///
+    /// `load_prefs` runs once, at startup. A head that has been up for hours has a
+    /// `dismissed` that only ever grew from its own presses — so a dismissal another head
+    /// recorded since is invisible, and `/notes` shows a note that is retired on disk as
+    /// live on the screen. The file is the durable record (`load_prefs`' own comment says
+    /// so), and reading it is what makes that true rather than a claim.
+    ///
+    /// Called where the operator is looking or acting — the listing and the chord — rather
+    /// than on a timer: nothing here needs to notice a change nobody has asked about, and a
+    /// stat-and-read on a keypress is free while a poll loop is a poll loop.
+    fn refresh_retired(&mut self) {
+        let Some(path) = self.prefs_path.clone() else {
+            return;
+        };
+        let (p, _) = crate::prefs::load(&path);
+        if p.retired != self.dismissed {
+            self.dismissed = p.retired;
+            self.invalidate_history();
+            self.redraw = true;
         }
     }
 
@@ -14587,6 +14629,218 @@ mod tests {
         b.key(Key::Enter);
         let back = b.screen(100, 30).join("\n");
         assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The operator's own state, reproduced from the measurement rather than guessed.**
+    ///
+    /// 2026-09-22, on his screen: `/notes` said `7 note(s), 1 retired` and only one entry
+    /// carried `[retired]`, while `head.toml` held keys for the notes that were listed.
+    /// `cargo run --example dump_notes` put the two lists side by side against the live log
+    /// and found six of the seven keys **identical — code, clock and detail hash** — so the
+    /// file and the log agreed, and the odd one out was the head's own `dismissed`.
+    ///
+    /// The six facts below are the real ones: the real clock and the real sentence, each
+    /// asserted against the key `head.toml` actually held. A transcription slip fails here
+    /// rather than passing quietly as a different incident.
+    #[test]
+    fn the_head_retires_every_note_the_file_it_wrote_says_it_retired() {
+        let facts: [(&str, u64, &str); 6] = [
+            (
+                "mode_set",
+                1790080806043,
+                "this session is at `allow-all (this box, consented)` from the next call \
+                 — nothing confines this box, and this point stands on your confirmation \
+                 rather than on a boundary.",
+            ),
+            ("context_wall", 1790104751092, "stopping this turn after 22 round(s)"),
+            ("auto_compact", 1790104751092, "938785 of 999999 tokens resident"),
+            ("compacted", 1790104765616, "compacted: 941052 → 8748 tokens"),
+            ("auto_compact", 1790104765616, "compacted: 8748 tokens resident now"),
+            ("promote_idle", 1790108290718, "nothing was running to move"),
+        ];
+
+        // The shape the head's own file must have honoured: every one of them retired,
+        // written as the file writes it and read back through the file's own parser.
+        let dir = std::env::temp_dir().join(format!("letibot-operator-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+        let keys: Vec<String> = facts
+            .iter()
+            .map(|(code, ts, detail)| {
+                note_key(&Note::Warned(Warned {
+                    code: (*code).into(),
+                    detail: (*detail).into(),
+                    ts: *ts,
+                }))
+            })
+            .collect();
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                retired: keys.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        a.load_prefs();
+        assert_eq!(
+            a.dismissed, keys,
+            "the file's retired set did not reach the head"
+        );
+
+        // The same six, delivered as the log delivers them: a snapshot, with the clock
+        // each envelope carried.
+        let mut snapshot = Snapshot {
+            session_id: "s".into(),
+            seq: 1,
+            dropped: 0,
+            items_dropped: 0,
+            items: Vec::new(),
+            turn: None,
+            open_decisions: Vec::new(),
+            settled_decisions: Vec::new(),
+            warnings: facts
+                .iter()
+                .map(|(code, ts, detail)| Warned {
+                    code: (*code).into(),
+                    detail: (*detail).into(),
+                    ts: *ts,
+                })
+                .collect(),
+            heads: Vec::new(),
+        };
+        snapshot.warnings.truncate(facts.len());
+        a.apply(hello("s", vec![brief("s", "one", false)], snapshot));
+
+        assert_eq!(a.notes.len(), facts.len(), "{:?}", a.notes);
+        assert_eq!(
+            a.retired_notes(),
+            facts.len(),
+            "the file says {} retired and the head retired {}: dismissed={:?}",
+            facts.len(),
+            a.retired_notes(),
+            a.dismissed
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A dismissal a SECOND head made is honoured by this one, without a restart.**
+    ///
+    /// The operator's report of 2026-09-22 — *"i dismissed letibot notes but they stay"*
+    /// — and the half of it that a shared file makes possible. `~/.config/letibot/head.toml`
+    /// is one file for every head on the box, and `load_prefs` runs **once, at startup**:
+    /// two heads were running (measured: pids 2076943 and 2350959), so what one of them
+    /// retired after the other had loaded was invisible to it for the rest of its life.
+    ///
+    /// The path here is the operator's exactly: `a` loads the file, *then* the file gains a
+    /// key, and `a` is asked for the listing. Before `refresh_retired` the note was still on
+    /// the screen; the assertion is that it is not.
+    #[test]
+    fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
+        let dir = std::env::temp_dir().join(format!("letibot-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+
+        // One head, up first, attaching to a log that already holds one warning.
+        let hub = Hub::new("s");
+        let live = hub.publish(SessionEvent::Warning {
+            code: "gate_timeout".into(),
+            detail: "nobody answered within 300s".into(),
+        });
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        a.load_prefs();
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        assert_eq!(a.notes.len(), 1);
+        assert_eq!(a.retired_notes(), 0, "nothing retired yet");
+
+        // **A second head retires it.** Not a call into `a` — a write to the file this
+        // head will look at, which is the only thing the two processes share.
+        let key = note_key(&a.notes[0].1);
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                retired: vec![key.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // **Before it looks, this head does not know.** `dismissed` is what it loaded at
+        // startup, and the file has moved since — which is the state the operator was in.
+        assert_eq!(
+            a.retired_notes(),
+            0,
+            "the premise is a head that has not read the file since it changed, and this \
+             one already had: dismissed={:?}",
+            a.dismissed
+        );
+        typed(&mut a, "/notes");
+        a.key(Key::Enter);
+        let listed = a.screen(120, 60).join("\n");
+        assert!(
+            listed.contains("[retired"),
+            "the listing showed a note the file says is retired as live:\n{listed}"
+        );
+        assert!(listed.contains("1 retired"), "{listed}");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // And the same envelope arriving again lands retired rather than planting
+        // itself — the redelivery half of R10, now with the key read off the file
+        // rather than out of this head's own memory.
+        a.key(Key::Esc);
+        a.apply(ServerFrame::Event(live.clone()));
+        let screen = a.screen(120, 60).join("\n");
+        assert!(
+            !screen.contains("nobody answered"),
+            "a note retired by another head came back at a seam:\n{screen}"
+        );
+    }
+
+    /// **One head's save does not discard another head's dismissals.**
+    ///
+    /// The write half of the same repair, and the one that explains the operator seeing
+    /// MORE keys in `head.toml` than his head honoured. Both heads load once and each used
+    /// to write its own list back whole; `merge_retired` makes the file grow instead, so a
+    /// key survives a save that never heard of it.
+    #[test]
+    fn a_save_keeps_a_key_this_head_never_loaded() {
+        let dir = std::env::temp_dir().join(format!("letibot-union-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+
+        // The other head got there first.
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                retired: vec!["w|mode_set|1|aaaa".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // This one loaded the file BEFORE that key existed, then saves for its own
+        // reasons — a config row toggled, say.
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        a.dismissed = vec!["w|promote_idle|2|bbbb".into()];
+        let _ = a.save_prefs();
+
+        let (p, _) = crate::prefs::load(&path);
+        assert!(
+            p.retired.iter().any(|k| k == "w|mode_set|1|aaaa"),
+            "the save discarded another head's dismissal: {:?}",
+            p.retired
+        );
+        assert!(
+            p.retired.iter().any(|k| k == "w|promote_idle|2|bbbb"),
+            "the save lost this head's own dismissal: {:?}",
+            p.retired
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

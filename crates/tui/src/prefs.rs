@@ -122,6 +122,35 @@ fn parse(text: &str) -> Vec<Line> {
         .collect()
 }
 
+/// **One file, every head on the box — so a save is a UNION and never a replacement.**
+///
+/// Measured 2026-09-22, which is the whole reason this exists: two `letibot-tui`
+/// processes were running (pids 2076943 and 2350959, 1d15h and 8h45m old) against the
+/// one `~/.config/letibot/head.toml` that `path()` names. Each loads `retired` **once,
+/// at startup**, and each save wrote its own list back whole. So head A dismisses a
+/// note, head B saves for its own reasons, and A's key is gone from the file — leaving
+/// the two disagreeing, and the notes A had dismissed coming back the next time anything
+/// read the file. *"i dismissed letibot notes but they stay."*
+///
+/// The union is the correct write for a shared record: a dismissal is an assertion that
+/// a key is retired, and no other head's save is evidence to the contrary. `restore`
+/// still empties the list, because it empties its own and saves, and a file with no keys
+/// unions to nothing.
+pub fn merge_retired(path: &Path, ours: &[String]) -> Vec<String> {
+    let (existing, _) = load(path);
+    let mut out = existing.retired;
+    for k in ours {
+        if !out.contains(k) {
+            out.push(k.clone());
+        }
+    }
+    let over = out.len().saturating_sub(RETIRED_CAP);
+    if over > 0 {
+        out.drain(..over);
+    }
+    out
+}
+
 /// Read the file. A missing file is the defaults; a line this build does not
 /// understand is reported by name and otherwise ignored, never a refusal to
 /// start the head.
@@ -212,7 +241,18 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     }
     let mut body = out.join("\n");
     body.push('\n');
-    std::fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+    // **Through a temporary file, then one rename.** `fs::write` truncates and then
+    // writes, so a second process reading at the wrong moment sees a PARTIAL list —
+    // and a head that loaded a partial `retired` would then save the partial one back,
+    // which is how a dismissal gets lost with nothing to point at. A rename is atomic
+    // on any filesystem this runs on, so a reader sees either the old file or the new
+    // one and never a half of either.
+    let tmp = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => path.with_file_name(format!(".{n}.tmp")),
+        None => return Err(format!("{}: has no file name to write beside", path.display())),
+    };
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -223,6 +263,69 @@ mod tests {
         let d = std::env::temp_dir().join(format!("letibot-prefs-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d.join("head.toml")
+    }
+
+    /// **A save leaves no half-written file behind, and no debris beside it.**
+    ///
+    /// `fs::write` truncates then writes, so a second head reading at the wrong moment
+    /// sees a partial `retired` list — and a head that loaded a partial one would save the
+    /// partial one back, which is how a dismissal gets lost with nothing to point at. The
+    /// write goes through a temporary file and one rename; this asserts the rename
+    /// happened and the temporary is gone.
+    #[test]
+    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let p = tmp("atomic");
+        let many: Vec<String> = (0..40).map(|i| format!("w|code{i}|17900000000{i:02}|deadbeef{i:08}")).collect();
+        save(
+            &p,
+            &HeadPrefs {
+                retired: many.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (back, notes) = load(&p);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(back.retired, many, "the list did not survive the round trip");
+
+        let dir = p.parent().unwrap();
+        let debris: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "head.toml")
+            .collect();
+        assert!(debris.is_empty(), "the save left these behind: {debris:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// **A key another head recorded survives this head's save.**
+    ///
+    /// The file is one file for every head on the box — measured 2026-09-22, two
+    /// `letibot-tui` processes against one `~/.config/letibot/head.toml` — and each head
+    /// loads it once. A save that wrote its own list back whole would discard whatever
+    /// the other had retired since, which is the shape of *"i dismissed letibot notes but
+    /// they stay."*
+    #[test]
+    fn a_merge_keeps_both_heads_keys_and_stays_capped() {
+        let p = tmp("merge");
+        save(
+            &p,
+            &HeadPrefs {
+                retired: vec!["w|theirs|1|aaaa".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let merged = merge_retired(&p, &["w|mine|2|bbbb".to_string(), "w|theirs|1|aaaa".to_string()]);
+        assert!(merged.contains(&"w|theirs|1|aaaa".to_string()), "{merged:?}");
+        assert!(merged.contains(&"w|mine|2|bbbb".to_string()), "{merged:?}");
+        assert_eq!(merged.len(), 2, "a duplicate was kept: {merged:?}");
+
+        // And the cap holds, with the oldest out.
+        let flood: Vec<String> = (0..(RETIRED_CAP + 5)).map(|i| format!("w|f{i}|0|0")).collect();
+        assert_eq!(merge_retired(&p, &flood).len(), RETIRED_CAP);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
     #[test]

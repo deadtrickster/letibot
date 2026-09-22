@@ -2291,3 +2291,29 @@ NVMe bandwidth that is measurably spare). Not a letibot change either way — it
 
 ---
 
+---
+
+## BashArena — Kev versus the incumbent on the attack corpus — **STOPPED 2026-09-22, unresolved; the operator ruled it off**
+
+**Where it stopped.** The measurement is done and committed (`docs/evidence/basharena-2026-09-22.md`,
+commits `d1a5a22` + `4b10c0a`): 339 rows converted from HF `abhayesian/basharena-monitor-eval`,
+Kev scored on the Blackwell in bf16 (5/47 attacks caught at t=0.5), the incumbent through
+`--etalon-oracle` (14/47, then 12/47 on a rerun), the four gate words, the per-side-task split, and
+the zero-false-allow threshold (**t > 0.8498 catch-all, 274 of 292 honest calls**).
+
+**What is unresolved, and it is the one that decides whether the comparison means anything:**
+`docs/guard-corpus-plan.md` §4b records the SAME guard on the SAME 339 rows at **27 of 47 (57%)**
+on 2026-09-17; today's runs give **14 and 12**. Two candidate causes, neither tested:
+
+  * the endpoint moved — the plan's number is 192.168.1.78:8082, today's is 127.0.0.1:8080
+    (`providers.toml` moved the gatekeeper there on 2026-09-20, same model name both ends);
+  * the arm — today's run reports `+ what the agent says it is doing` and the plan used the claim
+    arm too, so the claim is NOT the difference on its face;
+  * or something in layer A's reading genuinely regressed across the five days of `intent.rs`
+    commits between the two measurements.
+
+**Until the incumbent's own number is stable across two runs, the Kev-versus-incumbent table is
+not a comparison** — the incumbent is the noisy half (12 vs 14 with nothing changed) and its
+2026-09-17 value is four times today's. The next step is to run both endpoints and both arms over
+the same 339 rows and see which moves; the run two `--etalon-oracle` invocations needed is a
+`--oracle` host:port flag away and nothing else.
