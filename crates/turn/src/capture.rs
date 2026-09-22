@@ -15,6 +15,14 @@
 //! on demand from a transcript, so the only moment the evidence exists is the
 //! moment it fires. It is caught here rather than reconstructed later.
 //!
+//! **And that line is now two lines**, which is the change R12's shape asked for: the
+//! direction of the mismatch says whether the server withheld ids it counted (`ids <
+//! advance` — the UTF-8 gate, i.e. a llama.cpp without `d10f94713`) or sent more than it
+//! counted (`ids > advance` — a fault no withholding explains). See
+//! [`crate::stream::Mismatch`]. This module is unchanged by that and is what the second
+//! case points at: when the reading is *over-sent*, the captured frames are the only
+//! evidence there is.
+//!
 //! # What it keeps, and why the frames *after* matter most
 //!
 //! The offending frame, the two before it, and the next few. The trailing ones are

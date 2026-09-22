@@ -1228,6 +1228,27 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
         .expect("the interruption must be announced");
     assert!(reason.starts_with("frame_mismatch"), "{reason}");
     assert!(kept, "the partial was kept and must say so");
+    // **And the sentence says WHICH fault it was** (the R12-shaped half): the server
+    // withheld ids it counted, which is the UTF-8 gate, so the operator is told to check
+    // the server's build and given the commit to check it against. Before this the line
+    // was three bare numbers — *tokens_predicted N -> M carried K id(s)* — which names a
+    // disagreement and no remedy.
+    assert!(
+        reason.contains("withheld"),
+        "the reading is what the operator acts on: {reason}"
+    );
+    assert!(
+        reason.contains("d10f94713"),
+        "the one check this box can name, because the fix is a patch on a branch: {reason}"
+    );
+    assert!(
+        reason.contains("glm-all"),
+        "and the branch, so the check is one command: {reason}"
+    );
+    assert!(
+        !reason.contains("over_sent"),
+        "the wrong reading, and the opposite remedy: {reason}"
+    );
 
     // The evidence T23 asked for, on disk, verbatim.
     let path = sink

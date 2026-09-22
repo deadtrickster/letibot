@@ -815,15 +815,47 @@ impl TurnEngine<'_> {
         // earlier. Failing the whole turn over the tail threw away an answer the
         // operator was waiting on and left `nothing was recorded` behind; keeping
         // the head and marking the seam is the same trade §5.8 already makes.
+        //
+        // **The refusal is one; the reason it is refused is two.** `stream::Mismatch` reads
+        // the direction of the disagreement, and the sentence below says which — the
+        // server's build when ids were withheld, the captured frames when more arrived than
+        // were counted. Leaving the sentence as three bare numbers was R12's defect in a
+        // second family: a reader learned that something disagreed and not what to do.
         let interrupt_reason = match &outcome.aborted {
             Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
+            // **Two faults, one prefix, and the reading is what the operator acts on.**
+            // `frame_mismatch` stays the prefix so a reader — and a grep of a log — sees
+            // one kind of event; the clause after it says which of the two, because the
+            // first thing to check differs: the server's build when ids were WITHHELD,
+            // the captured frames when more were sent than counted. See
+            // [`crate::stream::Mismatch`], which is where the line between them is drawn
+            // once.
             Some(AbortCause::FrameMismatch {
                 n_decoded,
                 previous,
                 ids,
-            }) => Some(format!(
-                "frame_mismatch: tokens_predicted {previous} -> {n_decoded} carried {ids} id(s)"
-            )),
+                reading,
+            }) => Some(match reading {
+                // **The word `withheld` is load-bearing**: it is the reading's name, it is
+                // what an operator greps a session log for, and the other arm deliberately
+                // does NOT contain it — so a hit is the UTF-8 gate and nothing else.
+                crate::stream::Mismatch::Withheld => format!(
+                    "frame_mismatch: the server withheld {} of the {} token(s) it counted \
+                     (tokens_predicted {previous} -> {n_decoded}, {ids} id(s) sent) — the \
+                     shape of a token whose bytes end mid-character, which is llama.cpp \
+                     before `d10f94713` (branch `glm-all`). Check the server's build; the \
+                     frames are in the capture below.",
+                    n_decoded - previous - *ids as u64,
+                    n_decoded - previous
+                ),
+                crate::stream::Mismatch::OverSent => format!(
+                    "frame_mismatch: the server sent {ids} id(s) for {} counted \
+                     (tokens_predicted {previous} -> {n_decoded}) — MORE than it counted, \
+                     which suppression cannot explain (it only ever removes ids), so this is \
+                     not the UTF-8 gate. Read the frames in the capture below.",
+                    n_decoded - previous
+                ),
+            }),
             _ => None,
         };
         // The same two ways `TurnOk::truncated` counts — §5.7's kept text and
@@ -1388,6 +1420,7 @@ impl TurnEngine<'_> {
                         n_decoded,
                         previous,
                         ids,
+                        reading,
                     } = e
                     else {
                         unreachable!("matched above")
@@ -1396,6 +1429,7 @@ impl TurnEngine<'_> {
                         n_decoded,
                         previous,
                         ids,
+                        reading,
                     });
                     return Ok(if capture.trail_complete() {
                         Flow::Stop

@@ -34,11 +34,19 @@ pub enum Frame {
     Token { id: u32, text: &'static str },
     /// A token the server **counted but sent no frame for**.
     ///
-    /// T23's defect, in the server's own terms: `process_token`
-    /// (`server-context.cpp:4067`) skips `send_partial_response` when the
-    /// generated text ends mid-UTF-8-character, and `slot.stats.n_gen` has already
-    /// been incremented. So the counter advances by one with nothing on the wire,
-    /// and the *next* frame appears to advance by two while carrying one id.
+    /// T23's defect, in the server's own terms: unpatched `process_token`
+    /// (`server-context.cpp:4067`) skips `send_partial_response` when the generated text
+    /// ends mid-UTF-8-character, and `slot.stats.n_gen` has already been incremented. So the
+    /// counter advances by one with nothing on the wire, and the *next* frame appears to
+    /// advance by two while carrying one id.
+    ///
+    /// **Upstream's defect, fixed on a branch.** `d10f94713` (*"server : emit the frame for a
+    /// token that ends in a partial UTF-8 character"*, branch `glm-all` in
+    /// `~/Projects/llama.cpp`) makes `send_partial_response` run unconditionally, so this
+    /// frame shape cannot arise on a patched server. It is kept here because the patch is a
+    /// rebase onto upstream master rather than a merge into it: a server built from upstream
+    /// is unpatched, which is every server but this box's. See `turn/src/stream.rs`'s module
+    /// header — the guard is the detector for exactly that, and it is not dead code.
     ///
     /// Measured against the live server on 2026-09-10: `" 😂"` is `[26525, 224]`,
     /// `26525` spells a space plus the first three bytes of the emoji, and only
