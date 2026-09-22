@@ -943,3 +943,130 @@ the wording that removes the *appearance* of contradiction without moving what a
 
 **That closes A's three of §11's eight** — item 3 (§11.3, `87b67ee`), item 6 (§11.6,
 `e1cd2b0`) and item 7 (§11.7, `11f07e7`). Items 1, 2, 4, 5 and 8 are B's.
+
+## R19 (A's half) — a fresh attach does not open with old news — **SETTLED 2026-09-22 — `50914ec` + `d6f2d21`**
+
+`head-parity-2026-09-21.md` **R19**, ruled by the operator on restarting a head and being
+met by twelve red lines: *"i dont want to see that on restart."* **Three faults, and A owned
+two of them** — the third was already built here, which is worth stating because the ruling
+reads as a list of three jobs.
+
+What they saw: four notes — `daemon_stopping`, `compacted` and two `auto_compact` — folded
+correctly to three lines each, in the failure colour, at the top of a session that had just
+started. **None had been dismissed**, so persisting a retired set would not have helped:
+a fresh head plants a snapshot's warnings at position 0 because *everything in a snapshot is
+history and none of it is anchored* — true about where it goes and wrong about what it is.
+
+### Fault 1 — history arrives as news (`50914ec`)
+
+The distinction is not age. **A warning is how a head shows a fact ONCE**, and the facts a
+snapshot carries are not old, they are **prior**: this head was not there, so replaying them
+as though they had just happened puts them above a conversation they did not precede.
+
+A note is therefore told apart by where it came from rather than by an anchor that lies:
+
+    enum Placed { Seam(usize), Before }
+
+`Seam` is the row count the conversation had when it arrived — what `note()` always did, and
+where the history walk puts it back. `Before` is a fact that arrived with a snapshot: listed
+by `/notes`, counted by `/status`, **not drawn**. Three consequences, all deliberate:
+
+- **`load` sorts rather than replaces.** This head's own notes keep their seam — it filed them
+  while watching, at rows of this very conversation — and a note the snapshot also carries is
+  not planted a second time beside them (one identity now: `note_key`'s, shared by the walk,
+  the listing, the file and the load path).
+- **A seam the new transcript no longer has is not a seam.** A compaction or a reseat forks
+  the conversation, so a note filed at row 200 of a 250-row transcript is no longer between
+  any two rows of this one; it joins the history rather than being drawn at a place that
+  stopped existing.
+- `/status`'s notes row gained the third number — `12 · 3 retired · 4 from before this window`
+  — because *the reader retired it* and *it happened before this head attached* are two
+  different reasons for a line not being on the screen.
+
+The four the operator saw are four notes and twelve lines; after this they are four lines in
+`/notes` and a number on `/status`.
+
+### Fault 2 — routine is painted as failure (`d6f2d21`)
+
+**The split is a table and it lives in `letibot_sessionlog::warning`**, not in a head: the
+codes are the log's vocabulary, the daemon and the turn engine publish through it, and every
+head renders it — a split only `letibot-tui` knew would be copied and would drift. §11.6 rules
+the same way about `JobState::word`.
+
+The rule, so a code nobody has written yet can be judged: **routine** is a sentence about
+something that worked, something the operator asked for, or something the session is doing by
+design — delete it and the reader is no worse off. **Failure** is about something that did not
+work, did not happen, was refused, or could not be checked. A caveat that a check did not
+happen (`reseat_unchecked`, `prefix_check_skipped`, `monitor_wake_not_armed`) is a **failure**
+by that rule: the register's job is to say *look at this*, which is right for both.
+
+Routine — drawn dim, with the `·` the head already uses for a factual line, code kept:
+
+| code | why |
+|---|---|
+| `auto_compact` | the daemon saying it is about to compact, and afterwards what it did |
+| `compacted` | the conversation compacted itself, as configured |
+| `reseated` | the compaction also picked up the tools this daemon seats; already paid for |
+| `frame_capture_written` | the evidence for a refused frame was written where it can be read |
+| `frame_capture_disabled` | capture is switched off, so nothing was written |
+| `mode_set` | the answer to the operator's own `/mode` |
+| `mode_set_next_session_only` | the project row moved; this one cannot carry the point |
+| `mode_session_only` | a consented `allow-all` is this session's, deliberately not written to the row |
+| `model_endpoint_retry` | the server did not answer and the round is being taken again |
+| `interrupt_idle`, `promote_idle` | their interrupt / promote arrived between turns, with nothing to do |
+| `daemon_stopping` | somebody asked this daemon to stop; the session is on disk |
+| `resume_note`, `open_note` | the store's own note about what a resume or an open did |
+| `reattached` | this head's own: it got its connection back |
+| `slash` | a slash command's answer (`slash_refused` is the failure) |
+| `imported`, `import_scrap`, `imported_summary` | the import's three routine notes |
+| `steering_urgent` | the operator's steering arrived, so the turn was aborted to take it |
+| `cache_reuse_shortfall` | a diagnostic of the server's prefix cache; off the screen unless debug |
+| `test` | the `testing` helper's code; there is no production fact behind it |
+
+Failure — red, prefixed `!`: `turn_failed`, `context_wall`, `auto_compact_skipped`,
+`auto_compact_no_progress`, `auto_compact_failed`, `length_empty_turn`, `length_batch_refused`,
+`ended_in_reasoning`, `repetition_collapse`, `reasoning_stall`, `prefix_divergence`,
+`prefix_check_skipped`, `ledger_chain_mismatch`, `row_coverage_gap`, `record_item_pairing`,
+`reseat_unchecked`, `monitor_wake_not_armed`, `reseat_refused`, `frame_capture_failed`,
+`secret_late`, `mode_unknown`, `mode_set_refused`, `mode_unpersisted`, `flowy_not_seated`,
+`answer_unclaimed`, `job_output_refused`, `slash_refused`, `session_unavailable`,
+`transcript_store`, `decision_corpus`, `title_not_stored`, `resume_failed`, `import_no_db`,
+`import_no_session`, `import_failed`, `fabric_refresh_failed`, `log_gap`, `unreadable_frame`,
+`protocol_skew`, `orphan_body`, `sudo`, and four that exist only in fixtures (`gate`,
+`gate_timeout`, `gap`, `guard.empty`).
+
+**A code the table has never heard of is a FAILURE**, and that default is the point: it is
+drawn loudly, so forgetting one costs a red line somebody asks about rather than a quiet line
+nobody notices.
+
+**The guard reads this tree** (`crates/sessionlog/tests/warning_codes.rs`) — the instrument
+§11.5 ruled for the last table that had this shape. It finds `Warning { code: "…" }`,
+`Warned { code: "…" }` (including a `code:` whose value is an `if`/`else`, which is how the
+daemon says `slash` and `slash_refused` from one call site) and `import_note("…", …)`, and
+fails until each code has a row. It cannot see a code that reaches the wire through a
+variable — the engine's `code: trip.code`, the prefix check's `code` from `check.warning()`
+— which is why the table's own doc says so and why the default is loud. **Falsified by hand**:
+a stray `code: "unheard_of_yet"` in `harnessd/src/sessions.rs` fails it, naming the file.
+Two vacuity guards, because a scan that found nothing passes every assertion: a floor on the
+count, and a named few — one per shape and one per emitting crate.
+
+### Fault 3 — a dismissal must survive a restart: **already A's, and now proved harder**
+
+A writes the retired set to `~/.config/letibot/head.toml` (`prefs.rs`, keyed
+`hash(code|ts|detail)`, capped at 512) and reads it in `load_prefs()` **before** the attach,
+so it was never the fault on this side — §11.2's ruling that *restart is a different
+requirement* was about B. The R10 test moved with fault 1 and got stronger: the incident is
+delivered **live** to a head whose retired set came off the file, which is the one delivery
+nothing else suppresses — a snapshot's copy is prior, and a redelivery is not filed twice —
+so what stops it is the retirement and nothing else.
+
+### What the operator has to do, and what B has to do
+
+**Only the head changed.** Unlike §11.6 and §11.7 this carries no wire field, so no daemon
+restart is needed to see it — but the head binary must be restarted, and it is 11:19 rather
+than the 07:13 the operator is running.
+
+**B's half is the same three faults in `leticl`**, and the codes are not all shared: each head
+emits some of its own. The split above is A's answer to *"decide the severity split with your
+own codes rather than mine"*; where the two heads disagree about a code they both emit, that
+is a drift row before it is a commit.
