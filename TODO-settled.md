@@ -904,3 +904,32 @@ has no duration, so the clause goes and the byte count stays) and the model-faci
 variant, classifies it, and pins its word literally; the head maps those same words to
 the three sentences. A sixth state cannot fall through to a head's sentence, and a reword
 on either side of the wire breaks the other's test.
+
+## §11.7 (A.3) — R18's card says why it is asking — **SETTLED 2026-09-22 — 11f07e7**
+
+`head-parity-2026-09-21.md` §11's item 7, and the last of the three A owned. R18's card
+was five wrong things; four were fixed, and what was left was the sentence saying *why
+the card is up at all*. It printed two statements that read as a contradiction — the
+headline's **exec access** (the tool's declaration) and the dim line's **auto** (layer
+A's reading of the action) — with nothing joining them, so a card that went up anyway
+read as an argument against its own evidence.
+
+**The missing clause is the access**, and the fact had been in the request as
+`ActionClass::access` all along without ever reaching the wire. `DecisionRequested`
+gains `access` (`#[serde(default)]`, no `PROTOCOL_VERSION` bump — the
+added/defaulted-field precedent `ModelAdvice::consulted` set), the daemon fills it from
+the class it adjudicated, and the view carries it, so the live and snapshot paths draw
+the same card.
+
+Drawn **only where the declaration is what asks** (`exec`), and not for read, write or
+network: something else asks for those, and a sentence about the declaration would be
+false on the very card carrying it — which is what `because: workspace: /` was. Empty
+is a daemon older than the field: no clause, and no guess.
+
+**The tier ladder did not move.** §11.7 records A's `da4a576` refusal to implement *"a
+decision already marked auto is not re-asked"* as stated (`mode.rs:622-636` shows it
+would make `bash` unaskable for every read command); that refusal stands, and this was
+the wording that removes the *appearance* of contradiction without moving what asks.
+
+**That closes A's three of §11's eight** — item 3 (§11.3, `87b67ee`), item 6 (§11.6,
+`e1cd2b0`) and item 7 (§11.7, `11f07e7`). Items 1, 2, 4, 5 and 8 are B's.
