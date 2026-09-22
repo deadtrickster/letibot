@@ -395,10 +395,16 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             ordered,
             start,
             items,
+            indents,
         } => {
             let p = cfg.painter();
             let mut out = Vec::new();
             for (i, it) in items.iter().enumerate() {
+                // **The item's own column** (§2.7). A sub-bullet renders one step in
+                // from the item it belongs to, which is the whole of what a nested
+                // list has to say. `0` when `indents` is short, which is a block built
+                // by hand rather than by the lexer.
+                let nest = indents.get(i).copied().unwrap_or(0);
                 // `·` rather than `•`, from grok-build: a bullet the same weight as
                 // the prose competes with it down a long list, and what the marker
                 // has to do is mark the indent, not be seen.
@@ -417,12 +423,19 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                 };
                 // Columns, not bytes. `"· "` is two columns and three bytes, and
                 // indenting a wrapped bullet by its byte length put every
-                // continuation line a column too far right.
-                let pad = visible_width(&marker);
+                // continuation line a column too far right. The nest goes inside this
+                // arithmetic rather than being prepended to the output row, so a
+                // wrapped sub-item's continuation lines line up under its own text
+                // instead of under its parent's.
+                let pad = nest + visible_width(&marker);
                 let body = wrap(&paint_runs(it, p), w.saturating_sub(pad));
                 for (j, line) in body.into_iter().enumerate() {
                     if j == 0 {
-                        out.push(format!("{}{line}", p.paint(marker_role, &marker)));
+                        out.push(format!(
+                            "{:nest$}{}{line}",
+                            "",
+                            p.paint(marker_role, &marker)
+                        ));
                     } else {
                         out.push(format!("{:width$}{line}", "", width = pad));
                     }
@@ -1217,6 +1230,65 @@ mod tables {
     /// contents means the text in it.
     fn cells(v: &[Vec<Run>]) -> Vec<String> {
         v.iter().map(|c| crate::markdown::runs_text(c)).collect()
+    }
+
+    #[test]
+    fn a_nested_list_is_indented_under_the_item_it_belongs_to() {
+        // §2.7's missing half. A sub-bullet used to render in its parent's column,
+        // because the walk that flattens nested lists into one vector threw the depth
+        // away and the renderer had a single indent level.
+        let rows = render("- top\n  - sub\n    - deeper\n- top again\n", 80);
+        let lead = |l: &str| l.len() - l.trim_start().len();
+        let at: Vec<usize> = rows.iter().map(|l| lead(l)).collect();
+        assert_eq!(at, vec![0, 2, 4, 0], "{rows:#?}");
+        // Two columns per step: the same step the reasoning rail and the frame's
+        // gutter use, so one level of structure costs one column-pair everywhere.
+        assert!(rows[1].contains("sub"), "{rows:#?}");
+        assert!(rows[2].contains("deeper"), "{rows:#?}");
+
+        // **An `1. ` sub-list written at three or four spaces lands on the same step
+        // as a `- ` one at two** — that is what rounding to an even column is for. A
+        // head that indented by the raw column would put these a column apart for no
+        // reason a reader could name.
+        let two = render("- a\n  1. one\n", 80);
+        let four = render("- a\n    1. one\n", 80);
+        assert_eq!(lead(&two[1]), lead(&four[1]), "{two:#?} {four:#?}");
+        assert_eq!(lead(&two[1]), 2, "{two:#?}");
+
+        // And the step is capped, so a deeply nested list cannot walk off the width.
+        // Six levels deep, which is past the cap: the last two flatten onto 8 rather
+        // than continuing 10 and 12.
+        let deep = render(
+            "- a\n  - b\n    - c\n      - d\n        - e\n          - f\n",
+            80,
+        );
+        let at: Vec<usize> = deep.iter().map(|l| lead(l)).collect();
+        assert_eq!(at, vec![0, 2, 4, 6, 8, 8], "{deep:#?}");
+    }
+
+    /// **The §2.7 ordering CONFLICT, ruled and pinned.**
+    ///
+    /// The parity document had this head rendering `1. 1. 1.` for a loose list — *"one
+    /// block per item, each with its own written `start`"* — against leticl's
+    /// `1. 2. 3.`, and called it a conflict needing a ruling. **The description of this
+    /// head is stale**: the grammar keeps a loose list as ONE block (the same fix, and
+    /// the same reason, as `start + i`), so the numbers count up here too.
+    ///
+    /// What is worth ruling is the case both heads can still disagree about: a model
+    /// that writes `1.` for every item. Every markdown renderer on the box numbers
+    /// those 1, 2, 3 — the repeated `1.` is an idiom, not a claim — so a head that
+    /// echoed it would be showing something no other reader of that message sees.
+    /// `start + i` is therefore the right rule, and it is what leticl does.
+    #[test]
+    fn a_loose_ordered_list_counts_up_rather_than_echoing_a_repeated_marker() {
+        let rows = render("1. a\n\n1. b\n\n1. c\n", 80);
+        let starts: Vec<&str> = rows.iter().map(|l| &l[..2.min(l.len())]).collect();
+        assert_eq!(starts, vec!["1.", "2.", "3."], "{rows:#?}");
+        // The written number of the FIRST item is kept, so a list that starts at
+        // seven stays at seven — the model phrasing its own list is not corrected away.
+        let rows = render("7. seven\n8. eight\n", 80);
+        assert!(rows[0].starts_with("7. "), "{rows:#?}");
+        assert!(rows[1].starts_with("8. "), "{rows:#?}");
     }
 
     #[test]

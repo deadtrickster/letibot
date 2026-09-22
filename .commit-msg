@@ -1,104 +1,93 @@
-content this head did not write can no longer reconfigure the terminal
+a nested list is indented under the item it belongs to
 
-§3.1. **The exposure is real and it is this head's specifically, not a shared habit.**
-leticl composes styled segments into a **cell grid** — `screen-put-string` writes only
-cluster text and every SGR comes from the interned style table — so it *cannot* emit an
-escape it did not author. This head composes ANSI-bearing strings and `paint_full`
-writes each row **verbatim**, so an escape in model prose reached whatever terminal was
-attached. The parity document's own summary of the two: *"B cannot emit an escape it
-did not author. A can."*
+§2.7's missing half. A sub-bullet rendered in exactly its parent's column: the walk
+that collects a list's items **recursed into nested lists and threw the depth away**,
+pushing every level into one flat vector, and the renderer had a single indent step.
 
-**And it is not hypothetical.** Tool payloads were already sanitised (that is the fix
-for the mouse-wheel bug), and §3.1 names the rest: model prose, reasoning, the user's
-own message, the system row, fence bodies, diff excerpts read from disk. Every one of
-those reached the glass raw.
+**The parse already had the tree — this is a seam, not a parse.** `collect_items` is
+given the `list` children of each item and calls itself on them; what it did not do was
+record where those items came from. So the fix is to carry one more vector alongside
+`items`, and the question is only what number goes in it.
 
-## The bug I wrote while fixing it, which is why it gets its own function
+## The number comes from the source, not the recursion depth
 
-`\n` **is a control character** — `char::is_control` is true of every C0 code,
-including it. So the obvious move, passing model prose to the existing single-line
-`without_control`, does not sanitise a document: it **collapses it onto one line**,
-and every paragraph, list item and fenced block in every long message disappears. My
-first cut of this did exactly that.
+`marker_indent` reads the **column the marker was actually written at**, from the marker
+node's byte offset and the source that is right there, then rounds it down to an even
+number and caps it at 8. All three of those are leticl's constants and each earns its
+place:
 
-The mistake is invisible on the one-line fixture a hurried test would use and destroys
-content on every real message, so it is a named function with its own doc rather than a
-second `.map` at the call site:
+- **From the source** rather than a depth counter, because the two disagree for exactly
+  the lists people write: a `- ` sub-list is written at two spaces and a `1. ` one at
+  three or four, and the model's own indentation is the fact its prose refers to.
+- **Rounded to even** so those two land on the *same* step. A head that indented by the
+  raw column would put a bullet sub-list and an ordered sub-list a column apart for no
+  reason a reader could name.
+- **Capped at 8** so a deeply nested list cannot walk off the width it is rendered at.
+  Six levels deep flattens the last two onto 8 rather than continuing 10 and 12, and
+  that is asserted rather than assumed.
+- **Two columns per step**, which is the step `card::REASONING_RAIL_WIDTH` and
+  `App::GUTTER` already use, so the page keeps one idea of what one level of structure
+  costs instead of three unrelated indents.
 
-    without_control_lines(s)   // per line, joined by the newline it split on
-    without_control(line)      // unchanged: one line, controls become spaces
+The nest is added **inside** the marker-width arithmetic rather than prepended to the
+output row, so a wrapped sub-item's continuation lines line up under its own text and not
+under its parent's — the same reason the `pad` there is measured in columns rather than
+bytes.
 
-**A space, not a deletion**, which is the trade the payload path already made: dropping
-a character silently reflows the line, and the wrapper about to measure it counts
-columns.
+## The ordering conflict, ruled — and this head's description was stale
 
-## Everything sanitised, and where the seam is for each
+§2.7 lists a **CONFLICT** on ordered numbering: this head rendering `1. 1. 1.` for a
+loose list, *"one block per item, each with its own written `start`"*, against leticl's
+`1. 2. 3.`.
 
-| surface | seam | why there |
-|---|---|---|
-| model prose, live | the `Delta { Text }` arm | the answer enters here; `IncrementalMarkdown` is a frozen-prefix lexer (§13.3), so a control byte that reaches it is frozen into the stable half and cannot be removed later without re-lexing |
-| model prose, settled | `TranscriptItem::Assistant` | before the lexer, so what is lexed and what is measured are one string |
-| reasoning, live and settled | the same two | it renders through the markdown renderer as well |
-| the operator's own paste | `TranscriptItem::User` | not distrust — a control byte copied out of a log arrives *as theirs*, and their own keystrokes cannot contain one (the decoder hands back `Key::Char`) |
-| the system row | `TranscriptItem::System` | the bootstrap text is the harness's, not this head's |
-| raw tool markup (`ctrl-x`) | `raw_call_lines` | accumulated for the whole turn and read by nothing else, so the one renderer is the right seam |
-| a diff's two sides and its path | both `render_edit_view` call sites, **before the diff is taken** | a file's bytes are the one surface that is neither the model's nor the daemon's. Sanitising after the diff would leave a `\r` moving the cursor inside a row the renderer had already measured |
-| a tool's failure reason | `outcome_why` | a command's stderr is arbitrary text |
-| `decision_detail` | at each `format!` | three sentences there are somebody else's: the daemon's ask, the decider's basis, the guard's verdict and the operator's phrases it cites |
-| notes, warned and decided | `note_lines_unfolded` | one renderer for both the transcript row and `/notes`, so one place covers both |
-| a subagent's peeked scrollback | `subagent_out_lines` | another session's payloads and prose, read over a `Peek` and drawn here; sanitised at the builder so the spill file matches the pane |
+**That description is out of date, and the check is one line of code**: `lex("1. first\n\n2.
+second\n\n3. third\n\n")` produces **one** block with three items, not three blocks —
+the grammar keeps a loose list together, which is the same fix that put `start + i` in
+the renderer. So this head numbers `1. 2. 3.` too, and the conflict as stated does not
+exist.
 
-That is the list §3.1 asked for, and the two that were **already** done are named for
-completeness rather than credit: the settled tool payload and the job-output pane.
+What is worth ruling is the case the two heads *could* still differ on: a model that
+writes `1.` for every item, which markdown permits and models do. **Numbering up is
+right**, because the repeated `1.` is an idiom rather than a claim about the number —
+every markdown renderer on this box shows `1. 2. 3.` for that input, so a head echoing
+`1. 1. 1.` shows something no other reader of the same message sees. And **the first
+item's written number is kept**, so a list the model numbered from seven stays at seven:
+the rule is "count from what was written", not "renumber", and a model phrasing its own
+list is not quietly corrected. Both are pinned by
+`a_loose_ordered_list_counts_up_rather_than_echoing_a_repeated_marker`.
 
-## The half neither of us had done: a test that would catch a regression
+## Tests
 
-The requirement says leticl has two tests here and this head has none, and that is the
-part worth reading as a criticism rather than as a to-do — **a guard nobody tests is
-the state that let this sit.** So:
+- `a_nested_list_is_indented_under_the_item_it_belongs_to` — columns `0, 2, 4, 0` for
+  three levels plus a sibling; a `1. ` sub-list at three spaces and at four landing on
+  the **same** step as a `- ` one at two; and six levels cramming onto `0, 2, 4, 6, 8, 8`
+  so the cap is exercised rather than asserted.
+- `a_loose_ordered_list_counts_up_rather_than_echoing_a_repeated_marker` — the ruling
+  above, at the render level, plus `7. 8.` staying `7. 8.`.
+- The existing `a_loose_ordered_list_keeps_the_numbers_it_was_written_with` is unchanged
+  and still passes, which is the evidence for the stale-description claim: it asserts one
+  block with three items, and it did so before this commit.
 
-- `content_this_head_did_not_write_cannot_reconfigure_the_terminal` walks **every
-  surface in the table above** with one sequence: `ESC ] 0 ; x BEL`, the window-title
-  request, which is the one an operator can *watch happen*. It asserts the literal
-  `ESC ] 0 ;` cannot occur in any rendered row, that no `BEL` survives, and — so the
-  test cannot be satisfied by dropping the whole line — that the text is still there
-  with the control byte spaced. The diff case is exercised through the real
-  `render_edit_view`, so if the sanitisation were removed from either side the literal
-  sequence appears and the test fails.
-- `sanitising_a_document_keeps_its_lines_and_loses_its_controls` asserts the pair that
-  is the whole function: the newline count is unchanged, and a sweep finds no control
-  character other than `\n`. It also pins the single-line form's flattening behaviour,
-  because "these two are not the same function" is the thing a later tidy-up would
-  merge.
-
-## What is deliberately **not** here
-
-**The structural fix is a cell grid, and this is not that.** leticl cannot emit an
-escape it did not author because it has no strings-with-escapes to emit; this commit
-makes the same escapes impossible by sanitising the text that carries them. The parity
-document's own caveat applies and is worth repeating: **leticl's immunity is incidental
-to its painter, not a guard** — its own comment says so — and it would not survive a
-change of painter. Neither would this survive a new renderer that forgets to call the
-sanitiser, which is exactly why the test above is the durable half of it.
-
-`cargo test -p letibot-tui`: **309 passed, 0 failed, 4 ignored** (307 + 2).
+`cargo test -p letibot-tui`: **311 passed, 0 failed, 4 ignored** (309 + 2).
 `cargo test -p letibot-ui`: **101 passed, 0 failed**.
 
 **Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
 a temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts. One cargo at a time, as the last commit's note says; every run above
-is one crate pair.
+the operator lifts. `letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn` are still
+unrun since `65725ce`, for the lock reasons the last two commits record.
 
 ## Not in this commit
 
-**`letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn` are still unrun since
-`65725ce`.** Two attempts to run them contended on the cargo lock with my own builds and
-sat at 0 % CPU; the honest statement is that I do not have their result rather than that
-they fail. The only cross-crate dependency that commit could have had is a test built on
-the removed refusal, and that lived in `clauses.rs`, which is green.
+**The rest of §6's missing-in-A list**, which is the next block of work and is mostly
+small: `/todos`, `/subagents`, `/peek`, `/resume`, `/promote`, unknown verbs forwarded to
+the daemon rather than refused against an allowlist, `q` closing any pane, `ctrl-o` into
+a subagent, clicks reaching five panes instead of two, SGR mouse motion decoded, the
+composer draft preserved across a history walk, the truthful paste line count (this head
+reports 301 lines for a 300-line paste), and the tail-origin scroll sign for the peek and
+job-output panes.
 
-**R12 is blocked on a grant, not on a decision** — recorded with the exact query in
-`~/Projects/blocked-overnight-2026-09-22.md`, because the store is outside this
-session's view and every read of it opens a card that times out with nothing run.
-
-**§2.7 (list nesting) is next**, then the rest of §6's missing-in-A list.
+**A defect found while reading the lexer, not fixed here**: the settled half of a list
+takes its indent from the source column, but `IncrementalMarkdown` freezes a prefix once
+it is lexed — so an item that is indented *after* it has already been rendered into the
+frozen half would keep its old column. It needs a fence-like guard in `cut_point` if it
+is real, and it is recorded rather than guessed at.

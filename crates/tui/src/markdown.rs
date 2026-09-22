@@ -99,6 +99,24 @@ pub enum Block {
         /// quietly correct.
         start: usize,
         items: Vec<Vec<Run>>,
+        /// **How far each item is indented, in columns** (§2.7), parallel to
+        /// `items`.
+        ///
+        /// A nested list used to be *flattened*: `collect_items` recursed into
+        /// `list` children and pushed their items into the same flat vector, so a
+        /// sub-bullet rendered at exactly the column of the item it belonged to and
+        /// the structure the model wrote was gone. That is the whole of this field —
+        /// the parse already had the tree, and the renderer had one indent level,
+        /// so the depth was discarded at the seam between them.
+        ///
+        /// **Columns, not a level number**, because the source says columns: the
+        /// value is derived from the marker's own column in the source line,
+        /// rounded down to an even number and capped at 8. Two columns per level is
+        /// the same step the reasoning rail and the frame's gutter use, so a nested
+        /// list reads as one more turn of a screw rather than as an unrelated
+        /// indent — and the cap is what keeps a deeply nested list inside the width
+        /// it is rendered at.
+        indents: Vec<usize>,
     },
     Quote {
         lines: Vec<Vec<Run>>,
@@ -1197,30 +1215,53 @@ fn text_without_continuations(node: &Node, src: &str) -> String {
 
 fn list_block(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Block {
     let mut items = Vec::new();
+    let mut indents = Vec::new();
     let mut ordered = false;
     let mut start = 1;
     let mut first = true;
-    collect_items(node, src, spans, fences, &mut items, &mut ordered, &mut start, &mut first);
+    collect_items(
+        node,
+        src,
+        spans,
+        fences,
+        &mut items,
+        &mut indents,
+        &mut ordered,
+        &mut start,
+        &mut first,
+    );
     Block::List {
         ordered,
         start,
         items,
+        indents,
     }
 }
 
-/// Flatten a list's items, nested lists included.
+/// Flatten a list's items, nested lists included — **each with the column it was
+/// written at** (§2.7).
 ///
-/// Nesting is flattened rather than modelled because the renderer has one indent
-/// level, and because that is what the lexer this replaced did: a sub-bullet showed
-/// up as an item of the list above it. Modelling the tree would be better and is not
-/// what a conversation needs — a nested list inside a chat answer is a definition
-/// list, and reading it flat is fine.
+/// The tree is walked rather than modelled, and that stays: a renderer with one
+/// indent step does not need the shape, only the depth, and reading a chat answer's
+/// sub-list at an indent is the same thing as reading it flat except that it is
+/// readable. What changed is that the walk used to *throw the depth away* — it
+/// recursed into `list` children and pushed their items into one vector with no
+/// record of where they came from, so a sub-bullet rendered in its parent's column.
+///
+/// **The indent comes from the source, not the recursion depth.** The marker node
+/// carries a byte offset and the source is right here, so the column the model
+/// actually wrote is a slice and a count — and that is the honest number, because it
+/// is what the model's own reading of its list depends on. Rounded down to an even
+/// number and capped at 8 columns, so `1. ` sub-items (written at three or four
+/// spaces) and `- ` sub-items (written at two) land on the same step rather than one
+/// column apart.
 fn collect_items(
     node: &Node,
     src: &str,
     spans: &[Span],
     fences: &[Fence],
     items: &mut Vec<Vec<Run>>,
+    indents: &mut Vec<usize>,
     ordered: &mut bool,
     start: &mut usize,
     first: &mut bool,
@@ -1266,17 +1307,41 @@ fn collect_items(
                 let item = item_runs(&rest, src, spans, fences);
                 if !item.is_empty() {
                     items.push(item);
+                    indents.push(marker_indent(src, marker));
                 }
                 for g in &c.children {
                     if g.kind == "list" {
-                        collect_items(g, src, spans, fences, items, ordered, start, first);
+                        collect_items(
+                            g, src, spans, fences, items, indents, ordered, start, first,
+                        );
                     }
                 }
             }
-            "list" => collect_items(c, src, spans, fences, items, ordered, start, first),
+            "list" => collect_items(
+                c, src, spans, fences, items, indents, ordered, start, first,
+            ),
             _ => {}
         }
     }
+}
+
+/// **The column an item's marker was written at**, rounded down to an even number and
+/// capped at 8 (§2.7).
+///
+/// `None` — an item with no marker node, which the grammar should not produce but a
+/// defensible default exists for — is column 0.
+///
+/// The constants are leticl's, and the reason for each is worth keeping: **even** so a
+/// `- ` sub-list (written at two spaces) and a `1. ` sub-list (written at three or
+/// four) land on the same step instead of a column apart, and **capped at 8** so a
+/// deeply nested list does not walk off the right of the width it is rendered at. Two
+/// columns per step is the same step `card::REASONING_RAIL_WIDTH` and `App::GUTTER`
+/// use, so the page keeps one idea of what one level of structure costs.
+fn marker_indent(src: &str, marker: Option<&Node>) -> usize {
+    let Some(m) = marker else { return 0 };
+    let line_start = src[..m.start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col = src[line_start..m.start].chars().count();
+    (col / 2 * 2).min(8)
 }
 
 fn table_block(node: &Node, src: &str, spans: &[Span]) -> Block {
@@ -2016,7 +2081,7 @@ tail
     #[test]
     fn a_loose_ordered_list_keeps_the_numbers_it_was_written_with() {
         let b = lex("1. first\n\n2. second\n\n3. third\n\ntail\n");
-        let Some(Block::List { ordered, start, items }) = b.first() else {
+        let Some(Block::List { ordered, start, items, .. }) = b.first() else {
             panic!("{b:#?}");
         };
         assert!(ordered);
