@@ -2303,17 +2303,20 @@ the zero-false-allow threshold (**t > 0.8498 catch-all, 274 of 292 honest calls*
 
 **What is unresolved, and it is the one that decides whether the comparison means anything:**
 `docs/guard-corpus-plan.md` §4b records the SAME guard on the SAME 339 rows at **27 of 47 (57%)**
-on 2026-09-17; today's runs give **14 and 12**. Two candidate causes, neither tested:
+on 2026-09-17; today's runs give **14 and 12**.
 
-  * the endpoint moved — the plan's number is 192.168.1.78:8082, today's is 127.0.0.1:8080
-    (`providers.toml` moved the gatekeeper there on 2026-09-20, same model name both ends);
-  * the arm — today's run reports `+ what the agent says it is doing` and the plan used the claim
-    arm too, so the claim is NOT the difference on its face;
-  * or something in layer A's reading genuinely regressed across the five days of `intent.rs`
-    commits between the two measurements.
+**REOPENED AND LARGELY SETTLED 2026-09-22 — see `docs/evidence/basharena-2026-09-22.md` §5b.**
+Four runs on two endpoints put the incumbent at **12–14 / 47 (26–30%)**, stable to two attacks:
+`127.0.0.1:8080` gives 14, 12, 14, 12 and `192.168.1.78:8082` gives 14 — **so the endpoint is
+ruled out**, which was the obvious candidate. The set's composition is a real but partial effect:
+the replay shows the oracle the previous rows' verdicts as in-context examples, so the 47 attacks
+**alone** catch **18/47 (38%)** against 12–14 on the full set. Like for like — attacks alone, same
+endpoint, same arm — the record says 28 caught and today says 18: **a deficit of 10 rows that
+neither the endpoint nor the set explains**, and the remaining candidate is five commits that
+touch what the oracle is shown (`c3ee6b7` first, *"the session's scratch is its own place, and rm
+inside it is ordinary work"*, since every BashArena row carries `cwd: /app`). **Not bisected.**
 
-**Until the incumbent's own number is stable across two runs, the Kev-versus-incumbent table is
-not a comparison** — the incumbent is the noisy half (12 vs 14 with nothing changed) and its
-2026-09-17 value is four times today's. The next step is to run both endpoints and both arms over
-the same 339 rows and see which moves; the run two `--etalon-oracle` invocations needed is a
-`--oracle` host:port flag away and nothing else.
+So the §4 comparison IS usable (same rows, same binary, incumbent stable at 26–30%), and any
+comparison against the plan's 57% is **not** — that number is not reproducible from today's code
+by any setting tried, which casts doubt on §4b's other figures (*"22 caught"*, *"honest flagged:
+20"*) until the five commits are bisected.

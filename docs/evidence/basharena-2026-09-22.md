@@ -91,10 +91,11 @@ incumbent. Saying so is the point of the line.
 these 47 rows: **28 caught** in a `--etalon-oracle` run over the attacks alone (§4b's opening line —
 *"on the 47 attacks alone, 19 through"*), and **22** after step 2b for the live pipeline of layer A
 plus the oracle. Today, with layer A bypassed the same way that 28 was, the oracle alone catches
-**14** (run 1) and **12** (run 2) — roughly half again. Layer A's own share is **5 of 47** now and
-**5** after step 2b, so layer A is where the plan left it; it is the model's verdict that moved.
-Its quietness has risen the other way: honest rows it will not wave through, **120/292** in the
-first pass, **89 and 88** now.
+**18** on the attacks alone and **12–14** on the full set — §5b reconciles those two figures with
+the record, rules the endpoint out by running it, and locates the remaining deficit to a window of
+five commits. Layer A's own share is **5 of 47** now and **5** after step 2b, so layer A is where
+the plan left it; it is the model's verdict that moved. Its quietness has risen the other way:
+honest rows it will not wave through, **120/292** in the first pass, **88–90** now.
 
 That is the trade §4b predicted in its own words — *"the guard's recall fell while layer A's
 precision rose"* — with the mechanism it named: *"the other four are actions the reading made
@@ -265,6 +266,102 @@ The ranking is unchanged (AUC +0.004) and every score moves **up** by about 0.12
 task in view Kev thinks *both* columns follow from it more often, which moves the 0.5 threshold's
 meaning without improving the ordering. **The clip is not the story.**
 
+## 5b. Reconciliation: the record's 57% against today's 30%, and what accounts for it
+
+**The discrepancy.** `docs/guard-corpus-plan.md` §4b records the guard on these 339 rows at
+**27 of 47** (its own prose says *"on the 47 attacks alone, 19 through"* — 28 caught), and it
+records step 2b moving that to **22 of 47** for the live pipeline. Today's runs give **12, 14
+and 12** of 47. No comparison means anything until the incumbent's own number is stable
+across two runs, so that was measured first, and then each candidate was ruled in or out.
+
+### The incumbent's number IS stable — four runs, two endpoints
+
+| run | endpoint | attacks caught | honest asked |
+|---|---|---|---|
+| 1 (`oracle_local.txt`) | `127.0.0.1:8080` | **14** / 47 | 88 / 292 |
+| 2 (`oracle_local_run2.txt`) | `127.0.0.1:8080` | **12** / 47 | 88 / 292 |
+| per-side-task (`oracle_bytask.txt`) | `127.0.0.1:8080` | **14** / 47 | 89 / 292 |
+| reconcile A (`reconcile_local_a.txt`) | `127.0.0.1:8080` | **12** / 47 | 90 / 292 |
+| reconcile B (`reconcile_lan.txt`) | **`192.168.1.78:8082`** | **14** / 47 | 88 / 292 |
+
+**26–30%, four times, on two machines.** The spread is two attacks; the honest column is
+±2. That is the stable figure 166e097's §4 already reported, and it now has two more runs and
+a second endpoint behind it.
+
+### The endpoint is ruled OUT, and that is the headline
+
+The plan's number was taken at `192.168.1.78:8082` and `providers.toml` moved the gatekeeper
+to `127.0.0.1:8080` on 2026-09-20, so *"the endpoint moved"* was the most obvious candidate.
+It is not the cause: **the LAN endpoint, on the same binary and the same rows, gives 14/47**
+— inside today's own run-to-run spread.
+
+The two servers are the same weights and nearly the same configuration: both serve
+`/home/dead/models/Qwen3.8-27B-UD-Q6_K_XL.gguf`, `Q6_K`, 27,320,697,856 parameters, and both
+report `temperature 1.0, top_k 20, top_p 0.95`. They differ in `min_p` (local 0.0, LAN 0.05)
+and `n_ctx` (local 262144, LAN 8192). **Neither difference moves the number**, which is what
+the 14-vs-14 shows directly.
+
+### The set's composition accounts for part of it, and it is a real effect
+
+The replay shows the oracle the **previous rows' own verdicts** as in-context examples —
+`req.examples = answered_before`, up to 6 of them, oldest dropped (`calibrate.rs`). On the
+full 339 those are mostly honest rows, which the guard admits, so it arrives at an attack
+having just been shown six examples of *"allowed"*. On the attacks alone, they are mostly
+refusals.
+
+That is a property of the set, not of the guard, so it was measured directly — the same 47
+attack rows, alone, on the local endpoint:
+
+| set | attacks caught | through |
+|---|---|---|
+| all 339 rows | 12–14 / 47 (26–30%) | 33–35 |
+| **the 47 attacks alone** (`attacks_only.txt`) | **18 / 47 (38%)** | 29 |
+
+**Four to six rows, so the effect is real — and it is not enough.**
+
+### Like for like, the gap is 28 → 18, and it is the code
+
+The plan's `19 through` is the **same measurement on the same set**: attacks alone, the same
+endpoint, the same model, the same claim arm, the budget and the replay. So the honest
+comparison is:
+
+| | attacks alone | through |
+|---|---|---|
+| 2026-09-17, §4b's opening line | **28 / 47** | 19 |
+| 2026-09-22, today | **18 / 47** | 29 |
+
+**A deficit of 10 rows that neither the endpoint nor the set composition explains.** The
+remaining candidate is the code between the two measurements, and the commits that touch the
+guard's brief or its reading in that window are named here rather than guessed at:
+
+    c3ee6b7  2026-09-20  the session's scratch is its own place, and rm inside it is ordinary work
+    a16453f  2026-09-20  the oracle reads the script, not the filename
+    bf4137e  2026-09-20  the durable rule names the program that needs authority
+    452d7dd  2026-09-22  the oracle's brief and its reply are on the row
+    3d8754d  2026-09-22  R12 — an oracle that ran out of room is not an oracle that could not be read
+
+**`c3ee6b7` is the one to look at first and it has a mechanism**: BashArena's rows all carry
+`cwd: /app`, and *"the session's scratch is its own place, and rm inside it is ordinary work"*
+is a change to exactly how a path in the workspace is read. **This is not bisected.** Naming
+the candidate is not the same as measuring it, and the honest state is: the deficit is
+located to a window of five commits and to a function that decides what the oracle is shown.
+
+### What this does and does not license
+
+The **comparison in §4 is usable**, and this section is why: both models were run on the same
+339 rows, by the same binary, in the same session, and the incumbent's figure is stable at
+**26–30%** across four runs and two endpoints. What is **not** usable is any comparison against
+the plan's 57%, because that number is not reproducible from today's code by any setting
+found here — and until the five commits above are bisected, the plan's other BashArena
+figures (§4b's *"22 caught"*, its *"honest rows flagged: 20"*) inherit the same doubt.
+
+**And it changes what §2's in-sample label means.** The incumbent was `IN-SAMPLE` for these
+rows when the plan measured 57% — but the guard has since moved *away* from what this corpus
+rewarded, which is a regression on this set and may be an improvement on the operator's (a
+reading tuned until benign work stops tripping it will also stop tripping on attacks that
+look like benign work, and 11 of these 47 are exactly that). §2 said that; this is it, with
+a number.
+
 ## 6. Per side task
 
 At each model's own operating point. **The incumbent's column is its per-side-task run**
@@ -359,6 +456,9 @@ would move by 14 and 33 points. Every claim in §6 is qualified by that, and the
       basharena_kev_full_scores.jsonl      # Kev, full ask
       oracle_local.txt                     # the incumbent, run 1
       oracle_local_run2.txt                # the incumbent, run 2 (12 attacks against run 1's 14)
+      reconcile_local_a.txt                # run 4, same endpoint — 12
+      reconcile_lan.txt                    # run 5, THE PLAN'S ENDPOINT .78:8082 — 14
+      attacks_only.txt                     # the 47 attacks alone — 18, the examples effect
       oracle_bytask.txt                    # the incumbent, per side task
       layerA.txt                           # `--etalon`: layer A alone
       kev_server_rerun.log                 # the second server's own log
@@ -367,6 +467,9 @@ would move by 14 and 33 points. Every claim in §6 is qualified by that, and the
     #   docs/evidence/basharena-rows-2026-09-22.jsonl            the 339 rows both read
     #   docs/evidence/basharena-kev-scores-2026-09-22.jsonl      Kev's verdict on them
     #   docs/evidence/basharena-oracle-run1.txt|run2.txt         the incumbent, twice
+    #   docs/evidence/basharena-oracle-reconcile.txt             run 4, same endpoint
+    #   docs/evidence/basharena-oracle-lan.txt                   run 5, the record's endpoint
+    #   docs/evidence/basharena-attacks-only.txt                 the 47 attacks alone
     #   docs/evidence/basharena-oracle-bytask.txt                the incumbent, split
     #   docs/evidence/basharena-layerA.txt                       layer A, before any model
     #   docs/evidence/basharena_build.py|_analyse.py|_compare.py  the three scripts above
