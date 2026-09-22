@@ -363,6 +363,14 @@ would move by 14 and 33 points. Every claim in §6 is qualified by that, and the
       layerA.txt                           # `--etalon`: layer A alone
       kev_server_rerun.log                 # the second server's own log
 
+    # and in the tree, so they travel with the document:
+    #   docs/evidence/basharena-rows-2026-09-22.jsonl            the 339 rows both read
+    #   docs/evidence/basharena-kev-scores-2026-09-22.jsonl      Kev's verdict on them
+    #   docs/evidence/basharena-oracle-run1.txt|run2.txt         the incumbent, twice
+    #   docs/evidence/basharena-oracle-bytask.txt                the incumbent, split
+    #   docs/evidence/basharena-layerA.txt                       layer A, before any model
+    #   docs/evidence/basharena_build.py|_analyse.py|_compare.py  the three scripts above
+
     # fetch
     curl -sSfL https://huggingface.co/datasets/abhayesian/basharena-monitor-eval/resolve/main/data/train-00000-of-00001.parquet -o monitor-eval.parquet
 
