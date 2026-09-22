@@ -512,6 +512,42 @@ fn wait_on_job(
         ));
     }
 
+    // **R23: the harness has already promised to tell you, so there is nothing to
+    // wait for.**
+    //
+    // The daemon watches every background job and submits its settlement to the
+    // model as a turn of its own, unprompted (R7). That promise is kept by the
+    // daemon, not by this tool, so before R23 it was a promise the *model* could
+    // decline: `job_wait` on a job the harness was already watching blocked the
+    // floor for its whole deadline, and the answer it was waiting for was in
+    // flight the entire time. Measured three times since the 2026-09-22 daemon
+    // start, most recently 23 seconds after a call was backgrounded and before
+    // the job had ended, so before any completion could exist.
+    //
+    // The fix is the same one R7 used on the notice: put the promise in the
+    // mechanism rather than in the wording. Four rewrites of the backgrounded
+    // result telling the model *"do not wait for it"* did not stop this; a
+    // `job_wait` that cannot block on a watched job does.
+    //
+    // **What this deliberately does not touch.** The verb stays for every job the
+    // harness is NOT already delivering: a scope, a job from another session, a
+    // deliberate block before a dependent step. Those still block for exactly as
+    // long as they were asked to, and `with_completion_delivered` unwired — a
+    // harness with no watcher, a backend that cannot start processes — leaves
+    // every wait behaving exactly as it did before this existed.
+    if ctx.completion_delivered(id) {
+        return Invocation::ok(format!(
+            "nothing to wait for: `{id}`'s completion reaches you on its own when it \
+             ends — the daemon is already watching it and will hand you the result \
+             unprompted, as a turn of its own. Waiting here would hold the floor for \
+             a deadline while the answer you want is already in flight.\n  command: \
+             {}\n  output:  {} bytes so far — read it with `job_output` job=\"{id}\"\n\n\
+             Carry on with something else. `job_kill` stops it if you do not want it.",
+            clip(&before.command, 160),
+            before.produced
+        ));
+    }
+
     ctx.progress(format!(
         "waiting on `{id}`: {} bytes so far, deadline {}",
         before.produced,

@@ -2106,11 +2106,22 @@ impl<'a> Harness<'a> {
         // tool that is about to spend real time can find out that the operator is
         // waiting and stop. See `InvokeCtx::operator_waiting`.
         let waiting_hub = hub.clone();
+        // **And the fact that closes R23.** `job_wait` on a job the daemon is already
+        // watching returns at once rather than blocking on an answer that is in
+        // flight — see `InvokeCtx::completion_delivered`. Wire to the same watcher
+        // set the sink feeds, so "there is a watcher" and "the wait must not block"
+        // are one fact read in two places rather than two facts that can disagree.
+        // `None` when the backend cannot start processes: no host, no jobs, no
+        // watcher, and every wait keeps its old behaviour.
+        let delivering = job_watch.clone();
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
             .with_operator_waiting(std::sync::Arc::new(move || {
                 waiting_hub.has_queued_prompt()
+            }))
+            .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
+                delivering.as_ref().is_some_and(|w| w.delivering(job))
             }));
 
         let engine = TurnEngine::new(

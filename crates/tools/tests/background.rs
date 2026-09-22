@@ -485,3 +485,132 @@ fn pkill_lists_and_kills_by_pid_only() {
     assert!(kill.payload.contains("all 1 gone"), "{}", kill.payload);
     let _ = go.wait();
 }
+
+// ------------------------------------------------------------ R23: the wait declines
+
+/// **R23: a `job_wait` on a job the harness is already delivering returns at once.**
+///
+/// The operator's complaint, filed as R23, recurring *after* R7 landed: *"letibot
+/// again did `job_wait` right after i backgrounded."* R7 gave the daemon a promise —
+/// a background job's settlement is submitted to the model as a turn of its own,
+/// unprompted — and four rewrites of the `Backgrounded` result telling the model
+/// *do not wait for it* did not stop this. Advice is not a guarantee, which is this
+/// tree's own rule about checks applied to a prompt.
+///
+/// So the promise moves into the mechanism: `job_wait` asks whether the harness has
+/// already promised this job's answer, and if it has, returns instead of blocking.
+///
+/// # The measurement, and why it is a clock rather than a string
+///
+/// Same as R7's: **force the case and time it.** The deadline is 30 s, the job is a
+/// `sleep 300` that cannot end during the call, and the assertion is on elapsed time.
+/// Text alone would pass for a wait that blocked 30 s and then said the right thing —
+/// which is precisely the behaviour the operator is reporting, and the behaviour this
+/// test exists to make impossible.
+#[test]
+fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
+    let mut h = runner!("r23_at_once");
+
+    // A job that will outlive any deadline this test sets.
+    let started = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 300", "background": true}).to_string(),
+    );
+    let id = match &started.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("{other:?}: {}", started.render()),
+    };
+
+    // **The daemon's own answer, forced.** In a real session this closure reads the
+    // per-session job watchers: the sink arms one the moment a `Backgrounded` result
+    // passes it, so by the time the model's next call runs the job is watched.
+    let watched = id.clone();
+    h.with_completion_delivered(std::sync::Arc::new(move |j: &str| j == watched));
+
+    let t0 = std::time::Instant::now();
+    let r = h.call(
+        "job_wait",
+        &serde_json::json!({"job": id, "timeout_ms": 30_000}).to_string(),
+    );
+    let took = t0.elapsed();
+
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "a wait on a job the harness is already delivering must return at once, \
+         not after its deadline; it took {took:?}"
+    );
+    // Not a deadline and not a failure: the call was reasonable and the answer is
+    // already on its way.
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let body = r.render();
+    assert!(
+        body.contains("nothing to wait for"),
+        "the sentence must say why nothing was waited for: {body}"
+    );
+    assert!(
+        body.contains("on its own"),
+        "and it must name the promise it is relying on: {body}"
+    );
+    assert!(
+        body.contains("sleep 300"),
+        "and it must still say what the job was: {body}"
+    );
+
+    // The job is untouched — this declined to wait, it did not stop anything.
+    let host = h.processes.clone().unwrap();
+    let view = host.job(&JobId(id.clone())).expect("the job is still known");
+    assert!(view.state.is_running(), "the wait must not stop the job");
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}
+
+/// **The contrast: a `job_wait` on a job nobody is delivering still blocks, exactly
+/// as before.**
+///
+/// R23 removes one case and must remove only that one. A scope, a job from another
+/// session, a deliberate block before a dependent step — all of those keep the verb
+/// they always had, and this is the assertion that says so rather than the comment
+/// saying so. The deadline is short so the test is; what is measured is that the
+/// deadline *is* reached, which is the whole of "blocks".
+#[test]
+fn a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline() {
+    let mut h = runner!("r23_still_blocks");
+
+    let started = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 300", "background": true}).to_string(),
+    );
+    let id = match &started.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("{other:?}: {}", started.render()),
+    };
+
+    // The same closure, saying the harness is watching something else entirely —
+    // the honest shape of "this job is not one the daemon will hand you".
+    h.with_completion_delivered(std::sync::Arc::new(|_j: &str| false));
+
+    let t0 = std::time::Instant::now();
+    let r = h.call(
+        "job_wait",
+        &serde_json::json!({"job": id, "timeout_ms": 700}).to_string(),
+    );
+    let took = t0.elapsed();
+
+    assert_eq!(
+        r.outcome,
+        ToolOutcome::Timeout,
+        "an undelivered job must still reach its deadline: {}",
+        r.render()
+    );
+    assert!(
+        took >= std::time::Duration::from_millis(650),
+        "it must actually spend the deadline it was given, not return early for \
+         some other reason; it took {took:?}"
+    );
+    let body = r.render();
+    assert!(
+        !body.contains("nothing to wait for"),
+        "the R23 sentence must not appear for a job nobody is delivering: {body}"
+    );
+    assert!(body.contains("STILL RUNNING"), "{body}");
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}

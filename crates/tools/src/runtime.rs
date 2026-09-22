@@ -214,6 +214,25 @@ impl Default for Limits {
 /// what a hub is, so the daemon supplies the question already answered.
 pub type OperatorWaiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// **Is this job's completion already on its way to the model?**
+///
+/// The daemon watches every background job and submits its settlement to the model
+/// as a turn of its own, unprompted (R7, `crates/harnessd/src/jobwatch.rs`). That is
+/// a promise the harness *keeps*, and until R23 the tools merely described it — so a
+/// `job_wait` on a job the harness had already promised could still block the floor
+/// for its whole deadline, and the model could spend a round waiting for an answer
+/// that was in flight. *"A promise the harness keeps and the tools merely describe is
+/// a promise the model can decline."*
+///
+/// Same shape as [`OperatorWaiting`] and for the same reason: the answer is the
+/// daemon's and it changes while a call runs, so `crates/tools` gets the question
+/// already answered and never learns what a watcher is.
+///
+/// A closure taking the **job id**, because unlike the operator's question this one
+/// is about a particular job: the promise is per job, and two `job_wait` calls in the
+/// same session must get different answers.
+pub type CompletionDelivered = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 pub struct InvokeCtx<'a> {
     pub backend: &'a dyn ExecBackend,
     pub spiller: &'a Spiller,
@@ -227,6 +246,7 @@ pub struct InvokeCtx<'a> {
     call_id: &'a str,
     sink: &'a mut dyn ToolEventSink,
     operator_waiting: Option<&'a OperatorWaiting>,
+    completion_delivered: Option<&'a CompletionDelivered>,
 }
 
 impl InvokeCtx<'_> {
@@ -253,6 +273,16 @@ impl InvokeCtx<'_> {
     /// exactly as it always did.
     pub fn operator_waiting(&self) -> bool {
         self.operator_waiting.map(|f| f()).unwrap_or(false)
+    }
+
+    /// **This job's completion is already being delivered to you.**
+    ///
+    /// See [`CompletionDelivered`]. `false` when nobody wired the question, so a
+    /// runtime with no watcher behind it blocks exactly as it always did — which is
+    /// the conservative direction: an unwired runtime waits, and a wait is never
+    /// wrong, only slow.
+    pub fn completion_delivered(&self, job: &str) -> bool {
+        self.completion_delivered.map(|f| f(job)).unwrap_or(false)
     }
 
     pub fn call_id(&self) -> &str {
@@ -1149,6 +1179,10 @@ pub struct ToolRuntime {
     pub files: crate::files::FileLedger,
     /// See [`OperatorWaiting`]. `None` in a runtime with no head behind it.
     pub operator_waiting: Option<OperatorWaiting>,
+    /// See [`CompletionDelivered`]. `None` in a runtime with no job watcher behind
+    /// it — a harness driven directly by a test, or a backend that cannot start
+    /// processes.
+    pub completion_delivered: Option<CompletionDelivered>,
 }
 
 impl ToolRuntime {
@@ -1163,12 +1197,23 @@ impl ToolRuntime {
             limits: Limits::default(),
             files: crate::files::FileLedger::new(),
             operator_waiting: None,
+            completion_delivered: None,
         }
     }
 
     /// Wire the question a long-running tool asks before it spends another minute.
     pub fn with_operator_waiting(mut self, f: OperatorWaiting) -> Self {
         self.operator_waiting = Some(f);
+        self
+    }
+
+    /// **Wire the fact that makes `job_wait` refuse to block on its own promise.**
+    ///
+    /// See [`CompletionDelivered`]. A daemon supplies a closure over its own
+    /// per-session job watchers; a runtime that wires nothing keeps the old
+    /// behaviour, which R23 leaves exactly as it was.
+    pub fn with_completion_delivered(mut self, f: CompletionDelivered) -> Self {
+        self.completion_delivered = Some(f);
         self
     }
 
@@ -1384,6 +1429,7 @@ impl ToolRuntime {
                 call_id: &call.id,
                 sink,
                 operator_waiting: self.operator_waiting.as_ref(),
+                completion_delivered: self.completion_delivered.as_ref(),
             };
             tool.invoke(&mut ctx, &args)
         };

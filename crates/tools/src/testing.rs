@@ -127,6 +127,19 @@ impl Harness {
             .ok()
             .and_then(|m| m.modified().ok())
     }
+
+    /// **Wire the R23 question**, the way the daemon wires it from its own job
+    /// watchers.
+    ///
+    /// Exposed as a method rather than left to a test poking `rt` because the
+    /// closure's meaning is the thing under test: *"is this job's completion already
+    /// being delivered to the model?"* A test that sets it says which jobs the
+    /// harness is watching and nothing else, and a runtime that never calls this
+    /// behaves exactly as it did before R23 existed — which is what the
+    /// contrast case needs.
+    pub fn with_completion_delivered(&mut self, f: crate::runtime::CompletionDelivered) {
+        self.rt.completion_delivered = Some(f);
+    }
 }
 
 pub fn harness() -> Harness {

@@ -161,6 +161,29 @@ impl JobWatchers {
         g.drain(..).collect()
     }
 
+    /// **Is this job's completion already on its way to the model?**
+    ///
+    /// True while a watcher thread is blocked on the job. That thread publishes the
+    /// settlement to the hub and queues a [`JobCompletion`], which
+    /// [`crate::harness::Harness::wake`] submits as a turn of its own — so from the
+    /// moment the watcher exists, the model is going to be told whether it asks or
+    /// not. Nothing `job_wait` does can change that, which is exactly why R23 makes
+    /// the wait return instead of blocking: the answer is in flight.
+    ///
+    /// **A settled job is deliberately `false`.** Once the watcher has published, it
+    /// is moved from `watching` to `settled` and the thread ends. A `job_wait` on a
+    /// job in that state is answered by the caller's own "had already finished"
+    /// branch, which is the honest sentence for it — *nothing was waited for*, rather
+    /// than *you are about to be told*. Reporting `true` here for a job whose
+    /// delivery has already happened would make the two readings one.
+    ///
+    /// False for a job this session was never watching: a job from another session, a
+    /// scope's contents, anything a runtime with no daemon behind it sees. Those
+    /// waits keep blocking for exactly as long as they were asked to.
+    pub fn delivering(&self, job: &str) -> bool {
+        self.watching.lock().expect("job watchers").contains(job)
+    }
+
     /// Stop every watcher this set has spawned. Called when the session's backend
     /// closes: the threads wake within [`WATCH_CHUNK`], fail to upgrade their
     /// handles, and exit without publishing.
@@ -431,6 +454,68 @@ mod tests {
             .filter(|e| matches!(&e.event, SessionEvent::JobSettled { job, .. } if job == &id.0))
             .count();
         assert_eq!(count, 1, "one job, one settlement");
+    }
+
+    /// **R23's question, answered by the one thing that can answer it.**
+    ///
+    /// `delivering` is what `job_wait` asks before it decides whether to block, so
+    /// the two readings it must get right are: **true** while a watcher is live for
+    /// that job — the promise is real and the wait would be waiting for something
+    /// already in flight — and **false** everywhere else. The false cases are the
+    /// whole of "R23 removes one case and only that one": a job this session never
+    /// watched keeps blocking, and so does a job whose settlement has already been
+    /// published.
+    ///
+    /// The settled case is the subtle one and is asserted separately from the
+    /// never-watched one on purpose. Both are `false`, but for different reasons and
+    /// with different consequences: for a settled job `job_wait`'s own "had already
+    /// finished" branch answers, which is the honest sentence — *nothing was waited
+    /// for* — while for an unwatched job the wait really does block, which is what
+    /// the operator's "a deliberate block before a dependent step" depends on.
+    #[test]
+    fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
+        let hub = Hub::new("s-jobs");
+        let host = a_host();
+        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+
+        let id = spawn_a_short_job(&host, "30");
+
+        // Before anything watched it: not delivering, so a wait on it blocks.
+        assert!(
+            !watchers.delivering(&id.0),
+            "a job nobody watches must not claim its answer is on the way"
+        );
+
+        watchers.watch(id.0.clone());
+        assert!(
+            watchers.delivering(&id.0),
+            "a live watcher IS the promise: the settlement will be submitted to the \
+             model whether it asks or not"
+        );
+        // Per job, not per session. The closure `job_wait` is given takes an id for
+        // exactly this reason, and a second id must not ride on the first's watcher.
+        assert!(
+            !watchers.delivering("j-not-this-one"),
+            "the promise is per job; another id must not inherit it"
+        );
+
+        // Let it settle: the watcher publishes and ends, so it is no longer
+        // delivering — and the wait on it is answered by the caller's own
+        // already-finished branch instead.
+        host.kill_job(&id).expect("killing the job settles it");
+        wait_for_settlement(&hub, &id.0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while watchers.delivering(&id.0) {
+            assert!(
+                Instant::now() < deadline,
+                "the watcher must stop claiming delivery once it has delivered"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !watchers.delivering(&id.0),
+            "a settled job is not being delivered any more; it HAS been"
+        );
     }
 
     /// **R7: the settlement reaches the MODEL, not only the heads.**
