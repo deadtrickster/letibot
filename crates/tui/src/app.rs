@@ -551,6 +551,26 @@ pub const RECONNECT_BACKOFF_MS: u64 = 2_000;
 /// has told them nothing they could not see for themselves.
 pub const LINK_IMPATIENT_MS: u64 = 15_000;
 
+/// **How long a status notice stays on the screen** — in wall-clock milliseconds.
+///
+/// **1600 is the number that was already in effect, measured rather than chosen.** The
+/// old countdown was 60 *frames*, and on the live head that was 1.6 s of wall time (about
+/// 38 loop passes a second on an idle screen). So this changes the **unit** and not the
+/// behaviour: the same sentence stays for the same second and a half, on a busy screen as
+/// on a quiet one.
+///
+/// **Why the unit matters.** A TTL counted in frames is a timer that stops when the
+/// frames stop — which is exactly when a notice is left standing longest. It was six
+/// seconds on a head woken ten times a second, instant under `--replay`, and — because
+/// the old body was guarded on a positive count — *permanent* for a notice whose count
+/// had already reached zero. That is the shape R13 already fixed once for the elapsed
+/// time of a running call: the clock belongs to the wall, not to the render loop.
+///
+/// leticl's `+notice-ttl-ms+` is the same 1600, reached the same way from the same 60
+/// frames; see its `chrome.lisp` for the measurement. The two heads must not drift here,
+/// because the operator reads the same sentence for the same length of time on both.
+pub const NOTICE_MS: u64 = 1_600;
+
 /// line. See `crates/ui/DESIGN.md` §2.3.
 #[derive(Debug, Clone)]
 struct CallRow {
@@ -1043,9 +1063,22 @@ pub struct App {
     /// and it must not be what anybody sees by accident.
     pub raw_calls: bool,
     notice: Option<String>,
-    /// Frames the notice has left. A notice that never expires becomes furniture,
-    /// and the old one replaced the input line for the rest of the session.
-    notice_ttl: u32,
+    /// **When the notice stops being news, on this head's own clock** — the same
+    /// milliseconds [`App::clock`] is fed and the same ones a running call's elapsed
+    /// time is measured against.
+    ///
+    /// `None` is a notice **nobody started a clock on**, which a direct write to
+    /// `notice` can still make. There is one such writer left — the resync line, which
+    /// goes through [`App::say`] for exactly this reason — and it is written down here
+    /// because a note with no clock is the note that can never be cleared: leticl's
+    /// live defect was a magenta `permission answered` that stood for the rest of the
+    /// session, and this field is what makes that state visible as a type rather than as
+    /// a countdown somebody forgot to start.
+    ///
+    /// **A countdown of frames was the defect, not the number.** It made a notice's
+    /// lifetime a fact about the render loop rather than about the reader: see
+    /// [`NOTICE_MS`], which is also where the two symptoms and the fix are written down.
+    notice_until: Option<u64>,
     help: bool,
     /// The session picker, which is a screen like `help` rather than a mode with a
     /// cursor. Same argument as the folds: there is one input surface here and it
@@ -1787,7 +1820,7 @@ impl App {
             tools: Fold::Folded,
             raw_calls: false,
             notice: None,
-            notice_ttl: 0,
+            notice_until: None,
             help: false,
             picker: false,
             mode_picker: false,
@@ -2445,7 +2478,14 @@ impl App {
                 self.resyncs += 1;
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
-                self.notice = Some(format!("resync: {reason}"));
+                // **Through `say`, so this line has a clock like every other.** It used to
+                // be a direct write to the slot, which armed no countdown: the sentence
+                // then stood until the next notice replaced it, for the rest of the
+                // session. The reason is worth reading and is not worth keeping — the
+                // `resyncs` counter holds it, the alarm triangle repeats it, and
+                // `/status` spells it out — so it is news like the rest, and `say` is the
+                // one writer that starts a clock.
+                self.say(&format!("resync: {reason}"));
                 self.load(*snapshot);
                 Disposition::Control
             }
@@ -3758,9 +3798,17 @@ impl App {
     /// after the first press — that is the entire mechanism by which anyone
     /// discovers a double-tap exists.
     pub fn key(&mut self, k: Key) -> Option<Action> {
-        // Any key is an acknowledgement of whatever the notice said.
-        if !matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
-            self.notice_ttl = self.notice_ttl.min(1);
+        // **Any key is an acknowledgement of whatever the notice said**: the deadline
+        // moves to now, so this tick's `screen()` — which runs below the key handling —
+        // takes the sentence down before anything is drawn. The arrows and the paging
+        // keys are exempt because they are the keys a reader scrolls *with*.
+        //
+        // A notice nobody timed is not the reader's to dismiss, exactly as only `say`
+        // starts a clock: a key moves a deadline, it does not invent one.
+        if !matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown)
+            && self.notice_until.is_some()
+        {
+            self.notice_until = Some(self.now_ms);
         }
         // **The `allow-all` confirmation owns the keyboard too**, and for the same
         // reason the password field does: a question this consequential must not be
@@ -5773,13 +5821,17 @@ impl App {
             .collect()
     }
 
-    /// Post a transient line. It lives for a few frames and then gets out of the
-    /// way; it does **not** take the input line's place, which is what the old one
-    /// did — after the first prompt of a session there was nowhere to see what you
+    /// Post a transient line. It lives for [`NOTICE_MS`] of **wall time** and then gets
+    /// out of the way; it does **not** take the input line's place, which is what the old
+    /// one did — after the first prompt of a session there was nowhere to see what you
     /// were typing, for the rest of the session.
+    ///
+    /// **The one writer of the notice, and it is the one that starts the clock.** Both
+    /// halves in one `setf` is the point: a sentence nobody timed is a sentence nobody can
+    /// get rid of, and there is now no way to set one without starting its clock.
     fn say(&mut self, text: &str) {
         self.notice = Some(text.to_string());
-        self.notice_ttl = 60;
+        self.notice_until = Some(self.now_ms.saturating_add(NOTICE_MS));
     }
 
     fn turn_running(&self) -> bool {
@@ -6390,10 +6442,15 @@ impl App {
         // Click mapping has to redo this frame's arithmetic without a repaint;
         // the height the frame was composed for is the fact it needed.
         self.screen_rows = h;
-        if self.notice_ttl > 0 {
-            self.notice_ttl -= 1;
-            if self.notice_ttl == 0 {
+        // **The notice's clock, read rather than decremented.** A comparison against the
+        // head's own clock is the whole mechanism: `say` sets a deadline and a key moves it
+        // to now, and this is the frame either of those takes effect on. Nothing here
+        // counts frames, so the sentence's lifetime is the same on a head woken ten times a
+        // second and on one that is quiet — see [`NOTICE_MS`].
+        if let Some(until) = self.notice_until {
+            if self.now_ms >= until {
                 self.notice = None;
+                self.notice_until = None;
             }
         }
 
@@ -9439,10 +9496,11 @@ impl App {
         out
     }
 
-    /// Drop the transient notice, once the operator has had a frame to see it.
+    /// Drop the transient notice, once the operator has had a frame to see it, and stop
+    /// whatever clock it started.
     pub fn clear_notice(&mut self) {
         self.notice = None;
-        self.notice_ttl = 0;
+        self.notice_until = None;
     }
 }
 
@@ -17401,18 +17459,77 @@ mod tests {
     #[test]
     fn a_notice_does_not_outlive_its_welcome_or_hide_the_input() {
         let mut a = app();
+        a.clock(1_000);
         a.apply(ServerFrame::Accepted {
             client_request_id: "c1".into(),
             seq: 3,
             note: "stale expected_seq: queued anyway as a follow-up user item".into(),
         });
         assert!(a.screen(80, 12).join("\n").contains("queued anyway"));
+        // **Frames do not age it** (§11.3). Two hundred repaints at the same millisecond
+        // leave the sentence exactly where it was — which is the whole point of moving the
+        // clock off the frame and onto the wall: a notice's lifetime was 60 loop passes,
+        // which is 6 s on a busy head, instant under `--replay`, and for ever on one whose
+        // counter had already reached zero.
         for _ in 0..200 {
             a.screen(80, 12);
         }
         assert!(
+            a.screen(80, 12).join("\n").contains("queued anyway"),
+            "200 repaints is not a duration"
+        );
+        a.clock(1_000 + NOTICE_MS);
+        assert!(
             !a.screen(80, 12).join("\n").contains("queued anyway"),
             "a notice that never expires becomes furniture"
+        );
+    }
+
+    /// **A notice expires in TIME, on this head's clock** — §11.3, and R13's second
+    /// symptom. The mirror of leticl's `a-notice-expires-and-an-alarm-does-not`.
+    #[test]
+    fn a_notice_expires_in_time_and_not_in_frames() {
+        let mut a = app();
+        a.clock(1_000);
+        a.say("hello");
+        assert_eq!(
+            a.notice_until,
+            Some(1_000 + NOTICE_MS),
+            "the clock started, at the deadline — not a countdown"
+        );
+        assert!(a.screen(80, 12).join("\n").contains("hello"));
+        // 200 repaints at one millisecond: a frame is a rendering of time, not a unit of it.
+        for _ in 0..200 {
+            a.screen(80, 12);
+        }
+        assert!(
+            a.screen(80, 12).join("\n").contains("hello"),
+            "frames do not age a notice"
+        );
+        // **The boundary, and not \"eventually\": present a millisecond before the
+        // deadline, gone the millisecond it is due — and never `screen()` in between, so
+        // the only thing that moved is the clock.
+        a.clock(1_000 + NOTICE_MS - 1);
+        assert!(
+            a.screen(80, 12).join("\n").contains("hello"),
+            "still there a millisecond before"
+        );
+        a.clock(1_000 + NOTICE_MS);
+        assert!(
+            !a.screen(80, 12).join("\n").contains("hello"),
+            "gone the millisecond it is due"
+        );
+        assert_eq!(a.notice_until, None, "and its clock stopped with it");
+        // **A key is the acknowledgement, and it moves the deadline rather than the text:**
+        // the sentence survives the keypress and is taken down by the frame that follows
+        // it, which is the behaviour the frame-count version had.
+        a.clock(2_000);
+        a.say("again");
+        let _ = a.key(Key::Char('x'));
+        assert!(a.notice.is_some(), "still there until the frame it is drawn on");
+        assert!(
+            !a.screen(80, 12).join("\n").contains("again"),
+            "and the next frame takes it down"
         );
     }
 
