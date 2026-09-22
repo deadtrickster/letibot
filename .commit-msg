@@ -1,123 +1,196 @@
-the panes and the promote are reachable as verbs, and a key that scrolls a pane moves that pane
+R18: a call with no path is judged on what it does, and a fact named workspace comes from the workspace
 
-Two §6 items, and the second is two defects of one shape — **the key moved something
-other than what the footer under it promised.**
-
-## §6: `/todos`, `/subagents`, `/peek`, `/resume`, `/promote`
-
-Each of the five had a **chord and no word**, which is two problems: a head driven over
-a pipe cannot reach them at all, and `/help` cannot teach a chord it has no name for.
-The chords stay — they are faster — and **every pair ends in one function**, so the two
-spellings cannot drift: `Key::CtrlP` and `/todos` both call `toggle_todos`, `CtrlO` and
-`/promote` both call `promote` (whose doc carries the argument about why the fact it
-guards is a running CALL and not a running turn), `CtrlG` and `/subagents` both call
-`toggle_subagents`.
-
-`/peek ID` and `/resume ID` take the daemon's id and are refused by name when the id is
-missing rather than sending an empty one to be refused for us. `/resume` sets
-`want_new_session`, which is the same two-step the picker takes for a row it labels *on
-disk* — attach where the daemon puts you, then ask — because `Attach` refuses a session
-the daemon does not hold.
-
-**And §7's C14 ruling says the completion table is the UNION of both heads' verbs.**
-C14 wants one shared artefact both trees read; that is a cross-tree change and is filed
-rather than half-done here, but **listing what this head implements is this head's half
-of it**, so `/todos`, `/subagents`, `/peek`, `/resume`, `/promote` and the two that were
-implemented and simply not listed (`/models`, `/resync`) are on it.
-
-## §6/C8: a key that scrolls a pane moves that pane
-
-**The page keys and the wheel reached the transcript while the job-output overlay was
-open.** The subagent view had been fixed for exactly this — `"a wheel in the subagent
-output view scrolled the conversation underneath it"` — and the job overlay, the same
-overlay one arm down and opened by the same kind of Enter, was left out. So a wheel over
-a job's output moved the conversation behind it and Esc came back to a transcript parked
-somewhere else. **One arm is a place to forget**, so both now go through
-`scroll_tail_overlay`, which is also where the sign of a tail-origin pane is written
-down once: a subagent's answer and a running job's newest bytes are at the END, so their
-offset counts rows hidden *below*, and moving toward the beginning ADDS to it.
-
-**The slash listing's arrows were inverted, and it had no page keys at all.**
-`pane_scroll` counts rows hidden **above the top** — `pane_window` is literally
-`skip(self.pane_scroll)` — so adding to it walks *down* the document, and the arms added
-on Up. `↑` scrolled a `/notes` listing toward its end while the footer under it said
-`up/down scrolls`. This is leticl's own finding in the same place — *"called with the
-top-origin sign, ↑ walked toward the END while the hint bar said otherwise"* — and the
-listing was also missing from the page-keys list, so PageDown moved the transcript under
-it. Both fixed.
-
-C8 states the general rule the requirement is measured against: *"a modal card owns the
-viewport: pgup/pgdn/wheel do not reach anything behind it."*
-
-## Two of my own tests caught real consequences, and both were wrong about what to assert
-
-- `/subagents` returns `None` and says nothing, because a screen appearing or
-  disappearing is its own feedback. My completion-table test asserted every listed verb
-  either asks the daemon or speaks, so it failed — **the behaviour is right and the
-  assertion was wrong.** It now diffs the pane flags, which is the actual observable.
-- The tab cycle's expectation encoded the old table. `/s` matches `sessions, switch,
-  status, subagents` in table order, so the cycle gained a member; the test names it,
-  which is stronger than before because it proves the new verb is reachable by Tab.
-
-## Tests
-
-- `the_panes_and_the_promote_are_reachable_as_verbs` — each verb, the pane it flips, the
-  chord agreeing with it, `/peek` and `/resume` carrying the id, and `/promote` in both
-  of its two silences (the second with a turn that has gone terminal while its call is
-  still running, which is the case the guard exists for).
-- `every_listed_slash_command_is_one_this_head_answers` — every entry in the table does
-  something observable and leaves the composer untouched, plus the seven names.
-- `a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it` — the job
-  overlay taking PageUp/PageDown/wheel while `self.scroll` stays 0; the listing's arrows
-  in both directions *and what the reader sees* (`skip(3)` puts `row 1` on top and takes
-  `row 0` off); and the listing taking PageDown.
-- `tab_completes_a_slash_command_and_more_tabs_cycle_the_matches` — updated for the cycle
-  the table now describes.
-
-`cargo test -p letibot-tui`: **315 passed, 0 failed, 4 ignored**.
-`cargo test -p letibot-ui`: **103 passed, 0 failed**.
-
-**Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
-a temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts.
-
-## `compact_live` — what it actually failed of, measured
-
-`letibot-harnessd --test compact_live` failed after 3151 s of test time, and the failure
-is **not** a hang, a timeout or a cache problem. The server answered turn 2 by name:
+The operator's card, twice over, from a session started with
+`--workspace /home/dead/Projects/letibot`:
 
 ```
-Http 400  "request (262194 tokens) exceeds the available context size
-           (262144 tokens), try increasing it"
-          n_prompt_tokens: 262194   n_ctx: 262144   exceed_context_size_error
+job_kill wants exec access [permission]
+ask — intents [read_file] — auto (a read inside the boundary)
+because: workspace: /
 ```
 
-So **turn 1 succeeded and turn 2's prompt is 50 tokens over the model's whole context.**
-That is a fact about the two numbers, not a knob to turn: a two-message conversation
-cannot honestly be 262k tokens, so something else is being sent — a system prompt or a
-tool-schema payload of that order, or turn 1's own reply — and this commit does not
-pretend to know which. What is worth recording is the exactness: the server said which
-limit was passed and by how much.
+and, later, the same `because:` line on **four consecutive cards including two ordinary
+`cargo test` invocations inside the tree.**
 
-**My first two readings of this were wrong and both are worth naming**, because this is
-the third time tonight a fact read off a screen was wrong:
+## `452d7dd` is innocent, verified twice over
 
-1. I said the test "hung" because it printed no `turn 1 ->` line in the first minutes.
-   It had not reached the print — or stdout was lost in the unwind — and 3151 s of
-test time is the *model* taking that long, not the test waiting on a lock.
-2. I then said it was contending for the singleton model server's KV with this session.
-   That was a plausible mechanism with no evidence, and the real answer was in the
-   failing assertion the whole time.
+Raised as a suspect on timing and a card — circumstantial, and the operator said so.
+**There is no code path from R11 to the workspace fact:**
 
-**And it is a live test on the server this session runs on.** Its own doc says *"never
-start a second model server to make a test pass"* — so it uses the one that is already
-serving. That is the right policy and it is also why this test cannot be re-run cheaply
-or in parallel, which is now recorded rather than discovered again.
+1. `crates/harnessd/src/answers.rs` in that commit is **+8 / −0** (`git show --stat`). A
+   pure addition cannot have dropped or reordered a field. The added lines are
+   `consulted: a.consulted` on `WireAdvice` and a new `last_reply()`.
+2. `crates/tools/src/adjudicate.rs`'s diff for that commit contains the string
+   `workspace` **zero times**. A first grep appeared to hit one; it was commit-message
+   prose, which `git show` prints above the diff. **That wrong reading was mine, and it
+   is the third of the night.**
+
+## The root cause: one accessor answering the other question
+
+`harnessd/src/harness.rs` builds an unconfined seat as
+
+```rust
+HostBackend::executable("/").with_cwd(&cfg.workspace)
+// "Reaching the whole host is not the same as starting at its root: a
+//  relative path, and a command's cwd, start in the workspace."
+```
+
+So for such a seat **`root_path()` is `/` and the workspace is the cwd** — both true, two
+different questions. `runtime.rs` filled `GateCall.workspace` from `root_path()`, and
+that string is the **first boundary fact**, which the head prints as `because: …`.
+
+**The configuration was right the whole time.** The accessor was answering *is this path
+inside the boundary* when the card was asking *where is this session*.
+
+Fixed by naming the question: a new `ExecBackend::workspace_path()` (default `None`,
+`HostBackend` returns `cwd`), and `runtime.rs` asks for the workspace first, `root_path`
+second, `describe()` last. **`root_path()` is unchanged and keeps its own callers** —
+`path_is_inside` wants the boundary, and for an unconfined seat "everything is inside"
+is the correct answer.
+
+## Two more sites with the same accessor, found while fixing this one
+
+- **`bash.rs`'s pre-command sweep.** `crate::detect::before(root)` runs a `git status` to
+  turn a shell's file rewrite into an edit card. Seeded from `/` it finds no repository,
+  so **the detection silently did nothing on exactly the sessions that can write
+  anything.** A guard whose failure mode is silence.
+- **`lsp.rs`'s root.** A language server rooted at `/` indexes the whole host instead of
+  the project.
+
+Both now ask for the workspace first. Same one-line shape, same reasoning.
+
+## The five points are not five defects. They are two, and the second is not a defect.
+
+### Points 2, 3 and 5 are ONE defect: a placeholder stated as a fact
+
+For a call with no target, no path and no command, the gate has nothing to describe the
+call with — and in three places it invented a placeholder and then stated the placeholder
+*as* the fact:
+
+| point | the card showed | what was behind it |
+|---|---|---|
+| 2 | `<no target argument>` | nothing had a target to name |
+| 3 | `because: workspace: /` | `root_path()` where the workspace was meant (above) |
+| 5 | ``Allow `<tool>` (this class)…`` | `NO_PROGRAM`, a **key** chosen so a grant over `bash` cannot cover a `write`, printed into a **label** |
+
+Point 5 is fixed by naming the sentinel: `NO_PROGRAM` is one constant, used by
+`grant_program`, by `intent.rs`'s `SecretFlow.program`, and **checked in `exec_options`
+before it can reach a label** — where a call with no program now names the class, which
+is the wording the other ladder already uses and is exactly true.
+
+Point 3's *other* half — the fact itself — is the accessor fix above.
+
+**And a fourth false statement, which the operator's requirement names directly:**
+`path_is_inside` answers **`true`** when there is no `path` key, so for a targetless call
+the brief did not merely mention a path that is not there — it **asserted** *"the path is
+inside the session's workspace"*, a claim about a path nobody named. The fact is now
+suppressed unless the call names one, and the absence is stated instead:
+
+> this call names no path, so it is judged on what it DOES rather than on where it points
+
+That is the requirement's own sentence, and the guard is `path_is_inside`'s own first
+line so the two cannot disagree about whether there is a path at all.
+
+### Points 1 and 4 are a FACT, correctly presented — and the card never says why
+
+The headline says **exec access** (the tool's declared `GateCall.access`) and the tier
+line says **auto** (layer A's reading of the *action*). Different things, both true.
+
+**So "auto" does not mean "do not ask", and the code is explicit about why**
+(`mode.rs:622-636`): clause 4 is enforced by the **runtime**, which consults the gate only
+when the tool's declared access is *not* read — *"a call that has reached this function is
+a call whose tool declared write, exec or network… `bash("cat x")` derives `Tier::Auto`…
+admitting it here would make `bash` unaskable for every read command."* And
+`mode.rs:606`: `Access::Read` is `Disposition::Admit` at every point, so a read is never
+asked about.
+
+**Therefore requirement 2 as literally stated — "a decision already marked auto is not
+re-asked" — cannot be implemented without making `bash` unaskable for every read command,
+which that file refuses by name and has a test against. It needs a ruling, not code, and
+it is raised rather than quietly skipped.**
+
+The operator's underlying complaint is nonetheless right, and the constructive reading is
+one clause: **a card that says `auto` and then asks has not said why it is asking.** The
+missing statement is the *access*, not a second tier:
+
+```
+ask — `job_kill` declares exec access, which always asks (auto is about the ACTION)
+```
+
+That satisfies "the card must not contradict itself" without touching the tier ladder.
+Not implemented here because it is a card-wording decision on the surface where the
+operator is asked to decide, and one of the two requirements it touches is unresolved.
+
+## leticl's finding, checked: does this head's snapshot arm do what its live arm does?
+
+leticl found a card arriving **inside a snapshot** drawing `expires in 29833973 min` —
+fifty-six years — because its live path converted a wire deadline and its snapshot path
+did not. That is the shape this head has met twice (R16's fork, R17's `orphan_bodies`).
+
+**Checked, and this head needs no conversion** — with a test rather than a sentence: the
+wire deadline is `event::now_ms()` (the epoch) and this head's clock is the epoch too, so
+a snapshot's deadline subtracts from `now_ms` with no constant between them.
+`a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live` asserts the same
+card reads `expires in 5 min` from a `Hello` snapshot as from the live renderer, and
+names the year-scale shape it would produce if that changed.
+
+## Tests — four new, all named in the run
+
+- `backend.rs::a_seat_rooted_at_the_host_still_reports_its_own_workspace` — **the
+  reproduction**: `HostBackend::writable("/").with_cwd(&dir)` has `root_path() == "/"` and
+  `workspace_path() == dir`; and a project-rooted backend has the two *equal*, which is
+  why the wrong accessor looked right.
+- `adjudicate.rs::a_call_with_no_path_is_not_described_by_a_path_it_does_not_have` — no
+  containment claim for a targetless call; the claim **kept** for a call that names
+  one, both inside and OUTSIDE; and the workspace fact prints the workspace it was handed.
+- `adjudicate.rs::the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placeholder`
+  — the sentinel cannot reach any label, and the ladder's ids/order/durable rung are
+  unchanged by the fix.
+- `harness.rs::the_gate_is_told_the_configured_workspace_and_not_a_root` — layer A gets
+  `cfg.workspace`, and follows `--workspace` rather than a constant.
+- `app.rs::a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live` — above.
+
+```
+cargo test -p letibot-tools         613 passed, 0 failed
+cargo test -p letibot-harnessd --lib 114 passed, 0 failed
+cargo test -p letibot-tui           316 passed, 0 failed, 4 ignored
+cargo test -p letibot-ui            103 passed, 0 failed
+```
+
+`--lib` for harnessd is deliberate: its **integration** suite contains `compact_live`,
+which drives three real turns against the singleton model server this session is itself
+running on. It failed earlier tonight after 3151 s with the server's own words —
+`request (262194 tokens) exceeds the available context size (262144)` — and is recorded
+separately; it is not a test that can be re-run cheaply or in parallel.
+
+## NOT VERIFIED, and the limit is structural
+
+**The end-to-end proof is deferred to a daemon restart, and cannot be otherwise.** The
+daemon gating this session was started at 23:55 from a binary built *before* these
+changes, and a fix landed now cannot take effect for the session running inside it —
+only the operator can restart it safely while the session is live. So:
+
+- **No card has been observed to read the right workspace.** What is proven is the unit:
+  the two accessors answer the two questions differently, the gate prints what it is
+  handed, and a targetless call makes no path claim.
+- **Reproducing the card on demand was not possible for the same reason** — the only way
+  to make it appear is `job_kill` with no argument, which is itself a card against the
+  old binary. The reproduction is the fix's own trigger.
+- `rustfmt --check` cannot run: it writes a temp file and `bash` is closed for that
+  direction by the circuit breaker, which only the operator lifts.
+
+**What to check after the restart**, in one line each: a `job_kill` card should read
+`workspace: /home/dead/Projects/letibot`; a card for a call with no `path` should say it
+names no path rather than asserting containment; and no card should print `<tool>`.
 
 ## Not in this commit
 
-**The rest of §6**: `q` closing any pane, `ctrl-o` into a subagent, clicks reaching five
-panes instead of two, and SGR mouse motion decoded.
+**Requirement 2 needs a ruling** — see above; implementing it as stated would make `bash`
+unaskable for every read command, against a recorded decision with a test.
 
-**§7 C14's shared table.** One artefact both heads read, with a test that they agree —
-which is the part that makes it a shared table rather than two lists that agree today.
+**The card's wording** — naming the access as the reason it is asking — is a decision on
+the surface where the operator is asked to decide, and one of the two requirements it
+touches is unresolved.
+
+**leticl's half.** The `<tool>` label may be shared; the snapshot-arm question was
+answered for this head in the test above.

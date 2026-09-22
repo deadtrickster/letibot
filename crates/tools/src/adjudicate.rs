@@ -600,6 +600,23 @@ pub fn permission_options(derived: Option<&str>) -> Vec<DecisionOption> {
 /// the grant it records is scoped the way the rule is: the program and the
 /// class, never exec at large.
 pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption> {
+    // **A call with no command has no program to name, so the label names the class.**
+    //
+    // `grant_program` answers [`NO_PROGRAM`] for a path-shaped call — `job_kill`,
+    // `write` — and that string is a *key*: it must match nothing a command produces so
+    // a grant over `bash` cannot cover a `write`. Printing it here produced an option
+    // reading *"Allow `<tool>` (this class) for the rest of the session"*, which is a
+    // placeholder standing where a noun belongs, on the one surface where the operator
+    // is asked to decide (R18's fifth point).
+    //
+    // The alternative is not a guess at a name — that is what the sentinel exists to
+    // avoid. It is the wording the other ladder already uses, because it is exactly
+    // true: there is no program, so what the grant covers is the class.
+    let session_label = if program == NO_PROGRAM {
+        "Allow this class for the rest of the session".to_string()
+    } else {
+        format!("Allow `{program}` (this class) for the rest of the session")
+    };
     let mut out = vec![
         DecisionOption {
             id: "allow_once".into(),
@@ -608,7 +625,7 @@ pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption>
         },
         DecisionOption {
             id: "allow_session".into(),
-            label: format!("Allow `{program}` (this class) for the rest of the session"),
+            label: session_label,
             kind: OptionKind::AllowSession,
         },
     ];
@@ -1577,6 +1594,20 @@ fn turn_seq(turn_id: &str) -> Option<u64> {
     turn_id.rsplit('#').next()?.parse().ok()
 }
 
+/// **The sentinel key for a call with no program — which is NOT a label.**
+///
+/// For a path-shaped tool call there is no program, and the tool's own name is not one
+/// — so it is this, which matches nothing a command produces. A grant taken over `bash`
+/// must not silently cover a `write` call.
+///
+/// **A key and never a label, and that distinction is not cosmetic.** It was rendered
+/// straight into an option on the gate card — *"Allow `<tool>` (this class) for the
+/// rest of the session"* — which is a placeholder standing where a noun belongs, on the
+/// one surface where the operator is asked to decide (R18's fifth point). Naming it is
+/// the fix: one definition, used where the key is built and where a label would print
+/// it.
+pub const NO_PROGRAM: &str = "<tool>";
+
 /// **What a grant is keyed on**: the program the shell will actually run.
 ///
 /// For a shell command it is the *last* stage's program name, which is a choice worth
@@ -1586,9 +1617,7 @@ fn turn_seq(turn_id: &str) -> Option<u64> {
 /// one still falls out, because the **intent set** is the union across stages and the
 /// grant covers only what it was shown.
 ///
-/// For a path-shaped tool call there is no program, and the tool's own name is not one
-/// — so it is `"<tool>"`, which matches nothing a command produces. A grant taken over
-/// `bash` must not silently cover a `write` call.
+/// [`NO_PROGRAM`] where there is no command to read one out of.
 fn grant_program(baseline: &crate::intent::Baseline) -> String {
     baseline
         .command
@@ -1596,7 +1625,7 @@ fn grant_program(baseline: &crate::intent::Baseline) -> String {
         .and_then(|n| n.stages.last())
         .and_then(|s| s.program_name())
         .map(str::to_string)
-        .unwrap_or_else(|| "<tool>".to_string())
+        .unwrap_or_else(|| NO_PROGRAM.to_string())
 }
 
 /// §11.4's refuse-list, evaluated **before any adjudicator** and overridable by
@@ -2148,15 +2177,41 @@ impl AdjudicatedGate {
                     .to_string(),
             ]
         } else {
-            vec![
-                format!("workspace: {}", call.workspace),
-                format!(
+            let mut f = vec![format!("workspace: {}", call.workspace)];
+            // **A call with no path argument is judged on what it DOES** (R18).
+            //
+            // This fact was printed unconditionally, so a call whose arguments name no
+            // path — `job_kill` with nothing, or any tool that acts on something else —
+            // was described by a path it does not have. And `path_is_inside` answers
+            // `true` when the `path` key is absent, so the card did not merely mention a
+            // path that is not there: it **asserted** *"the path is inside the session's
+            // workspace"*, a claim about a path nobody named.
+            //
+            // The guard is `path_is_inside`'s own first line, on purpose: the two ask
+            // the same question and must not be able to disagree about whether there is
+            // a path at all.
+            let names_a_path = call
+                .args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .is_some_and(|p| !p.trim().is_empty());
+            if names_a_path {
+                f.push(format!(
                     "the path is {} the session's workspace",
                     if inside { "inside" } else { "OUTSIDE" }
-                ),
+                ));
+            } else {
+                f.push(
+                    "this call names no path, so it is judged on what it DOES rather \
+                     than on where it points"
+                        .to_string(),
+                );
+            }
+            f.push(
                 "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
                     .to_string(),
-            ]
+            );
+            f
         };
         if creates && !network {
             facts.push(
@@ -3640,6 +3695,90 @@ fn never_hit(args: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
 
+    /// **R18's fifth point: the option label carried the literal `<tool>`.**
+    ///
+    /// `grant_program` answers [`NO_PROGRAM`] for a path-shaped call — `job_kill`,
+    /// `write` — and that string is a **key**: it must match nothing a command produces
+    /// so a grant taken over `bash` cannot cover a `write`. It was also being printed
+    /// into the ladder, so the operator's card offered
+    ///
+    ///     Allow `<tool>` (this class) for the rest of the session
+    ///
+    /// which is a placeholder standing where a noun belongs, on the one surface where a
+    /// person is asked to decide. The card was reproduced from the operator's screen on
+    /// 2026-09-22 with `job_kill` and no argument — an Exec-access tool whose arguments
+    /// contain no command line, which is exactly the case that reaches this arm.
+    ///
+    /// The fix is not a guess at a name; it is the wording the other ladder already uses
+    /// for the same situation, because it is exactly true when there is no program: what
+    /// the grant covers is the class.
+    #[test]
+    fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placeholder() {
+        // The bug, as an assertion: the sentinel must not appear in any label.
+        for (program, offered) in [
+            (NO_PROGRAM, exec_options(None, NO_PROGRAM)),
+            ("cargo", exec_options(None, "cargo")),
+            ("cargo", exec_options(Some("cargo test"), "cargo")),
+        ] {
+            for o in &offered {
+                assert!(
+                    !o.label.contains(NO_PROGRAM),
+                    "the sentinel key {NO_PROGRAM:?} reached a label for {program:?}: {:?}",
+                    o.label
+                );
+                assert!(
+                    !(o.label.contains('<') && o.label.contains('>')),
+                    "a placeholder reached a label: {:?}",
+                    o.label
+                );
+            }
+        }
+
+        // And the two cases still say different things, which is the point of naming the
+        // program when there is one.
+        let named = exec_options(None, "cargo");
+        let session = named
+            .iter()
+            .find(|o| o.id == "allow_session")
+            .expect("the session rung");
+        assert!(session.label.contains("cargo"), "{:?}", session.label);
+        assert!(session.label.contains("this class"), "{:?}", session.label);
+
+        let class_only = exec_options(None, NO_PROGRAM);
+        let session = class_only
+            .iter()
+            .find(|o| o.id == "allow_session")
+            .expect("the session rung");
+        assert_eq!(
+            session.label, "Allow this class for the rest of the session",
+            "a call with no program must name the class, not a placeholder"
+        );
+
+        // **The ladder is otherwise unchanged**: same ids, same order, and the durable
+        // rung still appears when — and only when — the matcher would honour it. A fix to
+        // one label must not quietly reshape the ladder.
+        let with_durable = exec_options(Some("cargo test"), "cargo");
+        let ids: Vec<&str> = with_durable.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "allow_once",
+                "allow_session",
+                "allow_always",
+                "deny",
+                "deny_and_tell"
+            ],
+            "the ladder's shape moved"
+        );
+        let without_durable = exec_options(None, "cargo");
+        let no_durable: Vec<&str> = without_durable.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            no_durable,
+            vec!["allow_once", "allow_session", "deny", "deny_and_tell"],
+            "a rung the matcher would ignore is left off rather than shown and declined"
+        );
+    }
+
     /// **A host the operator admitted once is not a first contact again.** The
     /// rule is `network_egress_to_an_UNSEEN_host`; `saw_host` existed for the
     /// second contact and nothing called it, so a session asked about the same
@@ -4153,6 +4292,68 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    /// **R18: a call that names no path is not described by a path it does not have.**
+    ///
+    /// The facts are what the head prints as `because: …` and what the oracle is shown,
+    /// and one of them asserted *"the path is inside the session's workspace"* for a
+    /// call with **no `path` argument at all** — because `path_is_inside` answers `true`
+    /// when the key is absent. Measured on the operator's screen 2026-09-22: a
+    /// `job_kill` with no arguments, described by a path nobody had named.
+    ///
+    /// The requirement's own words: *"a tool call with no path argument is judged on
+    /// what it DOES, not on a path it does not have — resolving no-target to `/` makes
+    /// every targetless call a call on the whole filesystem, which is the least true
+    /// reading available."*
+    #[test]
+    fn a_call_with_no_path_is_not_described_by_a_path_it_does_not_have() {
+        let mut g = AdjudicatedGate::closed();
+
+        // No `path` key at all: no containment claim, and the absence is stated.
+        let no_path = g.request_for(&call("job_kill", &json!({"job": "j1"})));
+        let brief = no_path.brief();
+        assert!(
+            !brief.contains("the path is inside") && !brief.contains("the path is OUTSIDE"),
+            "a containment claim about a path nobody named:\n{brief}"
+        );
+        assert!(
+            brief.contains("names no path"),
+            "the brief must say the call has no path:\n{brief}"
+        );
+
+        // **A call that does name one keeps the fact, both ways round.** Without this
+        // half the test would pass on a gate that had simply stopped saying it.
+        let inside = g.request_for(&call("write", &json!({"path": "a/b.txt", "content": "x"})));
+        assert!(
+            inside
+                .brief()
+                .contains("the path is inside the session's workspace"),
+            "{}",
+            inside.brief()
+        );
+        let outside = g.request_for(&call(
+            "write",
+            &json!({"path": "/etc/passwd", "content": "x"}),
+        ));
+        assert!(
+            outside
+                .brief()
+                .contains("the path is OUTSIDE the session's workspace"),
+            "{}",
+            outside.brief()
+        );
+
+        // **And the workspace fact prints the workspace it was handed.** This is the
+        // fact the operator saw on four cards as `workspace: /`; the gate's half of
+        // that fix is that it prints what it is given rather than substituting a root,
+        // and `a_seat_rooted_at_the_host_still_reports_its_own_workspace` in
+        // `backend.rs` is the other half.
+        assert!(
+            inside.brief().contains("workspace: /w"),
+            "the brief must print the workspace it was handed:\n{}",
+            inside.brief()
+        );
+    }
 
     fn call<'a>(name: &'a str, args: &'a Value) -> GateCall<'a> {
         GateCall {

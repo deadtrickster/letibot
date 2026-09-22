@@ -181,6 +181,28 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// **Where a relative path starts, as this backend is actually configured.**
+    /// `None` when the substrate has no such thing.
+    ///
+    /// **This is not [`Self::root_path`], and conflating them is R18.** An unconfined
+    /// session's root is `/` — that is what *unconfined* means, and it is the right
+    /// answer to *is this path inside the boundary*, which is what `root_path` is for.
+    /// It is the wrong answer to *which directory is this session working in*: a fact
+    /// named `workspace` filled from `root_path` told every card in such a session
+    /// `workspace: /` — the whole filesystem, the least true reading available, on the
+    /// one surface where the operator is asked to decide.
+    ///
+    /// Measured 2026-09-22: a daemon started with `--workspace /home/dead/Projects/`
+    /// `letibot` put `because: workspace: /` on four consecutive cards, including two
+    /// ordinary `cargo test` invocations inside the tree. The configuration was right;
+    /// the accessor was answering a different question.
+    ///
+    /// A **trait** method rather than a downcast, because the fact is wanted by the
+    /// code that fills `GateCall` and that code holds a `dyn ExecBackend`.
+    fn workspace_path(&self) -> Option<String> {
+        None
+    }
+
     /// The session's scratch directory, where tools put working artifacts that are
     /// too big for the transcript — a fetched page, a generated script. Per-session
     /// and set by whoever opened the session, so every tool in it sees the same
@@ -800,6 +822,14 @@ impl ExecBackend for HostBackend {
         Some(self.root.to_string_lossy().to_string())
     }
 
+    /// The session's working directory** — which for an unconfined session is *not*
+    /// the root. See [`ExecBackend::workspace_path`]: `harnessd` builds an unconfined
+    /// seat as `HostBackend::executable("/").with_cwd(&cfg.workspace)`, so `/` is the
+    /// root and the workspace is the cwd. Both are true and they are different facts.
+    fn workspace_path(&self) -> Option<String> {
+        Some(self.cwd.to_string_lossy().to_string())
+    }
+
     fn scratch_dir(&self) -> Option<String> {
         self.scratch.as_ref().map(|p| p.to_string_lossy().to_string())
     }
@@ -1118,6 +1148,41 @@ pub fn default_skip(e: &DirEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// **R18's root cause, in one assertion.**
+    ///
+    /// An unconfined seat is built as
+    /// `HostBackend::executable("/").with_cwd(&workspace)`, so the two accessors answer
+    /// two different questions — and filling a fact named `workspace` from `root_path()`
+    /// put `because: workspace: /` on four of the operator's cards on 2026-09-22,
+    /// including two ordinary `cargo test` calls well inside the tree. The daemon's
+    /// configuration was right the whole time; the accessor was answering *is this path
+    /// inside the boundary* when the card was asking *where is this session*.
+    #[test]
+    fn a_seat_rooted_at_the_host_still_reports_its_own_workspace() {
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .expect("a canonical temp dir");
+        // `writable` rather than `executable`: the same root and the same `with_cwd`,
+        // and it needs no cgroup to build.
+        let b = HostBackend::writable("/")
+            .expect("a whole-host backend")
+            .with_cwd(&dir)
+            .expect("the session's workspace");
+        assert_eq!(b.root_path().as_deref(), Some("/"), "the root is the host");
+        assert_eq!(
+            b.workspace_path().as_deref(),
+            Some(dir.to_string_lossy().as_ref()),
+            "and the workspace is where the session works"
+        );
+        // The property the second question exists for: a relative path starts here,
+        // not at `/`.
+        assert_eq!(b.cwd(), dir.as_path());
+        // **A confined seat has the two equal, which is why this hid.** With
+        // `root == workspace` the two accessors agree, so the wrong one looks right.
+        let c = HostBackend::new(&dir).expect("a project-rooted backend");
+        assert_eq!(c.root_path(), c.workspace_path());
+    }
     use super::*;
 
     fn fixture() -> (tempdir::TempDir, HostBackend) {

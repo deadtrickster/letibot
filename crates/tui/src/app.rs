@@ -20314,6 +20314,76 @@ mod tests {
         assert!(matches!(b.key(Key::Enter), Some(Action::Answer { .. })));
     }
 
+    /// **leticl's finding, checked here: does the SNAPSHOT arm draw what the live arm
+    /// draws?**
+    ///
+    /// leticl found a card arriving inside a snapshot drawing `expires in 29833973 min`
+    /// — fifty-six years — because its live path converted a wire deadline into the
+    /// head's own clock and its snapshot path did not. That is the shape this head has
+    /// met twice already: R16's fork (the live arm marks the pending echo, the snapshot
+    /// arm has to be told to) and R17's `orphan_bodies` (the live arm files a row, a
+    /// snapshot replaces the table). So it is checked rather than assumed, which is what
+    /// the operator asked for.
+    ///
+    /// **This head needs no conversion**, and that is a claim with a test rather than a
+    /// sentence: the wire deadline is `letibot_sessionlog::event::now_ms()` — the epoch —
+    /// and this head's clock is the epoch too (`bin::now_ms`, `driver::now_ms`), so a
+    /// snapshot's deadline subtracts from `now_ms` with no constant between the two. The
+    /// assertion is that a card from a snapshot reads the same number a live one does, at
+    /// the daemon's real 300 s budget.
+    #[test]
+    fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
+        use letibot_sessionlog::event::OptionKind;
+        const NOW: u64 = 1_788_984_000_000;
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.deadline = Some(NOW + 300_000);
+
+        // The live arm's renderer, which §1.6's test covers at length.
+        let mut live = app();
+        live.clock(NOW);
+        let from_live = live.decision_lines(&d, 200).join("\n");
+        assert!(from_live.contains("expires in 5 min"), "{from_live}");
+
+        // **The snapshot arm** — the half that goes wrong in this family: the same card,
+        // arriving in a view rather than as an event.
+        let mut snap = app();
+        snap.clock(NOW);
+        snap.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: "h1".into(),
+            dropped: 0,
+            snapshot: Some(Box::new(Snapshot {
+                session_id: "s".into(),
+                seq: 0,
+                dropped: 0,
+                items_dropped: 0,
+                items: Vec::new(),
+                turn: None,
+                open_decisions: vec![d.clone()],
+                settled_decisions: Vec::new(),
+                warnings: Vec::new(),
+                heads: Vec::new(),
+            })),
+            resumed_from: None,
+            scrubbed: Default::default(),
+            wiring: wiring(),
+            sessions: Vec::new(),
+        });
+        let from_snapshot = snap.screen(200, 30).join("\n");
+        assert!(
+            from_snapshot.contains("expires in 5 min"),
+            "the snapshot arm drew a different countdown from the live one — and if the \
+             number is astronomical that is exactly the shape leticl found:\n{from_snapshot}"
+        );
+        // The year-scale shape, refused by name: five figures before the unit is not a
+        // countdown, it is a second epoch wearing one.
+        assert!(
+            !from_snapshot.contains("000 min"),
+            "a second epoch in minutes:\n{from_snapshot}"
+        );
+    }
+
     /// **A refused call is not a decision, so nothing about deadlines is drawn on one.**
     /// The clause belongs to a card that will wait for an answer, and a card that has
     /// already settled cannot be left to expire again.

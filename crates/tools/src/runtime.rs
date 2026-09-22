@@ -1318,9 +1318,24 @@ impl ToolRuntime {
             .filter(|a| a.is_unattended() && !declared.is_unattended())
             .unwrap_or(declared);
         if !effective.is_unattended() {
+            // **The workspace, not the root — and the difference is R18.**
+            //
+            // This asked the backend for `root_path()`. For an unconfined session that
+            // is `/`, because *unconfined* means the whole host and `/` is the right
+            // answer to *is this path inside the boundary*. It is the wrong answer to
+            // *which directory is this session working in*, and this string is the
+            // first boundary fact — which the head prints as `because: …` on the gate
+            // card. Measured 2026-09-22: four consecutive cards in a session started
+            // with `--workspace /home/dead/Projects/letibot` said
+            // `because: workspace: /`, including two ordinary `cargo test` calls.
+            //
+            // `workspace_path()` answers the second question; `root_path()` stays as
+            // the fallback for a substrate that only knows its root, and `describe()`
+            // (a sentence, not a path) as the last resort rather than the second.
             let workspace = self
                 .backend
-                .root_path()
+                .workspace_path()
+                .or_else(|| self.backend.root_path())
                 .unwrap_or_else(|| self.backend.describe());
             let target_exists = args
                 .get("path")

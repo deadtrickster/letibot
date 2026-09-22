@@ -2923,7 +2923,12 @@ impl Baseline {
                     rule,
                     path: p.to_string(),
                     store: store.clone(),
-                    program: "<tool>".into(),
+                    // The same sentinel `grant_program` keys a grant on, and for the same
+                    // reason: what touched this has no program name because it was a
+                    // tool, not a command. One definition, so the two cannot spell it
+                    // differently — and so the day one of them renders it as a *label*
+                    // instead of a key, both are fixed at once (R18's fifth point).
+                    program: crate::adjudicate::NO_PROGRAM.into(),
                     why: why.clone(),
                 });
                 if rule != FlowRule::WriteIntoSecretStore {

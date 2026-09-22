@@ -253,7 +253,13 @@ impl Tool for LspTool {
                 );
             }
         };
-        let root = ctx.backend.root_path().unwrap_or_default();
+        // **The workspace, not the backend's root** (R18): a language server rooted at
+        // `/` is a server that indexes the whole host instead of the project.
+        let root = ctx
+            .backend
+            .workspace_path()
+            .or_else(|| ctx.backend.root_path())
+            .unwrap_or_default();
         match diagnostics(path, language, &root, &content, &self.config) {
             Ok(items) if items.is_empty() => Invocation::ok("no diagnostics."),
             Ok(items) => Invocation::ok(format!(

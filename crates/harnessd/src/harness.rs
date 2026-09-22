@@ -6415,6 +6415,29 @@ mod tests {
         );
     }
 
+    /// **R18's daemon half: layer A is given the configured workspace.**
+    ///
+    /// The wrong fact the operator's four cards showed came from the *backend's root*
+    /// (`/` for an unconfined seat), not from here — `surroundings_for` has always used
+    /// `cfg.workspace`. This pins it, because two halves of one program answering *where
+    /// is this session* differently is exactly the shape of that defect, and nothing in
+    /// either half would have noticed.
+    #[test]
+    fn the_gate_is_told_the_configured_workspace_and_not_a_root() {
+        let mut cfg = Config::for_this_box("/home/dead/Projects/letibot");
+        assert_eq!(
+            surroundings_for(&cfg).workspace.as_deref(),
+            Some("/home/dead/Projects/letibot")
+        );
+        // …and it follows `--workspace` rather than a constant, which is the property
+        // that makes the configured value the one that reaches the classifier.
+        cfg.workspace = std::path::PathBuf::from("/tmp/somewhere-else");
+        assert_eq!(
+            surroundings_for(&cfg).workspace.as_deref(),
+            Some("/tmp/somewhere-else")
+        );
+    }
+
     /// **The stop must not blame the model for working.**
     ///
     /// The sentence this replaced was *"the model called tools 12 times without

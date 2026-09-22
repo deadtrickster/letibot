@@ -142,7 +142,18 @@ impl Tool for Bash {
         // diff and no record; the sweep after the command is what turns it back
         // into an edit card. See `crate::detect` — one `git status` on a clean
         // tree, and nothing read.
-        let root = ctx.backend.root_path().map(std::path::PathBuf::from);
+        // **The workspace, not the backend's root** (R18). `root_path()` is `/` for an
+        // unconfined session — the right answer to *is this path inside the boundary*,
+        // and the wrong one for *where is the tree I am watching*, which is the only
+        // question a `git status` can answer. Seeded from `/` the sweep finds no
+        // repository, so a shell that rewrites a file hands the head no diff and the
+        // detection this exists for silently does nothing on exactly the sessions that
+        // can write anything.
+        let root = ctx
+            .backend
+            .workspace_path()
+            .or_else(|| ctx.backend.root_path())
+            .map(std::path::PathBuf::from);
         let before = root.as_deref().map(crate::detect::before);
 
         // The second gate, and it is a different mechanism from the first: a
