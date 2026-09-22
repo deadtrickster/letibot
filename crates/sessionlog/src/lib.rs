@@ -71,13 +71,16 @@ pub use event::{
 };
 pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
 pub use question::{AnswerDefect, QuestionAnswer};
-pub use registry::{Bell, CreateError, Registry, SessionBrief, SessionWiring};
+pub use registry::{Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame, protocol_skew};
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{
     CallState, CallView, OpenDecision, SessionView, SettledDecision, Snapshot, SnapshotItem,
     TurnState, TurnView, ViewBounds,
+    // **The one definition of a row's `body`** (R19.2b), re-exported because the daemon's
+    // store-backed reader answers the same question and must not answer it differently.
+    body_of,
 };
 
 #[cfg(feature = "turn")]

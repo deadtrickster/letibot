@@ -1,90 +1,75 @@
-the sanitiser guards foreign text, not the head's own — and takes a sequence whole
+FetchRow answers from the store for a row the view has trimmed
 
-The operator's screen, live for the first time on the 07:04 binary, from my own
-`81990b3`: **`/notes` drew its rows as garbage** — literal `[31m` and `[0m` as printable
-text, and the wrapping broken so words fell onto their own lines. `81990b3` said it guarded
-"the slash listing — the echo and every row of `/notes`, `/job`, `/gate`". It did, and
-that was the mistake: **a `/notes` row is this head's own composed text, already coloured
-by the head.**
+The four steps `R19.2b-fetchrow-and-the-gate-loop.md` wrote down, done — this is the item
+the gate loop had deferred, and the loop is gone.
 
-Reproduced on the bytes first, coloured, through the real producer:
+## What was wrong
 
-     [31m! gate — a refusal [0m
+`FetchRow` exists so a head can read a row its daemon is not holding. It could not: the
+server answered through `hub.row_body_at`, which reads the **bounded view** — 2,000 rows,
+8 MB of bodies — and a snapshot's `items` *is* that same vector. So a trimmed ordinal
+answered `null` and a carried one was a row the head already had. leticl measured it; the
+seam already draws three states and one of them, *"the daemon does not hold them any more"*,
+was unreachable and had nothing true to say.
 
-The `ESC` gone and the body left behind. Two faults in one place.
+The protocol's own doc had already settled the shape it should have: *"the daemon is a
+**proxy** for anything its own caches do not hold… so a head asks once and never learns
+which tier answered."*
 
-## Fault one: §3.1's subject is content the head did NOT write
+## The seam, and it is the `SessionSource` pattern rather than a new one
 
-A note this head painted with its own colour is not foreign content. Pointing the
-sanitiser at it strips the head's own escapes — the same bug with the sign flipped.
+- **`registry::RowSource`** — `fn row_body(&self, session_id, row) -> Option<String>` —
+  beside `SessionSource`, set by `Registry::set_row_source` exactly as `source` is set by
+  `set_source` (*"set once at startup by the daemon"*), and `None` in every head and every
+  test that predates it, where behaviour is exactly what it was.
+- **On the registry and not on each hub.** The server's `FetchRow` arm already holds the
+  registry, and the registry is what knows whether there is a store — so no hub grows a
+  field, no hub-construction site changes, and there is no fourth place for a hub to be
+  built without it.
+- **`Registry::row_body_from_store`** clones the `Arc` out before calling it, so the lock
+  is not held across a SQLite read: a head paging a trimmed row cannot block a listing.
+- **The server asks the view first, then the store** — one lock and a `Vec` index for the
+  fast path, and the store only for a row the view has trimmed. The clamping, the cap and
+  the character-boundary arithmetic are untouched.
 
-**Which of the six sites I was wrong about**, since that list is the interesting half:
+## The store's reads, which are one indexed lookup each
 
-| # | the site closed in `81990b3` | foreign? | verdict |
-|---|---|---|---|
-| 1 | a tool-progress note (`card` header tail) | yes — the daemon's `ToolProgress` | **right**, kept |
-| 2 | the queued echo (`queued_lines`) | yes — the operator's words, and a *paste* can carry a control byte | **right**, kept |
-| 3 | **the slash listing** | **no — this head's own rows** | **WRONG** |
-| 4 | the four panes (job command/state, subagent prompt/role/state, todo content, picker title, header title) | yes — the model's and the daemon's words | **right**, kept |
-| 5 | the five raw `sgr::REVERSE` sites | not a sanitiser question | **right but unrelated** — they emitted escapes under `color: false`, which is `Palette::None`'s contract broken; now wrapped in `colour()` |
-| 6 | **`Palette::paint` sanitising its argument** | **no — a palette's argument is the head's own text, and it may already carry the head's own sequences, because this method is called on strings the head composed *by calling this method*** | **WRONG** |
-| — | **`card::render`'s body** (found by re-reading, not by a test) | **no — `body` is composed by the caller** | **WRONG** |
+- `Store::row_json_at(transcript_id, seq)` — `transcript_item`'s primary key is
+  `(transcript_id, seq)`, so this is **not** a scan and **not** `load_transcript`, which
+  reads every row of the session to return one. That is the whole difference the frame
+  needs.
+- `Store::current_transcript_id(session_id)` — the **newest** transcript, ordered
+  `created_at DESC, rowid DESC` (the rowid because a fork is written in the same
+  millisecond as the row that caused it). After a compaction, ordinal 3 is a row of the
+  *new* base; reading the old transcript's row 3 would answer with a row nobody asked
+  about.
 
-Three wrong, and the third is the shape of all of them: **a guard placed where the string
-happens to pass rather than where foreign text enters.**
+`harnessd`'s `StoreSessions` implements `RowSource` — **the same instance** it already
+gives `set_source`, because that is one store asked two questions and a third connection
+would be a third thing in WAL's reader set. The wiring is two lines in `bin/harnessd.rs`,
+beside the `set_source` it mirrors.
 
-## Fault two, and it is the more general defect: a sequence must go whole
+## `body_of`, one definition
 
-`without_control` replaced every control character with a space. For an escape sequence's
-**introducer** that is the worst of both: the `ESC` becomes a space, the `[31m` stays, and
-the result is **five columns of visible garbage where the terminal measured none** — which
-is also why the wrapping broke, because the wrapper counts what is on the line.
+A row's body is a match over the item kind (a payload, a text, a user row's text parts
+joined, a segment mark's nothing) and it now lives **once**, in
+`letibot_sessionlog::body_of`, called by the view's reader *and* by the store's. Two copies
+is how the two tiers would come to disagree about what `body` means. The *windowing* is
+deliberately not in it: the cap and the boundary arithmetic belong to whoever answers the
+frame.
 
-So it now consumes the sequence: `ESC [ params final`, `ESC ] … BEL`/`ST`, and the C1
-forms (`CSI`, `OSC`, `ST`) with no `ESC` in front. A well-formed sequence measures no
-columns, so **removing it leaves the column count exactly as it was** — a space would add
-one. A **lone** control byte that is not part of a sequence (a tab, a `\r`, a DEL) still
-becomes a space, because dropping it would silently reflow the line.
+## Tests
 
-## A third instance of the same defect, found by the sweep
-
-`sessionlog`'s `truncate_target` — which builds a tool call's display target out of the
-model's **own arguments** — had the identical bug, and it is why the raw-markup row still
-read `{"path":" ]0;pwned "}` after the head was fixed: **the `ESC` was already destroyed
-upstream, so no later guard could see a sequence at all.**
-
-That decides where the one definition lives. `letibot-sessionlog` cannot see
-`letibot-ui` and must not start, so `without_control`/`without_control_lines` and their
-sequence parser move to **`letibot-transcript::sanitize`** — the crate both sides already
-depend on, for the same reason `ToolEditExcerpt` lives there. `letibot_ui::text` becomes a
-forward, so every existing call site in this tree is unchanged.
-
-**That adds one dependency edge, and `letibot-ui`'s manifest states a rule against
-letibot crates.** The rule's reason is about *types* — "a rendering primitive that knows
-what a `ToolOutcome` is cannot be tested without the transcript" — and a pair of pure
-`&str -> String` functions is not that. The manifest now says so, in place, with the
-alternative named: a second copy of a sequence parser, which is the duplicate this tree
-keeps deleting.
-
-## Tests, and two of them found holes rather than confirming
-
-- `a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it` — **the
-  reproduction**, both halves: no escape's body as text, *and* the head's own colour still
-  there (stripping it would be a different bug from leaving garbage).
-- `text::an_escape_sequence_goes_whole_and_never_leaves_its_body_behind` — every family in
-  the store's vocabulary, asserting **not one byte of any sequence survives** and the
-  surrounded text does.
-- `text::removing_a_sequence_leaves_the_bytes_and_the_text_behind_it` — the arithmetic:
-  removal, not substitution.
-- `text::a_lone_control_byte_becomes_a_space_rather_than_nothing`, and the pair that
-  keeps the two functions apart.
-- **The §3.1 sweep found two more things**, which is what it is for: `truncate_target`
-  above, and that the sweep's own slash-listing case had been feeding raw foreign text
-  straight into a surface whose contract is *already-composed rows* — a test of a contract
-  no producer has. It now goes through `notes_lines()`, the real producer.
-- Two of my own new tests were wrong on first run and both were my error, not the code's:
-  a hand-typed expected string for the width property (replaced by the property itself),
-  and a bare `CSI` case that correctly swallows the next byte as its final.
+- `store::a_row_is_readable_by_ordinal_without_loading_its_transcript` — the row by
+  ordinal through the same serde form the wire carries; `None` (not `""`) for an ordinal
+  the transcript does not have; the session→current-transcript mapping the glue depends on;
+  and `None` for a session nothing was written for.
+- `store::an_ordinal_follows_the_fork_to_the_new_base` — after `put_fork`, the *new* base
+  is what an ordinal is relative to, and its row 0 is not the old transcript's.
+- `view::a_rows_body_is_its_own_kind_of_text` — the shared definition pinned per variant,
+  rather than inferred from whichever tier a test happened to exercise.
+- The existing `sessionlog/tests/fetch_row.rs` (8 tests) is unchanged and still passes: with
+  no row source installed, the behaviour is exactly what it was.
 
 ```
 cargo test -p letibot-tools       613 passed, 0 failed
@@ -95,16 +80,10 @@ cargo test -p letibot-sessionlog   96 passed, 0 failed
 cargo test -p letibot-tokencore    61 passed, 0 failed
 ```
 
-**Not verified:** `rustfmt --check` cannot run (it writes a temp file, which the gate
-blocks). And the fix is verified on the bytes rather than on a terminal — the operator's
-screen is the next thing that can confirm it, because this head is one of the two drawing
-it.
+**Not verified, and it is the same limit as `da4a576`:** the daemon running this session
+was built before this commit, so **no head has yet fetched a trimmed row through it**. What
+is proven is the unit — the store read, the registry's second tier, and the server's arm
+asking the view first. The end-to-end proof is on the next restart, and the head half
+already draws the state it will then have something true to say in.
 
-## What I should have done in `81990b3`
-
-Asked of each site *"is this foreign content, or my own?"* before closing it, rather than
-after. The sweep test that found six holes was the right instinct and it was pointed at
-the wrong question: it asked *"does an escape reach the terminal"* when the question is
-*"does an escape THIS HEAD DID NOT WRITE reach the terminal"*. A test that cannot tell
-those apart cannot tell the fix from the bug — which is the same family as the night's
-other finding, that a liveness check which cannot be false is not a check.
+`rustfmt --check` still cannot run (it writes a temp file, which the gate blocks).

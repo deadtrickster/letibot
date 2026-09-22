@@ -1935,6 +1935,82 @@ mod tests {
         ("tr-1".into(), prefix_id)
     }
 
+    /// **R19.2b: one row, by ordinal, without loading the transcript it is in.**
+    ///
+    /// The read behind `FetchRow` for a row the daemon's **bounded view** has trimmed
+    /// (2,000 rows, 8 MB of bodies). Its whole point is that it is **one indexed
+    /// lookup** — `transcript_item`'s primary key is `(transcript_id, seq)` — so this
+    /// asserts what the index is for, what it answers for an ordinal that is not there,
+    /// and that an ordinal is relative to the session's **current** transcript.
+    #[test]
+    fn a_row_is_readable_by_ordinal_without_loading_its_transcript() {
+        let s = store();
+        let (tr, _) = seeded(&s);
+        let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+        let items = [
+            TranscriptItem::User {
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "first".into(),
+                }],
+            },
+            TranscriptItem::Assistant {
+                text: "second".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+        ];
+        for (seq, item) in items.iter().enumerate() {
+            let toks = vec![10 + seq as u32];
+            let row = ledger.append(&format!("it-{seq}"), &toks).unwrap().clone();
+            s.append_item(&tr, seq as u32, item, &row, &toks).unwrap();
+        }
+
+        // **The ordinal is relative to the CURRENT transcript**, which is the one the
+        // rows went into. This is the mapping the `FetchRow` glue depends on, and after
+        // a fork it is the whole reason the lookup goes through the session rather than
+        // a transcript id the head has never heard of.
+        assert_eq!(
+            s.current_transcript_id("sess-1").unwrap().as_deref(),
+            Some("tr-1")
+        );
+
+        // The row by ordinal, read through the same serde form the wire carries — so
+        // this asserts the shape `body_of` will be handed, not a private one.
+        let json = s.row_json_at(&tr, 1).unwrap().expect("row 1 is there");
+        let back: TranscriptItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, items[1]);
+
+        // **An ordinal the transcript does not have is `None`, not an empty string** —
+        // the rule `RowFetched` states for the wire: "nobody has it" and "it is empty"
+        // must not look alike.
+        assert_eq!(s.row_json_at(&tr, 2).unwrap(), None);
+        assert_eq!(s.row_json_at(&tr, 9_999).unwrap(), None);
+
+        // A session nothing was written for has no current transcript, so the same read
+        // answers `None` rather than somebody else's row.
+        assert_eq!(s.current_transcript_id("no-such-session").unwrap(), None);
+    }
+
+    /// **A fork's rows are the ones an ordinal names.** After a compaction the session
+    /// has two transcripts and ordinal 3 belongs to the new base — reading the old one
+    /// would answer with a row nobody asked about, which is the failure the "newest
+    /// transcript" rule exists to prevent. Asserted against the store so the SQL that
+    /// picks the leaf is what is under test, not a comment about it.
+    #[test]
+    fn an_ordinal_follows_the_fork_to_the_new_base() {
+        let s = store();
+        let (tr, prefix_id) = seeded(&s);
+        s.put_fork("tr-2", "sess-1", &prefix_id, &tr, 1).unwrap();
+        assert_eq!(
+            s.current_transcript_id("sess-1").unwrap().as_deref(),
+            Some("tr-2"),
+            "the newest transcript is the one an ordinal is relative to"
+        );
+        // …and the new base has none of the old rows: ordinal 0 of a fork that carried
+        // nothing is not the old transcript's row 0.
+        assert_eq!(s.row_json_at("tr-2", 0).unwrap(), None);
+    }
+
     #[test]
     fn a_stable_prefix_is_addressed_by_its_content_and_its_dialect() {
         let s = store();

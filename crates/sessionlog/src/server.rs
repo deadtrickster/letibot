@@ -678,30 +678,37 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // is clamped to the body rather than refused, because a head paging
                 // forward does not know where the end is and asking past it is how it
                 // finds out.
-                let (body, total, at) = match registry.resolve(&session_id) {
-                    Some(hub) => match hub.row_body_at(row) {
-                        Some(full) => {
-                            let total = full.len();
-                            let start = clamp_char(&full, at.min(total));
-                            let want = len.min(MAX_FETCH_ROW);
-                            let end = clamp_char(&full, (start + want).min(total));
-                            (Some(full[start..end].to_string()), total, start)
-                        }
-                        // The ordinal is outside this view: trimmed by `ViewBounds`, or
-                        // past the end of the session. `None` rather than an empty string,
-                        // because "nobody has it" and "it is empty" must not look alike.
-                        None => (None, 0, 0),
-                    },
-                    None => {
-                        let f = ServerFrame::Rejected {
-                            client_request_id: format!("fetchrow:{session_id}/{row}"),
-                            reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
-                            expected_seq: 0,
-                            actual_seq: seat.hub.head_seq(),
-                        };
-                        writer.lock().unwrap().write(&f)?;
-                        continue;
+                let Some(hub) = registry.resolve(&session_id) else {
+                    let f = ServerFrame::Rejected {
+                        client_request_id: format!("fetchrow:{session_id}/{row}"),
+                        reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                    continue;
+                };
+                // **The view first, then the store.** The view is one lock and a `Vec`
+                // index, so it is the fast path for a row this daemon is holding; the
+                // store is the answer for an ordinal its bounded view has trimmed
+                // (2,000 rows, 8 MB of bodies), which is the case `FetchRow` exists for.
+                // A registry with no store answers `None` here and behaves exactly as it
+                // always did. See [`letibot_sessionlog::registry::RowSource`].
+                let full = hub
+                    .row_body_at(row)
+                    .or_else(|| registry.row_body_from_store(&session_id, row));
+                let (body, total, at) = match full {
+                    Some(full) => {
+                        let total = full.len();
+                        let start = clamp_char(&full, at.min(total));
+                        let want = len.min(MAX_FETCH_ROW);
+                        let end = clamp_char(&full, (start + want).min(total));
+                        (Some(full[start..end].to_string()), total, start)
                     }
+                    // Nowhere holds it: past the end of the session, or a store this
+                    // daemon cannot reach. `None` rather than an empty string, because
+                    // "nobody has it" and "it is empty" must not look alike.
+                    None => (None, 0, 0),
                 };
                 let f = ServerFrame::RowFetched {
                     session_id,

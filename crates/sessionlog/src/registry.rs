@@ -364,12 +364,36 @@ struct Inner {
 }
 
 /// Every session this daemon is serving.
+/// **Where a registry can read one row's body without holding it** (R19.2b).
+///
+/// The other half of [`SessionSource`], and a trait for the same reason: the daemon's
+/// *view* is bounded (2,000 rows, 8 MB of bodies), so an ordinal it has trimmed is a row
+/// the ledger has and the view does not — and `ClientFrame::FetchRow` exists precisely to
+/// reach it. Before this, a trimmed ordinal answered `null`, and a head could not tell
+/// "the daemon does not hold it" from "there is no such row".
+///
+/// It answers a **session ordinal**, not a transcript and a seq, because that is what the
+/// frame carries and because resolving a session to its *current* transcript is the
+/// store's own business — after a fork, ordinal 3 is a row of the new base and not of the
+/// history it summarised.
+///
+/// A registry with no source behaves exactly as it did before, which is what every
+/// existing test asserts.
+pub trait RowSource: Send + Sync {
+    /// The body of `row` (a session ordinal) for `session_id`, or `None` when nothing
+    /// holds it. **Not an empty string** for a row that exists and is empty — the two must
+    /// not look alike, which is the rule `RowFetched`'s own doc states for the wire.
+    fn row_body(&self, session_id: &str, row: usize) -> Option<String>;
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
     /// Set once at startup by the daemon. `None` in every head and every test that
     /// predates resume, and the registry then lists only what it holds.
     source: Mutex<Option<Arc<dyn SessionSource>>>,
+    /// Set once at startup by the daemon, beside [`Registry::source`]. See [`RowSource`].
+    rows: Mutex<Option<Arc<dyn RowSource>>>,
 }
 
 /// What the worker was woken for.
@@ -430,6 +454,7 @@ impl Registry {
             }),
             bell: Bell::new(),
             source: Mutex::new(None),
+            rows: Mutex::new(None),
         })
     }
 
@@ -580,6 +605,30 @@ impl Registry {
     /// Where to find sessions this registry is not holding. See [`SessionSource`].
     pub fn set_source(&self, source: Arc<dyn SessionSource>) {
         *self.source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    /// **Where to find one row's body that this registry's own view no longer holds.**
+    ///
+    /// See [`RowSource`]. Set once at startup by the daemon, exactly as
+    /// [`Registry::set_source`] is, and `None` in every head and every test that predates
+    /// it — in which case a `FetchRow` for a trimmed ordinal answers `None`, as it always
+    /// did.
+    pub fn set_row_source(&self, rows: Arc<dyn RowSource>) {
+        *self.rows.lock().unwrap_or_else(|e| e.into_inner()) = Some(rows);
+    }
+
+    /// **The body of a session ordinal, from the store** — or `None` when there is no
+    /// source, or it does not hold that row.
+    ///
+    /// The second tier of `FetchRow`, and deliberately a *separate* entry point from
+    /// `SessionView::row_body_at`: the view is the fast path and stays one lock and a
+    /// `Vec` index, while this is the slow one and must never run for a row the view
+    /// already has. The caller asks the view first, and only then here.
+    pub fn row_body_from_store(&self, session_id: &str, row: usize) -> Option<String> {
+        // The Arc is cloned out before the call, so the lock is not held across a SQLite
+        // read: a head paging a trimmed row must not be able to block a listing.
+        let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        source.row_body(session_id, row)
     }
 
     fn source(&self) -> Option<Arc<dyn SessionSource>> {

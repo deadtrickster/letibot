@@ -1818,6 +1818,30 @@ impl StoreSessions {
     }
 }
 
+/// **The same second connection, answering a row the view has trimmed** (R19.2b).
+///
+/// One instance does both jobs because they are one store asked two questions, and
+/// because a third connection would be a third thing to keep in WAL's reader set. The
+/// daemon passes this same `Arc` to `Registry::set_source` and `Registry::set_row_source`.
+impl letibot_sessionlog::registry::RowSource for StoreSessions {
+    fn row_body(&self, session_id: &str, row: usize) -> Option<String> {
+        // A session is not going to have four billion rows; a `usize` that does not fit is
+        // a request for something that cannot exist, and `None` is the honest answer.
+        let seq = u32::try_from(row).ok()?;
+        let store = self.store.lock().ok()?;
+        // **The ordinal is relative to the CURRENT transcript.** After a fork — a
+        // compaction, a reseat — ordinal 3 is a row of the new base, so reading the old
+        // transcript's row 3 would answer with a row nobody asked about.
+        let transcript_id = store.current_transcript_id(session_id).ok()??;
+        let json = store.row_json_at(&transcript_id, seq).ok()??;
+        // The row's own type decides what its body is, and that match lives once — in
+        // `letibot_sessionlog::body_of`, which the view's own reader calls too. Two copies
+        // is how the two tiers would come to disagree about what a row's `body` is.
+        let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
+        Some(letibot_sessionlog::body_of(&item))
+    }
+}
+
 /// **What a compaction tells the head.**
 ///
 /// The result used to go to the daemon's stderr and nowhere else. On the

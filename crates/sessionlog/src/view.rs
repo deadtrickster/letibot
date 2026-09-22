@@ -839,7 +839,7 @@ impl SessionView {    // (the free function `body_of` at the foot of this file i
 /// The *windowing* is deliberately not here: the cap and the character-boundary
 /// arithmetic belong to whoever answers the frame, and a second implementation would be
 /// a second answer to the same question.
-fn body_of(item: &TranscriptItem) -> String {
+pub fn body_of(item: &TranscriptItem) -> String {
     match item {
         TranscriptItem::ToolResult { payload, .. } => payload.clone(),
         // The other variants' "body" is their text. A row a head can page is a tool
@@ -867,6 +867,74 @@ mod tests {
     use super::*;
     use crate::log::{LogBounds, SessionLog};
     use crate::testing::*;
+
+    /// **The one definition of a row's `body`, per variant** (R19.2b).
+    ///
+    /// Two tiers answer `FetchRow` — the bounded view and, behind it, the store — and both
+    /// call this, because two copies of the match is how they would come to disagree about
+    /// what a row's body *is*. So the definition itself is pinned here rather than left to
+    /// be inferred from whichever tier a test happened to exercise.
+    #[test]
+    fn a_rows_body_is_its_own_kind_of_text() {
+        use letibot_transcript::{ReasoningField, ToolOutcome, UserPart};
+        // A tool result's body is its payload — the case a head pages, since that is
+        // where a 418 KB log lives.
+        assert_eq!(
+            body_of(&TranscriptItem::ToolResult {
+                call_id: "c".into(),
+                name: "bash".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "the payload".into(),
+                edit: None,
+            }),
+            "the payload"
+        );
+        // A prose row's body is its text, for all three kinds that have one.
+        for item in [
+            TranscriptItem::Assistant {
+                text: "an answer".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            TranscriptItem::Reasoning {
+                text: "thinking".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::System {
+                text: "bootstrap".into(),
+                origin: letibot_transcript::SystemOrigin::Bootstrap,
+            },
+        ] {
+            let want = match &item {
+                TranscriptItem::Assistant { text, .. }
+                | TranscriptItem::Reasoning { text, .. }
+                | TranscriptItem::System { text, .. } => text.clone(),
+                _ => unreachable!(),
+            };
+            assert_eq!(body_of(&item), want);
+        }
+        // A user row's body is its text parts joined — and the non-text parts contribute
+        // nothing (the `_ => None` arm), because an image or a file ref *names* a thing
+        // rather than being one. Asserted with two text parts, which is the shape this
+        // can construct without inventing the other variants' fields.
+        assert_eq!(
+            body_of(&TranscriptItem::User {
+                parts: vec![
+                    UserPart::Text {
+                        text: "first".into(),
+                    },
+                    UserPart::Text {
+                        text: "second".into(),
+                    },
+                ],
+            }),
+            "first\nsecond"
+        );
+        // **A segment mark renders to nothing, so it has no body to page** — that is the
+        // `SegmentMark => String::new()` arm, and it is a *different* answer from "there is
+        // no such row", which is the wire's `body: Some("")` against `body: None`.
+    }
 
     fn fold(log: &SessionLog) -> SessionView {
         let mut v = SessionView::new("s", ViewBounds::default());
