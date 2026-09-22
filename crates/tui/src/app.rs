@@ -268,6 +268,27 @@ pub enum Key {
     CtrlO,
     /// Open or close the background-jobs pane: the jobs this session started.
     CtrlQ,
+    /// **Retire every note this head is holding** (R22).
+    ///
+    /// R10 gave the reader the power to retire a note and spelled it `/notes dismiss all` —
+    /// *the right power in the wrong hand*: the thing you do to clear your own screen is a
+    /// **reflex, not a sentence**, and every other reflex on this screen is already a chord.
+    /// The operator, being told how to hide a note: *"typing `/notes dismiss all` is not
+    /// humane."*
+    ///
+    /// **ALL of them, and it is one decision made in `head-parity-2026-09-21.md` §R22 with the
+    /// other head rather than here** — a reflex that does different things on two screens is
+    /// worse than the verb it replaces. The argument for all over newest is in that section
+    /// and in the answer beside the proposal; the short form is that `/notes dismiss N` is
+    /// where a *deliberate* single retire belongs (it numbers the notes, so the operator can
+    /// see which is which), and that over-clearing is one verb to undo while under-clearing
+    /// cannot be undone by a chord at all.
+    ///
+    /// **What it keeps from R10, because the reason has not changed:** retired is not deleted.
+    /// The note stays in `notes`, `/notes` prints it in full, `/status` counts it, and
+    /// `/notes restore` brings it back. A head that can silently drop a warning is a head whose
+    /// warnings cannot be trusted to be complete.
+    CtrlN,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -323,6 +344,7 @@ impl Key {
             | Key::CtrlG
             | Key::CtrlO
             | Key::CtrlQ
+            | Key::CtrlN
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
@@ -4088,6 +4110,51 @@ impl App {
                 // version drew a stale one. Later changes arrive as `JobSettled`.
                 return self.jobs_pane.then_some(Action::ListJobs);
             }
+            // **R22: clearing your own screen costs one key.**
+            //
+            // Retiring a note used to be `/notes dismiss all` — the right power in the wrong
+            // hand, because the thing you do to clear your own screen is a reflex and every
+            // other reflex here is already a chord. The operator, on being told how to hide a
+            // note: *"typing `/notes dismiss all` is not humane."*
+            //
+            // **It calls the VERB rather than reimplementing it.** `notes_command` is the one
+            // writer for this act — it computes the keys, retires them through `retire()`,
+            // saves the file and composes the sentence — so the chord and `/notes dismiss all`
+            // cannot come to disagree about any of those four things. A second copy of "retire
+            // every note" is a second place for the persisted set to be written differently,
+            // and the whole point of agreeing the key with the other head is that one act has
+            // one behaviour.
+            //
+            // **And the empty press says so.** That is the one place this head's answer to
+            // R22 differs from the proposal it agreed with, and the reason is this tree's own
+            // rule that *a chord may only be named where it acts*: `ctrl-t` is silent with
+            // nothing to open because its seam names it only on the row it can open, and the
+            // hint bar cannot be conditional — it names `ctrl-n` always, so the chord answers
+            // when pressed. `ctrl-o` sets the same precedent one arm away ("nothing is running
+            // to move to the background"), and the operator's own worry is that a reflex which
+            // appears to do nothing invites a second press. One line, routine register, taken
+            // down by any key including this one.
+            Key::CtrlN => {
+                // **"Nothing to retire" means nothing LEFT to retire**, not "no notes held".
+                //
+                // A retired note stays in `notes` on purpose (R10: retired is not deleted), so
+                // after a first press the set is *all retired* rather than *empty* — and a guard
+                // on `notes.is_empty()` would send the second press down the verb's path, where
+                // it would say `retired 0 note(s)`, which is a true sentence an operator should
+                // not be shown. Counting what is left makes the chord idempotent and honest:
+                // first press retires N and says so, second press says this.
+                let left = self
+                    .notes
+                    .iter()
+                    .filter(|(_, n)| !self.is_retired(n))
+                    .count();
+                if left == 0 {
+                    self.say("nothing to retire");
+                } else {
+                    let _ = self.notes_command("notes", "dismiss all");
+                }
+                return None;
+            }
             // **Ctrl+O: move the running command to the background**, the same action
             // `/promote` names. See [`App::promote`] for why the fact it guards is a
             // running CALL and not a running turn.
@@ -7083,7 +7150,7 @@ impl App {
         } else if !self.open.is_empty() {
             "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
-            "ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t long output · ctrl-q jobs · tab completes /commands · /help"
+            "ctrl-s sessions · ctrl-n notes · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t long output · ctrl-q jobs · tab completes /commands · /help"
         };
         // The separator belongs between two halves, not in front of one: with
         // the editor's half suppressed the bar used to open with a bare `·`.
@@ -10918,6 +10985,13 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         ("ctrl-l", "repaint the screen"),
         (
+            "ctrl-n",
+            "retire every note this head is showing — hidden, still counted on /status, \
+             `/notes` prints them and `/notes restore` brings them back. Retired is not \
+             deleted: a head that can silently drop a warning is a head whose warnings \
+             cannot be trusted to be complete",
+        ),
+        (
             "/status",
             "this head's counters — dropped, scrubbed, resync — and what each means",
         ),
@@ -14230,6 +14304,170 @@ mod tests {
     /// retirement loaded from `head.toml` beats a **live** delivery, which is the one case
     /// where nothing else would stop it. (The operator's own wall had none of this
     /// retired: fault 1 is why it was up.)
+    /// **R22: clearing your own screen costs one key, and it keeps every rule R10 bought.**
+    ///
+    /// The operator, on being told how to hide a note: *"typing `/notes dismiss all` is not
+    /// humane."* So the reflex is a chord — `ctrl-n` — and this test is the whole of what it
+    /// must not break: **retired is not deleted.** The notes stay, `/notes` prints them,
+    /// `/status` counts them, `/notes restore` brings them back, and the reflex survives a
+    /// restart (R19 part 3) so it does not have to be repeated.
+    ///
+    /// The agreement with the other head is in `head-parity-2026-09-21.md` §R22 and is
+    /// asserted here as behaviour rather than restated: **all of them, not the newest**, and
+    /// the empty press says so.
+    #[test]
+    fn ctrl_n_retires_every_note_and_keeps_every_note() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        // Four notes, which is the shape the operator actually reported: R19's restart was
+        // four notes at three lines each, and R10's wall was two.
+        for (code, detail) in [
+            ("gate_timeout", "denied: nobody answered before the deadline"),
+            ("daemon_stopping", "`dead` asked this daemon to stop"),
+            ("compacted", "compacted: 940188 → 9181 tokens"),
+            ("auto_compact", "938065 of 999999 tokens resident — compacting now"),
+        ] {
+            let e = hub.publish(SessionEvent::Warning {
+                code: code.into(),
+                detail: detail.into(),
+            });
+            a.apply(ServerFrame::Event(e));
+        }
+        let before = a.screen(100, 30).join("\n");
+        assert!(before.contains("gate_timeout"), "{before}");
+        assert!(before.contains("auto_compact"), "{before}");
+
+        // **One key, and the wall goes.**
+        assert_eq!(a.key(Key::CtrlN), None, "the chord is not a daemon action");
+        let after = a.screen(100, 30).join("\n");
+        for code in ["gate_timeout", "daemon_stopping", "compacted", "auto_compact"] {
+            assert!(!after.contains(code), "`{code}` survived the press:\n{after}");
+        }
+        // **And it says what it did, in the VERB's own words** — because it calls the verb
+        // rather than composing a second sentence. That is the property worth asserting here:
+        // a chord with its own wording is a chord that can come to disagree with `/notes
+        // dismiss all` about what just happened. `(not saved: ...)` is in this frame because
+        // this test's head has no `head.toml`; that suffix is the same writer's too.
+        assert!(after.contains("retired 4 note(s)"), "{after}");
+        assert!(after.contains("still counted on /status"), "{after}");
+
+        // **Not deleted.** Every one is still held, still counted, still readable.
+        assert_eq!(a.notes.len(), 4, "a note was dropped, not retired");
+        assert_eq!(a.retired_notes(), 4);
+        a.command("status");
+        let stats = a.screen(120, 60).join("\n");
+        assert!(stats.contains("4 retired"), "{stats}");
+        a.key(Key::Esc);
+        typed(&mut a, "/notes");
+        a.key(Key::Enter);
+        let listed = a.screen(120, 60).join("\n");
+        assert!(listed.contains("nobody answered"), "{listed}");
+        assert!(listed.contains("[retired]"), "{listed}");
+        a.key(Key::Esc);
+
+        // **A second press says there is nothing left to retire.** Not "retired 0 note(s)",
+        // which is what the verb would say and is a sentence an operator should not be shown:
+        // the notes are held but retired, so the count of what is LEFT is zero.
+        assert_eq!(a.key(Key::CtrlN), None);
+        let twice = a.screen(100, 30).join("\n");
+        assert!(twice.contains("nothing to retire"), "{twice}");
+        assert!(!twice.contains("retired 0 note(s)"), "{twice}");
+
+        // **And back, if the reader was wrong** — the undo is exactly as cheap as the act.
+        typed(&mut a, "/notes restore");
+        a.key(Key::Enter);
+        let back = a.screen(100, 30).join("\n");
+        assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+        assert!(back.contains("/notes restore") || back.contains("back on the screen"), "{back}");
+    }
+
+    /// **The reflex survives a restart** (R22 + R19 part 3), which is the half that stops it
+    /// having to be repeated — and the half that used to be B's requirement and became A's
+    /// when the operator hit it.
+    #[test]
+    fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        let clean = hub.snapshot();
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], clean.clone()));
+        let live = hub.publish(SessionEvent::Warning {
+            code: "gate_timeout".into(),
+            detail: "denied: nobody answered before the deadline".into(),
+        });
+        a.apply(ServerFrame::Event(live.clone()));
+        assert!(a.screen(100, 30).join("\n").contains("gate_timeout"));
+
+        // A real file, because the property is about the file.
+        let dir = std::env::temp_dir().join(format!("letibot-r22-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+        a.prefs_path = Some(path.clone());
+        a.key(Key::CtrlN);
+        assert!(
+            !a.screen(100, 30).join("\n").contains("gate_timeout"),
+            "the chord did not retire it"
+        );
+        assert!(path.is_file(), "the press did not reach head.toml");
+
+        // A new head, the same file, the incident delivered **live** — the one delivery
+        // nothing else suppresses (a snapshot's copy is prior, a redelivery is not filed
+        // twice), so what stops it here is the persisted retirement and nothing else.
+        let mut b = app();
+        b.prefs_path = Some(path.clone());
+        b.load_prefs();
+        assert_eq!(b.dismissed.len(), 1, "{:?}", b.dismissed);
+        b.apply(hello("s", vec![brief("s", "one", false)], clean));
+        b.apply(ServerFrame::Event(live));
+        let after = b.screen(100, 30).join("\n");
+        assert!(
+            !after.contains("gate_timeout"),
+            "a restart replanted what ctrl-n retired:\n{after}"
+        );
+        assert_eq!(b.notes.len(), 1, "hidden, not dropped: {:?}", b.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The chord is the head's, is named where it is advertised, and moves nothing else.**
+    ///
+    /// Three separate things a chord has to get right, and each has already been got wrong
+    /// somewhere in this file: it must not type into the composer, it must be on the hint bar
+    /// where the operator can actually see it (the bar is longer than a terminal and trimmed),
+    /// and it must not move a fold or open a pane.
+    #[test]
+    fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else() {
+        let mut a = app();
+        typed(&mut a, "hello");
+        a.key(Key::CtrlN);
+        assert_eq!(a.input(), "hello", "ctrl-n typed into the composer");
+        assert_eq!(a.reasoning, Fold::Folded, "ctrl-n moved the thinking fold");
+        assert_eq!(a.tools, Fold::Folded, "ctrl-n moved the tool-output fold");
+        assert!(!a.jobs_pane && !a.todos_pane && !a.picker, "ctrl-n opened a pane");
+        assert!(!a.raw_calls, "ctrl-n toggled the raw view");
+
+        // **On the bar, at 80 columns.** The bar is 151 columns now and the frame trims it,
+        // so a chord appended to the end is a chord nobody can see — measured, not assumed.
+        let bar = a.screen(80, 24).join("\n");
+        assert!(
+            bar.contains("ctrl-n notes"),
+            "the chord is advertised but not visible at 80 columns:\n{bar}"
+        );
+        // And it does not push `ctrl-s` off, which is what the bar opens with.
+        assert!(bar.contains("ctrl-s sessions"), "{bar}");
+
+        // `/help` names it, with the rule that matters on the line.
+        a.command("help");
+        let help = a.screen(120, 60).join("\n");
+        assert!(help.contains("ctrl-n"), "{help}");
+        assert!(
+            help.contains("Retired is not deleted"),
+            "the row must carry the rule R10 bought: {help}"
+        );
+    }
+
     #[test]
     fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
         let hub = Hub::new("s");

@@ -750,6 +750,24 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlQ);
                 i += 1;
             }
+            // **Retire every note. Ctrl+N, and `N` is the whole mnemonic** (R22).
+            //
+            // Free on this side and free in the strongest sense: this byte had NO arm
+            // before, so it reached the `_ => i += 1` fallthrough and was eaten silently —
+            // a key that does nothing rather than a key bound to nothing. `ctrl-v` (`0x16`)
+            // and `0x1c`-`0x1e` are the only bytes left in this table with no arm, and none
+            // of those four has a mnemonic worth having.
+            //
+            // **Not a tty control character**, so nothing upstream is listening for it: it
+            // is not `IXON`/`IXOFF` (`ctrl-s`/`ctrl-q` are, and `cfmakeraw` clears them),
+            // and it is not one of the six chords the hint bar already lists. leticl checked
+            // the other half of this — the operator's own multiplexer, `tmux list-keys -T
+            // root`, 75 bindings and not one bare `C-n` — because a chord can be eaten
+            // before a head ever sees it.
+            0x0e => {
+                out.push(Key::CtrlN);
+                i += 1;
+            }
             // Tab: the composer's slash-command completion. A plain 0x09 used to
             // fall through the `c >= 0x20` arm and vanish — a byte the head eats
             // silently is a key nobody can learn.
@@ -960,6 +978,13 @@ mod tests {
         assert_eq!(decode(b"\x7f"), vec![Key::Backspace]);
         assert_eq!(decode(b"\x1b"), vec![Key::Esc]);
         assert_eq!(decode(b"\x18"), vec![Key::CtrlX]);
+        // **R22's chord, and it is a NEW arm rather than an old one.** `0x0e` had no arm in
+        // this decoder before `ctrl-n`, so it fell to the `_ => i += 1` fallthrough and was
+        // eaten — a key that did nothing rather than a key bound to nothing. That is also
+        // why it was free: nothing in this head, and nothing downstream of it, was waiting
+        // for the byte. Asserted here rather than only through `App::key`, because what this
+        // guards is a byte that vanishes before any handler can see it.
+        assert_eq!(decode(b"\x0e"), vec![Key::CtrlN]);
     }
 
     #[test]
