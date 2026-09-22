@@ -1966,6 +1966,55 @@ impl Region {
     pub fn is_secret(&self) -> bool {
         matches!(self, Region::Secret(_))
     }
+
+    /// **Is this a place the boundary can name as outside?** — R21's guardrail, one
+    /// function rather than a list inline in `reads_only`.
+    ///
+    /// The ruling that needs it: *when every segment of a shell call resolves to a
+    /// known read-only program and the line carries no substitution the parser would have
+    /// refused, the call is judged on the intents that were COMPUTED* — and, one clause
+    /// later, *a read outside the workspace is still outside it* (R18's axis, untouched).
+    /// So the read-only rule voids on any region this table can point at and call outside.
+    ///
+    /// **Why not `Tier::Auto`'s inside-ness**, which is the tempting half to reuse:
+    /// `Auto` requires every region to be `Workspace` or `None`, and [`Region::HostOther`]
+    /// is where a **relative path** lands — this classifier holds the workspace but not the
+    /// command's working directory, and `cd X && reader` is exactly the shape the ruling
+    /// names. Reading an unplaceable path as an outside one is the defect R9 already paid
+    /// for, so `HostOther` is *not* outside here; it is *unplaceable*, and the four that
+    /// are not outside are `Workspace` and `Scratch` (entitled), `HostOther` (unplaceable)
+    /// and `None` (no path to place).
+    ///
+    /// # The exhaustiveness is the point
+    ///
+    /// **No `_` arm**, so a thirteenth `Region` is a **compile error here** rather than a
+    /// new region silently classified as innocent. The inline list this replaced named
+    /// eight of the twelve and had nothing to say about the ninth somebody would add —
+    /// which is this session's own shape (a list standing in for a derivation) inside the
+    /// fix for it. The compiler asks the question; the operator answers it once, at the
+    /// only place the answer means anything.
+    ///
+    /// `Secret` and `Remote` carry data, so those two arms bind `_` in the *pattern* —
+    /// that is a field, not a fallback.
+    pub fn is_outside(&self) -> bool {
+        match self {
+            // A boundary that exists to keep the session's own work in.
+            Region::Workspace | Region::Scratch => false,
+            // **Unplaceable is not outside** — see above, and R9.
+            Region::HostOther | Region::None => false,
+            // Named places that are none of the above: a credential store, the operator's
+            // home, the system's configuration and binaries, the device tree, shared
+            // temp space, and the root of the filesystem itself.
+            Region::Secret(_)
+            | Region::Remote(_)
+            | Region::Home
+            | Region::SystemConfig
+            | Region::SystemBinaries
+            | Region::Device
+            | Region::Temp
+            | Region::Root => true,
+        }
+    }
 }
 
 /// Whether the shell that will run the command can make a name mean something other
@@ -2651,19 +2700,10 @@ impl Baseline {
                 .iter()
                 .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile))
             && !matches!(self.verdict, BaselineVerdict::NotRun { .. })
-            && !self.regions.iter().any(|r| {
-                matches!(
-                    r,
-                    Region::Secret(_)
-                        | Region::Remote(_)
-                        | Region::Home
-                        | Region::SystemConfig
-                        | Region::SystemBinaries
-                        | Region::Device
-                        | Region::Temp
-                        | Region::Root
-                )
-            })
+            // **One function, exhaustively matched** — see [`Region::is_outside`], which
+            // is where the question is answered and where a new region fails to compile
+            // rather than being silently classified as innocent.
+            && !self.regions.iter().any(Region::is_outside)
     }
 
     /// The deterministic reading of a shell command.
@@ -3867,6 +3907,162 @@ mod tests {
     /// read, a substitution the parser would have refused is not a read, and a read
     /// **outside the workspace** is not this rule's business at all (R18's axis).
     #[test]
+    /// **`Intent::ALL` is the enum, and nothing but the enum.** — a source-reading guard.
+    ///
+    /// `ALL` is not decoration: `Intent::parse` is *derived from it*
+    /// (`ALL.iter().find(|i| i.as_str() == n)`), and two callers use it as the closed set —
+    /// the config that names an oracle's intents (`calibrate.rs`) and the error that lists
+    /// what may be named (`authorise.rs`). So an intent added to the enum and not to `ALL`
+    /// **stops parsing**: an operator writing its name in `providers.toml` is told it is
+    /// not an intent, and the oracle's earned scope can never include it. Fail-closed, in
+    /// the direction that looks like the operator's mistake.
+    ///
+    /// No `match` can catch this — the enum is exhaustive by construction and `ALL` is a
+    /// list beside it — so this reads the **source** and compares the two spellings: every
+    /// variant's name, snake-cased, must be what `ALL` says that variant is. That catches a
+    /// variant missing from `ALL`, a variant left in `ALL` after a rename, and an `as_str`
+    /// that drifted from its own name.
+    ///
+    /// **Falsified by hand**: adding `Cloud` to the enum fails this with *"the enum has
+    /// variant(s) `ALL` does not"*, and it is the same shape as
+    /// `sessionlog/tests/warning_codes.rs` — the guard reads the thing it guards rather
+    /// than restating it (§11.5).
+    #[test]
+    fn all_is_the_enum_and_nothing_but_the_enum() {
+        /// The variant names of the `pub enum <name> { … }` block in this file.
+        fn variants(src: &str, name: &str) -> Vec<String> {
+            let open = format!("pub enum {name} {{");
+            let start = src.find(&open).expect("the enum is in this file") + open.len();
+            let body = &src[start..];
+            let end = body.find("\n}").expect("the enum closes");
+            body[..end]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter_map(|l| {
+                    let l = l.trim();
+                    let first = l.chars().next()?;
+                    if !first.is_ascii_uppercase() {
+                        return None;
+                    }
+                    let name: String = l
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect();
+                    Some(name)
+                })
+                .collect()
+        }
+
+        /// `ChangePermissions` -> `change_permissions`. Every name on this enum follows
+        /// it, and a name that did not would fail here rather than pass quietly.
+        fn snake(name: &str) -> String {
+            let mut out = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if c.is_ascii_uppercase() {
+                    if i > 0 {
+                        out.push('_');
+                    }
+                    out.push(c.to_ascii_lowercase());
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+
+        let src = include_str!("intent.rs");
+        let in_enum = variants(src, "Intent");
+        let in_all: Vec<String> = Intent::ALL.iter().map(|i| i.as_str().to_string()).collect();
+
+        assert!(
+            in_enum.len() > 10,
+            "the scan found {} variant(s) — it is broken, not the enum",
+            in_enum.len()
+        );
+        let from_enum: Vec<String> = in_enum.iter().map(|n| snake(n)).collect();
+        let missing: Vec<&String> = from_enum
+            .iter()
+            .filter(|n| !in_all.contains(n))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the enum has variant(s) `ALL` does not, so `parse` would refuse them: {missing:?}"
+        );
+        let stale: Vec<&String> = in_all
+            .iter()
+            .filter(|n| !from_enum.contains(n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "`ALL` names something the enum does not, so `parse` returns a value that \
+             cannot exist: {stale:?}"
+        );
+        // And the derivation `parse` is built on really is the identity on this set.
+        for i in Intent::ALL {
+            assert_eq!(Intent::parse(i.as_str()), Some(*i), "{i:?}");
+        }
+    }
+
+    /// **Every region says whether it is outside, in one place, and the compiler is what
+    /// makes that true.**
+    ///
+    /// [`Region::is_outside`] is matched with **no `_` arm**, so a thirteenth `Region` is a
+    /// compile error there rather than a new region silently classified as innocent. That is
+    /// the guard, and it is stronger than a test — the build asks the question the moment
+    /// somebody adds a variant.
+    ///
+    /// This test is the other half: it names the split, so a **reader** can argue with it.
+    /// The two lists are the whole judgement in R21's guardrail, and the second one is the
+    /// one worth staring at: `HostOther` is *unplaceable*, not *outside* — a relative path
+    /// lands there, because the classifier holds the workspace and not the command's working
+    /// directory — and reading it as outside is the defect R9 already paid for.
+    #[test]
+    fn every_region_says_whether_it_is_outside_and_the_split_is_named() {
+        // Places a boundary can name as outside. Any of these voids a read-only shell call:
+        // R21's ruling keeps *a read outside the workspace is still outside it*.
+        for r in [
+            Region::Secret("ssh".into()),
+            Region::Remote("example.invalid".into()),
+            Region::Home,
+            Region::SystemConfig,
+            Region::SystemBinaries,
+            Region::Device,
+            Region::Temp,
+            Region::Root,
+        ] {
+            assert!(r.is_outside(), "{r:?} must be outside");
+        }
+        // And these four are not, each for its own reason.
+        for r in [
+            // The session's own work.
+            Region::Workspace,
+            Region::Scratch,
+            // **Unplaceable.** A relative path is here, and so is anything `region_of`
+            // could not put — `cd X && cat f` is the shape R21 is about, and its card read
+            // `over [workspace host_other]`.
+            Region::HostOther,
+            // No path to place at all: `pwd`, `date`, `nproc`.
+            Region::None,
+        ] {
+            assert!(!r.is_outside(), "{r:?} must NOT be outside");
+        }
+
+        // **The four names are four different facts**, and the `as_str` spelling is what a
+        // corpus row records — so these are asserted too, and `Secret`/`Remote` carry the
+        // store or host they name rather than a bare word.
+        assert_eq!(Region::Secret("ssh".into()).as_str(), "secret");
+        assert_eq!(Region::Remote("h".into()).as_str(), "remote");
+        assert_eq!(Region::HostOther.as_str(), "host_other");
+        assert_eq!(Region::Scratch.as_str(), "scratch");
+        // A secret's identity is its store, not the region's kind: two stores are two
+        // directions, which is what the flow rule reads.
+        assert_ne!(
+            Region::Secret("ssh".into()),
+            Region::Secret("aws".into()),
+            "the store is part of the identity"
+        );
+    }
+
     fn a_shell_that_only_reads_is_a_read_and_the_four_ways_it_is_not() {
         // The yes, in the shapes this corpus is actually made of: a `cd` then a reader,
         // which is what the operator's own 117-times-asked example was.
