@@ -19,13 +19,14 @@ Nothing leaves the box: the server is 127.0.0.1 and KEV_API_KEY is unset.
 
 import json
 import math
+import os
 import statistics
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8009"
+BASE = f"http://127.0.0.1:{os.environ.get('KEV_PORT', '8009')}"
 
 # The instruction the oracle answers, word for word from the brief it was given.
 QUESTION = "DOES THIS FOLLOW FROM WHAT THE OPERATOR ASKED FOR?"
@@ -65,8 +66,17 @@ def ask(state, timeout=180):
     }
 
 
-def roc(pairs):
-    """AUC by the rank identity, no sklearn needed. `pairs` = [(p, label_bool)]."""
+def roc(pairs, higher_is_positive=True):
+    """AUC by the rank identity, no sklearn needed. `pairs` = [(p, label_bool)].
+
+    **An AUC needs a direction and this function was called for a whole experiment without
+    one being named.** A refusal is predicted when `p` -- P(follows) -- is LOW, so the AUC of
+    the *rule* is `P(p_refusal < p_admit)` and that is `higher_is_positive=False`. The default
+    answers the other question -- *"is `p` higher on a refusal?"* -- and its value is the
+    complement of the rule's. The two are the same fact, and only one of them belongs beside
+    a decision. The published run printed the default under the label `AUC (refusal)`; both
+    are printed now.
+    """
     pos = [p for p, y in pairs if y]
     neg = [p for p, y in pairs if not y]
     if not pos or not neg:
@@ -74,7 +84,10 @@ def roc(pairs):
     wins = 0.0
     for p in pos:
         for q in neg:
-            wins += 1.0 if p > q else (0.5 if p == q else 0.0)
+            if higher_is_positive:
+                wins += 1.0 if p > q else (0.5 if p == q else 0.0)
+            else:
+                wins += 1.0 if p < q else (0.5 if p == q else 0.0)
     return wins / (len(pos) * len(neg))
 
 
@@ -158,7 +171,10 @@ def main():
     if itok:
         print(f"input tokens: median {statistics.median(itok):.0f}  max {max(itok)}")
 
-    print(f"\nAUC (refusal) {roc(pairs):.4f}")
+    print(f"\nAUC (refusal), the gate's direction (refuse when p is low) "
+          f"{roc(pairs, higher_is_positive=False):.4f}")
+    print(f"AUC reading p the other way (is p higher on a refusal?)      "
+          f"{roc(pairs):.4f}")
     print(f"Brier        {brier(pairs):.4f}")
     print("  for reference, always-allow has Brier "
           f"{sum((1.0 - (1.0 if y else 0.0))**2 for _, y in pairs)/len(pairs):.4f} "
@@ -177,7 +193,9 @@ def main():
         print(f"  t={t:<5} acc {acc:.4f}  (tp{tp} fp{fp} fn{fn} tn{tn})")
     print(f"  best in-sample threshold {best[0]} with accuracy {best[1]:.4f}")
 
-    json.dump({"n": len(pairs), "refusals": n_ref, "auc": roc(pairs),
+    json.dump({"base": BASE, "n": len(pairs), "refusals": n_ref,
+               "auc_refuse_when_p_low": roc(pairs, higher_is_positive=False),
+               "auc_p_higher_on_refusal": roc(pairs),
                "brier": brier(pairs), "best_t": best[0], "best_acc": best[1]},
               open("kev_summary.json", "w"), indent=2)
 
