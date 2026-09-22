@@ -1,93 +1,79 @@
-a nested list is indented under the item it belongs to
+an unknown verb is the daemon's to refuse, not this head's
 
-§2.7's missing half. A sub-bullet rendered in exactly its parent's column: the walk
-that collects a list's items **recursed into nested lists and threw the depth away**,
-pushing every level into one flat vector, and the renderer had a single indent step.
+§6: *"unknown verbs forwarded to the daemon rather than refused against an allowlist"*.
 
-**The parse already had the tree — this is a seam, not a parse.** `collect_items` is
-given the `list` children of each item and calls itself on them; what it did not do was
-record where those items came from. So the fix is to carry one more vector alongside
-`items`, and the question is only what number goes in it.
+The fallthrough of `command` held a **twelve-name allowlist** of daemon verbs and
+answered anything outside it with `unknown command /x — try /help`. That is a second
+copy of the daemon's verb table, and the failure mode is the worst kind this file
+recognises: a verb added on the other side is **unreachable until this head is
+rebuilt**, and the operator is told the command does not exist *by the half that does
+not own the list*. The head then lies about its own daemon.
 
-## The number comes from the source, not the recursion depth
+**The comment four lines above already said the right thing** — *"the head does not know
+them and does not need to: the line goes over as typed and the answer comes back on the
+session log"* — and then the code refused the ones it had not heard of. This commit makes
+the code agree with its own sentence.
 
-`marker_indent` reads the **column the marker was actually written at**, from the marker
-node's byte offset and the source that is right there, then rounds it down to an even
-number and caps it at 8. All three of those are leticl's constants and each earns its
-place:
+## Why forwarding loses nothing
 
-- **From the source** rather than a depth counter, because the two disagree for exactly
-  the lists people write: a `- ` sub-list is written at two spaces and a `1. ` one at
-  three or four, and the model's own indentation is the fact its prose refers to.
-- **Rounded to even** so those two land on the *same* step. A head that indented by the
-  raw column would put a bullet sub-list and an ordered sub-list a column apart for no
-  reason a reader could name.
-- **Capped at 8** so a deeply nested list cannot walk off the width it is rendered at.
-  Six levels deep flattens the last two onto 8 rather than continuing 10 and 12, and
-  that is asserted rather than assumed.
-- **Two columns per step**, which is the step `card::REASONING_RAIL_WIDTH` and
-  `App::GUTTER` already use, so the page keeps one idea of what one level of structure
-  costs instead of three unrelated indents.
+`harnessd/src/slash.rs` answers an unrecognised verb **by name**:
 
-The nest is added **inside** the marker-width arithmetic rather than prepended to the
-output row, so a wrapped sub-item's continuation lines line up under its own text and not
-under its parent's — the same reason the `pad` there is measured in columns rather than
-bytes.
+    /{verb} is not a daemon verb; /help lists the head's
 
-## The ordering conflict, ruled — and this head's description was stale
+So the question is settled by the half that owns the table, and a typo gets a *better*
+sentence than this head could write — the daemon's says whose verbs those are, which is
+the fact a person who mistyped needs. Nothing is swallowed and nothing is guessed.
 
-§2.7 lists a **CONFLICT** on ordered numbering: this head rendering `1. 1. 1.` for a
-loose list, *"one block per item, each with its own written `start`"*, against leticl's
-`1. 2. 3.`.
+## This is the same mistake, a third time
 
-**That description is out of date, and the check is one line of code**: `lex("1. first\n\n2.
-second\n\n3. third\n\n")` produces **one** block with three items, not three blocks —
-the grammar keeps a loose list together, which is the same fix that put `start + i` in
-the renderer. So this head numbers `1. 2. 3.` too, and the conflict as stated does not
-exist.
+Two other comments in this file record the head keeping a copy of a daemon-owned list and
+getting it wrong: the `mode` settings row (*"a second copy of a list is a copy that
+drifts"* — it offered `supervised`, which is not a mode, and not `automode-edits`, which
+is), and the jobs pane building its own table before the daemon published one. An
+allowlist of verbs is the same shape, so it goes for the same reason rather than because
+this particular instance had been observed to rot — it had not, because the daemon has
+not gained a verb since. **The argument is about which half owns the fact**, and the
+honest note is that this was a latent defect rather than a reported one.
 
-What is worth ruling is the case the two heads *could* still differ on: a model that
-writes `1.` for every item, which markdown permits and models do. **Numbering up is
-right**, because the repeated `1.` is an idiom rather than a claim about the number —
-every markdown renderer on this box shows `1. 2. 3.` for that input, so a head echoing
-`1. 1. 1.` shows something no other reader of the same message sees. And **the first
-item's written number is kept**, so a list the model numbered from seven stays at seven:
-the rule is "count from what was written", not "renumber", and a model phrasing its own
-list is not quietly corrected. Both are pinned by
-`a_loose_ordered_list_counts_up_rather_than_echoing_a_repeated_marker`.
+## What the arms above still own, which is what makes the fallthrough safe
 
-## Tests
+Every head-side verb returns before the fallthrough, and the test asserts three of them
+so the boundary is pinned rather than assumed:
 
-- `a_nested_list_is_indented_under_the_item_it_belongs_to` — columns `0, 2, 4, 0` for
-  three levels plus a sibling; a `1. ` sub-list at three spaces and at four landing on
-  the **same** step as a `- ` one at two; and six levels cramming onto `0, 2, 4, 6, 8, 8`
-  so the cap is exercised rather than asserted.
-- `a_loose_ordered_list_counts_up_rather_than_echoing_a_repeated_marker` — the ruling
-  above, at the render level, plus `7. 8.` staying `7. 8.`.
-- The existing `a_loose_ordered_list_keeps_the_numbers_it_was_written_with` is unchanged
-  and still passes, which is the evidence for the stale-description claim: it asserts one
-  block with three items, and it did so before this commit.
+- `/status` opens a pane and returns `None` — nothing is forwarded.
+- `/quit` is `Action::Quit`.
+- `/models` with **no argument** is the picker, not a daemon round trip: it asks
+  `Action::Settings` and opens the menu. (`/models NAME` still goes over as typed, which
+  is what `--once` and `--key` need — that arm is above the fallthrough and unchanged.)
 
-`cargo test -p letibot-tui`: **311 passed, 0 failed, 4 ignored** (309 + 2).
-`cargo test -p letibot-ui`: **101 passed, 0 failed**.
+And the one thing the fallthrough still guards is the session: an unattached head says
+*"not attached to a session yet"* rather than sending a line to a daemon it has no
+session on.
+
+## Test
+
+`a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged` — `/import foo.json`
+becomes `Action::Slash { line: "import foo.json" }` **and the head adds no verdict of its
+own** (the composer is empty, so the line was sent rather than held); then the three
+head-side verbs above, so "the arms above the fallthrough keep their verbs" is asserted
+and not merely true today.
+
+`cargo test -p letibot-tui`: **312 passed, 0 failed, 4 ignored** (311 + 1).
 
 **Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
 a temp file and `bash` is closed for that direction by the circuit breaker, which only
 the operator lifts. `letibot-harnessd`, `-sessionlog`, `-tokencore` and `-turn` are still
-unrun since `65725ce`, for the lock reasons the last two commits record.
+unrun since `65725ce`, for the lock reasons recorded in the last three commits. Nothing
+here touches them — this is one arm in `crates/tui/src/app.rs` and one test — but the
+statement is that I do not have their result.
 
 ## Not in this commit
 
-**The rest of §6's missing-in-A list**, which is the next block of work and is mostly
-small: `/todos`, `/subagents`, `/peek`, `/resume`, `/promote`, unknown verbs forwarded to
-the daemon rather than refused against an allowlist, `q` closing any pane, `ctrl-o` into
-a subagent, clicks reaching five panes instead of two, SGR mouse motion decoded, the
-composer draft preserved across a history walk, the truthful paste line count (this head
-reports 301 lines for a 300-line paste), and the tail-origin scroll sign for the peek and
-job-output panes.
+**The rest of §6's list**, one item per commit: `/todos`, `/subagents`, `/peek`,
+`/resume`, `/promote`, `q` closing any pane, `ctrl-o` into a subagent, clicks reaching
+five panes instead of two, SGR mouse motion decoded, the composer draft preserved across
+a history walk, the truthful paste line count (this head reports 301 lines for a
+300-line paste), and the tail-origin scroll sign for the peek and job-output panes.
 
-**A defect found while reading the lexer, not fixed here**: the settled half of a list
-takes its indent from the source column, but `IncrementalMarkdown` freezes a prefix once
-it is lexed — so an item that is indented *after* it has already been rendered into the
-frozen half would keep its old column. It needs a fence-like guard in `cut_point` if it
-is real, and it is recorded rather than guessed at.
+**R12 stays blocked on a grant, not a decision** — the query and the reason are in
+`~/Projects/blocked-overnight-2026-09-22.md`.

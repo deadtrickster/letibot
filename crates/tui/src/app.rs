@@ -5580,32 +5580,35 @@ impl App {
                     // it refreshes the rows the picker reads.
                     return Some(Action::Settings);
                 }
-                if matches!(
-                    verb,
-                    "flowy"
-                        | "models"
-                        | "model"
-                        | "login"
-                        | "supervise"
-                        | "supervised"
-                        | "gate"
-                        | "job"
-                        | "jobs"
-                        | "tools"
-                        | "default-model"
-                        | "default_model"
-                        | "default"
-                ) {
-                    if self.session_id.is_empty() {
-                        self.say("not attached to a session yet");
-                        return None;
-                    }
-                    return Some(Action::Slash {
-                        line: other.trim().to_string(),
-                    });
+                // **Every other verb goes to the daemon, and the head keeps no list.**
+                //
+                // There used to be an allowlist right here — twelve names — and it was
+                // a second copy of the daemon's verb table, which is the mistake this
+                // file has been burned by twice already (see the `mode` settings row,
+                // which the head kept its own copy of and got wrong). Its failure mode
+                // is the worst kind: the daemon gains a verb, this head is not rebuilt
+                // with it, and the operator is told *"unknown command /import — try
+                // /help"* about a command the other half implements. The head is then
+                // lying about its own daemon, which is the defect class this repo
+                // exists against.
+                //
+                // The comment four lines up already says the right thing — *"the head
+                // does not know them and does not need to: the line goes over as typed
+                // and the answer comes back on the session log"* — and then the code
+                // refused the ones it had not heard of.
+                //
+                // Nothing is lost by forwarding, because the daemon answers an
+                // unrecognised verb **by name**: `harnessd/src/slash.rs` builds
+                // `/{verb} is not a daemon verb; /help lists the head's`, so the
+                // question is settled by the half that owns the table and a typo gets
+                // a better sentence than this head could write.
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
                 }
-                self.say(&format!("unknown command /{other} — try /help"));
-                None
+                Some(Action::Slash {
+                    line: other.trim().to_string(),
+                })
             }
         }
     }
@@ -16250,6 +16253,49 @@ mod tests {
             "past tense once it is done: {screen}"
         );
         assert!(screen.contains("7.5s"), "{screen}");
+    }
+
+    /// **§6: a verb this head has never heard of is the daemon's to refuse.**
+    ///
+    /// The head kept a twelve-name allowlist of daemon verbs and answered `unknown
+    /// command /x — try /help` for anything outside it. That is a second copy of the
+    /// daemon's table, and its failure mode is the head lying about **its own daemon**:
+    /// a verb added on the other side is unreachable until this head is rebuilt, and the
+    /// operator is told the command does not exist by the half that does not own the
+    /// list.
+    ///
+    /// Forwarding is safe because the daemon answers an unrecognised verb by name
+    /// (`/{verb} is not a daemon verb; /help lists the head's`), so the question is
+    /// settled where the answer lives. This asserts both halves of that: the line goes
+    /// over, and the head does not add a verdict of its own.
+    #[test]
+    fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        match a.submit("/import foo.json".into()) {
+            Some(Action::Slash { line }) => assert_eq!(line, "import foo.json"),
+            other => panic!("an unknown verb must reach the daemon, got {other:?}"),
+        }
+        // No verdict from this head: the notice is not set, because the answer is the
+        // daemon's to give and it arrives on the session log.
+        assert!(
+            a.input().is_empty(),
+            "the head kept the line instead of sending it: {:?}",
+            a.input()
+        );
+
+        // **A head verb is still the head's** and is not forwarded — the arms above
+        // the fallthrough keep it, which is what makes the fallthrough safe.
+        let mut b = app();
+        b.session_id = "s1".into();
+        assert_eq!(b.submit("/status".into()), None, "/status opens a pane");
+        assert!(b.stats, "and it really opened it");
+        assert_eq!(b.submit("/quit".into()), Some(Action::Quit));
+        // …and `models` with no argument is the menu, not a daemon round trip.
+        let mut c = app();
+        c.session_id = "s1".into();
+        assert!(matches!(c.submit("/models".into()), Some(Action::Settings)));
+        assert!(c.models_picker, "the menu opened");
     }
 
     /// **§3.1: content this head did not write must not reconfigure the terminal.**
