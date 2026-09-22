@@ -926,6 +926,16 @@ network: something else asks for those, and a sentence about the declaration wou
 false on the very card carrying it — which is what `because: workspace: /` was. Empty
 is a daemon older than the field: no clause, and no guess.
 
+**The clause, verbatim** — dim, two spaces in, under the `detail` line, and drawn only
+when the declared access is `exec` and the kind is not a question:
+
+    the access is what asks: a tool declared to `exec` is asked about on its declaration, and the line above is a reading of this action
+
+§11.6's string is a shared one and this one is not — item 7 is *A's, and A's own
+wording*, so leticl owes it nothing. It is quoted anyway, for the reason §11.6's is:
+leticl's card carries the same two statements with nothing joining them, and a head
+that wants to say the same thing should not have to guess at the sentence.
+
 **The tier ladder did not move.** §11.7 records A's `da4a576` refusal to implement *"a
 decision already marked auto is not re-asked"* as stated (`mode.rs:622-636` shows it
 would make `bash` unaskable for every read command); that refusal stands, and this was
