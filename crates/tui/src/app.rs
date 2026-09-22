@@ -952,6 +952,29 @@ pub struct App {
     /// with a snapshot, so it happened before this window and is listed rather than
     /// drawn. See the type, and [`App::load`] for where the two kinds are sorted.
     notes: Vec<(Placed, Note)>,
+    /// **How far the open card's content is scrolled** (R20), counted in rows from the
+    /// TOP of the content — the opposite of [`App::scroll`], which counts rows back from
+    /// the bottom because a transcript is read from its tail. A card is read from its
+    /// head: the question and what it is about are the first lines, and the wall is what
+    /// you walk down into.
+    ///
+    /// Reset in one place ([`App::screen`], on a change of `open[0].req_id`) rather than
+    /// at every site that replaces the open set, because there are several and one would
+    /// have been forgotten — and a card that inherited the previous card's offset is a
+    /// card whose first screenful was somewhere in the middle.
+    dec_scroll: usize,
+    /// The `req_id` [`App::dec_scroll`] belongs to, so the reset above can tell a new card
+    /// from the same card drawn again.
+    dec_scroll_for: String,
+    /// **What the card's content window actually was on the last frame**: how many lines
+    /// the content has, and how many rows the viewport got, seam excluded.
+    ///
+    /// The key handler asks these to decide whether the page keys belong to the card at
+    /// all — the question is *is anything out of view*, and only the draw knows it, because
+    /// the length of the content is a function of the width. Named for the panes'
+    /// `pane_len`/`pane_room`, which are the same arrangement.
+    dec_content_len: usize,
+    dec_content_room: usize,
     /// **The notes this reader has retired**, by [`note_key`] — the identity a
     /// note keeps across a resync and a restart.
     ///
@@ -1811,6 +1834,10 @@ impl App {
             term_cols: 0,
             sel: 0,
             notes: Vec::new(),
+            dec_scroll: 0,
+            dec_scroll_for: String::new(),
+            dec_content_len: 0,
+            dec_content_room: 0,
             dismissed: Vec::new(),
             heads: 0,
             hist_renders: 0,
@@ -4088,6 +4115,26 @@ impl App {
                     Key::WheelUp => (true, 3),
                     _ => (false, 3),
                 };
+                // **An open card takes them while its own content has somewhere to go**
+                // (R20). The card is the thing that needs an answer, it already owns
+                // Up/Down and Enter, and the wall above its ladder is the one screenful
+                // the operator may have to read past — so the page keys move *that* window
+                // for as long as there is one. When the content fits, nothing here fires
+                // and the keys do exactly what they always did: a card being up must not
+                // cost the transcript its scroll.
+                //
+                // The two numbers are the last frame's, because whether anything is out of
+                // view is a fact about the width — see [`App::card_window`].
+                if !self.open.is_empty() && self.dec_content_len > self.dec_content_room {
+                    let max = self.dec_content_len - self.dec_content_room;
+                    self.dec_scroll = if up {
+                        self.dec_scroll.saturating_sub(by)
+                    } else {
+                        (self.dec_scroll + by).min(max)
+                    };
+                    self.redraw = true;
+                    return None;
+                }
                 if self.scroll_tail_overlay(up, by) {
                     return None;
                 }
@@ -6564,9 +6611,15 @@ impl App {
             }
         }
 
-        let dec: Vec<String> = match (&self.secret, self.open.first()) {
-            (Some(ask), _) => self.secret_lines(ask, w),
-            (None, Some(d)) => self.decision_lines(d, w),
+        // **R20: the card is two pieces, and only one of them gives way.** `dec` is the
+        // content — the question and its evidence, which a viewport shrinks and scrolls —
+        // and `dec_pinned` is the answer: the ladder, the deadline, the hint. The fit loop
+        // below may not touch the second, because a card that has dropped its choices is a
+        // question with no way to answer it. See [`App::decision_card`].
+        let (dec, dec_pinned): (Vec<String>, Vec<String>) = match (&self.secret, self.open.first())
+        {
+            (Some(ask), _) => (self.secret_lines(ask, w), Vec::new()),
+            (None, Some(d)) => self.decision_card(d, w),
             // The mode card rides in the ask card's slot: a compact card at
             // the bottom of the screen with the transcript still visible above
             // it, which is where everything else that wants a choice sits.
@@ -6576,11 +6629,23 @@ impl App {
             // Ahead of the mode picker: a head on its way out is answering the
             // last question it will be asked, and a list under it is a list
             // nobody is going to use.
-            (None, None) if self.quit_card => self.quit_card_lines(w),
-            (None, None) if self.mode_picker || self.models_picker => self.mode_picker_lines(w),
-            (None, None) => Vec::new(),
+            (None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
+            (None, None) if self.mode_picker || self.models_picker => {
+                (self.mode_picker_lines(w), Vec::new())
+            }
+            (None, None) => (Vec::new(), Vec::new()),
         };
         let dec_full = dec.len();
+        // **The window the key handler asks about.** Set every frame, because the length of
+        // the content is a function of the width and the room is a function of the terminal
+        // — the same arrangement `pane_len`/`pane_room` make for the panes. The scroll
+        // itself is reset in one place, here, so a second card cannot inherit the first
+        // one's offset however it arrived.
+        let card_here = self.open.first().map(|d| d.req_id.clone()).unwrap_or_default();
+        if card_here != self.dec_scroll_for {
+            self.dec_scroll_for = card_here;
+            self.dec_scroll = 0;
+        }
         // **The link line.** Read here with the other chrome rather than in the body: it
         // is a state of the connection, not a row of the conversation, and it belongs
         // where the eye crosses on the way to the composer — the same place the stuck
@@ -6609,9 +6674,19 @@ impl App {
         let mut show_stuck = stuck.is_some();
         let mut show_completions = completions.is_some();
         let mut boxed = true;
-        let mut dec_rows = dec.len();
+        // **The content viewport, and R20's one rule about it.** The loop used to shrink the
+        // whole card (`dec_rows -= 1`), which trims from the END — and the END of a card is
+        // the ladder, the deadline and the hint. So the last rows the operator needed were
+        // the first rows given up, and what stayed was the wall. Only this number moves now;
+        // `dec_pinned` is added in full and never enters the ladder of sacrifices.
+        let mut content_rows = dec.len();
         loop {
-            let n = dec_rows
+            // A windowed content costs one row for the seam that says so, and it is not
+            // drawn at all when there is no room for any of it.
+            let seam = usize::from(content_rows > 0 && dec.len() > content_rows);
+            let n = content_rows
+                + seam
+                + dec_pinned.len()
                 + usize::from(show_stuck)
                 + usize::from(show_notice)
                 + usize::from(show_completions)
@@ -6638,8 +6713,8 @@ impl App {
                 show_stuck = false;
             } else if boxed {
                 boxed = false;
-            } else if dec_rows > 1 {
-                dec_rows -= 1;
+            } else if content_rows > 0 {
+                content_rows -= 1;
             } else {
                 break;
             }
@@ -6663,7 +6738,16 @@ impl App {
                 chrome.push(p.paint(Role::Attention, &l));
             }
         }
-        chrome.extend(dec.into_iter().take(dec_rows));
+        // **The content, as a window** (R20), then the answer in full underneath it.
+        //
+        // The seam is what makes the window honest: it says how many lines are out of
+        // view and names the keys that move, and it is only drawn when there is something
+        // out of view. `card_window` clamps the scroll to what this frame actually has,
+        // because the length of the content is a function of the width and nothing else
+        // knows it.
+        let (card_rows, _) = self.card_window(w, &dec, content_rows);
+        chrome.extend(card_rows);
+        chrome.extend(dec_pinned);
         if show_stuck && let Some(l) = stuck {
             chrome.push(l);
         }
@@ -6736,7 +6820,7 @@ impl App {
         self.mode_rows_drawn = if (self.mode_picker || self.models_picker)
             && self.open.is_empty()
             && self.secret.is_none()
-            && dec_rows == dec_full
+            && content_rows == dec_full
             && pre_chrome == chrome.len()
         {
             self.mode_choices().len()
@@ -8994,7 +9078,29 @@ impl App {
         out
     }
 
-    fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
+    /// **The card, split where R20 says the split is.**
+    ///
+    /// `head-parity-2026-09-21.md` **R20**, ruled 2026-09-22 on a permission card carrying a
+    /// giant replace or a commit message: *"I'm shown a permission prompt and I just cant
+    /// see the selector."* The screen-fit loop in [`App::screen`] shrinks the card with
+    /// `dec_rows -= 1`, which trims **from the end**, and the card was built headline,
+    /// target, intents, because, advice, options, hint — so the loop ate the hint, then the
+    /// options bottom-up, and kept the wall. **A card that has dropped its choices is a
+    /// question with no way to answer it**, and the operator was left reading a wall at full
+    /// length while the four rows they had to act on were gone.
+    ///
+    /// So the card has two halves and only one of them gives way:
+    ///
+    /// * **`content`** — the question, what it is about, and the evidence. A viewport over
+    ///   this shrinks to the room that is left, and **scrolls** (`pgup`/`pgdn`), so the whole
+    ///   diff or message can still be read;
+    /// * **`choices`** — the ladder and what pressing it means: the deadline, the hint, the
+    ///   `deny_and_tell` line. **Never trimmed and never scrolled**, because this half is the
+    ///   answer.
+    ///
+    /// The order the card is read in does not change: content above, choices below, which is
+    /// the bottom of the card and therefore the row nearest the composer.
+    fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         // (helper below the method, so the rendering reads top to bottom)
         // **The question, then the thing itself, then the evidence.**
         //
@@ -9160,6 +9266,13 @@ impl App {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
+        // **R20: here the card stops being content and becomes the answer.** Everything
+        // above this line goes into the viewport that shrinks and scrolls; everything
+        // below is the ladder and what pressing it means, which the fit loop may not
+        // touch. This is the split point and it is here, at the list, because the list is
+        // what the operator has to act on — a card whose wall is cut short is a card you
+        // can still answer, and a card whose choices are cut off is not a card at all.
+        let mut choices: Vec<String> = Vec::new();
         // **One row per answer, with the highlighted one marked.**
         //
         // They used to be joined with `·` onto one wrapped line, which is readable but
@@ -9185,7 +9298,7 @@ impl App {
             // The id stays on the line. Typing it still works, a script still uses it,
             // and a reader learning the ladder sees both spellings of the same choice.
             for l in wrap(&format!("  {} {body}", if picked { "▸" } else { " " }), w) {
-                out.push(if picked {
+                choices.push(if picked {
                     // Inverse video rather than another colour: the prompt is already
                     // yellow, and a highlight that is a second hue reads as a second
                     // kind of thing rather than as "this one".
@@ -9230,7 +9343,7 @@ impl App {
                 said.push(clause.to_string());
             }
             for l in wrap(&format!("  {}", said.join(" · ")), w) {
-                out.push(colour(&self.cfg, sgr::DIM, &l));
+                choices.push(colour(&self.cfg, sgr::DIM, &l));
             }
         }
         // The glob line is only shown when an *always allow* is actually on offer.
@@ -9257,7 +9370,7 @@ impl App {
         } else {
             "  ↑↓ to choose · Enter to answer · or type the id"
         };
-        out.push(colour(&self.cfg, sgr::YELLOW, hint));
+        choices.push(colour(&self.cfg, sgr::YELLOW, hint));
         // **The option that asks for words says where to type them.** Its label
         // promised *"tell the model why"* and the card never said how — so the
         // why was typed into the composer, refused by `match_option`, and left
@@ -9266,13 +9379,92 @@ impl App {
             .iter()
             .any(|o| o.kind == letibot_sessionlog::event::OptionKind::RejectAlways)
         {
-            out.push(colour(
+            choices.push(colour(
                 &self.cfg,
                 sgr::YELLOW,
                 "  `deny_and_tell <why>` denies and sends those words to the model",
             ));
         }
-        out
+        (out, choices)
+    }
+
+    /// The whole card as one list, for the callers that want it whole: the fit loop in
+    /// [`App::screen`] does not, because R20 splits it there, so this is the transcript's
+    /// shape and the tests' entry point rather than the drawing path.
+    fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
+        let (mut content, choices) = self.decision_card(d, w);
+        content.extend(choices);
+        content
+    }
+
+    /// **The card's content as a window** (R20).
+    ///
+    /// `room` is how many rows the viewport may occupy, seam included; returns the lines to
+    /// draw — the seam and the window — and the scroll actually used.
+    ///
+    /// The seam is the whole of the disclosure, so it is written as one: **how many lines
+    /// are out of view** and which key moves toward them. It is never "there is more" — a
+    /// reader who cannot see the rest has to know whether one line or four hundred are
+    /// missing before deciding whether to scroll at all, which is the same rule
+    /// `OutputSlice::denominator` keeps for a job's output.
+    ///
+    /// **The window starts at the head**, because that is where a card is read from: the
+    /// question and what it is about are the first lines, and `pgdn` walks down into the
+    /// wall. The seam changes ends with the scroll — above the window once there is nothing
+    /// left below it — so the sentence is always the boundary the reader is looking at.
+    ///
+    /// The scroll is clamped here rather than in the key handler, for the reason the panes
+    /// clamp in `pane_window`: the drawn length is a function of the width and the fold, and
+    /// the key handler knows neither.
+    fn card_window(&mut self, _w: usize, content: &[String], room: usize) -> (Vec<String>, usize) {
+        self.dec_content_len = content.len();
+        if content.is_empty() || room == 0 {
+            self.dec_content_room = 0;
+            self.dec_scroll = 0;
+            return (Vec::new(), 0);
+        }
+        if content.len() <= room {
+            // `room` counts the content lines the viewport actually showed, seam excluded,
+            // so "nothing is out of view" is `len <= room` in both places that ask.
+            self.dec_content_room = content.len();
+            self.dec_scroll = 0;
+            return (content.to_vec(), 0);
+        }
+        // One row of the viewport is the seam, and it is spent even at `room == 1` — a
+        // viewport whose whole height is the sentence saying how much is missing is the
+        // honest shape of a screen with nowhere to put the content.
+        let shown = room - 1;
+        self.dec_content_room = shown;
+        let max = content.len() - shown;
+        let at = self.dec_scroll.min(max);
+        self.dec_scroll = at;
+        let above = at;
+        let below = content.len() - (at + shown);
+        let seam = if below == 0 {
+            dim(
+                &self.cfg,
+                &format!("  … {above} line(s) out of view · pgup scrolls"),
+            )
+        } else if above == 0 {
+            dim(
+                &self.cfg,
+                &format!("  … {below} line(s) out of view · pgdn scrolls"),
+            )
+        } else {
+            dim(
+                &self.cfg,
+                &format!("  … {above} above, {below} below · pgup/pgdn scrolls"),
+            )
+        };
+        let mut out: Vec<String> = Vec::with_capacity(room);
+        if below == 0 {
+            out.push(seam.clone());
+        }
+        out.extend(content[at..at + shown].iter().cloned());
+        if below != 0 {
+            out.push(seam);
+        }
+        (out, at)
     }
 
     /// The turn's status, inlaid in the composer's bottom border and pinned
@@ -20978,6 +21170,267 @@ mod tests {
         // is a *runtime* symptom rather than a shape in the source: nothing here
         // would have caught it in a type.
         assert!(!card.contains("0000s left"), "a second epoch in seconds: {card}");
+    }
+
+    /// **R20 — the measurement first, and then the fix.** A card whose content is taller
+    /// than the screen, on the glass.
+    ///
+    /// The operator, on a permission card carrying a giant replace or a commit message:
+    /// *"I'm shown a permission prompt and I just cant see the selector."* The mechanism
+    /// was the screen-fit loop's `dec_rows -= 1`, which trims **from the end** — and the
+    /// end of a card is the ladder, the deadline and the hint. **Measured before the fix,
+    /// 80x24 with a 42-row card: the headline, the target and nineteen lines of layer A's
+    /// reading, and the three options GONE.** The composer was still there, so the
+    /// operator held a screen with a question on it and no way to answer it.
+    ///
+    /// After: the ladder in full, then the hint, and a seam saying how many lines are out
+    /// of view and which key reads them. The content still starts at its head, because
+    /// that is where a card is read from.
+    fn tall_card(tall: bool) -> App {
+        use letibot_sessionlog::event::OptionKind;
+        let mut a = app();
+        let mut d = decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::AllowSession,
+            OptionKind::RejectOnce,
+        ]);
+        d.summary = "edit a file".into();
+        d.target = "crates/tui/src/app.rs".into();
+        d.detail = if tall {
+            (0..40)
+                .map(|i| format!("  line {i} of layer A's reading of this call"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            "the reading".into()
+        };
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::DecisionRequested {
+                req_id: d.req_id.clone(),
+                kind: d.kind.clone(),
+                call_id: None,
+                access: "write".into(),
+                summary: d.summary.clone(),
+                target: d.target.clone(),
+                detail: d.detail.clone(),
+                options: d.options.clone(),
+                choices: Vec::new(),
+                because: String::new(),
+                advice: None,
+                deadline: None,
+                on_timeout: d.on_timeout,
+            },
+        )));
+        a
+    }
+
+    #[test]
+    fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
+        let mut a = tall_card(true);
+        let screen = a.screen(80, 24).join("\n");
+
+        // **The answer is on the screen**, all of it: every option, and the line that
+        // says how to press one. This is the whole of the requirement.
+        for opt in ["allow_once", "allow_session", "deny"] {
+            assert!(screen.contains(opt), "`{opt}` was trimmed away:\n{screen}");
+        }
+        assert!(
+            screen.contains("↑↓ to choose · Enter to answer"),
+            "the hint is the fourth thing the loop used to eat:\n{screen}"
+        );
+        // **And the wall is where it belongs: above, with a seam.** The count is the
+        // disclosure — how much is out of view, not that there is more.
+        let has_seam = screen
+            .lines()
+            .any(|l| l.contains("line(s) out of view") && l.contains("pgdn scrolls"));
+        assert!(has_seam, "no seam over a windowed card:\n{screen}");
+        // The content starts at its head: the question is the first thing on the card.
+        let at_headline = screen.find("? edit a file [permission]").expect("the ask");
+        let at_frame = screen.find("crates/tui/src/app.rs").expect("the target");
+        let at_seam = screen.find("line(s) out of view").expect("the seam");
+        let at_ladder = screen.find("allow_once").expect("the ladder");
+        assert!(
+            at_headline < at_frame && at_frame < at_seam && at_seam < at_ladder,
+            "the card is not read top to bottom:\n{screen}"
+        );
+        // The content was NOT paid for by the ladder's rows: what is missing is content,
+        // and the seam says exactly how much.
+        assert!(
+            !screen.contains("line 39 of layer A"),
+            "the whole wall fitted — the premise is wrong:\n{screen}"
+        );
+    }
+
+    /// **The window scrolls, and the choices never leave** (R20).
+    ///
+    /// The ruling asks for a viewport that shrinks *and scrolls*, so the whole diff or
+    /// message can still be read without the options going anywhere. `pgup`/`pgdn` are the
+    /// keys — the ones an open card can take without stealing Up/Down from the ladder, and
+    /// the seam names them.
+    #[test]
+    fn the_card_body_scrolls_without_the_ladder_moving() {
+        let mut a = tall_card(true);
+        let first = a.screen(80, 24).join("\n");
+        assert!(first.contains("line 0 of layer A"), "{first}");
+
+        // A frame has been drawn, so the key handler knows there is something out of view.
+        a.key(Key::PageDown);
+        let scrolled = a.screen(80, 24).join("\n");
+        assert!(
+            !scrolled.contains("line 0 of layer A"),
+            "pgdn did not move the window:\n{scrolled}"
+        );
+        assert!(
+            scrolled.contains("lines below") || scrolled.contains("above,"),
+            "the seam must say there are now two ends hidden:\n{scrolled}"
+        );
+        assert!(scrolled.contains("pgup/pgdn scrolls"), "{scrolled}");
+
+        // **The ladder is where it was**, which is the point of the whole item.
+        for opt in ["allow_once", "allow_session", "deny"] {
+            assert!(scrolled.contains(opt), "scrolling lost `{opt}`:\n{scrolled}");
+        }
+        assert_eq!(
+            first.find("allow_once").map(|_| "in"),
+            scrolled.find("allow_once").map(|_| "in"),
+            "the ladder moved"
+        );
+
+        // **Walk to the end**, and the seam moves to the top of the window with it.
+        for _ in 0..8 {
+            a.key(Key::PageDown);
+        }
+        let end = a.screen(80, 24).join("\n");
+        assert!(end.contains("line 39 of layer A"), "{end}");
+        assert!(
+            end.contains("line(s) out of view · pgup scrolls"),
+            "at the tail the seam is above the window and names the way back:\n{end}"
+        );
+        assert!(end.contains("allow_once"), "{end}");
+
+        // And back to the head, where it all started.
+        for _ in 0..8 {
+            a.key(Key::PageUp);
+        }
+        let home = a.screen(80, 24).join("\n");
+        assert_eq!(home, first, "pgup did not come back to where it started");
+    }
+
+    /// **A card that fits is exactly the card it always was**, and the transcript keeps
+    /// its own scroll.
+    ///
+    /// The two halves are joined in the same order for the whole card, so nothing about a
+    /// short card changes — and `pgdn` on one still scrolls the conversation behind it,
+    /// because a card being up must not cost the transcript a key it has always had.
+    #[test]
+    fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
+        let mut a = tall_card(false);
+        let whole = a.screen(80, 24).join("\n");
+        assert!(
+            !whole.contains("out of view"),
+            "a card that fits must draw no seam:\n{whole}"
+        );
+        // Byte-for-byte the two halves in order: what `decision_lines` returns is what the
+        // screen shows, wrapped to the same width.
+        let d = a.open.first().cloned().expect("the card");
+        let expected: Vec<String> = a
+            .decision_lines(&d, 76)
+            .into_iter()
+            .flat_map(|l| wrap(&l, 76))
+            .map(|l| l.trim().to_string())
+            .collect();
+        let shown: Vec<String> = whole
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        for e in &expected {
+            assert!(
+                shown.contains(e),
+                "the card lost a line it used to draw: {e:?}\n{whole}"
+            );
+        }
+
+        // **The transcript's scroll keys are still the transcript's** — the card's content
+        // fits, so nothing here takes them.
+        a.items = (0..80)
+            .map(|i| SnapshotItem {
+                item_id: format!("i{i}"),
+                kind: "row".into(),
+                ledger_head: String::new(),
+                ts: 0,
+                item: Some(letibot_transcript::TranscriptItem::Assistant {
+                    text: format!("row {i}"),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            })
+            .collect();
+        a.invalidate_history();
+        a.screen(80, 24);
+        a.key(Key::PageUp);
+        assert!(
+            a.scroll > 0,
+            "the card stole the transcript's page key with nothing of its own to page"
+        );
+    }
+
+    /// **A new card starts at its head.** The offset is reset in one place, so a second
+    /// permission cannot inherit the first one's scroll and open in the middle of its wall.
+    #[test]
+    fn a_second_card_does_not_inherit_the_first_ones_scroll() {
+        let mut a = tall_card(true);
+        a.screen(80, 24);
+        a.key(Key::PageDown);
+        a.screen(80, 24);
+        assert!(a.dec_scroll > 0, "the premise: the window moved");
+
+        // **Answer the first one**, because an open set is a queue and `open[0]` is the
+        // card on the screen (§1.4: oldest first) — a second `DecisionRequested` while the
+        // first is unanswered is a second card behind it, not a replacement.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::DecisionAnswered {
+                req_id: "d1".into(),
+                outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                    option_id: "allow_once".into(),
+                },
+                by: letibot_sessionlog::event::Decider {
+                    kind: "operator".into(),
+                    identity: "dead".into(),
+                },
+                basis: "at the head".into(),
+                late: false,
+            },
+        )));
+        assert!(a.open.is_empty(), "the premise: the first card closed");
+        let mut d = decision_with(&[letibot_sessionlog::event::OptionKind::AllowOnce]);
+        d.req_id = "d2".into();
+        d.detail = (0..40).map(|i| format!("  line {i}")).collect::<Vec<_>>().join("\n");
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::DecisionRequested {
+                req_id: d.req_id.clone(),
+                kind: d.kind.clone(),
+                call_id: None,
+                access: "exec".into(),
+                summary: d.summary.clone(),
+                target: d.target.clone(),
+                detail: d.detail.clone(),
+                options: d.options.clone(),
+                choices: Vec::new(),
+                because: String::new(),
+                advice: None,
+                deadline: None,
+                on_timeout: d.on_timeout,
+            },
+        )));
+        // The reset is in `screen`, where the offset is used, so the property is what the
+        // *frame* does with it — the same reason the clamp lives there.
+        let screen = a.screen(80, 24).join("\n");
+        assert_eq!(a.dec_scroll, 0, "the new card inherited the old card's offset");
+        assert!(screen.contains("line 0"), "the new card opened mid-wall:\n{screen}");
     }
 
     /// **§1.6: the card says how long there is, and what silence will do.**
