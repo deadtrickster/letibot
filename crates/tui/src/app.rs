@@ -947,7 +947,11 @@ pub struct App {
     /// forever, so a warning about turn three was still shoving turn nine up the
     /// screen — and a settled decision was recorded and then never rendered at all,
     /// which is the silence §13.2b says a refusal must not become.
-    notes: Vec<(usize, Note)>,
+    ///
+    /// **And a note the head did not file itself is [`Placed::Before`]** (R19): it came
+    /// with a snapshot, so it happened before this window and is listed rather than
+    /// drawn. See the type, and [`App::load`] for where the two kinds are sorted.
+    notes: Vec<(Placed, Note)>,
     /// **The notes this reader has retired**, by [`note_key`] — the identity a
     /// note keeps across a resync and a restart.
     ///
@@ -2605,12 +2609,17 @@ impl App {
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
     fn load(&mut self, s: Snapshot) {
+        // **The same conversation, or a different one**, read once and at the top: the
+        // session id is assigned a few lines down, and three things here ask the
+        // question — what is carried over, and (R19) which of this head's own notes keep
+        // the seam they were filed at.
+        let same_session = self.session_id == s.session_id;
         // Everything session-scoped goes, not just the transcript. A snapshot is a
         // *replacement*, and this is also the switch path: carrying the previous
         // session's model name or a tool target keyed by a call id that only
         // existed over there is how a switched head shows the right conversation
         // with the wrong facts attached to it.
-        if self.session_id != s.session_id {
+        if !same_session {
             self.call_targets.clear();
             self.call_ms.clear();
             self.call_edits.clear();
@@ -2750,20 +2759,66 @@ impl App {
             .settled_decisions
             .into_iter()
             .partition(|d| d.call_id.is_some());
-        // Everything in a snapshot is history and none of it is anchored, so it
-        // goes at the top rather than being invented a position among the rows.
-        self.notes = s
-            .warnings
-            .into_iter()
+        // **A snapshot's notes are HISTORY, and this head's own are not** (R19).
+        //
+        // Until this, everything the snapshot carried was planted at anchor 0 —
+        // *everything in a snapshot is history and none of it is anchored* — which is
+        // right about where it goes and wrong about what it is: a fresh head showed
+        // nothing, so replaying hours of announcements as though they had just happened
+        // put them above a conversation they did not precede. The operator restarted a
+        // head and was met by twelve red lines: *"i dont want to see that on restart."*
+        //
+        // So the two kinds are sorted rather than merged. This head's own notes keep
+        // their seam — it filed them while watching, at rows of this very conversation —
+        // and what the snapshot adds is [`Placed::Before`]: listed by `/notes`, counted
+        // by `/status`, and not drawn, because a head that has just attached has shown
+        // nothing and the log is where these facts live.
+        //
+        // **A seam the new transcript no longer has is not a seam.** A compaction or a
+        // reseat forks the conversation, so a note filed at row 200 of a 250-row
+        // transcript is no longer between any two rows of this one; it joins the history
+        // rather than being drawn at a place that has stopped existing.
+        let mut mine: Vec<(Placed, Note)> = if same_session {
+            std::mem::take(&mut self.notes)
+                .into_iter()
+                .map(|(place, note)| match place {
+                    Placed::Seam(at) if at <= self.items.len() => (Placed::Seam(at), note),
+                    _ => (Placed::Before, note),
+                })
+                .collect()
+        } else {
+            // A different conversation: these are that session's notes about rows this
+            // head no longer holds, and the same rule that clears `call_targets` clears
+            // them.
+            Vec::new()
+        };
+        let mut before: Vec<(Placed, Note)> = Vec::new();
+        for w in s.warnings {
             // Same rule as the live arm: `turn_failed` is the log's record of what
             // the turn's own terminal state already says on the screen. Filtering
             // it here as well is what stops a *snapshot* from putting it back —
             // which is exactly what happened the first time, and is the reason the
             // live path and the snapshot path have to agree about every filter.
-            .filter(|w| w.code != "turn_failed")
-            .map(|w| (0, Note::Warned(w)))
-            .chain(notes_bound.into_iter().map(|d| (0, Note::Decided(d))))
-            .collect();
+            if w.code == "turn_failed" {
+                continue;
+            }
+            let n = Note::Warned(w);
+            if holds(&mine, &n) {
+                continue;
+            }
+            before.push((Placed::Before, n));
+        }
+        for d in notes_bound {
+            let n = Note::Decided(d);
+            if holds(&mine, &n) {
+                continue;
+            }
+            before.push((Placed::Before, n));
+        }
+        // Oldest first: the facts from before this window are older than anything this
+        // head filed, and `/notes` numbers them in the order a reader reads.
+        before.append(&mut mine);
+        self.notes = before;
         self.note_upto = 0;
         // The settled rows this snapshot carries are history, and a decision that
         // gated one of them has to ride that row rather than vanish with the live
@@ -6199,17 +6254,17 @@ impl App {
         //
         // The FIRST anchor wins. A warning belongs where it happened, and the
         // later arrival is a redelivery rather than a new event.
-        if let Note::Warned(w) = &n
-            && self.notes.iter().any(|(_, o)| {
-                matches!(o, Note::Warned(p) if p.code == w.code
-                    && p.detail == w.detail
-                    && p.ts == w.ts)
-            })
-        {
+        //
+        // The identity is [`note_key`]'s, and it is one rule for the whole head: the
+        // same three facts (code, the log's `ts`, and the detail) that `/notes dismiss`
+        // retires a note by and that [`holds`] asks a snapshot against. A note that a
+        // *snapshot* already carries is not filed a second time at a live seam either —
+        // the snapshot's copy is the older statement of the same fact (R19).
+        if holds(&self.notes, &n) {
             return;
         }
         let at = self.items.len();
-        self.notes.push((at, n));
+        self.notes.push((Placed::Seam(at), n));
         if self.notes.len() > 64 {
             self.notes.remove(0);
             self.note_upto = self.note_upto.saturating_sub(1);
@@ -6241,6 +6296,21 @@ impl App {
         self.notes
             .iter()
             .filter(|(_, n)| self.is_retired(n))
+            .count()
+    }
+
+    /// **How many notes this head holds and is not drawing, because they are older than
+    /// the conversation it is showing** (R19).
+    ///
+    /// The number `/status` shows beside the count, computed from the notes for the same
+    /// reason [`App::retired_notes`] is: the two are different reasons for a line not
+    /// being on the screen — one the reader chose, one the window decided — and a reader
+    /// who cannot tell *"I dismissed it"* from *"it happened before I attached"* will
+    /// believe the wrong one.
+    fn notes_before(&self) -> usize {
+        self.notes
+            .iter()
+            .filter(|(place, _)| matches!(place, Placed::Before))
             .count()
     }
 
@@ -6354,9 +6424,15 @@ impl App {
 
     /// The `/notes` listing: every note this head holds, in the order the
     /// conversation has them, numbered for `/notes dismiss N`.
+    ///
+    /// **Including the ones it is not drawing** (R19). A note from before this window is a
+    /// fact this head holds and has chosen not to plant in the conversation, so the
+    /// listing is where a reader finds it — marked, for the same reason a retired one is:
+    /// two different reasons for an absence must not look like one.
     fn notes_lines(&self) -> Vec<String> {
         let n = self.notes.len();
         let retired = self.retired_notes();
+        let before = self.notes_before();
         let mut out = if n == 0 {
             vec![
                 "this head holds no notes. A note is a disclosure: a guard that fired, a \
@@ -6366,19 +6442,31 @@ impl App {
             ]
         } else {
             vec![format!(
-                "{n} note(s), {retired} retired — the log holds the durable fact; a note is \
-                 how a head shows it once"
+                "{n} note(s), {retired} retired{} — the log holds the durable fact; a note is \
+                 how a head shows it once",
+                if before == 0 {
+                    String::new()
+                } else {
+                    format!(", {before} from before this window")
+                }
             )]
         };
-        for (i, (_, note)) in self.notes.iter().enumerate() {
+        for (i, (place, note)) in self.notes.iter().enumerate() {
             // **The same renderer the transcript uses, unfolded.** A listing that hid
             // the tail of the very thing it exists to make findable would be the
             // defect again, so the whole text is here.
             let body = note_lines_unfolded(&self.cfg, note);
-            let mark = if self.is_retired(note) {
-                "[retired]"
+            let mut marks: Vec<&str> = Vec::new();
+            if self.is_retired(note) {
+                marks.push("retired");
+            }
+            if matches!(place, Placed::Before) {
+                marks.push("before this window");
+            }
+            let mark = if marks.is_empty() {
+                String::new()
             } else {
-                ""
+                format!("[{}]", marks.join(", "))
             };
             out.push(format!("{:>3}  {mark}", i + 1));
             out.extend(body);
@@ -7195,9 +7283,21 @@ impl App {
             } = self;
             let diff_split = *diff_split;
             loop {
+                // **A note from before this window is stepped over, not drawn** (R19).
+                // It is a disclosure this head holds — `/notes` lists it and `/status`
+                // counts it — and it has no seam in this conversation to be drawn at,
+                // because this head was not there when it happened. Stepped over here,
+                // once, and never again: `note_upto` only goes forward, so the cost is
+                // paid at the head of the list and not per row.
+                while matches!(
+                    notes.get(*note_upto).map(|(place, _)| place),
+                    Some(Placed::Before)
+                ) {
+                    *note_upto += 1;
+                }
                 let note_next = notes
                     .get(*note_upto)
-                    .is_some_and(|(at, _)| *at <= *hist_upto);
+                    .is_some_and(|(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto));
                 if note_next {
                     // **A retired note contributes nothing — not its text, and not
                     // the blank line above it.** R10: the note is a disclosure, and
@@ -9451,13 +9551,28 @@ impl App {
         // `dropped`, which is a fact about what is gone.
         row(
             "notes",
-            format!("{} · {} retired", self.notes.len(), self.retired_notes()),
+            format!(
+                "{} · {} retired{}",
+                self.notes.len(),
+                self.retired_notes(),
+                // **A third number, because there is a third reason a note is not on the
+                // screen** (R19): the reader retired it, or it is from before this window
+                // and was never planted. Both are facts about what was chosen not to be
+                // shown; they are not the same choice, and the zero case says nothing
+                // rather than "0 from before this window" on every attach.
+                match self.notes_before() {
+                    0 => String::new(),
+                    n => format!(" · {n} from before this window"),
+                }
+            ),
             "What this head is holding: a guard that fired, a decision that settled, a \
              sentence the daemon interrupted with. A retired note is HIDDEN, and still \
              here — `/notes` lists every one with its text and `/notes restore` puts the \
              retired ones back, which is the difference between a disclosure and a \
              deletion. The session log holds them either way; a note is how a head shows \
-             a durable fact once.",
+             a durable fact once. **A note from before this window** is one that arrived \
+             with a snapshot: it happened before this head attached, so it is listed and \
+             counted rather than planted in a conversation it did not precede (R19).",
         );
         row(
             "dropped",
@@ -12235,6 +12350,28 @@ struct SecretAsk {
     deadline: u64,
 }
 
+/// **Where a note sits, or whether it sits in the conversation at all.**
+///
+/// `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22. A warning is
+/// *how a head shows a fact once*; a head that has just attached has shown nothing, so a
+/// snapshot's warnings were being replayed as though they had just happened — at position
+/// 0, above a conversation they did not precede. The operator restarted a head and was met
+/// by twelve red lines: *"i dont want to see that on restart."*
+///
+/// The distinction is not age — a snapshot's warnings are not old, they are **prior**: the
+/// head was not there. So a note filed live is anchored at a seam of this conversation and
+/// a note that arrived with a snapshot has no seam to be drawn at, and the two are told
+/// apart by this type rather than by a sentinel position that would be a lie the walk
+/// would have to undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    /// At this many rows: the seam the walk puts it back into.
+    Seam(usize),
+    /// **Before this window.** Reachable — `/notes` lists it, `/status` counts it, and a
+    /// reader who wants it is one verb away — and not drawn, because it is not news.
+    Before,
+}
+
 /// Something that happened between two transcript rows.
 #[derive(Debug, Clone)]
 enum Note {
@@ -12284,6 +12421,18 @@ fn note_key(n: &Note) -> String {
         Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::Decided(d) => format!("d|{}", d.req_id),
     }
+}
+
+/// **Is this announcement already one this head holds?**
+///
+/// One identity for a disclosure, and it is [`note_key`]'s rather than a second rule: the
+/// same announcement has to mean the same thing to the walk that draws it, the listing
+/// that numbers it and the file that remembers it was retired. Asked in two places —
+/// [`App::note`], so a redelivery is not filed twice, and [`App::load`], so a note the
+/// snapshot carries is not planted a second time beside the head's own copy of it (R19).
+fn holds(notes: &[(Placed, Note)], n: &Note) -> bool {
+    let k = note_key(n);
+    notes.iter().any(|(_, o)| note_key(o) == k)
 }
 
 /// FNV-1a, 64-bit: the offset basis and prime, and nothing else.
@@ -13842,22 +13991,38 @@ mod tests {
     /// Four things, and they are one behaviour. A note is a **disclosure, not a
     /// permanent record**: the session log holds the durable fact and the note is how a
     /// head shows it once, so a reader must be able to retire one they have read. A
-    /// retired note must **stay** retired across a resync and a reattach — a snapshot
-    /// replanting what somebody just dismissed is the same defect as never letting them
-    /// dismiss it. And it must not **drop** the fact: hidden, counted and findable, which
-    /// is the rule `/status`'s own `filtered` counter already keeps.
+    /// retired note must **stay** retired across a resync, a reattach and a **restart** —
+    /// a snapshot replanting what somebody just dismissed is the same defect as never
+    /// letting them dismiss it. And it must not **drop** the fact: hidden, counted and
+    /// findable, which is the rule `/status`'s own `filtered` counter already keeps.
+    ///
+    /// **R19 moved the two halves of this test, and made the second of them harder.** The
+    /// note is filed **live** here, because a note that arrives with a snapshot is no
+    /// longer planted at all — so what has to be proved about the *resync* is now that a
+    /// retired note is not drawn, and what has to be proved about the *restart* is that a
+    /// retirement loaded from `head.toml` beats a **live** delivery, which is the one case
+    /// where nothing else would stop it. (The operator's own wall had none of this
+    /// retired: fault 1 is why it was up.)
     #[test]
     fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
         let hub = Hub::new("s");
         hub.publish(testing::turn_started("t1"));
-        hub.publish(SessionEvent::Warning {
-            code: "gate_timeout".into(),
-            detail: "denied: nobody answered before the deadline".into(),
-        });
+        // **The snapshot from before the incident**, which is what the restarted head gets:
+        // a head that attached and *then* watched it happen. Taken here rather than inside
+        // the restart block below, because by then the hub carries the warning and a head
+        // whose snapshot already holds it would not be the live case at all.
+        let clean = hub.snapshot();
 
         let mut a = app();
         a.clock(1_000);
+        // Attached *before* the warning exists, so the head is there to see it happen:
+        // this is the live path, which is the only path that plants a note now.
         a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        let published = hub.publish(SessionEvent::Warning {
+            code: "gate_timeout".into(),
+            detail: "denied: nobody answered before the deadline".into(),
+        });
+        a.apply(ServerFrame::Event(published.clone()));
         let screen = a.screen(100, 30).join("\n");
         assert!(screen.contains("gate_timeout"), "{screen}");
 
@@ -13916,8 +14081,13 @@ mod tests {
             "a reattach replanted it"
         );
 
-        // **And a restart.** The dismissals live in `head.toml` and not in the process,
-        // because a head restart is the other half of the same defect.
+        // **The restart, and the half R19 made harder.** The dismissals live in
+        // `head.toml` and not in the process, and a head that has just started has shown
+        // nothing — so the incident is delivered to `b` **live**, at a seam, which is the
+        // one delivery nothing else would suppress: a snapshot's copy is not drawn for being
+        // prior, and a redelivery is not filed twice. What stops it here is the retirement
+        // this head read off the file, against the same `clean` snapshot (no warning in it)
+        // that `a` attached to.
         let dir = std::env::temp_dir().join(format!("letibot-notes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("head.toml");
@@ -13932,12 +14102,19 @@ mod tests {
         let mut b = app();
         b.prefs_path = Some(path.clone());
         b.load_prefs();
-        b.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        assert_eq!(
+            b.dismissed,
+            vec![key.clone()],
+            "the file's retired set did not reach the head"
+        );
+        b.apply(hello("s", vec![brief("s", "one", false)], clean));
+        b.apply(ServerFrame::Event(published.clone()));
         assert!(
             !b.screen(100, 30).join("\n").contains("gate_timeout"),
             "a restart replanted it: dismissed={:?} key={key:?}",
             b.dismissed
         );
+        assert_eq!(b.notes.len(), 1, "hidden, not dropped: {:?}", b.notes);
 
         // **And back, if the reader was wrong.** Two ways, and both of them are the
         // reader's: no dismissal is ever final in a way they cannot undo.
@@ -18839,14 +19016,21 @@ mod tests {
             "one announcement, one note: {:?}",
             a.notes
         );
-        // The first anchor wins: it belongs where it happened, not under whatever
-        // the conversation has reached by the time it is redelivered.
-        let (at, _) = a
+        // **One announcement, one note, and it stays where it arrived** (R19). It
+        // arrived in the snapshot, so it is not a seam of this conversation — the head was
+        // not there — and the redelivery of the same envelope does not move it to a seam
+        // at the end of the transcript, which would be the same fact drawn twice and in
+        // the wrong place.
+        let (place, _) = a
             .notes
             .iter()
             .find(|(_, n)| matches!(n, Note::Warned(w) if w.detail == "THE-WARNING"))
             .expect("the note");
-        assert_eq!(*at, 0, "the snapshot's anchor is kept, not the replay's");
+        assert_eq!(
+            *place,
+            Placed::Before,
+            "the snapshot's kind is kept, not the replay's seam"
+        );
     }
 
     /// **A carried row is done, not pending, and the colour has to say so.**
