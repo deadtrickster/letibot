@@ -1712,6 +1712,19 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("mode", "the mode picker — or /mode NAME to type it"),
     ("jobs", "open or close the background-jobs pane"),
+    // **§6's verbs, and §7's C14 ruling that the table is the UNION.** Five of these
+    // had a chord and no word, so they were unreachable from a pipe and `/help` had no
+    // name for them; `/models` and `/resync` were implemented and simply not listed.
+    // C14 calls the table *vocabulary, not implementation* and wants one shared artefact
+    // both heads read — that is a cross-tree change and is filed rather than half-done
+    // here, but **listing what this head implements is this head's half of it.**
+    ("todos", "open or close the todos pane (ctrl-p)"),
+    ("subagents", "open or close the subagent tree (ctrl-g)"),
+    ("peek", "ID — read one subagent's output without leaving this session"),
+    ("resume", "ID — bring a session on disk back and go there"),
+    ("promote", "move the running command to the background (ctrl-o)"),
+    ("models", "which model answers: /models is a menu, /models PROVIDER/MODEL switches"),
+    ("resync", "throw this head's state away and take a fresh snapshot"),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
     (
@@ -3699,6 +3712,46 @@ impl App {
         }
     }
 
+    /// **A page or a wheel over a TAIL-ORIGIN overlay**, which both of them are.
+    ///
+    /// `sub_out` and `job_out` window their content from the end — a subagent's answer
+    /// and a running job's newest bytes are what those panes are opened for — so their
+    /// `scroll` counts rows hidden **below** the bottom and moving toward the beginning
+    /// ADDS to it. That is the opposite of `pane_scroll`, which counts rows hidden above
+    /// the top because a `help`/`todos`/`slash` pane is read from its head.
+    ///
+    /// One function, because the two must agree about the sign — and because the second
+    /// one was **forgotten**: the page keys and the wheel reached this overlay's
+    /// transcript instead of the overlay, which is the defect the subagent view had
+    /// already been fixed for one arm above (`"a wheel in the subagent output view
+    /// scrolled the conversation underneath it"`). One arm is a place to forget.
+    ///
+    /// Returns whether an overlay took the key, so the caller can fall through to the
+    /// transcript when none did.
+    fn scroll_tail_overlay(&mut self, up: bool, by: usize) -> bool {
+        // **A closure over the value, not a binding to the struct.** The two overlays
+        // are different types (`SubOut`, `JobOut`) that happen to share a field name, so
+        // an `if let … else if let …` binding one `&mut` for both arms does not compile —
+        // which is the compiler saying the obvious thing: there is no shared type here,
+        // only a shared rule.
+        let moved = |scroll: usize| {
+            if up {
+                scroll.saturating_add(by)
+            } else {
+                scroll.saturating_sub(by)
+            }
+        };
+        if let Some(v) = self.sub_out.as_mut() {
+            v.scroll = moved(v.scroll);
+        } else if let Some(v) = self.job_out.as_mut() {
+            v.scroll = moved(v.scroll);
+        } else {
+            return false;
+        }
+        self.redraw = true;
+        true
+    }
+
     /// A key. Returns an action for the driver to send, if any.
     ///
     /// # Who owns which key
@@ -3888,33 +3941,12 @@ impl App {
                 }
                 return self.picker.then_some(Action::ListSessions);
             }
-            Key::CtrlP => {
-                self.todos_pane = !self.todos_pane;
-                // A pane opens at its top. Kept per-pane would be four fields
-                // that each go stale; one field reset on every open is the same
-                // behaviour with nothing to forget.
-                self.pane_scroll = 0;
-                self.redraw = true;
-                if self.todos_pane {
-                    // Read at open, and re-read on every draw the file has moved
-                    // under — see `refresh_repo_todos`. The file is the
-                    // operator's to edit, and a pane showing an old read of it is
-                    // a pane that lies quietly.
-                    self.refresh_repo_todos();
-                }
-                // Opening asks for the session's list rather than drawing the one
-                // from the last event: the bootstrap read, for a head that
-                // attached after the model last wrote. Later changes arrive as
-                // `TodosUpdated` and need no asking.
-                return self.todos_pane.then_some(Action::ListTodos);
-            }
+            Key::CtrlP => return self.toggle_todos(),
             // Ctrl+G for the subagent tree: R/T/X/L/S/P are taken, A/E/W/U/Y/K/B/F
             // are the composer's readline keys, and the subagent tree is a *view*,
             // not a thing the composer needs a letter for.
             Key::CtrlG => {
-                self.subagents_pane = !self.subagents_pane;
-                self.pane_scroll = 0;
-                self.redraw = true;
+                self.toggle_subagents();
                 return None;
             }
             // Ctrl+Q for the background jobs. J would have been the mnemonic and
@@ -3930,37 +3962,10 @@ impl App {
                 // version drew a stale one. Later changes arrive as `JobSettled`.
                 return self.jobs_pane.then_some(Action::ListJobs);
             }
-            // **Ctrl+O: move the running COMMAND to the background.**
-            //
-            // The fact to guard is a command running, and the check used to ask
-            // whether the TURN was running instead. They come apart: a terminal
-            // turn state can leave a call unsettled — the comment on the
-            // `TurnFinished` arm says so in as many words, and the engine emits
-            // `TurnFinished` on the interrupt paths while a tool is still
-            // executing. The operator, looking at a `◐ Running "cargo test …"`
-            // card while the head said otherwise: *"nothing is running to move to
-            // the background"* / *"how come"*.
-            //
-            // So it asks the calls. The daemon honours a promote inside `bash`'s
-            // own wait loop, which exists only while a command is executing, so a
-            // running call is not a proxy for the thing being promoted — it IS it.
-            Key::CtrlO => {
-                if self.running_call().is_some() {
-                    self.say("moving the running command to the background");
-                    return Some(Action::Promote);
-                }
-                // Two different silences, and a head that said the same thing for
-                // both sent the operator looking for a command that had not been
-                // started yet.
-                if self.turn_running() {
-                    self.say(
-                        "the model is still working — there is no command running to move yet",
-                    );
-                } else {
-                    self.say("nothing is running to move to the background");
-                }
-                return None;
-            }
+            // **Ctrl+O: move the running command to the background**, the same action
+            // `/promote` names. See [`App::promote`] for why the fact it guards is a
+            // running CALL and not a running turn.
+            Key::CtrlO => return self.promote(),
             // **The wheel and the page keys move what is on the screen.** They
             // moved the transcript unconditionally, so a wheel in the subagent
             // output view scrolled the conversation underneath it, and Esc
@@ -3984,13 +3989,7 @@ impl App {
                     Key::WheelUp => (true, 3),
                     _ => (false, 3),
                 };
-                if let Some(v) = self.sub_out.as_mut() {
-                    v.scroll = if up {
-                        v.scroll + by
-                    } else {
-                        v.scroll.saturating_sub(by)
-                    };
-                    self.redraw = true;
+                if self.scroll_tail_overlay(up, by) {
                     return None;
                 }
                 // **An open pane takes them.** They used to be swallowed here,
@@ -4010,6 +4009,12 @@ impl App {
                     || self.subagents_pane
                     || self.jobs_pane
                     || self.config_pane
+                    // **And the slash listing, which is a document read from its
+                    // head.** It has its own arm for the arrows, and it was missing
+                    // from *this* list — so PageDown while a `/notes` listing was up
+                    // scrolled the transcript underneath it, one pane over from the
+                    // same defect the subagent view had.
+                    || self.slash_out.is_some()
                 {
                     // **The polarity is the opposite of the transcript's**, and
                     // getting it wrong here made PageDown a no-op that looked
@@ -4049,15 +4054,14 @@ impl App {
         // "close everything".
         if self.sub_out.is_some() {
             match k {
+                // **Through the one function that knows the sign**, so the arrows, the
+                // page keys and the wheel cannot disagree about which way is back.
                 Key::Up => {
-                    self.sub_out.as_mut().unwrap().scroll += 1;
-                    self.redraw = true;
+                    self.scroll_tail_overlay(true, 1);
                     return None;
                 }
                 Key::Down => {
-                    let v = self.sub_out.as_mut().unwrap();
-                    v.scroll = v.scroll.saturating_sub(1);
-                    self.redraw = true;
+                    self.scroll_tail_overlay(false, 1);
                     return None;
                 }
                 Key::Enter if self.editor.text().is_empty() => {
@@ -4082,14 +4086,11 @@ impl App {
         if self.job_out.is_some() {
             match k {
                 Key::Up => {
-                    self.job_out.as_mut().unwrap().scroll += 1;
-                    self.redraw = true;
+                    self.scroll_tail_overlay(true, 1);
                     return None;
                 }
                 Key::Down => {
-                    let v = self.job_out.as_mut().unwrap();
-                    v.scroll = v.scroll.saturating_sub(1);
-                    self.redraw = true;
+                    self.scroll_tail_overlay(false, 1);
                     return None;
                 }
                 Key::Enter | Key::Right if self.editor.text().is_empty() => {
@@ -4119,13 +4120,24 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
+                // **Up moves toward the beginning, which means DECREASING this
+                // offset.** `pane_scroll` counts rows hidden **above the top** —
+                // `pane_window` is literally `skip(self.pane_scroll)` — so adding to it
+                // walks further *down* the document. These two arms had it inverted, so
+                // `↑` scrolled a `/notes` listing toward its end while the footer under
+                // it said `up/down scrolls`. It is leticl's own finding in the same
+                // place: *"called with the top-origin sign, ↑ walked toward the END
+                // while the hint bar said otherwise."*
                 Key::Up => {
-                    self.pane_scroll = self.pane_scroll.saturating_add(1);
+                    self.pane_scroll = self.pane_scroll.saturating_sub(1);
                     self.redraw = true;
                     return None;
                 }
+                // Down is the bounded one: `pane_window` clamps it against the rows
+                // it actually has, which is the only place that knows how many there
+                // are (the slash listing is built on every draw).
                 Key::Down => {
-                    self.pane_scroll = self.pane_scroll.saturating_sub(1);
+                    self.pane_scroll = self.pane_scroll.saturating_add(1);
                     self.redraw = true;
                     return None;
                 }
@@ -5494,6 +5506,57 @@ impl App {
                 self.redraw = true;
                 self.jobs_pane.then_some(Action::ListJobs)
             }
+            // **§6: the panes and the promote, reachable as verbs.**
+            //
+            // Each of these had a chord and no word, which is two problems: a head
+            // driven over a pipe — and a person who has not learnt the chord — cannot
+            // reach them at all, and `/help` cannot teach a chord it has no name for.
+            // The chords stay, because they are faster; both spellings end in the same
+            // function, so they cannot drift.
+            "todos" => self.toggle_todos(),
+            "subagents" => {
+                self.toggle_subagents();
+                None
+            }
+            "promote" => self.promote(),
+            // **`/peek ID` reads one subagent's scrollback into the pane the tree's
+            // Enter opens.** The id is the daemon's and an id it does not hold is
+            // refused by name — the head keeps no list of subagents to validate
+            // against, which would be a second copy of the tree it already folds.
+            _ if verb_arg(cmd, "peek").is_some() => {
+                let id = verb_arg(cmd, "peek").unwrap_or("").trim().to_string();
+                if id.is_empty() {
+                    self.say("/peek ID — the subagent to read; ctrl-g lists them");
+                    return None;
+                }
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
+                }
+                self.sub_out_pending = Some(id.clone());
+                Some(Action::Peek(id))
+            }
+            // **`/resume ID` brings a session that is on disk but not in this daemon
+            // back to life, and goes there.** The same two steps `switch_to` takes for a
+            // row the picker labels *on disk*: the head attaches to whatever the daemon
+            // put it on and then asks, because "not held yet" is exactly the state a
+            // resume is for, and `Attach` refuses a session the daemon does not hold.
+            _ if verb_arg(cmd, "resume").is_some() => {
+                let id = verb_arg(cmd, "resume").unwrap_or("").trim().to_string();
+                if id.is_empty() {
+                    self.say(
+                        "/resume ID — a session on disk that this daemon is not holding; \
+                         /sessions lists them",
+                    );
+                    return None;
+                }
+                self.want_new_session = true;
+                self.say(&format!(
+                    "resuming {} from the store…",
+                    self.session_label(&id)
+                ));
+                Some(Action::ResumeSession(id))
+            }
             "interrupt" | "i" => Some(Action::Interrupt("operator typed /interrupt".into())),
             "compact" => {
                 // The session this head is **in**, for the same reason /rename
@@ -5749,6 +5812,68 @@ impl App {
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running)
         )
+    }
+
+    /// **`/todos` and `ctrl-p`, as one action.**
+    ///
+    /// A pane with a chord and no word is unreachable from a pipe and unteachable by
+    /// `/help`, and two spellings of one action must not be two implementations.
+    ///
+    /// Returns the bootstrap read when the pane is opening: the daemon's todo list
+    /// rides no snapshot, so a head that attached after the model last wrote has to ask.
+    /// Later changes arrive as `TodosUpdated` and need no asking.
+    fn toggle_todos(&mut self) -> Option<Action> {
+        self.todos_pane = !self.todos_pane;
+        // A pane opens at its top. Kept per-pane would be four fields that each go
+        // stale; one field reset on every open is the same behaviour with nothing to
+        // forget.
+        self.pane_scroll = 0;
+        self.redraw = true;
+        if self.todos_pane {
+            // Read at open, and re-read on every draw the file has moved under — see
+            // `refresh_repo_todos`. The file is the operator's to edit, and a pane
+            // showing an old read of it is a pane that lies quietly.
+            self.refresh_repo_todos();
+        }
+        self.todos_pane.then_some(Action::ListTodos)
+    }
+
+    /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
+    ///
+    /// No bootstrap read: the tree is folded from durable `Subagent` events, which a
+    /// snapshot carries, so a head that joins late already has it.
+    fn toggle_subagents(&mut self) {
+        self.subagents_pane = !self.subagents_pane;
+        self.pane_scroll = 0;
+        self.redraw = true;
+    }
+
+    /// **Move the running command to the background** — `ctrl-o` and `/promote`.
+    ///
+    /// The fact to guard is a command running, and the check used to ask whether the
+    /// TURN was running instead. They come apart: a terminal turn state can leave a call
+    /// unsettled — the comment on the `TurnFinished` arm says so in as many words, and
+    /// the engine emits `TurnFinished` on the interrupt paths while a tool is still
+    /// executing. The operator, looking at a `◐ Running "cargo test …"` card while the
+    /// head said otherwise: *"nothing is running to move to the background"* /
+    /// *"how come"*.
+    ///
+    /// So it asks the calls. The daemon honours a promote inside `bash`'s own wait loop,
+    /// which exists only while a command is executing, so a running call is not a proxy
+    /// for the thing being promoted — it IS it.
+    fn promote(&mut self) -> Option<Action> {
+        if self.running_call().is_some() {
+            self.say("moving the running command to the background");
+            return Some(Action::Promote);
+        }
+        // Two different silences, and a head that said the same thing for both sent the
+        // operator looking for a command that had not been started yet.
+        if self.turn_running() {
+            self.say("the model is still working — there is no command running to move yet");
+        } else {
+            self.say("nothing is running to move to the background");
+        }
+        None
     }
 
     /// **The command running right now**, whatever the turn's own state says.
@@ -16255,6 +16380,164 @@ mod tests {
         assert!(screen.contains("7.5s"), "{screen}");
     }
 
+    /// **§6: the panes and the promote, reachable as verbs.**
+    ///
+    /// Each had a chord and no word (or, for `/models` and `/resync`, a word and no
+    /// listing in the completion table). A pane that can only be opened by a chord is
+    /// unreachable from a pipe and unteachable by `/help`, and a verb nobody lists is a
+    /// verb nobody finds. The chords stay — they are faster — and every pair here ends
+    /// in **one function**, so the two spellings cannot drift.
+    #[test]
+    fn the_panes_and_the_promote_are_reachable_as_verbs() {
+        // `/todos` opens the pane and asks the daemon for the list, exactly as `ctrl-p`.
+        let mut a = app();
+        assert_eq!(a.submit("/todos".into()), Some(Action::ListTodos));
+        assert!(a.todos_pane);
+        // …and closes it again, with no read the second time — a read on the way out
+        // would be a round trip for a screen that is going away.
+        assert_eq!(a.submit("/todos".into()), None);
+        assert!(!a.todos_pane);
+        // The chord and the verb agree.
+        let mut b = app();
+        assert_eq!(b.key(Key::CtrlP), Some(Action::ListTodos));
+        assert!(b.todos_pane, "the chord opens the same pane");
+
+        // The subagent tree is the same shape: no bootstrap read, because the tree is
+        // folded from durable `Subagent` events a snapshot already carries.
+        let mut c = app();
+        assert_eq!(c.submit("/subagents".into()), None);
+        assert!(c.subagents_pane);
+        c.submit("/subagents".into());
+        assert!(!c.subagents_pane);
+
+        // `/peek ID` reads one subagent, and remembers it is waiting so Esc can cancel.
+        let mut d = app();
+        d.session_id = "s1".into();
+        assert_eq!(
+            d.submit("/peek s-abc".into()),
+            Some(Action::Peek("s-abc".into()))
+        );
+        assert_eq!(d.sub_out_pending.as_deref(), Some("s-abc"));
+        // A bare `/peek` says how it is used rather than sending an empty id to a
+        // daemon that would answer with a refusal nobody asked for.
+        let mut e = app();
+        e.session_id = "s1".into();
+        assert_eq!(e.submit("/peek".into()), None);
+        assert!(e.sub_out_pending.is_none());
+
+        // `/resume ID` brings an on-disk session back *and goes there*: the switch rides
+        // the `Sessions` reply, which is what `want_new_session` means.
+        let mut f = app();
+        f.session_id = "s1".into();
+        assert_eq!(
+            f.submit("/resume s-xyz".into()),
+            Some(Action::ResumeSession("s-xyz".into()))
+        );
+        assert!(f.want_new_session);
+
+        // **`/promote` needs a command actually running**, and says which of the two
+        // silences it is in — the distinction the chord was fixed for.
+        let mut g = app();
+        g.session_id = "s1".into();
+        assert_eq!(g.submit("/promote".into()), None, "nothing is running");
+        let mut h = app();
+        h.session_id = "s1".into();
+        h.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        h.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        // A turn whose state has already gone terminal but whose CALL is still running:
+        // the case the guard exists for, because the two come apart.
+        h.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+        h.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        assert!(!h.turn_running(), "the premise: the turn is over");
+        assert!(h.running_call().is_some(), "and its command is not");
+        assert_eq!(h.submit("/promote".into()), Some(Action::Promote));
+        assert_eq!(
+            h.key(Key::CtrlO),
+            Some(Action::Promote),
+            "the chord and the verb are one action"
+        );
+    }
+
+    /// **§7 C14: the completion table lists what this head implements.**
+    ///
+    /// The ruling is that the table is the UNION of both heads' verbs and wants one
+    /// shared artefact — a cross-tree change, filed rather than half-done. What can be
+    /// checked here is the half that is this head's: **every verb in the table is one
+    /// this head answers**, and the five §6 verbs plus `/models` and `/resync` are on it.
+    /// A table naming a verb the head refuses is the allowlist defect with the sign
+    /// flipped — the head advertising something it does not have.
+    #[test]
+    fn every_listed_slash_command_is_one_this_head_answers() {
+        for (name, hint) in SLASH_COMMANDS {
+            // **A stated contract, checked rather than assumed**: the head documents
+            // itself with this table, so an entry that does nothing is `/help` lying.
+            // "Something happened" is either an action for the driver or a line said
+            // into the notice — and the composer is untouched either way, because a
+            // command that half-typed itself would be the worst of both.
+            let mut a = app();
+            a.session_id = "s1".into();
+            // **The observable for a pane toggle is the pane.** `ctrl-p` and `/subagents`
+            // return `None` and say nothing on the way out, because a screen appearing or
+            // disappearing is its own feedback — so "something happened" is an action, a
+            // line said, **or a pane changing state**, and the last is checked by diffing
+            // the flags rather than by trusting the return value. My first version of this
+            // assertion assumed every verb either asks the daemon or speaks, and
+            // `/subagents` does neither, which is correct behaviour and a wrong test.
+            let panes = |a: &App| {
+                (
+                    a.help,
+                    a.stats,
+                    a.picker,
+                    a.todos_pane,
+                    a.subagents_pane,
+                    a.jobs_pane,
+                    a.config_pane,
+                    a.mode_picker,
+                    a.models_picker,
+                    a.slash_out.is_some(),
+                )
+            };
+            let before = panes(&a);
+            let action = a.submit(format!("/{name}"));
+            assert!(
+                action.is_some() || a.notice.is_some() || panes(&a) != before,
+                "/{name} ({hint}) is listed and did nothing — no action, no notice, \
+                 no pane changed"
+            );
+            assert_eq!(a.input(), "", "/{name} left the composer dirty");
+            assert!(
+                a.notice.is_none() || !a.notice.as_deref().unwrap_or("").contains("unknown"),
+                "/{name} is listed and reported as unknown"
+            );
+        }
+        // And the seven this commit added are really on it.
+        for want in [
+            "todos",
+            "subagents",
+            "peek",
+            "resume",
+            "promote",
+            "models",
+            "resync",
+        ] {
+            assert!(
+                SLASH_COMMANDS.iter().any(|(n, _)| *n == want),
+                "/{want} is missing from the completion table"
+            );
+        }
+    }
+
     /// **§6: a verb this head has never heard of is the daemon's to refuse.**
     ///
     /// The head kept a twelve-name allowlist of daemon verbs and answered `unknown
@@ -16296,6 +16579,130 @@ mod tests {
         c.session_id = "s1".into();
         assert!(matches!(c.submit("/models".into()), Some(Action::Settings)));
         assert!(c.models_picker, "the menu opened");
+    }
+
+    /// **§6: a key that scrolls a pane moves THAT pane, and the two overlays are
+    /// tail-origin.**
+    ///
+    /// Two defects of one shape — *the key moved something other than what the footer
+    /// under it promised* — and both are what leticl's tail-origin note is about:
+    ///
+    /// * **The page keys and the wheel reached the transcript** while the job-output
+    ///   overlay was open. The subagent view had been fixed for exactly this (`"a wheel
+    ///   in the subagent output view scrolled the conversation underneath it"`), and the
+    ///   job overlay — the same overlay, one arm down, opened by the same kind of Enter —
+    ///   was left out of the arm. So a wheel over a job's output moved the conversation
+    ///   behind it and Esc came back to a transcript parked somewhere else.
+    /// * **The slash listing's arrows were inverted.** `pane_scroll` counts rows hidden
+    ///   **above the top** — `pane_window` is literally `skip(self.pane_scroll)` — so
+    ///   adding to it walks *down* the document, and the arms added on Up. `↑` scrolled
+    ///   a `/notes` listing toward its end while the footer said `up/down scrolls`.
+    #[test]
+    fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() {
+        // ---- the job-output overlay: tail-origin, and it must take the page keys ----
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j3", "cargo build", false)],
+        ));
+        a.key(Key::CtrlQ);
+        a.key(Key::Enter);
+        let lines: Vec<String> = (0..60).map(|i| format!("line {i}")).collect();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::JobOutput {
+                job: "j3".into(),
+                from: 0,
+                to: 10,
+                produced: 60,
+                dropped: 0,
+                state: "exited 0".into(),
+                lines,
+                next: None,
+            },
+        )));
+        // One draw, so the pane's own clamp has run and the transcript has a length.
+        a.screen(100, 24);
+        assert_eq!(a.scroll, 0, "the premise: the transcript is at its tail");
+
+        a.key(Key::PageUp);
+        assert!(
+            a.job_out.as_ref().unwrap().scroll > 0,
+            "PageUp did not move the overlay's window"
+        );
+        assert_eq!(
+            a.scroll, 0,
+            "the transcript scrolled behind the overlay: {}",
+            a.scroll
+        );
+
+        let was = a.job_out.as_ref().unwrap().scroll;
+        a.screen(100, 24);
+        a.key(Key::PageDown);
+        assert!(
+            a.job_out.as_ref().unwrap().scroll < was,
+            "PageDown did not come back toward the tail"
+        );
+        assert_eq!(a.scroll, 0, "and the transcript stayed put");
+
+        // **The wheel is the key the operator actually reaches for**, three lines a
+        // notch and toward the beginning for a `WheelUp`.
+        let before = a.job_out.as_ref().unwrap().scroll;
+        a.screen(100, 24);
+        a.key(Key::WheelUp);
+        assert_eq!(
+            a.job_out.as_ref().unwrap().scroll,
+            before + 3,
+            "a notch is three lines"
+        );
+        assert_eq!(
+            a.scroll, 0,
+            "the wheel scrolled the transcript behind the overlay"
+        );
+
+        // ---- the slash listing: head-origin, arrows were inverted ----
+        let mut b = App::new(plain_cfg(80));
+        b.slash_out = Some((
+            "/notes".into(),
+            (0..40).map(|i| format!("row {i}")).collect(),
+        ));
+        b.screen(80, 24);
+        assert_eq!(b.pane_scroll, 0);
+        // Up moves toward the beginning; at the beginning it stays there.
+        b.key(Key::Up);
+        assert_eq!(b.pane_scroll, 0, "Up walked forward from the top");
+        // Down moves into the listing, and Up comes back out of it.
+        b.key(Key::Down);
+        assert_eq!(b.pane_scroll, 1, "Down did not move the listing");
+        b.key(Key::Down);
+        assert_eq!(b.pane_scroll, 2);
+        b.key(Key::Up);
+        assert_eq!(b.pane_scroll, 1, "Up did not come back");
+        // **And what the reader sees follows**, because the offset is `skip(n)`. Three
+        // rows in — the title, the blank and `row 0` — `row 1` is the first thing on
+        // screen. Asserted on the text rather than on the number, because the number is
+        // only interesting for what it does to the glass.
+        b.pane_scroll = 3;
+        let shown = b.screen(80, 24).join("\n");
+        assert!(!shown.contains("row 0"), "row 0 was skipped: {shown}");
+        assert!(shown.contains("row 1"), "{shown}");
+        assert!(!shown.contains("esc closes"), "the footer is below the window: {shown}");
+
+        // ---- and the page keys reach the listing too, which they did not ----
+        let mut c = App::new(plain_cfg(80));
+        c.slash_out = Some((
+            "/notes".into(),
+            (0..40).map(|i| format!("row {i}")).collect(),
+        ));
+        c.screen(80, 24);
+        assert_eq!(c.scroll, 0);
+        c.key(Key::PageDown);
+        assert!(c.pane_scroll > 0, "PageDown did not move the listing");
+        assert_eq!(
+            c.scroll, 0,
+            "PageDown scrolled the transcript behind the listing"
+        );
     }
 
     /// **§3.1: content this head did not write must not reconfigure the terminal.**
@@ -21337,6 +21744,11 @@ mod tests {
         assert_eq!(a.input(), "/switch");
         a.key(Key::Tab);
         assert_eq!(a.input(), "/status");
+        // **A §6 verb joined the cycle**, which is the point of listing it: `/s` reaches
+        // `subagents` by Tab now, and the expectation has to name it or the test is
+        // pinning a list that no longer exists.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/subagents");
         a.key(Key::Tab);
         assert_eq!(a.input(), "/sessions", "the cycle wraps");
         // A character typed on after a completion kills the cycle: the next

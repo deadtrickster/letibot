@@ -1,56 +1,123 @@
-a history walk gives the draft back
+the panes and the promote are reachable as verbs, and a key that scrolls a pane moves that pane
 
-§6: *"composer draft preserved across a history walk"*.
+Two §6 items, and the second is two defects of one shape — **the key moved something
+other than what the footer under it promised.**
 
-Pressing Up to glance at the previous message and Down to come back set the buffer to
-**the empty string**. A half-written prompt was gone, and it was the quietest kind of
-loss: nothing was sent anywhere, nothing was recorded, and there is no undo entry —
-a recall is navigation, not an edit, so `undo` never saw it. Every shell on the box
-keeps the draft, which is also why nobody would think to check.
+## §6: `/todos`, `/subagents`, `/peek`, `/resume`, `/promote`
 
-## The fix, and the one place the walk is known to have begun
+Each of the five had a **chord and no word**, which is two problems: a head driven over
+a pipe cannot reach them at all, and `/help` cannot teach a chord it has no name for.
+The chords stay — they are faster — and **every pair ends in one function**, so the two
+spellings cannot drift: `Key::CtrlP` and `/todos` both call `toggle_todos`, `CtrlO` and
+`/promote` both call `promote` (whose doc carries the argument about why the fact it
+guards is a running CALL and not a running turn), `CtrlG` and `/subagents` both call
+`toggle_subagents`.
 
-`Editor` gains `draft: Option<String>` — *the buffer as it was when the walk started* —
-saved on the one transition that begins a walk (`history_at` is `None` and the key is
-Up) and **taken**, not read, when the walk ends. Taking it is the part that matters: a
-second walk then saves its own draft instead of inheriting the first one's, and the test
-asserts exactly that with a fresh line rather than by reasoning about it.
+`/peek ID` and `/resume ID` take the daemon's id and are refused by name when the id is
+missing rather than sending an empty one to be refused for us. `/resume` sets
+`want_new_session`, which is the same two-step the picker takes for a row it labels *on
+disk* — attach where the daemon puts you, then ask — because `Attach` refuses a session
+the daemon does not hold.
 
-Checked in `recall` rather than in `vertical`, so the two entry points into a walk (the
-arrow keys and the unwired Up/Down arm) cannot disagree about when a walk starts.
+**And §7's C14 ruling says the completion table is the UNION of both heads' verbs.**
+C14 wants one shared artefact both trees read; that is a cross-tree change and is filed
+rather than half-done here, but **listing what this head implements is this head's half
+of it**, so `/todos`, `/subagents`, `/peek`, `/resume`, `/promote` and the two that were
+implemented and simply not listed (`/models`, `/resync`) are on it.
 
-`take` also clears the draft, because a submitted line is not a draft.
+## §6/C8: a key that scrolls a pane moves that pane
 
-## The rule that stayed, and my test was wrong about it
+**The page keys and the wheel reached the transcript while the job-output overlay was
+open.** The subagent view had been fixed for exactly this — `"a wheel in the subagent
+output view scrolled the conversation underneath it"` — and the job overlay, the same
+overlay one arm down and opened by the same kind of Enter, was left out. So a wheel over
+a job's output moved the conversation behind it and Esc came back to a transcript parked
+somewhere else. **One arm is a place to forget**, so both now go through
+`scroll_tail_overlay`, which is also where the sign of a tail-origin pane is written
+down once: a subagent's answer and a running job's newest bytes are at the END, so their
+offset counts rows hidden *below*, and moving toward the beginning ADDS to it.
 
-The walk refuses to move once a recalled entry has been **edited** — *"the next press
-would silently destroy the edit"* — and that guard now also covers the restored draft:
-after coming back to it, the draft is an edited recall, so another Up is refused rather
-than overwriting what was typed.
+**The slash listing's arrows were inverted, and it had no page keys at all.**
+`pane_scroll` counts rows hidden **above the top** — `pane_window` is literally
+`skip(self.pane_scroll)` — so adding to it walks *down* the document, and the arms added
+on Up. `↑` scrolled a `/notes` listing toward its end while the footer under it said
+`up/down scrolls`. This is leticl's own finding in the same place — *"called with the
+top-origin sign, ↑ walked toward the END while the hint bar said otherwise"* — and the
+listing was also missing from the page-keys list, so PageDown moved the transcript under
+it. Both fixed.
 
-**My first version of the test asserted a second walk at that point and it failed**, and
-the failure is worth a line in this message because it is the useful kind: the assertion
-was wrong, not the guard. The test now asserts the refusal and then, separately, that a
-walk on a *fresh* line keeps its own draft — which is what the `take` is for.
+C8 states the general rule the requirement is measured against: *"a modal card owns the
+viewport: pgup/pgdn/wheel do not reach anything behind it."*
 
-## Test
+## Two of my own tests caught real consequences, and both were wrong about what to assert
 
-`a_history_walk_restores_the_draft_it_interrupted` — a two-entry history, a typed draft,
-Up twice to the oldest entry, Down twice back to the draft; then the refusal after an
-edit to it; then a fresh line whose walk keeps its own draft; then a one-entry history
-where the walk never leaves the newest entry and still comes back.
+- `/subagents` returns `None` and says nothing, because a screen appearing or
+  disappearing is its own feedback. My completion-table test asserted every listed verb
+  either asks the daemon or speaks, so it failed — **the behaviour is right and the
+  assertion was wrong.** It now diffs the pane flags, which is the actual observable.
+- The tab cycle's expectation encoded the old table. `/s` matches `sessions, switch,
+  status, subagents` in table order, so the cycle gained a member; the test names it,
+  which is stronger than before because it proves the new verb is reachable by Tab.
 
-`cargo test -p letibot-ui`: **103 passed, 0 failed** (102 + 1).
-`cargo test -p letibot-tui`: **312 passed, 0 failed, 4 ignored**.
+## Tests
+
+- `the_panes_and_the_promote_are_reachable_as_verbs` — each verb, the pane it flips, the
+  chord agreeing with it, `/peek` and `/resume` carrying the id, and `/promote` in both
+  of its two silences (the second with a turn that has gone terminal while its call is
+  still running, which is the case the guard exists for).
+- `every_listed_slash_command_is_one_this_head_answers` — every entry in the table does
+  something observable and leaves the composer untouched, plus the seven names.
+- `a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it` — the job
+  overlay taking PageUp/PageDown/wheel while `self.scroll` stays 0; the listing's arrows
+  in both directions *and what the reader sees* (`skip(3)` puts `row 1` on top and takes
+  `row 0` off); and the listing taking PageDown.
+- `tab_completes_a_slash_command_and_more_tabs_cycle_the_matches` — updated for the cycle
+  the table now describes.
+
+`cargo test -p letibot-tui`: **315 passed, 0 failed, 4 ignored**.
+`cargo test -p letibot-ui`: **103 passed, 0 failed**.
 
 **Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes
 a temp file and `bash` is closed for that direction by the circuit breaker, which only
-the operator lifts. The four crate suites outside these two are still unrun since
-`65725ce`, for the lock reasons the last five commits record.
+the operator lifts.
+
+## `compact_live` — what it actually failed of, measured
+
+`letibot-harnessd --test compact_live` failed after 3151 s of test time, and the failure
+is **not** a hang, a timeout or a cache problem. The server answered turn 2 by name:
+
+```
+Http 400  "request (262194 tokens) exceeds the available context size
+           (262144 tokens), try increasing it"
+          n_prompt_tokens: 262194   n_ctx: 262144   exceed_context_size_error
+```
+
+So **turn 1 succeeded and turn 2's prompt is 50 tokens over the model's whole context.**
+That is a fact about the two numbers, not a knob to turn: a two-message conversation
+cannot honestly be 262k tokens, so something else is being sent — a system prompt or a
+tool-schema payload of that order, or turn 1's own reply — and this commit does not
+pretend to know which. What is worth recording is the exactness: the server said which
+limit was passed and by how much.
+
+**My first two readings of this were wrong and both are worth naming**, because this is
+the third time tonight a fact read off a screen was wrong:
+
+1. I said the test "hung" because it printed no `turn 1 ->` line in the first minutes.
+   It had not reached the print — or stdout was lost in the unwind — and 3151 s of
+test time is the *model* taking that long, not the test waiting on a lock.
+2. I then said it was contending for the singleton model server's KV with this session.
+   That was a plausible mechanism with no evidence, and the real answer was in the
+   failing assertion the whole time.
+
+**And it is a live test on the server this session runs on.** Its own doc says *"never
+start a second model server to make a test pass"* — so it uses the one that is already
+serving. That is the right policy and it is also why this test cannot be re-run cheaply
+or in parallel, which is now recorded rather than discovered again.
 
 ## Not in this commit
 
-The rest of §6's list, one item per commit: `/todos`, `/subagents`, `/peek`, `/resume`,
-`/promote`, `q` closing any pane, `ctrl-o` into a subagent, clicks reaching five panes
-instead of two, SGR mouse motion decoded, and the tail-origin scroll sign for the peek
-and job-output panes.
+**The rest of §6**: `q` closing any pane, `ctrl-o` into a subagent, clicks reaching five
+panes instead of two, and SGR mouse motion decoded.
+
+**§7 C14's shared table.** One artefact both heads read, with a test that they agree —
+which is the part that makes it a shared table rather than two lists that agree today.
