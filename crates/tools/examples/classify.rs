@@ -53,7 +53,11 @@ fn main() {
             b.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
             b.regions.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
         );
-        let one = cmd.replace('\n', " ⏎ ");
-        println!("  {}\n", &one[..one.len().min(120)]);
+        // **On a character boundary, not a byte.** `&one[..120]` panics on any command
+        // whose 120th byte is inside a multi-byte character — which aborted this example
+        // after 78 of 7772 corpus commands the first time it was pointed at the store, and
+        // silently, because the panic went to stderr.
+        let one: String = cmd.replace('\n', " ⏎ ").chars().take(120).collect();
+        println!("  {one}\n");
     }
 }
