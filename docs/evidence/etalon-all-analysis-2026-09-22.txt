@@ -1,0 +1,103 @@
+scored 27212; human-labelled 27121; refusals 250  [census]
+
+=== A. human-labelled, a CENSUS (27121 rows, 250 refusals, 0.9218%)
+    AUC 0.5570   average precision 0.0132
+    always-allow accuracy 0.9908    always-refuse 0.0092
+    p_follows, by label (unweighted):
+      refusals  n   250  min 0.173  p25 0.466  med 0.578  p75 0.705  p90 0.794  max 0.900
+      admits    n 26871  min 0.093  p25 0.507  med 0.618  p75 0.718  p90 0.794  max 0.946
+    refusal rate by p band, ascending (the head is where a guard would fire):
+      p band        n   refusals   rate     (population rate at the top)
+      [0.09, 0.41]   2712      41   1.512%
+      [0.41, 0.48]   2712      24   0.885%
+      [0.48, 0.53]   2712      38   1.401%
+      [0.53, 0.57]   2712      21   0.774%
+      [0.57, 0.62]   2712      25   0.922%
+      [0.62, 0.66]   2712      18   0.664%
+      [0.66, 0.70]   2712      16   0.590%
+      [0.70, 0.74]   2712      17   0.627%
+      [0.74, 0.79]   2712      25   0.922%
+      [0.79, 0.95]   2713      25   0.921%
+    t      tp   fp(w)     acc     prec     rec   tp>fp?
+    0.05    0       0.0   0.9908      nan    0.000   tie
+    0.1     0       1.0   0.9907    0.000    0.000   no
+    0.2     1      63.0   0.9885    0.016    0.004   no
+    0.3    17     558.0   0.9708    0.030    0.068   no
+    0.4    35    2228.0   0.9099    0.015    0.140   no
+    0.5    84    6343.0   0.7600    0.013    0.336   no
+    0.6   136   12293.0   0.5425    0.011    0.544   no
+    0.7   185   19002.0   0.2970    0.010    0.740   no
+    0.8   227   24533.0   0.0946    0.009    0.908   no
+    0.85  243   26084.0   0.0380    0.009    0.972   no
+    0.9   249   26745.0   0.0138    0.009    0.996   no
+    0.95  250   26871.0   0.0092    0.009    1.000   no
+
+    --- per tool, unweighted, refusal defined as p<0.5 ---
+      bash   n 20001  ref  241  adm 19760  tp  83 fp 4905  AUC 0.554
+      edit   n  5846  ref    5  adm  5841  tp   0 fp 1233  AUC 0.516
+      write  n  1274  ref    4  adm  1270  tp   1 fp  205  AUC 0.698
+
+    --- per source ---
+      claude-code@lab2x1         n    10  ref    5  adm     5  tp   3 fp    0  AUC 0.960
+      claude-code@laptop         n 23607  ref  204  adm 23403  tp  67 fp 5652  AUC 0.538
+      claude-code@lubuntu1       n  3415  ref   36  adm  3379  tp  13 fp  658  AUC 0.627
+      claude-code@lubuntu2       n     6  ref    0  adm     6  tp   0 fp    2  AUC  n/a
+      claude-code@lubuntu3       n    20  ref    2  adm    18  tp   1 fp    8  AUC 0.583
+      letibot                    n    63  ref    3  adm    60  tp   0 fp   23  AUC 0.411
+
+=== B. decision-only, a CENSUS (310 rows)
+    n 310, refusals 250 (80.65%)
+    AUC 0.4756   average precision 0.8296
+    always-allow accuracy 0.1935    always-refuse 0.8065
+    p_follows, by label:
+      refusals  n   250  min 0.173  p25 0.466  med 0.578  p75 0.705  p90 0.794  max 0.900
+      admits    n    60  min 0.305  p25 0.478  med 0.559  p75 0.655  p90 0.727  max 0.884
+    t      tp   fp(w)     acc     prec     rec   tp>fp?
+    0.05    0       0.0   0.1935      nan    0.000   tie
+    0.1     0       0.0   0.1935      nan    0.000   tie
+    0.2     1       0.0   0.1968    1.000    0.004   YES
+    0.3    17       0.0   0.2484    1.000    0.068   YES
+    0.4    35       3.0   0.2968    0.921    0.140   YES
+    0.5    84      23.0   0.3903    0.785    0.336   YES
+    0.6   136      34.0   0.5226    0.800    0.544   YES
+    0.7   185      51.0   0.6258    0.784    0.740   YES
+    0.8   227      58.0   0.7387    0.796    0.908   YES
+    0.85  243      59.0   0.7871    0.805    0.972   YES
+    0.9   249      60.0   0.8032    0.806    0.996   YES
+    0.95  250      60.0   0.8065    0.806    1.000   YES
+
+=== C. non-human refusals (no admits to pair with)
+    n 91; p<0.5 on 43; median 0.509
+
+=== PR curve, population A (weighted)
+    rec 0.000  prec 1.000  fp_w 0.0
+    rec 0.000  prec  0.000  fp_w    12.0  
+    rec 0.000  prec  0.000  fp_w    25.0  
+    rec 0.004  prec  0.026  fp_w    38.0  #
+    rec 0.004  prec  0.020  fp_w    49.0  
+    rec 0.004  prec  0.016  fp_w    61.0  
+    rec 0.004  prec  0.013  fp_w    74.0  
+    rec 0.004  prec  0.011  fp_w    88.0  
+    rec 0.004  prec  0.010  fp_w    99.0  
+    rec 0.004  prec  0.009  fp_w   111.0  
+    rec 0.004  prec  0.008  fp_w   125.0  
+    rec 0.004  prec  0.007  fp_w   137.0  
+    rec 0.004  prec  0.007  fp_w   149.0  
+    rec 0.004  prec  0.006  fp_w   161.0  
+    rec 0.004  prec  0.006  fp_w   174.0  
+    rec 0.008  prec  0.011  fp_w   186.0  
+    rec 0.016  prec  0.020  fp_w   197.0  
+    rec 0.024  prec  0.028  fp_w   206.0  #
+    rec 0.032  prec  0.036  fp_w   217.0  #
+    rec 0.032  prec  0.034  fp_w   230.0  #
+    rec 0.032  prec  0.032  fp_w   242.0  #
+
+=== hold-out by session (rows in one session share a trail and correlate)
+    tune 10253 rows (128 refusals); held 16868 rows (122 refusals)
+    tune population 10253 (128 refusals, 10125 admits, prevalence 1.2484%); always-allow 0.9875
+    held population 16868 (122 refusals, 16746 admits, prevalence 0.7233%); always-allow 0.9928
+    best on tune: t=0.01 acc 0.9875 (tp 0, fp_w 0.0)
+    best on held: t=0.01 acc 0.9928 (tp 0, fp_w 0.0)
+    **tuned on tune (t=0.01) -> on held: acc 0.9928 (tp 0, fp_w 0.0) vs always-allow 0.9928**
+    at the pre-declared 0.5 on tune: acc 0.7851 (tp 37, fp_w 2112.0)
+    at the pre-declared 0.5 on held: acc 0.7447 (tp 47, fp_w 4231.0)
