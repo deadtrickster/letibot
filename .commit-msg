@@ -1,59 +1,110 @@
-the row's body is one definition, and the store can read an ordinal the view trimmed
+the sanitiser guards foreign text, not the head's own — and takes a sequence whole
 
-Two inert pieces of R19.2b's daemon half, landed because they are the half that does not
-need the wiring site I could not reach tonight.
+The operator's screen, live for the first time on the 07:04 binary, from my own
+`81990b3`: **`/notes` drew its rows as garbage** — literal `[31m` and `[0m` as printable
+text, and the wrapping broken so words fell onto their own lines. `81990b3` said it guarded
+"the slash listing — the echo and every row of `/notes`, `/job`, `/gate`". It did, and
+that was the mistake: **a `/notes` row is this head's own composed text, already coloured
+by the head.**
 
-**`body_of`, one definition for a row's body.** The match that `SessionView::row_body_at`
-used is now a free function, because a second reader is coming for the same question —
-the store, asked for an ordinal the view has trimmed — and two copies of this match is
-how the two would come to disagree about what a row's `body` is. Behaviour-identical:
-that is a refactor and nothing else. The *windowing* is deliberately not in it, because
-the cap and the character-boundary arithmetic belong to whoever answers the frame.
+Reproduced on the bytes first, coloured, through the real producer:
 
-**`Store::row_json_at` and `Store::current_transcript_id`.** One **indexed** lookup
-(`transcript_item`'s primary key is `(transcript_id, seq)`) — not a scan, and not
-`load_transcript`, which reads every row of the session to return one. That matters
-because the daemon's view is bounded at 2,000 rows and 8 MB, so an ordinal it trimmed was
-previously unanswerable: the two ways to answer it were "every row" or "nothing". The
-transcript is the **newest** one, ordered `created_at DESC, rowid DESC`, because after a
-fork ordinal 3 is a row of the new base and reading the old transcript's row 3 would
-answer with a row nobody asked about.
+     [31m! gate — a refusal [0m
 
-Neither has a caller yet. `R19.2b-fetchrow-and-the-gate-loop.md` has the four remaining
-steps in the order to write them, the `AnswerSink` precedent to copy, and the one piece
-that needs a grep.
+The `ESC` gone and the body left behind. Two faults in one place.
 
-## The finding, which is why this commit is small
+## Fault one: §3.1's subject is content the head did NOT write
 
-**A defect in the gate can cost an agent its whole night, and the fix cannot take effect
-without the restart the defect makes hard to justify.** R18's fix is in the tree
-(`da4a576`) and not in the running daemon, which started at 23:55 from an older binary —
-so it still computes `because: workspace: /`, judges ordinary work `host_other`, and asks
-about it. Only a restart loads the fix; only the operator can restart safely while a
-session is live; they were asleep. From ~04:00 every tool call was a coin flip costing up
-to 300 s, and by 05:00 **`touch` — a 30-byte write, one intent — expired too**. It is not
-the size of the call: a heavy `cargo check` and a trivial `touch` cost the same coin, so
-there is no call small enough to be safe.
+A note this head painted with its own colour is not foreign content. Pointing the
+sanitiser at it strips the head's own escapes — the same bug with the sign flipped.
 
-The refusal is `gate:timeout` with `asked dead` — nobody decided, nothing ran, nothing
-changed. The cost is entirely the wait, which is why the honest response is to stop rather
-than to keep paying it: a multi-crate change written without a compiler is unverified
-code, and unverified code committed is worse than an unfinished feature.
+**Which of the six sites I was wrong about**, since that list is the interesting half:
 
-**Verified:** `cargo check -p letibot-sessionlog -p letibot-tokencore` is **green** — no
-errors and no warning about the new code, only the two pre-existing ones
-(`llama_detokenize` unused, a `mut` in `client.rs`). So this commit is the whole story
-rather than a conditional one: the refactor compiles and the two readers compile, and
-nothing in the tree is left half-written.
+| # | the site closed in `81990b3` | foreign? | verdict |
+|---|---|---|---|
+| 1 | a tool-progress note (`card` header tail) | yes — the daemon's `ToolProgress` | **right**, kept |
+| 2 | the queued echo (`queued_lines`) | yes — the operator's words, and a *paste* can carry a control byte | **right**, kept |
+| 3 | **the slash listing** | **no — this head's own rows** | **WRONG** |
+| 4 | the four panes (job command/state, subagent prompt/role/state, todo content, picker title, header title) | yes — the model's and the daemon's words | **right**, kept |
+| 5 | the five raw `sgr::REVERSE` sites | not a sanitiser question | **right but unrelated** — they emitted escapes under `color: false`, which is `Palette::None`'s contract broken; now wrapped in `colour()` |
+| 6 | **`Palette::paint` sanitising its argument** | **no — a palette's argument is the head's own text, and it may already carry the head's own sequences, because this method is called on strings the head composed *by calling this method*** | **WRONG** |
+| — | **`card::render`'s body** (found by re-reading, not by a test) | **no — `body` is composed by the caller** | **WRONG** |
 
-**Not verified:** `rustfmt --check` could not run — it writes a temp file, which the same
-gate blocks — so the formatting is written to rustfmt's shape by hand and has not been
-diffed. And the two readers have no caller yet, so nothing exercises them: their tests
-belong with the `FetchRow` wiring, which is the next step and is written up in
-`R19.2b-fetchrow-and-the-gate-loop.md`.
+Three wrong, and the third is the shape of all of them: **a guard placed where the string
+happens to pass rather than where foreign text enters.**
 
-**And the commit itself cost one unanswered card**, which is the third shape of the same
-finding: the batch that compiled *and* reverted-on-failure was refused as `ALWAYS ASK
-(destruction_outside_the_project)`, because its `git checkout --` branch is a destroy
-intent and its paths were misread as outside the project. A conditional that might destroy
-is classified as one that does, so the check and the revert belong in separate calls.
+## Fault two, and it is the more general defect: a sequence must go whole
+
+`without_control` replaced every control character with a space. For an escape sequence's
+**introducer** that is the worst of both: the `ESC` becomes a space, the `[31m` stays, and
+the result is **five columns of visible garbage where the terminal measured none** — which
+is also why the wrapping broke, because the wrapper counts what is on the line.
+
+So it now consumes the sequence: `ESC [ params final`, `ESC ] … BEL`/`ST`, and the C1
+forms (`CSI`, `OSC`, `ST`) with no `ESC` in front. A well-formed sequence measures no
+columns, so **removing it leaves the column count exactly as it was** — a space would add
+one. A **lone** control byte that is not part of a sequence (a tab, a `\r`, a DEL) still
+becomes a space, because dropping it would silently reflow the line.
+
+## A third instance of the same defect, found by the sweep
+
+`sessionlog`'s `truncate_target` — which builds a tool call's display target out of the
+model's **own arguments** — had the identical bug, and it is why the raw-markup row still
+read `{"path":" ]0;pwned "}` after the head was fixed: **the `ESC` was already destroyed
+upstream, so no later guard could see a sequence at all.**
+
+That decides where the one definition lives. `letibot-sessionlog` cannot see
+`letibot-ui` and must not start, so `without_control`/`without_control_lines` and their
+sequence parser move to **`letibot-transcript::sanitize`** — the crate both sides already
+depend on, for the same reason `ToolEditExcerpt` lives there. `letibot_ui::text` becomes a
+forward, so every existing call site in this tree is unchanged.
+
+**That adds one dependency edge, and `letibot-ui`'s manifest states a rule against
+letibot crates.** The rule's reason is about *types* — "a rendering primitive that knows
+what a `ToolOutcome` is cannot be tested without the transcript" — and a pair of pure
+`&str -> String` functions is not that. The manifest now says so, in place, with the
+alternative named: a second copy of a sequence parser, which is the duplicate this tree
+keeps deleting.
+
+## Tests, and two of them found holes rather than confirming
+
+- `a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it` — **the
+  reproduction**, both halves: no escape's body as text, *and* the head's own colour still
+  there (stripping it would be a different bug from leaving garbage).
+- `text::an_escape_sequence_goes_whole_and_never_leaves_its_body_behind` — every family in
+  the store's vocabulary, asserting **not one byte of any sequence survives** and the
+  surrounded text does.
+- `text::removing_a_sequence_leaves_the_bytes_and_the_text_behind_it` — the arithmetic:
+  removal, not substitution.
+- `text::a_lone_control_byte_becomes_a_space_rather_than_nothing`, and the pair that
+  keeps the two functions apart.
+- **The §3.1 sweep found two more things**, which is what it is for: `truncate_target`
+  above, and that the sweep's own slash-listing case had been feeding raw foreign text
+  straight into a surface whose contract is *already-composed rows* — a test of a contract
+  no producer has. It now goes through `notes_lines()`, the real producer.
+- Two of my own new tests were wrong on first run and both were my error, not the code's:
+  a hand-typed expected string for the width property (replaced by the property itself),
+  and a bare `CSI` case that correctly swallows the next byte as its final.
+
+```
+cargo test -p letibot-tools       613 passed, 0 failed
+cargo test -p letibot-tui         317 passed, 0 failed, 4 ignored
+cargo test -p letibot-harnessd --lib 114 passed, 0 failed
+cargo test -p letibot-ui          103 passed, 0 failed
+cargo test -p letibot-sessionlog   96 passed, 0 failed
+cargo test -p letibot-tokencore    61 passed, 0 failed
+```
+
+**Not verified:** `rustfmt --check` cannot run (it writes a temp file, which the gate
+blocks). And the fix is verified on the bytes rather than on a terminal — the operator's
+screen is the next thing that can confirm it, because this head is one of the two drawing
+it.
+
+## What I should have done in `81990b3`
+
+Asked of each site *"is this foreign content, or my own?"* before closing it, rather than
+after. The sweep test that found six holes was the right instinct and it was pointed at
+the wrong question: it asked *"does an escape reach the terminal"* when the question is
+*"does an escape THIS HEAD DID NOT WRITE reach the terminal"*. A test that cannot tell
+those apart cannot tell the fix from the bug — which is the same family as the night's
+other finding, that a liveness check which cannot be false is not a check.

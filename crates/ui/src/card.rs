@@ -514,11 +514,14 @@ impl Card {
             ),
         };
         for l in body {
-            // The body too — a tool's payload, a diff row, a note. See the header.
-            out.push(width::truncate(
-                &format!("  {}", crate::text::without_control_lines(&l)),
-                cfg.width,
-            ));
+            // **Not sanitised, and the regression is why.** `body` is composed by the
+            // *caller* — `call_card` builds it out of painted lines and rendered diff
+            // panels — so this is the head's own text by the time `render` sees it, and
+            // guarding it here stripped the head's own colour and left `[2m` behind. The
+            // foreign text that reaches a card is guarded where it enters: the tool's
+            // reason, the target, the progress note, and a diff's two sides before the
+            // differ sees them. See `letibot_ui::text`.
+            out.push(width::truncate(&format!("  {l}"), cfg.width));
         }
         out
     }

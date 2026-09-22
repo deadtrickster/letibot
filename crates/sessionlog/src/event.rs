@@ -417,14 +417,20 @@ fn scalar(v: &serde_json::Value) -> Option<String> {
 
 /// Cut to [`TARGET_MAX_BYTES`] on a character boundary, and say that it was cut.
 ///
-/// Control characters go first: a newline inside a header would put a row on the
-/// screen the head did not count, which scrolls the frame it has just painted.
-/// That is the same fault `letibot_ui::width::break_cells` had, one layer up.
+/// **What a display target is, and why it is guarded here.** It is composed from the
+/// model's own arguments — a path, a command line, a pattern — so it is content this
+/// daemon did **not** write, and it ends up on a head's row. A display target that carried
+/// a live escape would put an instruction to the operator's terminal on a card that names
+/// a tool call (§3.1).
+///
+/// **And it must go as a whole sequence.** This mapped every control character to a space,
+/// which for the `ESC` of an escape is the worst of both: the introducer became a space and
+/// the `[31m` stayed, so a row read ` [31m` — five columns of visible garbage where the
+/// terminal measured none, which also breaks the width this function is truncating
+/// against. The sequence parser is `letibot_transcript::sanitize`'s, shared with
+/// `letibot-ui` rather than copied: this crate cannot see that one and must not start.
 fn truncate_target(s: &str) -> String {
-    let s: String = s
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let s = letibot_transcript::sanitize::without_control(s);
     if s.len() <= TARGET_MAX_BYTES {
         return s;
     }

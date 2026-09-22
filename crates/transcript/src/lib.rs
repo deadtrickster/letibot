@@ -9,6 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// **Text a head did not author, made safe for a terminal** (§3.1) — here because both
+/// sides of the log/wire boundary need it and neither can see the other.
+pub mod sanitize;
+
 /// One entry in the conversation, in the order the model produced or consumed it.
 ///
 /// **Reasoning is a sibling of `Assistant`, not a field on it.** This is the single

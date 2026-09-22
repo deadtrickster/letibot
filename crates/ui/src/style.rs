@@ -214,16 +214,21 @@ impl Palette {
 
     /// Wrap `s` in the role. A no-op for [`Palette::None`] and for
     /// [`Role::Plain`], so neither costs bytes.
+    ///
+    /// **It deliberately does NOT sanitise `s`, and that is a correction rather than an
+    /// omission** (§3.1, and the regression `81990b3` shipped). For one commit this called
+    /// `crate::text::without_control` on its argument, on the argument that a palette's
+    /// argument is text by definition. It is — but it is **the head's own text**, which is
+    /// what a palette exists to style, and it may already carry the head's own sequences:
+    /// this method is called on strings the head composed, including strings it composed
+    /// *by calling this method*. Sanitising here stripped the head's own colour and left
+    /// the body of the escape behind — a `/notes` row on the operator's screen read
+    /// ` [31m… [0m`.
+    ///
+    /// The guard belongs where **foreign** text enters — a payload, a model's prose, a
+    /// tool's reason — and every such site calls `crate::text` itself. See that module's
+    /// header for the rule.
     pub fn paint(self, r: Role, s: &str) -> String {
-        // **The text is sanitised here, once, for every painted string** (§3.1).
-        //
-        // A palette's argument is *text* by definition — the head's own sequences are
-        // the ones `open`/`close` supply — so a control byte in `s` is somebody else's
-        // bytes being painted as though they were words. Doing it here rather than at
-        // each caller is the difference between a rule and a habit: this crate draws
-        // every card and had **no** sanitiser at all, and a tool-progress note reached a
-        // card's tail raw because the guard lived in the head instead.
-        let s = &crate::text::without_control(s);
         let o = self.open(r);
         if o.is_empty() {
             return s.to_string();

@@ -6592,21 +6592,21 @@ impl App {
             .max(1);
         let mut out = if let Some((echo, lines)) = self.slash_out.clone() {
             let p = self.cfg.palette();
-            // **§3.1: a listing is a reply, and a reply is somebody else's text.** The
-            // echo is the command as the daemon read it and the rows are the answer — a
-            // `/job` log, a `/gate` table, a guard's paragraph — none of which this head
-            // wrote. Sanitised at the render rather than at the producers, so the next
-            // verb that answers with a listing cannot be the leaky one; the
-            // falsification test sweeps this pane for exactly that reason.
-            let mut rows = vec![
-                p.paint(Role::Strong, &without_control_lines(&echo)),
-                String::new(),
-            ];
-            rows.extend(
-                lines
-                    .iter()
-                    .flat_map(|l| wrap(&without_control_lines(l), w)),
-            );
+            // **Not sanitised, and the regression is why.** The rows in `slash_out` are
+            // **this head's own composed lines**: `/notes` draws them through
+            // `note_lines_unfolded`, which paints each one with `sgr::RED`, and `/gate`'
+            // and `/job`'s are laid out here by the same kind of code. Running the §3.1
+            // guard over them stripped the head's own colour — the operator's screen
+            // showed ` [31m! gate — a refusal [0m`, an escape's body left as text, and the
+            // wrapping broke because those five columns are not what the terminal
+            // measures.
+            //
+            // §3.1's subject is content this head did **not** write. Whatever a listing
+            // is showing, the strings in this `Vec` went through a renderer that
+            // sanitised its own foreign inputs already — a note's detail, a job's
+            // command, a gate's summary — so there is nothing left here to guard.
+            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
+            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
             rows.push(String::new());
             rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
             self.pane_window(rows, room)
@@ -17059,7 +17059,17 @@ mod tests {
                 title: format!("my session{HOSTILE}"),
             },
         )));
-        b.slash_out = Some(("/notes".into(), vec![format!("row{HOSTILE}")]));
+        // **A note with hostile text in it, drawn through the real producer.** The
+        // listing's contract is that its rows are *already-composed lines* — a note's row
+        // is built by `note_lines_unfolded`, which guards the daemon's `detail` as it
+        // composes it — so a test that pushed raw foreign text into `slash_out` would be
+        // testing a contract no producer has. (The first version of this did exactly that,
+        // and the regression commit is what exposed it.)
+        b.note(Note::Warned(Warned {
+            code: "gate".into(),
+            detail: format!("refused{HOSTILE}"),
+            ts: 0,
+        }));
         // **One pane at a time, because `screen` draws one.** The first version of this
         // loop set four panes at once and said "the jobs pane" for all four, while
         // `slash_out` won the screen every time — a label that described the loop rather
@@ -17073,7 +17083,7 @@ mod tests {
             b.jobs_pane = only == 0;
             b.subagents_pane = only == 1;
             b.todos_pane = only == 2;
-            b.slash_out = (only == 3).then(|| ("/notes".into(), vec![format!("row{HOSTILE}")]));
+            b.slash_out = (only == 3).then(|| ("/notes".into(), b.notes_lines()));
             // The header carries the renamed session's title whatever pane is up, so
             // every one of these frames also exercises the title.
             let shown = b.screen(160, 40);
@@ -17186,66 +17196,23 @@ mod tests {
                 !row.contains('\u{7}'),
                 "{what}: a BEL survived into the row: {row:?}"
             );
-            // …and the row is still a row: the escape became a space rather than
-            // the whole line being dropped, which is what keeps the column
-            // arithmetic honest (`without_control`'s own trade).
+            // …and the row is still a row: the sequence went **whole**, leaving the text
+            // standing rather than blanking the line.
             assert!(
-                row.contains("]0;pwned"),
-                "{what}: the text should survive with the control byte spaced: {row:?}"
+                !row.trim().is_empty(),
+                "{what}: the row was blanked by the sanitiser: {row:?}"
+            );
+            assert!(
+                !row.contains("]0;pwned"),
+                "{what}: an OSC's body was left as text: {row:?}"
             );
         }
     }
 
-    /// **The half of §3.1 that is easy to get wrong, and that I DID get wrong.**
-    ///
-    /// `\n` is a control character — `char::is_control` is true of every C0 code,
-    /// including it — so passing a document to the single-line `without_control` does
-    /// not sanitise it, it **collapses it onto one line**: every paragraph, every list
-    /// item and every fenced block gone. My first cut of this item did exactly that to
-    /// model prose, and the mistake is invisible on a one-line fixture while it
-    /// destroys every long message.
-    ///
-    /// So the newline is asserted to survive, and the other control bytes are asserted
-    /// not to — that pair is the whole function.
-    #[test]
-    fn sanitising_a_document_keeps_its_lines_and_loses_its_controls() {
-        let doc = "first paragraph\n\nsecond \u{1b}[31mred\u{1b}[0m and a tab\there\nthird\n";
-        let safe = without_control_lines(doc);
-        // **The newlines are the document**, so they are counted rather than eyeballed:
-        // three of them in, three out. (`lines()` is 4 for the same string — a trailing
-        // newline ends a line without starting one — which is why the assertion is on
-        // the newlines themselves.)
-        assert_eq!(
-            safe.matches('\n').count(),
-            doc.matches('\n').count(),
-            "the line structure is the document: {safe:?}"
-        );
-        assert_eq!(safe.lines().count(), 4, "{safe:?}");
-        assert_eq!(safe.lines().next(), Some("first paragraph"));
-        assert_eq!(safe.lines().last(), Some("third"));
-        assert!(
-            safe.contains("second  [31mred [0m and a tab here"),
-            "controls become spaces: {safe:?}"
-        );
-        // **Every control byte except the newline is gone**, which is the property —
-        // asserted as a sweep rather than as a list of four, so a C1 byte or a `\u{0}`
-        // added to the document later is caught by the same line.
-        for c in safe.chars() {
-            assert!(
-                c == '\n' || !c.is_control(),
-                "{c:?} survived: {safe:?}"
-            );
-        }
-        assert!(safe.ends_with('\n'), "a trailing newline is structure too");
-        // And the single-line version is unchanged, because a tool payload's lines are
-        // already split by its caller (`payload.lines()`), so each call sees one line.
-        assert_eq!(without_control("a\tb"), "a b");
-        assert_eq!(
-            without_control("a\nb"),
-            "a b",
-            "the one-line form still flattens — its callers split first"
-        );
-    }
+    /// **The half of §3.1 that is easy to get wrong** now lives with the functions, in
+    /// `letibot_ui::text`'s own tests — a single-line sanitiser applied to a document
+    /// collapses every paragraph, and the pair of functions is where that is pinned. It
+    /// used to be duplicated here.
 
     /// **R13: the number beside a running call comes from a clock that keeps moving.**
     ///
@@ -20713,6 +20680,52 @@ mod tests {
         let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
         d.deadline = Some(1_788_984_300_000);
         assert!(a.decision_lines(&d, 200).join("\n").contains("expires in 5 min"));
+    }
+
+    /// **R18's regression, reproduced on the bytes: a listing must not strip the colour
+    /// the head composed into it.**
+    ///
+    /// `81990b3` applied the §3.1 sanitiser to the slash listing's rows. But a `/notes`
+    /// row is **the head's own composed text** — `note_lines_unfolded` paints it with
+    /// `sgr::RED` — so the sanitiser stripped the head's own escape. And because
+    /// `without_control` replaced the `ESC` with a space and left the rest behind, the
+    /// row read ` [31m… [0m`: an invisible sequence turned into five columns of visible
+    /// garbage, which is also why the wrapping broke.
+    ///
+    /// Asserted on the bytes rather than the look, and **both halves**: the body of an
+    /// escape must not appear as text, and the head's own colour must still be there —
+    /// stripping it would be a different bug from leaving garbage.
+    #[test]
+    fn a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it() {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.session_id = "s1".into();
+        a.note(Note::Warned(Warned {
+            code: "gate".into(),
+            detail: "a refusal".into(),
+            ts: 0,
+        }));
+        // The premise: the row this head composes for its own listing IS coloured.
+        let rows = a.notes_lines();
+        assert!(
+            rows.iter().any(|l| l.contains("\u{1b}[31m")),
+            "the premise: `notes_lines` paints a warned note with the head's own red: {rows:?}"
+        );
+        // Now draw it through the listing, which is where the sanitiser was applied.
+        a.slash_out = Some(("/notes".into(), rows));
+        a.pane_scroll = 0;
+        let shown = a.screen(100, 30).join("\n");
+        assert!(
+            !shown.contains("[31m") || shown.contains("\u{1b}[31m"),
+            "an escape's BODY was left as printable text:\n{shown}"
+        );
+        assert!(
+            shown.contains("\u{1b}[31m"),
+            "the head's own colour was stripped from its own listing:\n{shown}"
+        );
     }
 
     #[test]
