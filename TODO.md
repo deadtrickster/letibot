@@ -39,6 +39,39 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 *Verified open by inspection on 2026-09-10; each says how to re-check.*
 
+---
+
+## A's three of the eight (`head-parity-2026-09-21.md` §11) — **given 2026-09-22**
+
+Three code changes from §11, filed here because §11 ages faster than the code it
+describes. **A.1 and A.2 are settled** — `87b67ee` and `e1cd2b0`, both written
+up in `TODO-settled.md` — and **A.3, below, is the one still open**.
+
+### A.3 — §11.7: R18's card, one sentence left of five
+
+R18's card was five wrong things; three are fixed (`da4a576`) — the `<tool>` label that
+stood where a noun belongs, `because: workspace: /`, and a containment claim about a path
+nobody named.
+
+**What is left is the sentence that says WHY the card is asking.** The card prints two
+statements that look like a contradiction — the headline's **exec access** (the tool's
+declared access) and the tier line's **auto** (layer A's reading of the *action*) — and
+it never joins them, so *"the classifier decided this needed no asking"* appears to be
+argued with by the card going up anyway. The missing clause is the **access**.
+
+- *still open?* `grep -n 'timeout_clause\|on_timeout' crates/tui/src/app.rs` and read
+  `decision_lines` — look for a sentence that names the declared access.
+- *done when* a card for an exec-declared call whose action classified `auto` says, in the
+  dim register, that the access is what asks; and a card whose access is read does not
+  carry the clause, because it is not why anything is being asked.
+- *not a second tier*: this is wording, and the tier ladder does not move. §11.7 says
+  *"A's wording, possibly reworded"* — so word it, and if the wording implies a change to
+  what asks, that is a different item.
+- *the one ruling this touches*: A's `da4a576` refused to implement "a decision already
+  marked auto is not re-asked" as stated, because `mode.rs:622-636` shows it would make
+  `bash` unaskable for every read command. **That refusal stands**, and this item is the
+  wording that removes the *appearance* of contradiction without moving the ladder.
+
 
 ---
 

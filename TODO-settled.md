@@ -857,3 +857,50 @@ and with nobody to answer, nothing ran.
 The raw command text still never reaches the oracle: a `PriorAnswer` carries the
 effect, a count and two ages, and nothing else — the existing leak test caught a
 brief smuggling once and it stays green.
+
+## §11.3 (A.1) — a notice's TTL in time, not frames — **SETTLED 2026-09-22 — 87b67ee**
+
+`head-parity-2026-09-21.md` §11's item 3, and R13's second symptom. The unit moved and
+the number did not: the old constant was 60 **frames**, and leticl measured it on a live
+head at 1.6 s of wall time, so `NOTICE_MS` is 1600 and the two heads keep one sentence up
+for one second and a half. `say` sets a deadline on the head's own clock, a key moves
+that deadline to now (the acknowledgement it always was), and `screen` reads it instead
+of decrementing a counter — which also closes the state the old guard made permanent: a
+notice whose count had already reached zero could never be cleared at all.
+
+`Resync`'s direct write to the slot went through `say` with it, so there is one writer
+and one clock source, and the field's doc records what a note with no clock means. The
+criterion is asserted the way §11's entry asked: present at `t + 1600 - 1`, gone at
+`t + 1600`, with 200 repaints at one millisecond in between and no `screen()` in the
+interval — the mirror of leticl's `a-notice-expires-and-an-alarm-does-not`. leticl's
+`chrome.lisp` carries the same 1600 from the same 60 frames, which is the cross-check
+§11's entry asked for by name.
+
+## §11.6 (A.2) — a job that never ran is not a job that wrote nothing — **SETTLED 2026-09-22 — e1cd2b0**
+
+`head-parity-2026-09-21.md` §11's item 6. `NotScoped` is the one `JobState` where the
+wrapper could not put the process in its cgroup, so **nothing ran** — and its empty window
+was drawn with the sentence a process that ran and wrote nothing gets, under a header
+that had just said it never started. Both heads had it identically.
+
+The line is `it never ran, so there is nothing it could have written.` — §11.6's ruling
+is *A rules the words; both heads render the same string*, so the literal is the whole of
+what the two agree about, and it is in the commit message as well as the code.
+
+**The fact travels instead of the sentence.** `JobState::never_ran()` sits beside
+`word()` — the companion that answers the question the word alone cannot — and the daemon
+puts it on the window (`SessionEvent::JobOutput`) and on the row (`JobEntry`). Both are
+`#[serde(default)]`, so an older head ignores them and renders exactly what it rendered
+before, `false` is the honest reading of silence, and no `PROTOCOL_VERSION` moves: the
+precedent `ModelAdvice::consulted` set for an added, defaulted field on an existing
+variant.
+
+The same contradiction was fixed in the two other places a reader met it: the jobs
+pane's row (`not run (could not join its scope) · 0 B out · ran 0.0s` — a job with no run
+has no duration, so the clause goes and the byte count stays) and the model-facing
+`job_output` text.
+
+**The pairing is what keeps it from drifting.** `letibot-tools` names every `JobState`
+variant, classifies it, and pins its word literally; the head maps those same words to
+the three sentences. A sixth state cannot fall through to a head's sentence, and a reword
+on either side of the wire breaks the other's test.
