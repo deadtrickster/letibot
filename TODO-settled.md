@@ -1070,3 +1070,135 @@ than the 07:13 the operator is running.
 emits some of its own. The split above is A's answer to *"decide the severity split with your
 own codes rather than mine"*; where the two heads disagree about a code they both emit, that
 is a drift row before it is a commit.
+
+## R20 — the ladder is pinned to the bottom, and the wall above it scrolls — **SETTLED 2026-09-22 — `a413f9a`**
+
+`head-parity-2026-09-21.md` **R20**, ruled on a permission card carrying a giant `replace` or
+a commit message: *"I'm shown a permission prompt and I just cant see the selector."*
+
+**The mechanism was the screen-fit loop's `dec_rows -= 1`,** and it trims **from the end** —
+which on this card is the ladder, the deadline and the hint. So the rows the operator had to
+act on were the first given up, and what stayed was the wall at full length. **Measured
+first**, 80x24 on a card whose content is 42 rows: the headline, the target, and nineteen
+lines of layer A's reading, with the three options **gone** — and the composer still there,
+so the screen held a question with no way to answer it.
+
+The card is two lists now (`decision_card`), split at the ladder: **content** (the question,
+the target, the reading, the §11.7 clause, the `because`, the model's verdict) is the
+viewport — the fit loop shrinks it and nothing else of the card, and `card_window` gives it a
+window plus **one seam row** saying how many lines are out of view and which key moves. The
+seam changes ends with the scroll and never says *"there is more"*: a reader has to know
+whether one line or four hundred are missing before deciding to scroll at all, which is
+`OutputSlice::denominator`'s rule for a job's output. **choices** (the ladder, the §1.6
+deadline, the hint, the `deny_and_tell` line) is never trimmed and never scrolled.
+
+Scrolling is `pgup`/`pgdn`/wheel, taken by the card **only while it has something out of
+view** — the numbers are the last frame's, because the length is a function of the width and
+only the draw knows it. When the content fits, nothing fires and the transcript keeps the
+keys it always had, which is asserted. The offset resets in one place (`screen`, on a change
+of `open[0].req_id`), where one site cannot be forgotten. **leticl must check its own fit
+path** — a faithful port of that loop has the same order.
+
+## R21 — a shell that only reads is a read — **SETTLED 2026-09-22 — `76e1b31`**
+
+`head-parity-2026-09-21.md` **R21**, raised looking at a gate on `head`. Both halves of the
+complaint had answers and neither was the defect: `head` **is** a read in the classifier, and
+the oracle was never asked to allow it. **The defect was that the vehicle outranked the
+work** — running anything through a shell is exec access whatever the program does, so a call
+whose every computed intent was a read still gated as exec and the card said *exec access*
+over intents that said *read*.
+
+**Measured first**, over every `bash` call this box has gated (7318 rows, the command text out
+of the store): **1008 rows (13.8%) are read-only by the rule, and 977 of the 5153 rows that
+were ASKED — 19.0% — stop gating.** The tempting reading of *inside the boundary*
+(`Tier::Auto`'s own) would have freed 7 of 7318, which is why the rule asks the narrower
+question it does.
+
+One function, `judged_access`: a shell call whose baseline `reads_only()` is judged at
+`Access::Read`, and that is *narrowing only*. Three readers, the three places the vehicle
+spoke for the work — the `ActionClass` (card headline, shape key, corpus class), the exec
+clause above the mode arm, and `Mode::admits_unasked` (a read is clause 4 and is admitted at
+every point, `always-ask` included, which is what clause 4 *is*).
+
+`Baseline::reads_only`'s conjuncts are the ruling's own guardrails: every intent a look or a
+read, nothing unresolved, nothing empty, and **no region this classifier can point at and
+call outside**. That last one is a judgement and it is not `Tier::Auto`: `Auto` requires every
+region to be `Workspace` or `None`, and a **relative path** lands in `HostOther` — the
+classifier holds the workspace, not the command's working directory, and `cd X && reader` is
+exactly the shape the ruling names (the operator's own card read `over [workspace
+host_other]`). Reading an unplaceable path as an outside one is the defect R9 already paid
+for, so the rule voids on the regions the table **names as outside** — `Secret`, `Remote`,
+`Home`, `SystemConfig`, `SystemBinaries`, `Device`, `Temp`, `Root` — and `cat /etc/passwd`
+keeps the exec access it has today. **Which makes this stricter than the `read` tool**, whose
+gate is never consulted at all; the asymmetry can only narrow what runs unasked.
+
+**What it deliberately does not free:** `sed -n …` computes `read_file` **and**
+`execute_code` (GNU sed's `e`, `s///e`, `w`), so the 1690 corpus rows carrying a `sed`
+segment still ask. The table is the judge of what a program is and this adds nothing to it —
+an unknown program, a pipeline into a writer and anything the parser could not resolve are
+all still not reads, and the last is *refused* rather than asked.
+
+**Where it lands in the family**, and the operator asked for this to be named: **R18 was one
+accessor answering a different question; `NotScoped` is one integer carrying two meanings;
+this is one declared access outranking the intents the classifier actually computed. In each,
+a fact about the MECHANISM was allowed to stand in for a fact about the WORK.** The fourth
+member is the same family one layer down — the oracle being asked *did the operator ask for
+this* when the operator's own trail is not the only source of intent — and R21's sibling below.
+
+**Six fixtures in three crates** used a read-only shell call as a generic *"a call that
+asks"* (`cat /w/src/lib.rs`, `ls`, `grep`); each is a `sed -n` or an `awk` now, with the
+reason at the site.
+
+## R21's sibling — a command that exits 125 ran — **SETTLED 2026-09-22 — `06ec17b`**
+
+`JobState::NotScoped` was derived **from the exit code alone**, and 125 is a legitimate exit
+code: `bash -c "exit 125"` was listed `not run (could not join its scope)`, the head drew
+§11.6's *it never ran…*, and the model read the state word and concluded *"the 125 exit code
+was never produced"*. Handed over by leticl, who found it and did not choose a fix.
+
+**Chosen: require the wrapper's marker before classifying** — because that is what the layer
+next door already does. `Bwrap::launcher_failure` refuses to classify a launcher failure by
+exit code at all and reads the launcher's stderr instead; the scope wrapper, which owns its
+own code and so could have, took the shortcut. **A launcher failure is recognised by what the
+launcher SAID.** The alternative (a marker *file* in a harness-owned directory) is stronger in
+the abstract and costs a directory with its own lifecycle inside a tree whose `prune` counts a
+leftover file as debris — for a case that cannot arise, since a wrapper that could not join its
+cgroup ran no command, so the marker is the entire output.
+
+`NOT_SCOPED_MARKER` is one string read by both ends (the script is built from it; a test fails
+if either is edited alone), `Capture::contains` is the substring test, and `EXIT_NOT_SCOPED`
+stays as the code — *not the evidence*. Reproduced first and falsified in both directions:
+`bash -c "echo ran-anyway >&2; exit 125"` reads `exited 125` with its own stderr in the
+capture, and a scope that cannot be joined still says *not run (could not join its scope)*
+with the marker present and the command's own line absent.
+
+## R12 — an oracle that ran out of room is not an oracle that could not be read — **SETTLED 2026-09-22 — `3d8754d`**
+
+The operator *"an oracle that ran out of budget is not an oracle that could not be read"*, and
+they asked for the measurement first. **Measured against the store**: 175 rows recorded *"gave
+no verdict this seam could read"* — **134 were the model ANSWERING `UNSURE`** (R11's defect,
+re-worded by `452d7dd`), **41 had no verdict line at all, and 38 of those end mid-clause** (a
+word, no full stop — the ceiling's signature; 21 in this session's daemon, 15 in the other
+head's, 2 elsewhere). The newest two are from today, so it is live. 848 consultations since
+R11, of which 3 recorded the sentence.
+
+Three things. **The verdict goes first** — the prompt asks for it on the FIRST line with the
+reasoning after, and the parser reads *either* end, so a cut reply still carries its answer and
+every reply written under the old shape still parses. Measured live against this box's guard
+model (`qwen-3.8-27b` at 127.0.0.1:8080): three of three samples put `ALLOW 0` on line 1 with
+`finish_reason: stop`, and at `max_tokens: 8` the reply is `ALLOW 0\nYes, running the` with
+`finish_reason: length` — the verdict survives the cut, which is the whole point. **The third
+outcome is named** — `UnsureKind` (`could_not_decide`, `between_thresholds`, `unreadable`,
+**`out_of_room`**) travels on the answer and becomes a column, `oracle_reading`, schema
+**v11**, so *the rate of each* is a `GROUP BY` and not a regex over prose; the card already
+carried the sentence, because R11 put the reply's basis on the wire. **And the knob the
+sentence names is real** — `--oracle-max-tokens`, plumbed to `HttpOracle::with_max_tokens`.
+
+`finish_reason` is the only thing that can tell a cut reply from one that stopped, and an
+absent field reads as `false`: a server that does not report it must not be read as the
+loudest case. The ceiling explains a *failure to parse* and never overrides a verdict.
+
+Found on the way: `decisions_tool::counts_are_per_session_and_any_widens_to_everything` was
+**already failing at HEAD** — the R11 fixture gave all three rows `consulted: Some(true)`, so
+*"one oracle answered"* measured 3 — and the two rows a person and a boundary decided now say
+`false`.
