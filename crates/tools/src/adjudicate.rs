@@ -2095,6 +2095,52 @@ impl AdjudicatedGate {
         format!("adj-{}-{:04}", self.session_id, self.seq)
     }
 
+    /// **The access this call is JUDGED at** — R21.
+    ///
+    /// A shell call is `Access::Exec` because the tool that carries it is, whatever the
+    /// program inside does: `bash("head -c 2000 f")` is a read, and it gated as exec, and
+    /// the card said *exec access* over intents that said *read*. That is the whole of
+    /// R21 — **a fact about the mechanism standing in for a fact about the work** — and
+    /// this function is where the substitution stops.
+    ///
+    /// # It is not a second classifier, and it decides nothing of its own
+    ///
+    /// The condition is [`crate::intent::Baseline::reads_only`], which is layer A's own
+    /// `Tier::Auto` plus the ruling's guardrails written out. Every judgement about what
+    /// a program is, what a construct means and where a path lands was made before this
+    /// and is not revisited here: an unknown program, an unparsed substitution, a
+    /// pipeline into a writer and a read outside the workspace all fail that test, so all
+    /// four keep the exec access they have today.
+    ///
+    /// # Why only a shell call, and why only when it reads
+    ///
+    /// `call.access` is the TOOL's declared class, and for every tool but `bash` it is
+    /// already a statement about the work — `read` reads, `write` writes, `web_fetch`
+    /// reaches a network. The one that is about a vehicle is the shell, so the one that
+    /// gets this is the shell. And it is *narrowing only*, in the same direction
+    /// [`crate::runtime`]'s `access_for` narrows: this can turn an exec call into a read
+    /// and can turn nothing into anything else.
+    ///
+    /// # What turns on it, and the one thing that must not
+    ///
+    /// Three readers, and they are the three places the vehicle used to speak for the
+    /// work: the [`ActionClass`] (its `access` is the card's headline, the shape cache's
+    /// key and the corpus's class), [`crate::mode::Mode::admits_unasked`] (a read is
+    /// clause 4 and is admitted at every point, including `always-ask` — that is what
+    /// clause 4 *is*, and it is why `reads_only` requires the boundary guardrail as well),
+    /// and the exec clause above the mode. **The boundary is not one of them**: the gate is
+    /// still consulted, because the gate is consulted on the DECLARED access
+    /// (`ToolRuntime::invoke`), and this changes what the gate *says*, not whether it is
+    /// asked. A read outside the workspace is still outside it — R18's axis, and the
+    /// ruling names it as untouched.
+    fn judged_access(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Access {
+        if call.access == Access::Exec && baseline.reads_only() {
+            Access::Read
+        } else {
+            call.access
+        }
+    }
+
     /// **Layer A's deterministic reading of this call**, before any adjudicator.
     ///
     /// A `command` argument is normalised through the grammar; anything else is read
@@ -2154,10 +2200,15 @@ impl AdjudicatedGate {
         // reversible: claiming irreversibility about a call whose target nobody
         // looked at would be a stronger statement than the evidence supports.
         let creates = call.target_exists == Some(false);
+        // **R21: the class is the WORK's, not the vehicle's.** `baseline` is already
+        // computed above this line in every caller, and it is the same reading the
+        // `because` facts and the intents come from — so the class, the headline and the
+        // intents can no longer disagree about what this call is.
+        let access = Self::judged_access(call, baseline);
         let class = if network {
-            ActionClass::external(call.access, Cost::Free)
+            ActionClass::external(access, Cost::Free)
         } else {
-            ActionClass::host(call.access, inside, creates)
+            ActionClass::host(access, inside, creates)
         };
         let digest = crate::events::payload_digest(&call.args.to_string());
         let mut facts = if network {
@@ -2250,10 +2301,13 @@ impl AdjudicatedGate {
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
             advice: None,
+            // The headline names the access the call is JUDGED at (R21), so a shell that
+            // only reads says `read access` rather than `exec access` over a list of
+            // intents that already said read.
             summary: format!(
                 "`{}` wants {} access to `{target}`",
                 call.name,
-                call.access.as_str()
+                access.as_str()
             ),
             target: target.clone(),
             arguments: call.args.clone(),
@@ -2789,6 +2843,10 @@ impl Gate for AdjudicatedGate {
         use crate::intent::BaselineVerdict;
 
         let baseline = self.baseline_for(call);
+        // **The access this call is judged at** (R21). Computed here and passed to the
+        // three places that used to read the tool's declared one — see
+        // [`ModelAdjudicator::judged_access`] for what turns on it and what must not.
+        let access = Self::judged_access(call, &baseline);
         let mut req = self.request_from(call, &baseline);
         let direction = TaskDirection::of(&req, &baseline);
         let breaker_state = self.breaker.state(&direction);
@@ -2986,8 +3044,16 @@ impl Gate for AdjudicatedGate {
         //    exec-class call unasked, because `bash` is the tool whose result is an
         //    arbitrary byte stream and the operator has decided that question is
         //    settled by them, every time, and by nothing else.
-        if (call.access != Access::Exec || self.exec_follows_mode)
-            && self.mode.admits_unasked(&req.tier, call.access)
+        //
+        //    **And R21 leaves that rule exactly where it is**, because `access` here is
+        //    the access this call is JUDGED at and not the tool's declaration: a shell
+        //    that only reads is judged a read, so it reaches clause 4 rather than this
+        //    exception, and a shell that does anything else is still `Exec` and is still
+        //    excepted. The exception is what the operator's rule is FOR; what R21 removes
+        //    is the case where the exception was firing over a call whose every computed
+        //    intent the classifier had already read as a look.
+        if (access != Access::Exec || self.exec_follows_mode)
+            && self.mode.admits_unasked(&req.tier, access)
         {
             let d = AdjudicationDecision::selected(
                 &req,
@@ -2996,7 +3062,7 @@ impl Gate for AdjudicatedGate {
                 &format!(
                     "the `{}` mode admits {} calls without asking; nothing was consulted",
                     self.mode.name,
-                    call.access.as_str()
+                    access.as_str()
                 ),
             );
             self.breaker.admitted(&direction);
@@ -3009,7 +3075,7 @@ impl Gate for AdjudicatedGate {
                 format!(
                     "the `{}` mode admits {} unasked",
                     self.mode.name,
-                    call.access.as_str()
+                    access.as_str()
                 ),
             );
             self.record(req, d, "admit", direction.key());
@@ -3864,15 +3930,18 @@ mod tests {
         )))
         .with_surroundings(pinned());
 
-        let one = json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+        // **Exec, so that asking is what is being measured** (R21): a `grep` over the
+        // workspace is a read and clause 4 settles it with nobody asked, which would
+        // make this test green about the shape cache it is not exercising.
+        let one = json!({"command": "sed -n 1p /w/a.rs"});
         assert!(matches!(
             g.admit(&bash_at(&one, "s#1")),
             GateDecision::Admit
         ));
         assert_eq!(asked.load(Ordering::Relaxed), 1);
 
-        // Different pattern, different context count, different file: one shape.
-        let two = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+        // A different line, a different file: one shape.
+        let two = json!({"command": "sed -n 2p /w/b.rs"});
         assert!(matches!(
             g.admit(&bash_at(&two, "s#2")),
             GateDecision::Admit
@@ -3933,22 +4002,24 @@ mod tests {
 
         // What the previous session wrote down: the shape, and the class it was
         // approved at, spelled the way the row holds it.
-        let first = json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+        // **Exec** (R21): a read would be admitted by clause 4 and this would be a
+        // green test about a shape cache that never ran.
+        let first = json!({"command": "sed -n 1p /w/a.rs"});
         let class = {
             let mut probe = AdjudicatedGate::closed().with_surroundings(pinned());
             let _ = probe.admit(&bash_at(&first, "s#0"));
             probe.log.last().expect("a row").request.class.to_string()
         };
         let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(
-            "grep -n \"struct CallRow\" -A 22 /w/a.rs",
+            "sed -n 1p /w/a.rs",
             &pinned(),
         ))
         .expect("a command has a shape");
 
         assert_eq!(g.seed_shapes([(shape, class)]), 1);
 
-        // A different pattern, count and file — one shape, and nobody is asked.
-        let now = json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+        // A different line and file — one shape, and nobody is asked.
+        let now = json!({"command": "sed -n 2p /w/b.rs"});
         assert!(matches!(
             g.admit(&bash_at(&now, "s#1")),
             GateDecision::Admit
@@ -3982,7 +4053,9 @@ mod tests {
         )))
         .with_surroundings(pinned());
 
-        let cmd = "grep -n \"fn foo\" -A 3 /w/b.rs";
+        // **Exec** (R21): a read is clause 4 and would be admitted whatever the seeded
+        // class said, so the call this test is about has to be one that asks.
+        let cmd = "sed -n 1p /w/b.rs";
         let shape =
             crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(cmd, &pinned()))
                 .expect("a command has a shape");
@@ -4885,9 +4958,19 @@ mod tests {
             .with_surroundings(pinned())
             .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
 
-        let args = json!({"command": "/bin/cat /w/src/lib.rs"});
-        for _ in 0..2 {
-            assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        // **A shell call that RUNS something** (R21). This was `/bin/cat …`, which is a
+        // read inside the workspace and is therefore clause 4 now — the subject here is
+        // exec asking, so the fixture has to be a call that is still exec. `sed` is the
+        // one that stays exec on the classifier's own account: `sed -n 1p` reads, and
+        // `sed` computes `execute_code` too, because GNU sed's `e` command and `s///e`
+        // run a shell. See `Baseline::reads_only`.
+        //
+        // **Two exec calls, and two different shapes of them.** The shape cache would
+        // settle the *second* identical call — only for a `MayApprove` tier, which an
+        // exec call is — so what this asks of two shapes is the honest version of
+        // *nobody but the person settles these*.
+        for cmd in ["/bin/sed -n 1p /w/src/lib.rs", "/usr/bin/awk {print} /w/src/lib.rs"] {
+            assert_eq!(g.admit(&bash(&json!({"command": cmd}))), GateDecision::Admit);
         }
         assert_eq!(
             asks.load(Ordering::SeqCst),
@@ -5710,6 +5793,150 @@ mod tests {
     }
 
     #[test]
+    /// **R21 — a shell that only reads is judged on the work, and the four ways it is
+    /// not.**
+    ///
+    /// `head-parity-2026-09-21.md` **R21**, raised by the operator looking at a gate on
+    /// `head`: *"wonder why oracle didnt allow head itself, or why head wasn't
+    /// categorized as Read."* Both halves had answers and neither was the defect — `head`
+    /// **is** a read in the classifier, and the oracle was never asked to allow it — and
+    /// what was left was that **the vehicle outranked the work**: a shell that only reads
+    /// gated as exec, and the card said *exec access* over intents that said *read*.
+    ///
+    /// **Measured, 2026-09-22, over every `bash` call this box has gated** (7318 rows,
+    /// from the store's own `arguments_json`): 1008 rows (13.8%) are read-only by this
+    /// rule, and **977 of the 5153 rows that were ASKED — 19.0% — stop gating.** The two
+    /// numbers are the point of this test in the small and of the commit in the large.
+    ///
+    /// The four guardrails are asserted failing, because the ruling says the rule is
+    /// *paid for* by the parser's refusals and void the moment a line carries something it
+    /// could not read. Each of them is a shape the corpus actually holds.
+    #[test]
+    fn a_shell_that_only_reads_is_judged_on_the_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // **A fresh gate per case.** A human `allow_session` on one call is a standing
+        // permission whose coverage is `intents.is_subset`, so a later call in the same
+        // gate can be settled by a grant taken over an earlier one — real behaviour, and
+        // noise in a test about which access a call is judged at. One gate per assertion,
+        // or the guardrails measure each other.
+        let gate = || {
+            let asked = std::sync::Arc::new(AtomicUsize::new(0));
+            let a = asked.clone();
+            let g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+                "human:test",
+                move |req: &AdjudicationRequest| {
+                    a.fetch_add(1, Ordering::Relaxed);
+                    Some(AdjudicationDecision::selected(
+                        req,
+                        "allow_once",
+                        "human:test",
+                        "fine",
+                    ))
+                },
+            )))
+            // `always-ask` is the strongest form of the assertion: clause 4 admits a read
+            // at **every** point, including the one whose whole purpose is to ask.
+            .with_mode(crate::mode::Mode::ALWAYS_ASK)
+            .with_exec_follows_mode(false)
+            .with_surroundings(pinned());
+            (g, asked)
+        };
+
+        // **The yes.** The operator's own example: a `cd`, then a reader. It asked before
+        // this, and the card it asked with said `exec access` over `[inspect read_file]`.
+        let (mut g, asked) = gate();
+        let reads = json!({"command": "cd /w && head -c 2000 src/lib.rs"});
+        let row = g.request_for(&bash(&reads));
+        assert_eq!(
+            row.class.access,
+            Access::Read,
+            "the class is the vehicle's again: {}",
+            row.class
+        );
+        assert!(
+            row.summary.contains("read access"),
+            "the headline says: {}",
+            row.summary
+        );
+        assert!(row.summary.contains("head"), "{}", row.summary);
+        assert_eq!(g.admit(&bash(&reads)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            0,
+            "nobody is asked about a read inside the boundary"
+        );
+        // And the row records it as the mode's doing, naming the access the call was
+        // judged at rather than the tool's declaration.
+        let last = g.log.last().expect("a row");
+        assert_eq!(last.decision.by, "gate:mode");
+        assert!(
+            last.decision.basis.contains("admits read calls"),
+            "{}",
+            last.decision.basis
+        );
+
+        // **The ways it is not a read.** Each keeps the exec class and each still asks —
+        // the guardrails are the requirement, so they are asserted as loudly as the yes.
+        for (cmd, why) in [
+            ("cd /w && frobnicate src/lib.rs", "an unknown program"),
+            ("cd /w && cat src/lib.rs | tee /w/copy", "a pipeline into a writer"),
+            ("cd /w && cat src/lib.rs > /w/copy", "a redirection into a writer"),
+            ("cat /etc/passwd", "a read outside the boundary"),
+            ("cd /w && sed -n 1p src/lib.rs", "a program that can execute"),
+            ("cd /w && rm -f src/lib.rs", "a deletion"),
+        ] {
+            let (mut g, asked) = gate();
+            let args = json!({"command": cmd});
+            let row = g.request_for(&bash(&args));
+            assert_eq!(
+                row.class.access,
+                Access::Exec,
+                "{why} was judged a read: {cmd}"
+            );
+            assert_eq!(g.admit(&bash(&args)), GateDecision::Admit, "{cmd}");
+            assert_eq!(
+                asked.load(Ordering::Relaxed),
+                1,
+                "{why} did not reach anybody: {cmd}"
+            );
+        }
+
+        // **A secret read through a shell is refused, which is stronger than asking.** It
+        // is the one case where being judged a read would have been *worse* than being
+        // judged exec: `cat ~/.ssh/id_rsa` is a read by every intent it computes, and the
+        // thing that stops it is the flow rule, which sees the secret store in the region
+        // table and refuses before any point is read. So the boundary conjunct in
+        // `reads_only` is what keeps this call's exec access, and the refusal is what
+        // happens next.
+        let (mut g, asked) = gate();
+        let secret = json!({"command": "cat ~/.ssh/id_rsa"});
+        let row = g.request_for(&bash(&secret));
+        assert_eq!(row.class.access, Access::Exec);
+        assert!(matches!(row.tier, Tier::Blocked { .. }), "{:?}", row.tier);
+        assert!(matches!(g.admit(&bash(&secret)), GateDecision::Refuse { .. }));
+        assert_eq!(asked.load(Ordering::Relaxed), 0, "a secret reached a person");
+
+        // **And a line the parser refused is refused**, which is a stronger statement
+        // than "it asks": the ruling's whole payment is that the parser's refusals are
+        // what makes a parsed line trustworthy. `not_run`, and nobody is consulted.
+        let (mut g, asked) = gate();
+        let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
+        let row = g.request_for(&bash(&unresolved));
+        assert_eq!(row.class.access, Access::Exec);
+        match g.admit(&bash(&unresolved)) {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::NotRun { why },
+                ..
+            } => assert!(why.contains("could not resolve"), "{why}"),
+            other => panic!("an unresolvable line was not refused: {other:?}"),
+        }
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            0,
+            "an action nobody could read reached a person"
+        );
+    }
+
     fn rm_rf_slash_is_not_blocked_by_the_gate_and_reaches_a_decision() {
         // The operator's case: `rm -rf /` can be allowed if it is the intent. What the
         // gate must NOT do is refuse it on the strength of the string.
@@ -5783,7 +6010,10 @@ mod tests {
         );
         // And the grant is scoped to what the call showed, not to exec at large: a
         // different program is outside it and asks again.
-        let other = json!({"command": "/bin/cat /w/src/lib.rs"});
+        // **A program the grant does not name** (R21: `cat` is a read and would be
+        // admitted by clause 4 without asking anybody, so it can no longer be the
+        // fixture for "a different program asks again").
+        let other = json!({"command": "/usr/bin/awk {print} /w/src/lib.rs"});
         assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
@@ -5828,7 +6058,11 @@ mod tests {
         .with_mode(crate::mode::Mode::WRITES_ALLOWED)
         .with_surroundings(pinned())
         .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-        let args = json!({"command": "/bin/cat /w/src/lib.rs"});
+        // **`sed -n` and not `cat`** (R21): the command has to be an exec-class call
+        // that still ASKS, and a shell that only reads is clause 4 now. This one is the
+        // classifier's own exec — see `Baseline::reads_only` — so the ladder is still
+        // exercised by a call that reaches it.
+        let args = json!({"command": "/bin/sed -n 1p /w/src/lib.rs"});
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert_eq!(
@@ -5856,8 +6090,10 @@ mod tests {
             "exec is offered Always allow, as a rule"
         );
         // And the grant is scoped to the program it was taken over: a different
-        // program is outside it and asks again.
-        let other = json!({"command": "/bin/ls /w"});
+        // program is outside it and asks again. **Exec, so that asking is what this
+        // measures** (R21): `ls` is a look and a shell carrying one is clause 4, which
+        // would be admitted without reaching a ladder at all.
+        let other = json!({"command": "/usr/bin/awk {print} /w/src/lib.rs"});
         assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Relaxed),
@@ -6247,10 +6483,14 @@ mod tests {
 
         // Three re-spellings of one intention. The counter must not be reset by the
         // re-spelling, which is the whole point of the direction key.
+        // **Three re-spellings of one intention, and they have to be exec** (R21):
+        // `cat`/`head`/`tail` are reads inside the workspace and clause 4 admits them
+        // without asking anything, so a breaker test built on them would never open.
+        // `sed -n` is the same direction and still asks (see `Baseline::reads_only`).
         for cmd in [
-            "/bin/cat /w/secret-ish.txt",
-            "/usr/bin/head /w/other.txt",
-            "/usr/bin/tail /w/third.txt",
+            "/bin/sed -n 1p /w/secret-ish.txt",
+            "/usr/bin/sed -n 2p /w/other.txt",
+            "/usr/bin/sed -n 3p /w/third.txt",
         ] {
             let args = json!({"command": cmd});
             assert!(
@@ -6260,8 +6500,10 @@ mod tests {
         }
         assert_eq!(consulted.load(std::sync::atomic::Ordering::Relaxed), 3);
 
-        // The fourth is not adjudicated at all.
-        let args = json!({"command": "/usr/bin/less /w/fourth.txt"});
+        // The fourth is not adjudicated at all — and it is exec for the same reason the
+        // three above are (R21): `less` is a read, so it would be clause 4 and no
+        // breaker could ever reach it.
+        let args = json!({"command": "/usr/bin/sed -n 4p /w/fourth.txt"});
         match g.admit(&bash(&args)) {
             GateDecision::Refuse {
                 outcome: ToolOutcome::NotRun { why },
@@ -6294,11 +6536,18 @@ mod tests {
         )))
         .with_surroundings(pinned())
         .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-        let args = json!({"command": "/bin/cat /w/a.txt"});
+        // Exec, and still asking (R21): a read would be admitted and there would be no
+        // refusal to count. **The fourth is a different SHAPE and the same direction**,
+        // because a human `allow_once` on a `MayApprove` exec call records an approved
+        // shape — so an identical fourth call would be settled by that cache and never
+        // reach the breaker this test is about. Two programs, one direction: the count
+        // is keyed on the direction, and the shape is not.
+        let args = json!({"command": "/bin/sed -n 1p /w/a.txt"});
         assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
         assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         // The loop closed, so the count is gone and the next refusal starts over.
+        let args = json!({"command": "/usr/bin/awk {print} /w/a.txt"});
         assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
         assert!(g.breaker.open_directions().is_empty());
     }
@@ -6409,7 +6658,11 @@ mod tests {
             },
         )))
         .with_surroundings(pinned());
-        let args = json!({"command": "/bin/ls /w"});
+        // **Exec, and still asking** (R21). `ls` is a look and nothing else, so a shell
+        // carrying it is clause 4 and no human answers — and this test is about what a
+        // HUMAN's answer leaves behind in the brief. `sed -n` is the exec that still
+        // reaches one; see `Baseline::reads_only`.
+        let args = json!({"command": "/bin/sed -n 1p /w"});
 
         let req1 = human.request_for(&bash_at(&args, "s#3"));
         assert!(
@@ -6420,7 +6673,7 @@ mod tests {
         let _ = human.admit(&bash_at(&args, "s#3"));
 
         // A re-spelling of the same direction, three turns later.
-        let req2 = human.request_for(&bash_at(&json!({"command": "/bin/ls -a /w"}), "s#6"));
+        let req2 = human.request_for(&bash_at(&json!({"command": "/bin/sed -n 2p /w"}), "s#6"));
         assert_eq!(req2.prior.len(), 1, "{:?}", req2.prior);
         let p = &req2.prior[0];
         assert_eq!(p.effect, "admit");
@@ -6477,7 +6730,7 @@ mod tests {
             }
         });
         let mut g = AdjudicatedGate::new(Box::new(adj)).with_surroundings(pinned());
-        let args = json!({"command": "/bin/ls /w"});
+        let args = json!({"command": "/bin/sed -n 1p /w"});
         let _ = g.admit(&bash_at(&args, "s#2"));
         let _ = g.admit(&bash_at(&args, "s#4"));
 

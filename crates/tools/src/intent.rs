@@ -2581,6 +2581,91 @@ pub struct Baseline {
 }
 
 impl Baseline {
+    /// **Is this call a read, and nothing else, inside the boundary?** — R21.
+    ///
+    /// `head-parity-2026-09-21.md` **R21**, raised by the operator looking at a gate on
+    /// `head`: *"wonder why oracle didnt allow head itself, or why head wasn't categorized
+    /// as Read."* Both halves of that had answers and neither was the defect: `head` **is**
+    /// classified as a read (`name_intents`), and the oracle was never asked to allow it —
+    /// it was asked whether the call followed from what the operator had written, and
+    /// answered honestly. **The defect is that the vehicle outranked the work.** Running
+    /// anything through a shell is exec access whatever the program does, so a call whose
+    /// every computed intent was a read still gated as exec, and the card said *exec
+    /// access* over intents that said *read*.
+    ///
+    /// # What qualifies, and every conjunct is one of the ruling's guardrails
+    ///
+    /// * **Every computed intent is a look or a read.** No `ExecuteCode` from a
+    ///   vehicle, no `WriteFile` from a redirection or a `tee`, no `Destroy`.
+    /// * **Nothing unresolved and nothing unknown** — an unresolvable word puts
+    ///   [`Intent::Unknown`] in the set or makes the verdict `NotRun`, and the ruling
+    ///   puts both out of scope in as many words: *this requirement is PAID FOR by* the
+    ///   parser's refusals *and is void the moment a line contains anything it could not
+    ///   parse.*
+    /// * **Non-empty** — a call that computed no intents at all is a call about nothing,
+    ///   not a read.
+    /// * **No region this classifier can point at and call outside** — see the long note
+    ///   below, which is the one conjunct with a judgement in it.
+    ///
+    /// # The boundary conjunct, and why it is not `Tier::Auto`
+    ///
+    /// `Auto` is layer A's clause-4 statement and it requires **every** region to be
+    /// `Workspace` or `None`. It is the tempting half to reuse and it is the wrong half:
+    /// [`Region::HostOther`] means *on the host, none of the above* — and a **relative
+    /// path** lands there, because this classifier cannot place one ([`Surroundings`]
+    /// holds the workspace but not the command's working directory, and `cd X && reader`
+    /// is exactly the shape the ruling is about). `Tier::Auto` would therefore refuse to
+    /// qualify `cd … && head -c 2000 crates/tui/src/app.rs` — the operator's own example,
+    /// whose card said *`over [workspace host_other]`*.
+    ///
+    /// Reading an unplaceable path as an outside one is the defect R9 already paid for,
+    /// so this asks the narrower question instead: **is any region one a table names as
+    /// outside?** `Secret`, `Remote`, `Home`, `SystemConfig`, `SystemBinaries`, `Device`,
+    /// `Temp` and `Root` are — `cat /etc/passwd`, `cat ~/.bashrc`, `cat /tmp/x`,
+    /// `rsync host:/x .` — and any of them voids the whole thing, so those calls keep the
+    /// exec access they have today and go on asking. `HostOther` does not, and that is
+    /// the deliberate half: it is *unplaceable*, not *outside*.
+    ///
+    /// **The consequence is stated rather than hidden: this is stricter than the `read`
+    /// tool itself**, whose gate is never consulted at all (`Access::Read` is
+    /// unattended, so `read({path: "/etc/passwd"})` is answered by the backend's view and
+    /// by nothing else). A shell that reads a path this classifier can name as outside
+    /// still asks; a shell that reads one it cannot place is now treated like the tool
+    /// that does the same job. That asymmetry can only narrow what runs unasked, and the
+    /// ruling's own guardrail — *a read outside the workspace is still outside it* — is
+    /// kept by the table rather than by the tier.
+    ///
+    /// **What it deliberately does not do is re-judge a program.** `sed` is not a
+    /// read-only program in this table and this does not make it one: GNU sed's `e`
+    /// command and `s///e` run a shell, `w`/`W` write files the argument list never
+    /// names, and the script arrives as the first positional as readily as via `-e` —
+    /// see its entry in `name_intents`, which is where that argument lives. So
+    /// `cd … && sed -n …` computes `read_file` **and** `execute_code` and stays an exec
+    /// call, and the count of corpus rows that is true of is in the commit that added
+    /// this method. An unknown program is not a read for the same reason: the table is
+    /// the judge of what a program is, and this adds nothing to it.
+    pub fn reads_only(&self) -> bool {
+        !self.intents.is_empty()
+            && self
+                .intents
+                .iter()
+                .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile))
+            && !matches!(self.verdict, BaselineVerdict::NotRun { .. })
+            && !self.regions.iter().any(|r| {
+                matches!(
+                    r,
+                    Region::Secret(_)
+                        | Region::Remote(_)
+                        | Region::Home
+                        | Region::SystemConfig
+                        | Region::SystemBinaries
+                        | Region::Device
+                        | Region::Temp
+                        | Region::Root
+                )
+            })
+    }
+
     /// The deterministic reading of a shell command.
     pub fn of_command(command: &str, env: &Surroundings) -> Baseline {
         let n = shell::normalise(command);
@@ -3769,6 +3854,67 @@ mod tests {
             },
             seen_hosts: BTreeSet::new(),
         }
+    }
+
+    /// **A shell that only reads** (R21) — the positive, and the four ways it must not
+    /// fire.
+    ///
+    /// The ruling: when every segment of a shell call resolves to a program this table
+    /// knows, nothing in the line is an execution vehicle, and every computed intent is a
+    /// read, the call is judged on the work and not on the wrapper. It is **paid for by**
+    /// the parser's own refusals, so the guardrails are the point of the test as much as
+    /// the yes is: an unknown program is not a read, a pipeline into a writer is not a
+    /// read, a substitution the parser would have refused is not a read, and a read
+    /// **outside the workspace** is not this rule's business at all (R18's axis).
+    #[test]
+    fn a_shell_that_only_reads_is_a_read_and_the_four_ways_it_is_not() {
+        // The yes, in the shapes this corpus is actually made of: a `cd` then a reader,
+        // which is what the operator's own 117-times-asked example was.
+        for cmd in [
+            "cd /home/dead/Projects/letibot && head -c 2000 crates/tui/src/app.rs",
+            "cd /home/dead/Projects/letibot && grep -n fn crates/tui/src/app.rs",
+            "cat README.md",
+            "ls && pwd",
+            "git status --short && git log --oneline -1",
+            "/usr/bin/wc -l crates/tui/src/app.rs",
+        ] {
+            assert!(b(cmd).reads_only(), "{cmd} :: {:?}", b(cmd).intents);
+        }
+
+        // 1. **An unknown program is not a read.** The table is the judge of what a
+        //    program is, and this rule adds nothing to it.
+        assert!(!b("frobnicate README.md").reads_only());
+        // 2. **A pipeline into a writer is not a read** — and neither is a redirection.
+        assert!(!b("cat README.md | sh").reads_only());
+        assert!(!b("cat README.md > /tmp/x").reads_only());
+        assert!(!b("tee /tmp/x < README.md").reads_only());
+        // 3. **A substitution the parser would have refused is not a read**, and the
+        //    refusal is `not_run`: nothing was decidable, so nothing is admitted.
+        assert!(!b("cat $(ls)").reads_only());
+        assert!(!b("cat `ls`").reads_only());
+        assert!(!b("cat <(ls)").reads_only());
+        // 4. **A read outside the workspace is not this rule's business.** `cat
+        //    /etc/passwd` computes `read_file` and one thing else: it is outside, so it
+        //    is `MayApprove` and no clause 4 reaches it. This is R18's axis and the
+        //    ruling names it as untouched.
+        let outside = b("cat /etc/passwd");
+        assert!(
+            !outside.reads_only(),
+            "an outside read qualified: {:?} {:?}",
+            outside.intents,
+            outside.regions
+        );
+        assert!(outside.intents.contains(&Intent::ReadFile));
+
+        // 5. **And the classifier is not re-judged.** `sed -n` reads and stays exec,
+        //    because GNU sed can run a shell (`e`, `s///e`) and write files (`w`) — see
+        //    `name_intents`, where that argument lives. This is the line that stops the
+        //    rule from becoming 'any command with a read in it', and it is why the
+        //    operator's `cd … ; sed -n …` count is in the commit rather than in it.
+        let sed = b("sed -n '640,656p' crates/tui/src/app.rs");
+        assert!(!sed.reads_only());
+        assert!(sed.intents.contains(&Intent::ExecuteCode));
+        assert!(sed.intents.contains(&Intent::ReadFile));
     }
 
     fn b(cmd: &str) -> Baseline {

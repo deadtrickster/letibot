@@ -255,7 +255,10 @@ mod shape_cache_tests {
             .with_surroundings(surroundings(workspace))
             .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
 
-            let args = serde_json::json!({"command": "grep -n \"struct CallRow\" -A 22 /w/a.rs"});
+            // **Exec, so that asking is what this measures** (R21): a `grep` over the
+            // workspace is a read, clause 4 settles it with nobody asked, and a run
+            // through this test would then be green about a prompt that never happened.
+            let args = serde_json::json!({"command": "sed -n 1p /w/a.rs"});
             assert!(matches!(
                 g.admit(&call(&args, workspace)),
                 GateDecision::Admit
@@ -295,7 +298,7 @@ mod shape_cache_tests {
             .with_surroundings(surroundings(workspace));
             assert_eq!(g.seed_shapes(warm), 1);
 
-            let args = serde_json::json!({"command": "grep -n \"fn foo\" -A 3 /w/b.rs"});
+            let args = serde_json::json!({"command": "sed -n 2p /w/b.rs"});
             assert!(matches!(
                 g.admit(&call(&args, workspace)),
                 GateDecision::Admit
