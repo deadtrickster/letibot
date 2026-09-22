@@ -237,6 +237,19 @@ pub struct Editor {
     /// The text as it was when a history entry was recalled, so an edit to it
     /// can be detected.
     history_recalled: Option<String>,
+    /// **What was in the buffer when the history walk began** (§6).
+    ///
+    /// Walking down past the newest entry used to restore the **empty string**, so a
+    /// half-written prompt was destroyed by pressing Up once to glance at the previous
+    /// message and Down to come back to it. Every shell keeps the draft across a walk,
+    /// and the loss was silent: the words were not sent anywhere, they were simply
+    /// gone, and there is no undo entry for a recall because a recall is navigation.
+    ///
+    /// `None` means no walk is in progress. Kept across the whole walk (never
+    /// overwritten by a recalled entry) and taken — not merely read — when the walk
+    /// ends, so a second walk saves its own draft rather than inheriting the first
+    /// one's.
+    draft: Option<String>,
     /// Placeholder text → the real pasted content.
     pastes: Vec<(String, String)>,
     esc_taps: Taps,
@@ -264,6 +277,7 @@ impl Editor {
             history: Vec::new(),
             history_at: None,
             history_recalled: None,
+            draft: None,
             pastes: Vec::new(),
             esc_taps: Taps::default(),
             ctrlc_taps: Taps::default(),
@@ -536,10 +550,19 @@ impl Editor {
             (Some(0), false) => None,
             (Some(i), false) => Some(i - 1),
         };
+        // **Save the draft as the walk begins**, which `(None, true)` is exactly.
+        // Checked here rather than in `vertical` so the two directions cannot disagree
+        // about when a walk starts, and guarded on `draft.is_none()` so a walk that
+        // somehow begins twice keeps the first draft rather than a recalled entry.
+        if self.history_at.is_none() && back && self.draft.is_none() {
+            self.draft = Some(self.text.clone());
+        }
         self.history_at = next;
         self.text = match next {
             Some(i) => self.history[self.history.len() - 1 - i].clone(),
-            None => String::new(),
+            // **Their own line, not an empty buffer.** `take`n rather than read, so the
+            // next walk starts from a clean slate.
+            None => self.draft.take().unwrap_or_default(),
         };
         self.cursor = self.text.len();
         self.history_recalled = Some(self.text.clone());
@@ -608,6 +631,8 @@ impl Editor {
         self.pastes.clear();
         self.history_at = None;
         self.history_recalled = None;
+        // A submitted line is not a draft: the walk starts fresh next time.
+        self.draft = None;
         self.undo.clear();
         self.redo.clear();
         self.last_kind = None;
@@ -859,6 +884,54 @@ mod tests {
         for c in s.chars() {
             e.key(Key::Char(c), 0);
         }
+    }
+
+    /// **§6: a history walk keeps the draft it interrupted.**
+    ///
+    /// Pressing Up to glance at the previous message and Down to come back used to
+    /// restore the **empty buffer**, so the half-written prompt was gone. It was the
+    /// quietest kind of loss — nothing was sent anywhere and there is no undo entry,
+    /// because a recall is navigation rather than an edit — and every shell keeps the
+    /// draft, so the behaviour was also the one thing nobody would think to check.
+    #[test]
+    fn a_history_walk_restores_the_draft_it_interrupted() {
+        let mut e = ed().with_history(vec!["first".into(), "second".into()]);
+        type_str(&mut e, "half a thought");
+        assert!(matches!(e.key(Key::Up, 0), Reaction::Changed));
+        assert_eq!(e.text(), "second", "the newest entry first");
+        assert!(matches!(e.key(Key::Up, 0), Reaction::Changed));
+        assert_eq!(e.text(), "first");
+        // Back down: their own line, not an empty buffer.
+        assert!(matches!(e.key(Key::Down, 0), Reaction::Changed));
+        assert_eq!(e.text(), "second");
+        assert!(matches!(e.key(Key::Down, 0), Reaction::Changed));
+        assert_eq!(e.text(), "half a thought", "the draft survived the walk");
+
+        // **And editing the restored draft still stops navigation**, which is the rule
+        // that keeps a walk from destroying an edit: the draft is now an edited recall
+        // (`history_recalled != text`), so another Up is refused rather than
+        // overwriting what they typed. My first draft of this test asserted a second
+        // walk here and failed — the assertion was wrong, not the guard.
+        type_str(&mut e, " and more");
+        assert!(matches!(e.key(Key::Up, 0), Reaction::Idle));
+        assert_eq!(e.text(), "half a thought and more");
+
+        // **A second walk keeps its own draft.** A fresh line, because the first
+        // draft was `take`n when its walk ended — this is not the old text reappearing.
+        let mut e2 = ed().with_history(vec!["first".into(), "second".into()]);
+        type_str(&mut e2, "another thought");
+        assert!(matches!(e2.key(Key::Up, 0), Reaction::Changed));
+        assert_eq!(e2.text(), "second");
+        assert!(matches!(e2.key(Key::Down, 0), Reaction::Changed));
+        assert_eq!(e2.text(), "another thought");
+
+        // And a walk that never leaves the newest entry still comes back to it.
+        let mut e = ed().with_history(vec!["only".into()]);
+        type_str(&mut e, "draft");
+        e.key(Key::Up, 0);
+        assert_eq!(e.text(), "only");
+        e.key(Key::Down, 0);
+        assert_eq!(e.text(), "draft");
     }
 
     #[test]
