@@ -884,16 +884,75 @@ fn sanitise(name: &str) -> String {
 ///
 /// Everything after the script is a separate argv element, so nothing here is a
 /// quoting question: the command text never passes through a second parser.
+///
+/// **The marker sentence is the evidence, and the code is not** (R21's sibling). 125 is a
+/// legitimate exit code, so `Some(EXIT_NOT_SCOPED) => JobState::NotScoped` called
+/// `bash -c "exit 125"` a command that never ran — see
+/// [`letibot_tools::exec::host`]'s `launcher_failed`, which requires [`NOT_SCOPED_MARKER`]
+/// before it believes the code. The sentence below and the const are one string, and the
+/// test at the foot of this file is what keeps them one.
 pub fn join_script() -> &'static str {
     "echo $$ > \"$1\" || { echo 'letibot: could not join the scope cgroup; the command was NOT run' >&2; exit 125; }; shift; exec \"$@\""
 }
 
+/// **What the wrapper says when it could not own the process**, verbatim.
+///
+/// The classification of a launcher failure rests on this string and not on the exit code,
+/// for the reason in [`join_script`]'s own note, and it is a `const` so that the script and
+/// the reader cannot drift apart: `the_script_and_the_marker_are_one_string` fails if either
+/// side is edited alone.
+pub const NOT_SCOPED_MARKER: &str =
+    "letibot: could not join the scope cgroup; the command was NOT run";
+
 /// The exit code [`join_script`] uses when a process could not join its scope.
+///
+/// **Not the evidence** — see [`NOT_SCOPED_MARKER`]. Kept because the wrapper's failure
+/// should not look like the command's success, and 125 is what the reference launcher uses
+/// too (`deepseek-harness`'s `entry/src/main.c`) for the same reason: a code the wrapped
+/// command is unlikely to choose. *Unlikely* is not *never*, which is the whole defect.
 pub const EXIT_NOT_SCOPED: i32 = 125;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The script and the marker are one string** — R21's sibling.
+    ///
+    /// The classification of a launcher failure rests on the sentence the wrapper writes,
+    /// and the exit code is no longer evidence at all (125 is a legitimate code:
+    /// `bash -c "exit 125"` was listed as `not run (could not join its scope)`). This is the
+    /// test that keeps the two ends of that string from drifting: edit the script and this
+    /// fails, edit the const and this fails. **Falsified by editing either one.**
+    #[test]
+    fn the_script_and_the_marker_are_one_string() {
+        assert!(
+            join_script().contains(NOT_SCOPED_MARKER),
+            "the wrapper no longer says what `launcher_failed` looks for:\n{}",
+            join_script()
+        );
+        // And the marker is not something a *successful* run could produce by accident:
+        // the script writes it only on the branch that also exits `EXIT_NOT_SCOPED`.
+        assert!(join_script().contains(&format!("exit {EXIT_NOT_SCOPED}")));
+        assert_eq!(
+            join_script()
+                .matches(NOT_SCOPED_MARKER)
+                .count(),
+            1,
+            "the marker appears once, on the failure branch"
+        );
+    }
+
+    /// **A command that exits 125 is a command that ran.** The state machine is in
+    /// `host.rs`; this pins the two constants apart so neither can be mistaken for the
+    /// other's evidence.
+    #[test]
+    fn the_exit_code_is_not_the_evidence() {
+        assert_eq!(EXIT_NOT_SCOPED, 125);
+        assert!(
+            !NOT_SCOPED_MARKER.contains("125"),
+            "a marker that carried the number would put the code back in the evidence"
+        );
+    }
 
     #[test]
     fn the_three_scopes_round_trip_and_there_is_no_fourth() {

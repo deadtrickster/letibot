@@ -897,7 +897,29 @@ impl ProcessHost for HostProcesses {
                 }
                 let state = match status {
                     Ok(s) => match s.code() {
-                        Some(EXIT_NOT_SCOPED) => JobState::NotScoped,
+                        // **The wrapper's marker, and not the number alone.** R21's
+                        // sibling, found by the other head on 2026-09-22:
+                        // `EXIT_NOT_SCOPED` is 125, and **125 is a legitimate exit code**,
+                        // so `bash -c "exit 125"` was listed as
+                        // `not run (could not join its scope)` — a command described as
+                        // never having run when it ran and chose 125. The model read the
+                        // state word and concluded *"the 125 exit code was never
+                        // produced"*, which is worse than misleading a person: a person
+                        // can disbelieve a card.
+                        //
+                        // The two layers here now agree, which they did not: the
+                        // CONFINEMENT layer refuses to classify a launcher failure by
+                        // exit code at all (*"we do not control bubblewrap's exit codes,
+                        // so this reads its stderr instead"*, `confinement_failure`), and
+                        // the scope wrapper — which does control its own code — took the
+                        // shortcut. **A launcher failure is recognised by what the
+                        // launcher SAID.**
+                        //
+                        // The capture is complete here (both drains have joined, above),
+                        // and in the case this tests the marker is all there is: the
+                        // command never ran, so there is nothing else to have pushed the
+                        // marker out of the ring.
+                        Some(EXIT_NOT_SCOPED) if launcher_failed(&waiter) => JobState::NotScoped,
                         Some(c) => JobState::Exited { code: c },
                         None => JobState::Signalled {
                             signal: signal_of(&s),
@@ -1250,6 +1272,33 @@ impl Drop for HostProcesses {
         // worktrees were.
         self.tree.prune();
     }
+}
+
+/// **Did the WRAPPER fail to put the process in its scope?**
+///
+/// The evidence is the sentence [`super::scope::join_script`] writes to stderr when the
+/// write to `cgroup.procs` did not work — the same string this check is built from, so the
+/// script and the check cannot drift (asserted in `scope.rs`'s own tests).
+///
+/// **Why not the exit code alone**, which is what this replaced: the wrapper exits
+/// `EXIT_NOT_SCOPED`, and 125 is a legitimate code. A command that chose 125 was reported
+/// as one that never ran, and the model reasoned from the state word to a false statement
+/// about the world. `bash -c "exit 125"` reads `exited 125` now, and this function is the
+/// difference.
+///
+/// The capture is bounded (8 MiB, the tail), and that is enough here for a reason worth
+/// stating: a wrapper that could not join the cgroup **ran no command**, so the marker is
+/// the entire output and nothing exists that could have pushed it out of the ring.
+///
+/// **The two layers agree again.** The confinement layer never classified a launcher
+/// failure by exit code — *"we do not control bubblewrap's exit codes, so this reads its
+/// stderr instead"* — and the scope wrapper, which owns its own code and so could have,
+/// took the shortcut. A launcher failure is recognised by what the launcher SAID.
+fn launcher_failed(job: &Job) -> bool {
+    job.capture
+        .lock()
+        .expect("capture")
+        .contains(super::scope::NOT_SCOPED_MARKER)
 }
 
 /// A reader thread that appends one stream into the job's capture.

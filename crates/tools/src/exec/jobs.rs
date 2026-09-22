@@ -169,6 +169,23 @@ impl Capture {
         }
     }
 
+    /// **Does the retained window hold this text?**
+    ///
+    /// One reader and one use: the wrapper's own failure marker, which is the evidence a
+    /// launcher failure is classified by (`host::launcher_failed` — the exit code alone is
+    /// not it, because 125 is a legitimate code). It is a substring test over the retained
+    /// bytes, and the ring is bounded, which is enough there for the reason stated at the
+    /// call site: a wrapper that could not join its cgroup ran no command, so the marker is
+    /// the whole of what was written.
+    pub fn contains(&self, needle: &str) -> bool {
+        let n = needle.as_bytes();
+        if n.is_empty() || n.len() > self.buf.len() {
+            return false;
+        }
+        let hay: Vec<u8> = self.buf.iter().copied().collect();
+        hay.windows(n.len()).any(|w| w == n)
+    }
+
     pub fn produced(&self) -> u64 {
         self.produced
     }
