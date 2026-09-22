@@ -518,6 +518,64 @@ mod tests {
         );
     }
 
+    /// **The arming path, end to end: the sink is what makes `delivering` true.**
+    ///
+    /// The test above arms the watcher with a direct `watch()` call, which is not how
+    /// a session arms it. A real session routes every tool result through
+    /// [`JobWatchSink`], and *that* is the composition `harness.rs` depends on when it
+    /// wires `job_wait`'s question to the same watcher set: the sink sees the
+    /// `Backgrounded` outcome, arms a watcher, and the moment it does, the promise is
+    /// real and `job_wait` must stop blocking.
+    ///
+    /// Asserted in both directions because the `false` half is the one that keeps R23
+    /// from being larger than it is: a job no `Backgrounded` result has passed through
+    /// is a job with no promise, and a wait on it blocks.
+    ///
+    /// **No race.** `watch()` inserts into `watching` synchronously, before it spawns
+    /// the thread, so `delivering` is true by the time the sink's `emit` returns — which
+    /// is before the turn that emitted it has ended, and therefore necessarily before
+    /// the model's next call. A test on a clock would be testing the thread scheduler.
+    #[test]
+    fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
+        let hub = Hub::new("s-jobs");
+        let host = a_host();
+        let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+        let mut sink = JobWatchSink::new(RecordingToolSink::default(), Some(watchers.clone()));
+
+        let id = spawn_a_short_job(&host, "30");
+        // Before any result has passed through the sink: no promise, so a wait blocks.
+        assert!(
+            !watchers.delivering(&id.0),
+            "a job the sink has not seen must not claim its answer is on the way"
+        );
+
+        sink.emit(ToolEvent::Finished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: ToolOutcome::Backgrounded {
+                handle: id.0.clone(),
+                ran_for_ms: 0,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "job_wait".into(),
+            },
+            payload_digest: letibot_tools::payload_digest(""),
+            inline_bytes: 0,
+            full_bytes: 0,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        });
+
+        // Synchronously true, with no sleep: the promise exists from the emit.
+        assert!(
+            watchers.delivering(&id.0),
+            "the sink is what arms the watcher, and arming it is what makes \
+             `job_wait` decline to block"
+        );
+
+        let _ = host.kill_job(&id);
+    }
+
     /// **R7: the settlement reaches the MODEL, not only the heads.**
     ///
     /// `JobSettled` has gone to the hub since protocol 14 and the jobs pane folds it,
