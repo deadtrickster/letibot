@@ -360,7 +360,8 @@ pub struct SessionView {
     heads: Vec<HeadPresence>,
 }
 
-impl SessionView {
+impl SessionView {    // (the free function `body_of` at the foot of this file is the definition both
+    // readers use — see its own doc)
     pub fn new(session_id: impl Into<String>, bounds: ViewBounds) -> Self {
         SessionView {
             session_id: session_id.into(),
@@ -745,26 +746,7 @@ impl SessionView {
     pub fn row_body_at(&self, row: usize) -> Option<String> {
         let idx = row.checked_sub(self.items_dropped as usize)?;
         let item = self.items.get(idx)?.item.as_ref()?;
-        Some(match item {
-            TranscriptItem::ToolResult { payload, .. } => payload.clone(),
-            // The other variants' "body" is their text. A row a head can page is a tool
-            // result in practice, but the accessor is not the place to decide that: a
-            // head asking for a long answer's bytes gets them rather than a silence it
-            // would have to interpret.
-            TranscriptItem::Assistant { text, .. }
-            | TranscriptItem::Reasoning { text, .. }
-            | TranscriptItem::System { text, .. } => text.clone(),
-            TranscriptItem::User { parts } => parts
-                .iter()
-                .filter_map(|p| match p {
-                    letibot_transcript::UserPart::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            // A segment mark renders to nothing, so it has no body to page.
-            TranscriptItem::SegmentMark { .. } => String::new(),
-        })
+        Some(body_of(item))
     }
 
     /// Attach content to an already-appended transcript row.
@@ -842,6 +824,41 @@ impl SessionView {
 
     pub fn open_decisions(&self) -> &[OpenDecision] {
         &self.open
+    }
+}
+
+/// **A row's body, as text — the one definition, for every reader.**
+///
+/// Two callers and they must agree: [`SessionView::row_body_at`], which answers from the
+/// **bounded view** (2,000 rows, 8 MB of bodies), and the store-backed reader behind
+/// `ClientFrame::FetchRow` (R19.2b), which answers for an ordinal the view has trimmed.
+/// A second copy of this match is how the two would come to disagree about what a row's
+/// `body` is — the same shape as `display_target`, which is one function for the same
+/// reason.
+///
+/// The *windowing* is deliberately not here: the cap and the character-boundary
+/// arithmetic belong to whoever answers the frame, and a second implementation would be
+/// a second answer to the same question.
+fn body_of(item: &TranscriptItem) -> String {
+    match item {
+        TranscriptItem::ToolResult { payload, .. } => payload.clone(),
+        // The other variants' "body" is their text. A row a head can page is a tool
+        // result in practice, but the accessor is not the place to decide that: a
+        // head asking for a long answer's bytes gets them rather than a silence it
+        // would have to interpret.
+        TranscriptItem::Assistant { text, .. }
+        | TranscriptItem::Reasoning { text, .. }
+        | TranscriptItem::System { text, .. } => text.clone(),
+        TranscriptItem::User { parts } => parts
+            .iter()
+            .filter_map(|p| match p {
+                letibot_transcript::UserPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // A segment mark renders to nothing, so it has no body to page.
+        TranscriptItem::SegmentMark { .. } => String::new(),
     }
 }
 

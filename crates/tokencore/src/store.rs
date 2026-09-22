@@ -1323,6 +1323,49 @@ impl Store {
         Ok(n as u32)
     }
 
+    /// **One row's JSON, by ordinal — the read behind `FetchRow`** (R19.2b).
+    ///
+    /// One indexed lookup: `transcript_item`'s primary key is
+    /// `(transcript_id, seq)`, so this is not a scan and not a transcript load. That
+    /// distinction is the whole point of the frame — the daemon's *view* is bounded
+    /// (2,000 rows, 8 MB of bodies), so an ordinal it trimmed was previously
+    /// unanswerable, and the two ways to answer it are `load_transcript` (every row
+    /// of the session, to return one) or this.
+    ///
+    /// `None` for an ordinal this transcript does not have. **Not an empty string**: a
+    /// row the store does not hold and a row whose body is empty must not look alike,
+    /// which is the same rule `RowFetched`'s own doc states for the wire.
+    pub fn row_json_at(&self, transcript_id: &str, seq: u32) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT item_json FROM transcript_item\n                   WHERE transcript_id = ?1 AND seq = ?2",
+                params![transcript_id, seq as i64],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// **The session's current transcript id**, which is what a row ordinal is
+    /// relative to.
+    ///
+    /// The **newest** transcript, because a fork replaces the conversation: after a
+    /// compaction, ordinal 3 is a row of the new base and not of the history it
+    /// summarised, so reading the old transcript's row 3 would answer with a row
+    /// nobody asked about. Ordered the same way `list_sessions` orders its subquery —
+    /// `created_at DESC, rowid DESC`, the rowid because a fork is written in the same
+    /// millisecond as the row that caused it.
+    pub fn current_transcript_id(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM transcript WHERE session_id = ?1\n                   ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                params![session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
     /// Every session in the store, newest activity first: what a picker or
     /// `letibot --sessions` is drawn from.
     ///

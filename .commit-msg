@@ -1,90 +1,59 @@
-the sanitiser is a rule and not a habit, and it has the tests it never had
+the row's body is one definition, and the store can read an ordinal the view trimmed
 
-§3.1's falsification half. The operator's framing is the reason this commit exists:
-**leticl has two tests here and this head had the fix and none** — so nothing proved the
-sanitising would notice if it stopped working. The vocabulary is the store's own (44
-`tool_result` rows carry an escape, 20 a mode string), not a list invented for a test:
-an SGR pair and a reset, `ESC[8m`, `ESC[2J`, `?1002`/`?1006`/`?1049`/`?2004`/`?2026`, an
-OSC window title, C1 CSI and ST, and DEL.
+Two inert pieces of R19.2b's daemon half, landed because they are the half that does not
+need the wiring site I could not reach tonight.
 
-## The test found six holes on its first run, which is the whole argument for it
+**`body_of`, one definition for a row's body.** The match that `SessionView::row_body_at`
+used is now a free function, because a second reader is coming for the same question —
+the store, asked for an ordinal the view has trimmed — and two copies of this match is
+how the two would come to disagree about what a row's `body` is. Behaviour-identical:
+that is a refactor and nothing else. The *windowing* is deliberately not in it, because
+the cap and the character-boundary arithmetic belong to whoever answers the frame.
 
-Each one is a surface this head renders and does not own, and every one of them was
-reaching the terminal raw:
+**`Store::row_json_at` and `Store::current_transcript_id`.** One **indexed** lookup
+(`transcript_item`'s primary key is `(transcript_id, seq)`) — not a scan, and not
+`load_transcript`, which reads every row of the session to return one. That matters
+because the daemon's view is bounded at 2,000 rows and 8 MB, so an ordinal it trimmed was
+previously unanswerable: the two ways to answer it were "every row" or "nothing". The
+transcript is the **newest** one, ordered `created_at DESC, rowid DESC`, because after a
+fork ordinal 3 is a row of the new base and reading the old transcript's row 3 would
+answer with a row nobody asked about.
 
-1. **A tool-progress note** — `card::Phase::Running`'s tail, pushed straight through at
-   `card.rs:425`. This is the surface the gate's own sentence rides.
-2. **The queued echo** — `queued_lines`, while `user_block` (the settled row the same
-   words become) was already guarded. Two callers, one of them forgotten.
-3. **The slash listing** — the echo and every row of `/notes`, `/job`, `/gate`.
-4. **Four panes** — a job's command line and state, a subagent's prompt, role and state,
-   a todo's content, the picker's session title, the header's title.
-5. **And a second defect entirely:** five sites emitted `sgr::REVERSE`/`sgr::RESET`
-   **unconditionally**, so a `--replay` or a pipe to a file carried `ESC[7m` for every
-   highlighted row. That is `Palette::None`'s contract (no sequences at all) broken in
-   the one configuration whose whole point is clean text.
-6. **The structural one.** `crates/ui` — the crate that draws every card — had **zero**
-   occurrences of `without_control`. The guard lived in the head, so the crate below it
-   could not be covered by construction.
+Neither has a caller yet. `R19.2b-fetchrow-and-the-gate-loop.md` has the four remaining
+steps in the order to write them, the `AnswerSink` precedent to copy, and the one piece
+that needs a grep.
 
-## The fix is a rule in two places rather than a habit in twenty
+## The finding, which is why this commit is small
 
-- **`letibot_ui::text`** is new: the two functions, moved out of the head. One definition
-  in the crate both sides already depend on is what stops the next renderer being the
-  leaky one.
-- **`Palette::paint` sanitises its own text argument.** A palette's argument is *text* by
-  definition — the head's own sequences are the ones `open`/`close` supply — so a control
-  byte in it is somebody else's bytes painted as though they were words. One line here
-  covers every painted string in both crates; the call sites that were already guarding
-  are now belt and braces.
-- **The renderers that own their input guard it themselves**: `card::render`/`header`,
-  `user_block`, `queued_lines`, the slash listing, and the pane fields that are pushed
-  unpainted. A caller cannot forget what the callee does.
+**A defect in the gate can cost an agent its whole night, and the fix cannot take effect
+without the restart the defect makes hard to justify.** R18's fix is in the tree
+(`da4a576`) and not in the running daemon, which started at 23:55 from an older binary —
+so it still computes `because: workspace: /`, judges ordinary work `host_other`, and asks
+about it. Only a restart loads the fix; only the operator can restart safely while a
+session is live; they were asleep. From ~04:00 every tool call was a coin flip costing up
+to 300 s, and by 05:00 **`touch` — a 30-byte write, one intent — expired too**. It is not
+the size of the call: a heavy `cargo check` and a trivial `touch` cost the same coin, so
+there is no call small enough to be safe.
 
-## Why the colourless half is the sharper assertion
+The refusal is `gate:timeout` with `asked dead` — nobody decided, nothing ran, nothing
+changed. The cost is entirely the wait, which is why the honest response is to stop rather
+than to keep paying it: a multi-crate change written without a compiler is unverified
+code, and unverified code committed is worse than an unfinished feature.
 
-With `color: false` the head emits **no escapes at all**, so "not one ESC in these rows"
-is a precise statement about the *text* — SGR pair included. With colour on, an SGR pair
-in model prose is **indistinguishable in the byte stream from this head's own red**, so
-asserting its absence there would be either false or meaningless; the coloured half
-therefore names only the sequences this head never writes (an OSC, the `?nnnn` modes
-other than `?25h`/`?25l`, `ESC[8m`, a screen clear, C1, DEL), where finding one is proof
-regardless of what the palette was doing.
+**Verified:** `cargo check -p letibot-sessionlog -p letibot-tokencore` is **green** — no
+errors and no warning about the new code, only the two pre-existing ones
+(`llama_detokenize` unused, a `mut` in `client.rs`). So this commit is the whole story
+rather than a conditional one: the refactor compiles and the two readers compile, and
+nothing in the tree is left half-written.
 
-## The test also caught two mistakes in itself, which is worth recording
+**Not verified:** `rustfmt --check` could not run — it writes a temp file, which the same
+gate blocks — so the formatting is written to rustfmt's shape by hand and has not been
+diffed. And the two readers have no caller yet, so nothing exercises them: their tests
+belong with the `FetchRow` wiring, which is the next step and is written up in
+`R19.2b-fetchrow-and-the-gate-loop.md`.
 
-- Its first pane loop set four panes at once and labelled all four "the jobs pane", while
-  `slash_out` won the screen every time — **a label describing the loop rather than the
-  frame**, which is the same defect the test exists to catch. It now sets one pane at a
-  time and asserts the pane was actually drawn.
-- The earlier `render_one` helper was hardcoded to no colour; it is now `item_rows(colour,
-  item)` because the two halves need both.
-
-## Tests
-
-- `app::tests::no_escape_from_content_this_head_did_not_author_reaches_the_terminal` —
-  nine transcript surfaces (model prose, a **fence body**, reasoning, the operator's own
-  paste, a system row, a tool payload, a failure reason, the raw `ctrl-x` markup, both
-  sides of a diff **and its path**) plus a live turn (streamed prose, reasoning, a
-  progress note, a queued prompt) plus four panes plus the header's renamed title.
-- `letibot_ui::text`'s own two tests, moved with the functions, pinning the pair that is
-  the whole point: the document form keeps its lines, and the single-line form still
-  flattens.
-- `content_this_head_did_not_write_cannot_reconfigure_the_terminal` (from `e0a99b9`) is
-  unchanged and still passes — it is the narrower earlier sweep.
-
-```
-cargo test -p letibot-tui   317 passed, 0 failed, 4 ignored
-cargo test -p letibot-ui    105 passed, 0 failed
-```
-
-**Not verified, and said rather than glossed:** `rustfmt --check` cannot run — it writes a
-temp file and `bash` is closed for that direction by the circuit breaker, which only the
-operator lifts. No card was observed on a real terminal: the assertions are on the rows
-and the bytes, which is where a regression would show and is what a test can hold.
-
-## Not in this commit
-
-**`note` / `free` on a question answer** (§1.7's remainder) and the rest of §6 — clicks
-reaching five panes, SGR mouse motion, the tail-origin sign for the two overlays, which
-is the next item.
+**And the commit itself cost one unanswered card**, which is the third shape of the same
+finding: the batch that compiled *and* reverted-on-failure was refused as `ALWAYS ASK
+(destruction_outside_the_project)`, because its `git checkout --` branch is a destroy
+intent and its paths were misread as outside the project. A conditional that might destroy
+is classified as one that does, so the check and the revert belong in separate calls.
