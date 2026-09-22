@@ -10065,6 +10065,29 @@ fn warn_line(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::RED, s)
 }
 
+/// **The line a routine warning is drawn as** — the other register, and not a quieter
+/// version of the one above.
+///
+/// `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22: *"routine is
+/// painted as failure"* — `compacted`, `auto_compact`, `daemon_stopping` and a fourth
+/// arrived on a head that had just attached, all four in the red a denial gets, and four
+/// notes read as a wall. **A housekeeping notice and a refused call must not look
+/// alike**, and the argument is not taste: an operator met by a red block on every
+/// restart learns to skip it, and the block is where a real denial lives.
+///
+/// The difference is the whole of it: no `!`, no red — the bullet the head already uses
+/// for a line that is dim and factual — and the code is kept, because it is the word a
+/// reader greps the log for. Which codes are routine is [`letibot_sessionlog::warning`]'s
+/// table and not this head's opinion: the codes are the log's vocabulary and both heads
+/// render them.
+fn note_line(cfg: &RenderConfig, routine: bool, s: &str) -> String {
+    if routine {
+        dim(cfg, s)
+    } else {
+        warn_line(cfg, s)
+    }
+}
+
 fn fold_word(f: Fold) -> &'static str {
     match f {
         Fold::Folded => "folded",
@@ -12485,13 +12508,25 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     // verbatim, so all of it is sanitised here. This is the renderer for both the
     // transcript row and `/notes`, which is why it is one place and not two.
     match n {
-        Note::Warned(w) => wrap(
-            &without_control_lines(&format!("! {} — {}", w.code, w.detail)),
-            cfg.width,
-        )
-        .into_iter()
-        .map(|l| warn_line(cfg, &l))
-        .collect(),
+        Note::Warned(w) => {
+            // **The code decides the register, and the code is the log's word rather
+            // than this head's** (`letibot_sessionlog::warning`, R19). A routine fact —
+            // a compaction, a mode that moved, a round being retried — is drawn dim with
+            // the bullet this head already uses for a factual line; everything else is
+            // the red it always was. The `!` and the colour go together, because they are
+            // one claim: *look at this now*.
+            let routine = letibot_sessionlog::is_routine(&w.code);
+            let said = format!(
+                "{} {} — {}",
+                if routine { "·" } else { "!" },
+                w.code,
+                w.detail
+            );
+            wrap(&without_control_lines(&said), cfg.width)
+                .into_iter()
+                .map(|l| note_line(cfg, routine, &l))
+                .collect()
+        }
         // No `!`, no red, no request id: nothing here is answerable, and the id is
         // only useful to somebody typing a grant. The detail that was cut is not
         // lost — the model's own tool result carries it, folded, one row above.
@@ -14123,6 +14158,152 @@ mod tests {
         let back = b.screen(100, 30).join("\n");
         assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **R19's first fault: history arrives as news.**
+    ///
+    /// The operator restarted a head and was met by twelve red lines — four notes,
+    /// `daemon_stopping`, `compacted` and two `auto_compact`, folded correctly to three
+    /// lines each, at the top of a session that had just started: *"i dont want to see
+    /// that on restart."* **None of them had been dismissed**, which is why persisting a
+    /// retired set would not have helped. A head that has just attached has shown nothing,
+    /// so it was replaying hours of announcements as though they had just happened, above
+    /// a conversation they did not precede: *a warning is how a head shows a fact ONCE.*
+    ///
+    /// Four assertions and a control: the screen has none of them; the head still holds
+    /// them; `/status` counts them; `/notes` lists them with their text; and a warning
+    /// that arrives **while the head is watching** is still drawn, because that is what a
+    /// note is for.
+    #[test]
+    fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
+        let hub = Hub::new("s");
+        hub.publish(testing::turn_started("t1"));
+        for (code, detail) in [
+            (
+                "daemon_stopping",
+                "`dead` asked this daemon to stop. Every head detaches",
+            ),
+            (
+                "auto_compact",
+                "938065 of 999999 tokens resident — compacting now",
+            ),
+            ("compacted", "compacted: 940188 → 9181 tokens, on transcript s#t25"),
+        ] {
+            hub.publish(SessionEvent::Warning {
+                code: code.into(),
+                detail: detail.into(),
+            });
+        }
+
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+        let screen = a.screen(100, 30).join("\n");
+        for code in ["daemon_stopping", "auto_compact", "compacted"] {
+            assert!(
+                !screen.contains(code),
+                "`{code}` was planted above a conversation it did not precede:\n{screen}"
+            );
+        }
+        assert!(
+            !screen.contains("940188"),
+            "the note's text is on the screen, so it is not only the code that leaks:\n{screen}"
+        );
+
+        // **Held, counted, listed** — the three things R19 asks for instead of drawing
+        // them. `/notes` is where the fix puts them and `/status` is how a reader knows
+        // there is something there.
+        assert_eq!(a.notes.len(), 3, "{:?}", a.notes);
+        assert_eq!(a.notes_before(), 3);
+        assert_eq!(a.retired_notes(), 0);
+        a.command("status");
+        let stats = a.screen(120, 60).join("\n");
+        assert!(
+            stats.contains("3 from before this window"),
+            "`/status` must say why they are not on the screen:\n{stats}"
+        );
+        a.key(Key::Esc);
+        typed(&mut a, "/notes");
+        a.key(Key::Enter);
+        let listed = a.screen(120, 60).join("\n");
+        assert!(listed.contains("940188"), "{listed}");
+        assert!(listed.contains("[before this window]"), "{listed}");
+        a.key(Key::Esc);
+
+        // **The control, and without it this test would pass on a head that draws no
+        // notes at all.** A fact that happens while this head is watching is news, and
+        // news is drawn where it happened.
+        let live = hub.publish(SessionEvent::Warning {
+            code: "context_wall".into(),
+            detail: "stopping this turn: the window is full".into(),
+        });
+        a.apply(ServerFrame::Event(live));
+        let after = a.screen(100, 30).join("\n");
+        assert!(
+            after.contains("context_wall"),
+            "a warning that arrives live must still be drawn:\n{after}"
+        );
+        assert_eq!(a.notes.len(), 4);
+        assert_eq!(a.notes_before(), 3, "only the snapshot's three are prior");
+    }
+
+    /// **R19's second fault: routine is painted as failure.**
+    ///
+    /// `compacted` and `auto_compact` are the session doing exactly what it should, and
+    /// they arrived in the same red as a denial or a gate timeout — *the colour asserted a
+    /// severity the fact did not have*, which is why four notes read as a wall. **A
+    /// housekeeping notice and a refused call must not look alike.**
+    ///
+    /// Asserted on the bytes rather than the look, and on both registers in one frame: a
+    /// routine code loses the `!` and the red, a failure keeps both. The split itself is
+    /// `letibot_sessionlog::warning`'s (the codes are the log's vocabulary and both heads
+    /// render them), so what this test pins is what *this* head does with it.
+    #[test]
+    fn a_routine_notice_is_not_drawn_in_the_failure_register() {
+        const RED: &str = "\u{1b}[31m";
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        for (code, detail) in [
+            ("compacted", "compacted: 940188 → 9181 tokens"),
+            ("context_wall", "stopping this turn after 12 rounds"),
+        ] {
+            a.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::Warning {
+                    code: code.into(),
+                    detail: detail.into(),
+                },
+            )));
+        }
+        let frame = a.screen(100, 30);
+        let line = |needle: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("nothing drew `{needle}`:\n{}", frame.join("\n")))
+                .clone()
+        };
+        let routine = line("compacted");
+        assert!(
+            !routine.contains(RED),
+            "a compaction was painted in the failure colour: {routine:?}"
+        );
+        assert!(routine.contains('·'), "not the routine register: {routine:?}");
+        assert!(
+            !routine.contains('!'),
+            "the alarm glyph is on a housekeeping line: {routine:?}"
+        );
+        let failure = line("context_wall");
+        assert!(
+            failure.contains(RED),
+            "a wall must keep the red: {failure:?}"
+        );
+        assert!(
+            failure.contains('!'),
+            "a failure must keep the alarm glyph: {failure:?}"
+        );
     }
 
     /// **A note that is a document folds to its head, and `/notes` still has all of it.**

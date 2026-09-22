@@ -56,6 +56,7 @@ pub mod scrub;
 pub mod server;
 pub mod testing;
 pub mod view;
+pub mod warning;
 pub mod wire;
 
 #[cfg(feature = "turn")]
@@ -82,6 +83,8 @@ pub use view::{
     // store-backed reader answers the same question and must not answer it differently.
     body_of,
 };
+
+pub use warning::{Class, class, is_routine};
 
 #[cfg(feature = "turn")]
 pub use lift::{LogSink, from_turn_event};
