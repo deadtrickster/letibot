@@ -38,6 +38,7 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
         outcome: ToolOutcome::Ok,
         payload: payload.into(),
         edit: None,
+        origin: None,
     }
 }
 

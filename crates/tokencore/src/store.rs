@@ -2275,6 +2275,7 @@ mod tests {
             },
             payload: "{}".into(),
             edit: None,
+            origin: None,
         };
         let row = ledger.append("it", &[1]).unwrap().clone();
         s.append_item(&tr, 0, &item, &row, &[1]).unwrap();

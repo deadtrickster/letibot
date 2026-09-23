@@ -435,6 +435,7 @@ mod tests {
             outcome: ToolOutcome::Denied { req_id: "r9".into() },
             payload: "nothing ran".into(),
             edit: None,
+            origin: None,
         });
         assert!(t.contains("denied"), "{t}");
         assert!(t.contains("r9"), "{t}");

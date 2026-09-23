@@ -13,6 +13,21 @@ use serde::{Deserialize, Serialize};
 /// sides of the log/wire boundary need it and neither can see the other.
 pub mod sanitize;
 
+/// **Who asked for a tool call** — R24 part two, decision 1.
+///
+/// One variant today, and the enum exists rather than a `bool` or an `Option<String>` for the
+/// reason this tree reaches for an enum on a fact that can grow: a second origin (a peer agent,
+/// a flowy seat, a scheduled job) is a variant rather than a second field on a struct that
+/// already has one. `SystemOrigin` is the precedent for the naming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallOrigin {
+    /// A person at this console ran it. `who` is the identity the gate records in
+    /// `verdict_by` (`human:dead`, `human:leticl`), so the row and its own adjudication name
+    /// the actor the same way.
+    Operator { who: String },
+}
+
 /// One entry in the conversation, in the order the model produced or consumed it.
 ///
 /// **Reasoning is a sibling of `Assistant`, not a field on it.** This is the single
@@ -28,6 +43,7 @@ pub mod sanitize;
 /// Qwen both interleave, so a field would be wrong for every model we target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+
 pub enum TranscriptItem {
     System {
         text: String,
@@ -85,10 +101,38 @@ pub enum TranscriptItem {
         /// render the edit card and not the diff"*). Display-only: the prompt
         /// builders read `payload` and never this, so the tokens a row renders
         /// to — and the hash chain over them — do not move. Absent on rows
-        /// written before the field existed, and `#[serde(default)]` is what
-        /// lets them still load.
+        /// written before the field existed, and what lets those still load is that a
+        /// **missing key for an `Option` field deserialises as `None`** — not the
+        /// `#[serde(default)]` beside it, which is explicit rather than load-bearing.
+        /// (Measured 2026-09-23: deleting the attribute, every test still passes.)
         #[serde(default)]
         edit: Option<ToolEditExcerpt>,
+        /// **Who asked for this call** — R24 part two, decision 1.
+        ///
+        /// A head labels a tool card from the nearest preceding `Assistant { tool_calls }`,
+        /// which by construction cannot see a call nobody proposed. So a call the OPERATOR
+        /// ran — a `web_fetch` they typed themselves — would be drawn as the model's, which is
+        /// a lie about who acted on the one row whose whole subject is what happened.
+        ///
+        /// **It cannot be inferred, which is why it is a field.** The absence of a proposing
+        /// row is *also* what a row from a resumed daemon looks like, and this tree already
+        /// renders that case deliberately (*"a row this head did not watch shows no
+        /// duration"*) — so inferring would make the two indistinguishable, which is the
+        /// defect R17 is about.
+        ///
+        /// **`who`, and not a unit variant.** The store already separates one person from
+        /// another (`verdict_by` holds `human:dead` 121 and `human:leticl` 37), so a bare
+        /// `Operator` would name the actor at a different granularity from the adjudication
+        /// for the same call — and one of the two would be wrong.
+        ///
+        /// `None` is **a call the model proposed**, which is every row written before this
+        /// field existed — hence `#[serde(default)]` and no version bump, the shape `never_ran`
+        /// and `edit` on this same variant already set.
+        /// No version bump, and the reason is serde's own rule rather than an attribute: a
+        /// missing key for an `Option` field deserialises as `None`. The `#[serde(default)]`
+        /// is kept only because the three fields around it have one.
+        #[serde(default)]
+        origin: Option<CallOrigin>,
     },
     /// A zero-width delimiter. **Renders to nothing.**
     ///
@@ -403,6 +447,7 @@ mod tests {
                 before: "fn a() {".into(),
                 after: "fn a() {\n    x();".into(),
             }),
+            origin: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: TranscriptItem = serde_json::from_str(&json).unwrap();
@@ -422,12 +467,58 @@ mod tests {
             outcome: ToolOutcome::Ok,
             payload: "done".into(),
             edit: None,
+            origin: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let old = json.replace(",\"edit\":null", "");
         assert_ne!(json, old, "the fixture must actually strip the key");
         let back: TranscriptItem = serde_json::from_str(&old).unwrap();
         assert_eq!(back, item);
+    }
+
+    /// **Who asked for the call, and that an old row says `None`** — R24 part two, decision 1.
+    ///
+    /// Two properties, and the second is the one a head's card depends on:
+    ///
+    ///  * an operator-run call round-trips **with the identity**, so the row and the
+    ///    adjudication for the same call name the actor the same way (`human:dead` is what the
+    ///    gate records);
+    ///  * a row written **before the field existed** reads as `None`, which is
+    ///    *the model proposed it* — not *nobody did*. That is what keeps a resumed daemon from
+    ///    refusing a session it served yesterday, and it is why the field is `default` rather
+    ///    than versioned, the same shape `edit` and `never_ran` already set on this variant.
+    #[test]
+    fn an_operator_run_call_carries_its_identity_and_an_old_row_reads_as_the_models() {
+        let mine = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "web_fetch".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "the page".into(),
+            edit: None,
+            origin: Some(CallOrigin::Operator {
+                who: "dead".into(),
+            }),
+        };
+        let json = serde_json::to_string(&mine).unwrap();
+        assert!(
+            json.contains("\"operator\"") && json.contains("\"dead\""),
+            "the identity must be on the wire, not inferred by a head: {json}"
+        );
+        let back: TranscriptItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, mine);
+
+        // And the row the store already holds, built by stripping the key off a real
+        // serialisation rather than hand-typing the wire shape and hoping.
+        let old = json.replace(",\"origin\":{\"operator\":{\"who\":\"dead\"}}", "");
+        assert_ne!(json, old, "the fixture must actually strip the key");
+        let back: TranscriptItem = serde_json::from_str(&old).unwrap();
+        match back {
+            TranscriptItem::ToolResult { origin, .. } => assert_eq!(
+                origin, None,
+                "a row from before the field is a row the MODEL proposed"
+            ),
+            other => panic!("not a tool result: {other:?}"),
+        }
     }
 
     #[test]

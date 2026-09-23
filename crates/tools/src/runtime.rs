@@ -1532,6 +1532,7 @@ impl ToolRuntime {
             outcome: result.outcome.clone(),
             payload: result.render(),
             edit: bounded_edit(result),
+            origin: None,
         }
     }
 }

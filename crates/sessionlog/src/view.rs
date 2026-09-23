@@ -894,6 +894,7 @@ mod tests {
                 outcome: ToolOutcome::Ok,
                 payload: "the payload".into(),
                 edit: None,
+                origin: None,
             }),
             "the payload"
         );
@@ -1024,6 +1025,7 @@ mod tests {
                 outcome: ToolOutcome::Ok,
                 payload: "y".repeat(10_000),
                 edit: None,
+                origin: None,
             },
         );
         assert_eq!(v.items.len(), 1, "the only row was dropped to satisfy the bound");

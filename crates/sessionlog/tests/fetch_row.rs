@@ -37,6 +37,7 @@ fn a_row_with_a_body(registry: &std::sync::Arc<Registry>, session: &str, item_id
             outcome: ToolOutcome::Ok,
             payload: body.into(),
             edit: None,
+            origin: None,
         },
     );
 }

@@ -12306,6 +12306,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             payload,
             call_id,
             edit: row_edit,
+            ..
         } => {
             // The row's own excerpt, when it has one — every row the runtime
             // builds now carries the same bounded pair the event does, so a
@@ -16053,6 +16054,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "done".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -16478,6 +16480,7 @@ mod tests {
                             outcome: letibot_transcript::ToolOutcome::Ok,
                             payload: "line one\nline two".into(),
                             edit: None,
+                            origin: None,
                         }),
                     },
                 ),
@@ -16551,6 +16554,7 @@ mod tests {
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload,
                         edit: None,
+                        origin: None,
                     }),
                 },
             )],
@@ -18299,6 +18303,7 @@ mod tests {
                         outcome: ToolOutcome::Ok,
                         payload: format!("$ ls{HOSTILE}\nfile.rs"),
                         edit: None,
+                        origin: None,
                     },
                 ),
             ),
@@ -18314,6 +18319,7 @@ mod tests {
                         },
                         payload: "$ false".into(),
                         edit: None,
+                        origin: None,
                     },
                 ),
             ),
@@ -18342,6 +18348,7 @@ mod tests {
                         outcome: ToolOutcome::Ok,
                         payload: "1 replacement".into(),
                         edit: None,
+                        origin: None,
                     },
                 ),
             ),
@@ -18511,6 +18518,7 @@ mod tests {
                     outcome: ToolOutcome::Ok,
                     payload: format!("$ ls\n{EVIL}\nfile.rs"),
                     edit: None,
+                    origin: None,
                 }),
             ),
             (
@@ -18523,6 +18531,7 @@ mod tests {
                     },
                     payload: "$ false".into(),
                     edit: None,
+                    origin: None,
                 }),
             ),
             (
@@ -18545,6 +18554,7 @@ mod tests {
                     outcome: ToolOutcome::Ok,
                     payload: "1 replacement".into(),
                     edit: None,
+                    origin: None,
                 }),
             ),
         ];
@@ -18872,6 +18882,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload,
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -18923,6 +18934,7 @@ mod tests {
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload: payload.clone(),
                         edit: None,
+                        origin: None,
                     }),
                 },
             )));
@@ -19278,6 +19290,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: payload.into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -20878,6 +20891,7 @@ mod tests {
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload: payload.into(),
                         edit: None,
+                        origin: None,
                     }),
                 },
             )));
@@ -20998,6 +21012,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -21084,6 +21099,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -21348,6 +21364,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "# rano TODO\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -21394,6 +21411,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "one\ntwo\nthree\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -21485,6 +21503,7 @@ mod tests {
                     },
                     payload: "a\nb\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -21525,6 +21544,7 @@ mod tests {
                         outcome: letibot_transcript::ToolOutcome::Ok,
                         payload: "x\n".repeat(n),
                         edit: None,
+                        origin: None,
                     }),
                 },
             )));
@@ -21578,6 +21598,7 @@ mod tests {
                     },
                     payload: "a\nb\nc\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -22528,6 +22549,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "hello\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));
@@ -24239,6 +24261,7 @@ mod tests {
                 // A row from before the field existed: the seeded map is the
                 // only carrier here, which is the point of this test.
                 edit: None,
+                origin: None,
             },
         );
         hub.publish(testing::turn_finished("t1"));
@@ -24283,6 +24306,7 @@ mod tests {
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "done".into(),
                 edit: Some(edit_excerpt()),
+                origin: None,
             },
         );
 
@@ -24468,6 +24492,7 @@ mod tests {
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "a.rs: 1 replacement(s). lines 1-3\n\n     1| fn a() {\n     2|     x();\n     3| }\n".into(),
                     edit: None,
+                    origin: None,
                 }),
             },
         )));

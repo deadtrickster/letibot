@@ -67,6 +67,7 @@ fn result(id: &str) -> TranscriptItem {
         outcome: ToolOutcome::Ok,
         payload: format!("contents of {id}"),
         edit: None,
+        origin: None,
     }
 }
 fn system(t: &str) -> TranscriptItem {

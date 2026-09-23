@@ -84,6 +84,7 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                 payload,
                 // Display-only; the prompt never sees it.
                 edit: _,
+                ..
             } => {
                 let content = match outcome {
                     ToolOutcome::Ok => payload.clone(),
@@ -255,6 +256,7 @@ mod tests {
                 },
                 payload: "nothing".into(),
                 edit: None,
+                origin: None,
             },
         ];
         let m = convert("be terse", &items);
@@ -323,6 +325,7 @@ mod pairing_tests {
             outcome: ToolOutcome::Ok,
             payload: "done".into(),
             edit: None,
+            origin: None,
         }
     }
 

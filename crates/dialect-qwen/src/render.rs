@@ -686,6 +686,7 @@ mod tests {
                 outcome: ToolOutcome::Ok,
                 payload: "alpha".into(),
                 edit: None,
+                origin: None,
             },
             TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -695,6 +696,7 @@ mod tests {
                 },
                 payload: String::new(),
                 edit: None,
+                origin: None,
             },
             TranscriptItem::Reasoning {
                 text: "They differ.".into(),
