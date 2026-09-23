@@ -266,7 +266,8 @@ impl Pick {
 const VERBOSITY_VALUES: &[(&str, &str)] = &[
     (
         "conversation",
-        "your messages and the model's answers — nothing the head did to produce them",
+        "your messages and the model's answers — nothing the head did to produce the words, \
+         and one [N tool calls, M thinking lines] where the work was, which ctrl-t opens",
     ),
     ("terse", "the above, plus one row per tool call and how it ended"),
     ("normal", "the above, plus the model's thinking"),
@@ -8471,12 +8472,12 @@ impl App {
         // read as the continuation of the prose above it, so the separator's blank line is
         // suppressed for that row. It rides in this tuple rather than being recomputed in
         // the assembly loop because the assembly has only the row index and the class.
-        let mut built: Vec<(usize, RowClass, Vec<String>, bool)> = Vec::new();
+        let mut built: Vec<(usize, RowClass, Vec<String>, Option<String>)> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(usize, RowClass, Vec<String>, bool)]| {
+        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<String>)]| {
             self.hist_lines.len() + built.iter().map(|(_, _, l, _)| l.len() + 1).sum::<usize>()
         };
         // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
@@ -8485,8 +8486,24 @@ impl App {
         // print and not by reading it. `None` is the lines-only walk.
         // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
-        let newest_run = newest_hidden_run(&self.items, self.verbosity);
-        while k > 0 && (covered(&built) < want || stop_row.is_some_and(|r| k > r)) {
+        let newest_run = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts);
+        // **`carry`: the walk does not stop in the middle of a run.**
+        //
+        // A run's marker is drawn at its FIRST row, and this walk renders the newest rows
+        // first — so the start is the last thing it reaches. Stopping before it (on the line
+        // budget) left the rows it had already passed with nothing on the screen at all: the
+        // reader scrolling a tool-heavy turn would see prose and then a hole, and the counts
+        // for the rows they were looking at would be nowhere. The cost of continuing is a
+        // pass of a cheap predicate per row — the rows themselves draw no lines and are
+        // dropped from `built` — which is nothing next to a marker that is not there.
+        let mut carry = false;
+        loop {
+            let enough = covered(&built) >= want
+                && stop_row.is_none_or(|r| k <= r)
+                && !carry;
+            if k == 0 || enough {
+                break;
+            }
             k -= 1;
             let targets = targets_before(&self.items, k);
             let answered = round_results(&self.items, k);
@@ -8497,26 +8514,36 @@ impl App {
             let open_run = run_open_at(
                 &self.items,
                 self.verbosity,
+                &self.bound_prompts,
                 self.payload_sel.as_deref(),
                 k,
             );
-            let marker = if open_run {
+            let unseen = if open_run {
                 None
             } else {
-                hidden_run_at(&self.items, self.verbosity, k)
+                unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, k)
             };
-            let tight = marker.is_some();
-            let (class, rows) = match marker {
-                Some((start, end)) if start == k => (
-                    RowClass::Activity,
-                    hidden_run_lines(
+            carry = unseen.is_some_and(|(start, _)| start < k);
+            // **The marker's text, when this row is the first of the run.** The joining is
+            // the assembly loop's, because that is where forward order exists — this walk
+            // renders newest first, so the prose this marker continues has not been reached
+            // yet when the row is built. See [`hidden_run_marker`].
+            let marker = unseen
+                .filter(|(start, _)| *start == k)
+                .map(|(start, end)| {
+                    hidden_run_marker(
                         &self.items,
                         start,
                         end,
-                        &targets,
+                        self.verbosity,
                         &cfg,
                         newest_run == Some(start),
-                    ),
+                    )
+                });
+            let (class, rows) = match unseen {
+                Some((start, _)) if start == k => (
+                    RowClass::Activity,
+                    vec![marker.clone().expect("a marker was built for this row")],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
                 None => item_lines(
@@ -8569,7 +8596,7 @@ impl App {
                 ),
             };
             if !rows.iter().all(|l| l.trim().is_empty()) {
-                built.push((k, class, rows, tight));
+                built.push((k, class, rows, marker));
             }
         }
         let rendered = self.hist_floor - k;
@@ -8579,9 +8606,29 @@ impl App {
             let mut block: Vec<String> = Vec::new();
             let mut fresh: Vec<Span> = Vec::new();
             let mut prev: Option<RowClass> = None;
-            for (row, class, rows, tight) in built.iter().rev() {
+            for (row, class, rows, marker) in built.iter().rev() {
+                // **The marker, glued into the sentence it continues** — R37 AMENDED's final
+                // shape, and this is the walk where the joining has to happen HERE rather
+                // than at the row: forward order exists only in this loop, and the prose the
+                // marker continues is the row just above it. `prev` is that row's class, and
+                // `Speech` is this file's own name for prose the reader can see.
+                //
+                // The width check is the fallback's: a line that cannot hold the counts
+                // would put them past the frame's edge, and counts that are off the screen
+                // are not a marker. Then it stands alone instead — `marker.is_none()` below
+                // leaves it without a blank, so it still hugs rather than starts a row.
+                if let Some(text) = marker
+                    && prev == Some(RowClass::Speech)
+                    && let Some(at) = block.iter().rposition(|l| !l.trim().is_empty())
+                {
+                    let joined = format!("{} {text}", block[at].trim_end());
+                    if visible_width(&joined) <= cfg.width {
+                        block[at] = joined;
+                        continue;
+                    }
+                }
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
-                if !block.is_empty() && !pack && !tight {
+                if !block.is_empty() && !pack && marker.is_none() {
                     block.push(String::new());
                 }
                 // **The span, before the lines go in.** `block` is in forward row order
@@ -8604,7 +8651,7 @@ impl App {
                 // there is the continuation of prose that is also in that block, so the
                 // blank goes. `built.first()` is the OLDEST row of the block (the vector is
                 // newest-first and walked in reverse above).
-                let tight = built.first().is_some_and(|(_, _, _, t)| *t);
+                let tight = built.last().is_some_and(|(_, _, _, m)| m.is_some());
                 if !pack && !tight {
                     block.push(String::new());
                 }
@@ -8651,7 +8698,7 @@ impl App {
     /// One function, so the chord and the marker's seam cannot come to disagree about which
     /// of the two things the key is about to open.
     fn newest_openable(&self) -> Option<String> {
-        if let Some(start) = newest_hidden_run(&self.items, self.verbosity) {
+        if let Some(start) = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts) {
             return Some(self.items[start].item_id.clone());
         }
         self.newest_payload_row()
@@ -9135,7 +9182,7 @@ impl App {
             // shape `newest_payload` has above, and for the same reason — the seam names the
             // chord only on the run the chord acts on, and asking per row would be a scan of
             // the transcript for every row drawn.
-            let newest_run = newest_hidden_run(items, *verbosity);
+            let newest_run = newest_unseen_run(items, *verbosity, bound_prompts);
             loop {
                 // **A note from before this window is stepped over, not drawn** (R19).
                 // It is a disclosure this head holds — `/notes` lists it and `/status`
@@ -9229,31 +9276,60 @@ impl App {
                     //   of them having to remember anything);
                     // * any other row of a closed run — nothing at all, which is R37 as
                     //   filed, and the walk treats a row that renders to nothing as no row.
-                    let open_run =
-                        run_open_at(items, *verbosity, payload_sel.as_deref(), *hist_upto);
-                    let marker = if open_run {
+                    let open_run = run_open_at(
+                        items,
+                        *verbosity,
+                        bound_prompts,
+                        payload_sel.as_deref(),
+                        *hist_upto,
+                    );
+                    let unseen = if open_run {
                         None
                     } else {
-                        hidden_run_at(items, *verbosity, *hist_upto)
+                        unseen_run_at(items, *verbosity, bound_prompts, *hist_upto)
                     };
-                    // **No blank line in front of a marker.** The operator's shape is prose
-                    // ending in a colon and the work under it, and the marker has to read as
-                    // the continuation of that sentence — a separator's blank line between
-                    // them is what makes it a row underneath instead. See
-                    // [`hidden_run_lines`].
-                    let tight = marker.is_some();
-                    let (class, rows) = match marker {
-                        Some((start, end)) if start == *hist_upto => (
-                            RowClass::Activity,
-                            hidden_run_lines(
+                    // **No blank line in front of a marker.** It continues the sentence above
+                    // it rather than standing as a row of its own, so the separator's blank —
+                    // which exists to say *a new kind of thing starts here* — is the opposite
+                    // of what it means. See [`hidden_run_marker`].
+                    let tight = unseen.is_some();
+                    let (class, rows) = match unseen {
+                        Some((start, end)) if start == *hist_upto => {
+                            let text = hidden_run_marker(
                                 items,
                                 start,
                                 end,
-                                call_targets,
+                                *verbosity,
                                 &cfg,
                                 newest_run == Some(start),
-                            ),
-                        ),
+                            );
+                            // **Glued to the sentence it continues**, when there is one: the
+                            // last drawn row is [`RowClass::Speech`] — the class this file
+                            // already has for prose the reader can see — and the joined line
+                            // still fits the frame. Otherwise it stands alone, which is the
+                            // honest degradation: counts with no sentence are still the fact,
+                            // and a marker clipped to fit would lose them.
+                            let joined = if *hist_class == Some(RowClass::Speech) {
+                                hist_lines
+                                    .iter()
+                                    .rposition(|l| !l.trim().is_empty())
+                                    .map(|at| format!("{} {text}", hist_lines[at].trim_end()))
+                                    .filter(|l| visible_width(l) <= cfg.width)
+                            } else {
+                                None
+                            };
+                            match joined {
+                                Some(line) => {
+                                    let at = hist_lines
+                                        .iter()
+                                        .rposition(|l| !l.trim().is_empty())
+                                        .expect("the joined line came from one");
+                                    hist_lines[at] = line;
+                                    (RowClass::Other, Vec::new())
+                                }
+                                None => (RowClass::Activity, vec![text]),
+                            }
+                        }
                         Some(_) => (RowClass::Other, Vec::new()),
                         None => item_lines(
                             &items[*hist_upto],
@@ -12579,27 +12655,92 @@ fn row_hidden(items: &[SnapshotItem], rung: Verbosity, row: usize) -> bool {
     }
 }
 
-/// **The contiguous run of hidden rows `row` belongs to**, as `[start, end)` — R37 AMENDED.
+/// **Does this row put anything on the SCREEN at this rung** — R37 AMENDED's boundary.
 ///
-/// A run is what the marker replaces, and it is *contiguous rows* rather than a round or a
-/// turn: an assistant row is kept, so the prose that introduces a batch of work and the
-/// paragraph that reports it both break a run naturally. That is exactly the operator's
-/// shape — *prompt → narration → work → report* — with the work in the middle.
+/// The operator ran the rung and got **eight markers in a row with no prose between any
+/// of them**: *"too many tool/thinking lines — they should all coalece to one."* Every
+/// marker's content was right; what was wrong was how many there were, and the cause was
+/// that the run was being broken by something the reader **cannot see**. An empty assistant
+/// part, a tool_result between a call and the next call, a row whose body has not arrived —
+/// each ended a run and started a new marker, and the result was the wall the rung exists
+/// to abolish, now with brackets.
 ///
-/// `None` when the row is not hidden, which is the question most callers are really asking.
-fn hidden_run_at(items: &[SnapshotItem], rung: Verbosity, row: usize) -> Option<(usize, usize)> {
-    if row >= items.len() || !row_hidden(items, rung, row) {
+/// So: **a run ends only at a row this rung actually draws.** Prose the reader can see
+/// ends a run. Nothing else does — not an item boundary, not a hidden row of another kind,
+/// not an empty or whitespace-only text part. **Contiguity is a property of the rendered
+/// screen, not of the item list**, and computing it over the list is the same class of
+/// error as counting lines instead of anchoring to a row, which is R36.
+///
+/// # The two rows that are kept but draw nothing, which is the whole of the bug
+///
+/// `Verbosity::keeps` keeps `User` and `Assistant`. Of those:
+///
+/// * an **`Assistant` row draws only its prose** at this rung — the loop over `tool_calls`
+///   is filtered out for it, so a row with no text and three calls renders to *nothing*.
+///   That is the common shape of a tool-calling round, which is to say it is the run.
+/// * a row whose **body has not arrived** draws nothing either, and draws it deliberately
+///   (`item_lines`' own comment: *"a row with no body is not information"*). It draws an
+///   echo only when this head has bound one to it.
+///
+/// The prose test is on the TEXT rather than on the rendered lines, and that is a choice
+/// worth naming: the renderer's own test is `!prose.iter().all(|l| l.trim().is_empty())`,
+/// and whitespace text lexes to whitespace lines. Lexing every row to ask the question would
+/// put a second renderer in the walk's inner loop; `trim()` answers it for every text the
+/// two can disagree about, and it errs toward *visible*, which errs toward *one more marker*
+/// rather than toward an invisible run.
+fn row_drawn(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+    row: usize,
+) -> bool {
+    if !rung.hides_the_working() {
+        return true;
+    }
+    let Some(it) = items.get(row) else {
+        return false;
+    };
+    if row_hidden(items, rung, row) {
+        return false;
+    }
+    match it.item.as_ref() {
+        None => bound.contains_key(&it.item_id),
+        Some(letibot_transcript::TranscriptItem::Assistant { text, .. }) => !text.trim().is_empty(),
+        _ => true,
+    }
+}
+
+/// **The stretch of rows the reader does not see, that `row` sits in** — as `[start, end)`,
+/// and `None` when the reader sees this row — R37 AMENDED.
+///
+/// The boundary is [`row_drawn`] and not [`row_hidden`]: a stretch of *invisible* rows is
+/// what the marker stands for, and an invisible row is not the same thing as a row the rung
+/// hides. An assistant row with no prose is invisible and is not hidden, and it is exactly
+/// what was splitting one run into eight.
+///
+/// A stretch with **nothing hidden in it draws no marker** — a line saying `[]` over a few
+/// blank rows would be a sentence about nothing. That case arises from the fix itself: the
+/// old boundary could not produce an all-visible stretch, and the new one can.
+fn unseen_run_at(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+    row: usize,
+) -> Option<(usize, usize)> {
+    if !rung.hides_the_working() || row >= items.len() || row_drawn(items, rung, bound, row) {
         return None;
     }
     let mut start = row;
-    while start > 0 && row_hidden(items, rung, start - 1) {
+    while start > 0 && !row_drawn(items, rung, bound, start - 1) {
         start -= 1;
     }
     let mut end = row + 1;
-    while end < items.len() && row_hidden(items, rung, end) {
+    while end < items.len() && !row_drawn(items, rung, bound, end) {
         end += 1;
     }
-    Some((start, end))
+    (start..end)
+        .any(|r| row_hidden(items, rung, r))
+        .then_some((start, end))
 }
 
 /// **Is this row inside the run that is currently OPEN** — R37 AMENDED's "it opens".
@@ -12616,6 +12757,7 @@ fn hidden_run_at(items: &[SnapshotItem], rung: Verbosity, row: usize) -> Option<
 fn run_open_at(
     items: &[SnapshotItem],
     rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
     open: Option<&str>,
     row: usize,
 ) -> bool {
@@ -12625,107 +12767,95 @@ fn run_open_at(
     let Some(start) = items.iter().position(|it| it.item_id == id) else {
         return false;
     };
-    hidden_run_at(items, rung, start).is_some_and(|(s, e)| row >= s && row < e)
+    unseen_run_at(items, rung, bound, start).is_some_and(|(s, e)| row >= s && row < e)
 }
 
-/// **The newest run of hidden rows, by its first row** — what `ctrl-t` opens.
+/// **The newest run of invisible rows, by its first row** — what `ctrl-t` opens.
 ///
 /// The same shape `App::newest_payload_row` has for a long result, and for the same reason:
 /// there is no cursor in this head, so exactly one run can be addressed by a chord, and the
 /// one a reader reaching for the key means is the newest. A chord may only be named where
 /// it acts, so only this run's marker names `ctrl-t`.
-fn newest_hidden_run(items: &[SnapshotItem], rung: Verbosity) -> Option<usize> {
+fn newest_unseen_run(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+) -> Option<usize> {
     if !rung.hides_the_working() {
         return None;
     }
     (0..items.len())
         .rev()
-        .find(|r| hidden_run_at(items, rung, *r).is_some_and(|(start, _)| start == *r))
+        .find(|r| unseen_run_at(items, rung, bound, *r).is_some_and(|(start, _)| start == *r))
 }
 
-/// How many distinct verbs a marker lists before it stops naming them.
+/// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
 ///
-/// The operator's *"adaptivity"* means the line is sized to what it describes, and this is
-/// the one number in that: a run of forty tool calls does not get forty verbs, it gets four
-/// and an ellipsis, because past four the reader is not reading a list any more — they are
-/// deciding whether to open it, and the counts above are what that decision needs.
-const RUN_VERBS: usize = 4;
-
-/// **The one line a run of hidden rows collapses to** — R37 AMENDED, and the whole point
-/// of the amendment.
+/// The operator, having seen it built: *"I also now understand i wat to keep only `[<n> tool
+/// calls, <m> thinking lines]`, right after `:`"*. So the verbs, the distinct targets and the
+/// whole question of a summary line are **superseded** — they were a question asked and
+/// answered, and the answer is that a marker with prose on both sides needs to carry
+/// neither. The turn's shape is narration → work → report, and the counts are the only fact
+/// the two neighbours do not already give.
 ///
-/// The operator, reading a screen where the model's prose ended in a colon:
-/// *"if toolcalls and thinking are just hidden completely the narrative breaks. something
-/// like `[5 tool calls and 43 thinking lines, \"summary line\"]` would fit better here."*
-/// The sentence pointed at work that was not there, so the rung did not hide the work — it
-/// made the model's own prose lie.
+/// # It is punctuation inside a sentence, not an entry in a list
 ///
-/// # What it carries, and what it deliberately does not
+/// The same message: *"so I do want to read it as a prose … in a way … but structured."*
+/// Its position is therefore fixed — **glued to the end of the narration line that points at
+/// the work**, with a space between the colon and the bracket:
 ///
-/// **How much and what it touched.** The counts are `N tool calls` and `N thinking lines`,
-/// because *how much* is the fact a reader uses to decide whether to open it. The subject is
-/// the verbs and targets the head already computed for the rows it is standing for —
-/// `card::Verb`'s own labels and `display_target`'s own elision — so `Ran, Edited
-/// src/chrome.lisp, Read` is TRUE by construction rather than a summary of anything.
+/// ```text
+/// …and the one where R22's arithmetic has to give: [11 tool calls, 246 thinking lines]
+/// ```
 ///
-/// **It does not say what was concluded, and that is the economy rather than a gap.** The
-/// marker has two visible neighbours: the line introducing the work and the paragraph
-/// reporting it. The conclusion is already on the screen, written by the model, for free —
-/// so the expensive part of a summary is the part this line must not attempt, and the
-/// remaining part is exactly the part that is missing. That is why there is no model here:
-/// the operator said *potentially* using one for summarisation, and measured against what
-/// the two neighbours already carry, there is nothing left for it to add.
+/// The structure is what the brackets and the counts GIVE that sentence; it is not something
+/// imposed on it by a row. **A marker drawn as its own row fails this test even when its
+/// text is correct** — which is exactly what the eight-marker screen was. So the two walks
+/// do not emit this as a line of its own; they append it to the last line of the row above,
+/// and only when that row is [`RowClass::Speech`] — the class this file already has for
+/// *prose the reader can see*. A run with no prose above it (the first row of a transcript, a
+/// tail walk that starts inside one) has nothing to continue, and then it stands alone:
+/// counts with no sentence are still the fact, and a marker that vanished would be the
+/// elision this document refuses.
 ///
-/// # Adaptivity, stated so it is not a licence
+/// # The seam, which is the one thing here that is not a count
 ///
-/// *"A run of one row may simply say what that row was."* So a run of one drops the counts
-/// clause when it has a subject to show instead: `[Read src/app.rs]` rather than `[1 tool
-/// call — Read src/app.rs]`, which is the same sentence with a number nobody needed. It does
-/// **not** mean the head writes prose about the work — every word here is a word the head
-/// already had.
-///
-/// # It reads as a continuation, not as a row
-///
-/// Faint, bracketed, and at the prose's own column — no `▸`, no card, and no blank line
-/// before it (both walks are told so). A boxed row underneath the sentence that points at it
-/// is the rendering the operator said does not read correctly.
-fn hidden_run_lines(
+/// ` · ctrl-t opens it`, or ` · /verbosity` on a run that is not the newest. R37 AMENDED
+/// requires a marker that **opens**, and R40's rule is that a chord may only be named where
+/// it acts — so the newest run's marker names the chord and every other one names the verb
+/// that does reach it. It is a seam and not content, exactly as `… +8 lines · /t unfolds it`
+/// is on every other elided row in this file, and it is one string to delete if the operator
+/// rules that the sentence is better without it.
+fn hidden_run_marker(
     items: &[SnapshotItem],
     start: usize,
     end: usize,
-    targets: &std::collections::HashMap<String, String>,
+    rung: Verbosity,
     cfg: &RenderConfig,
     newest: bool,
-) -> Vec<String> {
+) -> String {
     let mut calls = 0usize;
     let mut think_lines = 0usize;
-    // Verb → the first target seen with it. Deduped by verb, so a round that read six files
-    // says `Read` once and names one of them; the reader who wants the rest opens the run.
-    let mut verbs: Vec<(String, Option<String>)> = Vec::new();
-    for it in &items[start..end] {
-        match it.item.as_ref() {
-            Some(letibot_transcript::TranscriptItem::ToolResult { name, call_id, .. }) => {
-                calls += 1;
-                let verb = card::Verb::of(name).label(false).to_string();
-                if !verbs.iter().any(|(v, _)| *v == verb) {
-                    let target = targets
-                        .get(call_id)
-                        .filter(|t| !t.is_empty())
-                        .cloned();
-                    verbs.push((verb, target));
-                }
-            }
+    // **Per row, and only the rows this rung actually hides.** The guard has to be on the row
+    // being counted and not on the run's first one: a run normally *starts* at an assistant
+    // row with no prose — which is invisible and is NOT hidden (`keeps` keeps `Assistant`) —
+    // so a guard keyed on the start asked the wrong question and counted nothing. Found by
+    // the interleaved test reporting `[1 thinking line]` for seven calls.
+    for r in start..end {
+        if !row_hidden(items, rung, r) {
+            continue;
+        }
+        match items[r].item.as_ref() {
+            Some(letibot_transcript::TranscriptItem::ToolResult { .. }) => calls += 1,
             Some(letibot_transcript::TranscriptItem::Reasoning { text, .. }) => {
                 think_lines += reasoning_display_lines(text, cfg.width);
             }
-            // A `keeps`-false row of any other kind — a system update, a segment mark.
-            // Counted by nothing, and named by nothing: the requirement's own two counts
-            // are the two the operator named, and inventing a third kind of count for a
-            // row nobody classified would be the head describing work it cannot name.
+            // A hidden row of any other kind — a system update, a segment mark — is counted
+            // by nothing, because the two counts are the two kinds the rung hides in bulk and
+            // a third would be a number about a row nobody classified.
             _ => {}
         }
     }
-
     let plural = |n: usize, one: &str, many: &str| {
         format!("{n} {}", if n == 1 { one } else { many })
     };
@@ -12736,52 +12866,14 @@ fn hidden_run_lines(
     if think_lines > 0 {
         counts.push(plural(think_lines, "thinking line", "thinking lines"));
     }
-    let counts = counts.join(", ");
-
-    let named: Vec<String> = verbs
-        .iter()
-        .take(RUN_VERBS)
-        .map(|(v, t)| match t {
-            Some(t) => format!("{v} {t}"),
-            None => v.clone(),
-        })
-        .collect();
-    let mut subject = named.join(", ");
-    if verbs.len() > RUN_VERBS {
-        subject.push_str(", …");
-    }
-
-    // **One row says what it was.** See the note above: this is the whole of "adaptivity",
-    // and it only applies when there is a subject to say it with — a single reasoning row
-    // has nothing but its count, so the count stays.
-    let body = if end - start > 1 || subject.is_empty() {
-        if counts.is_empty() {
-            subject.clone()
-        } else if subject.is_empty() {
-            counts.clone()
-        } else {
-            format!("{counts} — {subject}")
-        }
-    } else {
-        subject.clone()
-    };
-
-    // **The seam, and the chord only on the run it acts on.** The newest run is the one
-    // `ctrl-t` opens, so that marker names the chord; every other run's marker names
-    // `/verbosity`, which is the verb that does reach it. `ctrl-t` silent-with-nothing-to-open
-    // is the same rule from the other side: a chord may only be named where it acts.
     let seam = if newest {
         " · ctrl-t opens it"
     } else {
         " · /verbosity"
     };
-    let w = cfg.width.max(20);
-    vec![trim_to(
-        &cfg.palette()
-            .paint(Role::Faint, &format!("[{body}]{seam}")),
-        w,
-    )]
+    format!("[{}]{seam}", counts.join(", "))
 }
+
 /// The fold's own header, which is also where its key is advertised.
 ///
 /// `card::reasoning` supplies the word and the tense; this adds the two things
@@ -23589,6 +23681,20 @@ mod tests {
     /// A tool result row whose body has landed, the way the daemon delivers one: an
     /// announcement, then its content. A local helper rather than a `testing::` one
     /// because the fixture's own `result` is inside another test function.
+    /// **How many markers a screen carries** — the number, which is the assertion R37
+    /// AMENDED needs.
+    ///
+    /// Counted by the seam every marker ends with, because that is what a marker has and no
+    /// other row does: `] · ctrl-t opens it` on the newest run and `] · /verbosity` on every
+    /// other. Counting `[` would count a payload's own text, and counting the counts would
+    /// pass on eight markers whose wording was right — which is exactly what happened.
+    fn markers(screen: &str) -> usize {
+        screen
+            .lines()
+            .filter(|l| l.contains("] · ctrl-t opens it") || l.contains("] · /verbosity"))
+            .count()
+    }
+
     fn a_result_row(a: &mut App, seq: u64, id: &str, payload: &str) {
         a.apply(ServerFrame::Event(env(
             seq,
@@ -28409,11 +28515,16 @@ mod tests {
             "the run must draw exactly one marker:\n{quiet}"
         );
         assert!(quiet.contains("3 thinking lines"), "{quiet}");
-        assert!(
-            quiet.contains("Read crates/tui/src/app.rs")
-                && quiet.contains("Edited crates/tui/src/chrome.lisp"),
-            "the marker names the verbs and the targets the head already had: {quiet}"
-        );
+        // **The counts and nothing else** — the operator's final shape. The verbs and the
+        // distinct targets were built, measured and superseded: with prose on both sides of
+        // the marker, the counts are the only fact the two neighbours do not already carry.
+        // Asserted as the *absence* of the superseded half, so it cannot creep back in.
+        for gone in ["Read", "Edited", "Searched", "Ran"] {
+            assert!(
+                !quiet.contains(gone),
+                "`{gone}` is the superseded summary half and must not be drawn: {quiet}"
+            );
+        }
         // The rows themselves are still gone — the point of the rung is that the reader does
         // not read them.
         for hidden in ["CONTENTS-0", "CONTENTS-3", "let me check the file"] {
@@ -28422,27 +28533,311 @@ mod tests {
 
         // **It is the continuation of the sentence, not a row underneath it.** The prose ends
         // in a colon and the marker is the very next line.
-        let lines: Vec<&str> = quiet.lines().collect();
-        let prose = lines
-            .iter()
-            .position(|l| l.contains("here is what I am about to do:"))
+        // **It is punctuation inside the sentence, not a row underneath it.** The marker is
+        // on the prose's OWN line, after the colon — which is the operator's exemplar:
+        // `…has to give: [11 tool calls, 246 thinking lines]`.
+        let line = quiet
+            .lines()
+            .find(|l| l.contains("here is what I am about to do:"))
             .expect("the prose is on the screen");
-        let marker = lines
-            .iter()
-            .position(|l| l.contains("[4 tool calls"))
-            .expect("the marker is on the screen");
-        assert_eq!(
-            marker,
-            prose + 1,
-            "a blank line between the sentence and its work is what makes the marker a row \
-             underneath: {quiet}"
+        assert!(
+            line.contains("[4 tool calls, 3 thinking lines]"),
+            "the marker is not on the line the colon points at: {line:?}"
+        );
+        assert!(
+            line.trim_end()
+                .ends_with("[4 tool calls, 3 thinking lines] · ctrl-t opens it"),
+            "the counts come last on the sentence they continue: {line:?}"
         );
     }
 
-    /// **A run of one row says what that row was** — the operator's *"adaptivity"*, which
-    /// means the line is sized to what it describes and **not** that the head invents prose.
+    /// **A tool-heavy turn draws EXACTLY ONE marker, whatever rows the daemon
+    /// interleaved** — R37 AMENDED, and this is the form to write rather than the case.
+    ///
+    /// The operator ran the rung and got **eight markers in a row with no prose between
+    /// any of them**. Every one of their CONTENTS was right; what was wrong was how many
+    /// there were. So this asserts the **number**, not the content — a test that checked
+    /// the wording would have passed on all eight — and it asserts it over the shapes the
+    /// daemon really writes between one call and the next:
+    ///
+    /// * an assistant row with **no text** carrying the round's calls (the shape of a
+    ///   tool-calling round, and invisible at this rung);
+    /// * an assistant row whose text is **whitespace only**;
+    /// * a **tool_result** row;
+    /// * a row **announced with no body** — *"a zero-length text row"*, and invisible
+    ///   by design.
+    ///
+    /// Each of those ended a run under the old boundary, and the count is what says so.
     #[test]
-    fn a_run_of_one_row_says_what_that_row_was() {
+    fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let mut seq = 1u64;
+        let mut append = |a: &mut App, id: &str, kind: &str, item: Option<TranscriptItem>| {
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.into(),
+                    kind: kind.into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            seq += 1;
+            if let Some(item) = item {
+                a.apply(ServerFrame::Event(env(
+                    seq,
+                    SessionEvent::TranscriptContent {
+                        item_id: id.into(),
+                        item: Box::new(item),
+                    },
+                )));
+                seq += 1;
+            }
+        };
+
+        // The prose that introduces the work — the sentence with the colon.
+        append(
+            &mut a,
+            "s.0",
+            "assistant",
+            Some(TranscriptItem::Assistant {
+                text: "let me check all of it:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            }),
+        );
+        // Round one: an assistant row with NO text, its three calls, and their results.
+        let calls = |from: usize, n: usize| -> Vec<letibot_transcript::ToolCall> {
+            (from..from + n)
+                .map(|i| letibot_transcript::ToolCall {
+                    id: format!("c{i}"),
+                    name: "bash".into(),
+                    arguments: format!("{{\"command\": \"step {i}\"}}"),
+                })
+                .collect()
+        };
+        append(
+            &mut a,
+            "s.1",
+            "assistant",
+            Some(TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: calls(0, 3),
+                truncated: false,
+            }),
+        );
+        for i in 0..3 {
+            let id = format!("s.{}", 2 + i);
+            append(&mut a, &id, "tool_result", None);
+            append(
+                &mut a,
+                &id,
+                "tool_result",
+                Some(TranscriptItem::ToolResult {
+                    call_id: format!("c{i}"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!("output {i}"),
+                    edit: None,
+                    origin: None,
+                }),
+            );
+        }
+        // A reasoning block, and a second round announced with NO body at all.
+        append(
+            &mut a,
+            "s.20",
+            "reasoning",
+            Some(TranscriptItem::Reasoning {
+                text: "three down, more to go".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            }),
+        );
+        append(&mut a, "s.21", "assistant", None);
+        append(
+            &mut a,
+            "s.21",
+            "assistant",
+            Some(TranscriptItem::Assistant {
+                text: "   \n  ".into(),
+                tool_calls: calls(3, 4),
+                truncated: false,
+            }),
+        );
+        for i in 3..7 {
+            let id = format!("s.{}", 22 + i);
+            append(&mut a, &id, "tool_result", None);
+            append(
+                &mut a,
+                &id,
+                "tool_result",
+                Some(TranscriptItem::ToolResult {
+                    call_id: format!("c{i}"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!("output {i}"),
+                    edit: None,
+                    origin: None,
+                }),
+            );
+        }
+        // And the prose that reports it, which is what ENDS the run.
+        append(
+            &mut a,
+            "s.40",
+            "assistant",
+            Some(TranscriptItem::Assistant {
+                text: "and that is what all of it says.".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            }),
+        );
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(110, 200).join("\n");
+
+        assert_eq!(
+            markers(&screen),
+            1,
+            "seven calls and two rounds with no prose between them are ONE run:\n{screen}"
+        );
+        assert!(
+            screen.contains("[7 tool calls") && screen.contains("1 thinking line"),
+            "the counts aggregate over the whole run:\n{screen}"
+        );
+        // The positive control, and the reason the number above means anything: **prose
+        // ends a run.** A second visible sentence in the middle makes it two.
+        //
+        // **Applied in transcript order.** The events go through `apply` in the order they
+        // are written and `env`'s seq is only a stamp, so a control written out of order
+        // puts the rows in the wrong order and counts one marker for the wrong reason.
+        let mut b = app();
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let mut seq = 1u64;
+        // One closure rather than two, because both would capture `seq` and the second is
+        // then a second mutable borrow. It takes the whole item, so the two shapes this
+        // control needs — prose and a result — are one call with different arguments.
+        let mut put = |b: &mut App, id: &str, kind: &str, item: TranscriptItem| {
+            b.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.into(),
+                    kind: kind.into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            seq += 1;
+            b.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(item),
+                },
+            )));
+            seq += 1;
+        };
+        for (id, text) in [("s.0", "first:"), ("s.2", "second:")] {
+            put(
+                &mut b,
+                id,
+                "assistant",
+                TranscriptItem::Assistant {
+                    text: text.into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+            let at = if id == "s.0" { "s.1" } else { "s.3" };
+            put(
+                &mut b,
+                at,
+                "tool_result",
+                TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "output".into(),
+                    edit: None,
+                    origin: None,
+                },
+            );
+        }
+        b.verbosity = Verbosity::Conversation;
+        b.invalidate_history();
+        let two = b.screen(110, 200).join("\n");
+        assert_eq!(
+            markers(&two),
+            2,
+            "prose the reader can see is what ends a run:\n{two}"
+        );
+    }
+
+    /// **The marker the walk could not reach.** A run longer than the line budget used to
+    /// lose its marker entirely when it was filled from the bottom: the marker is drawn at
+    /// the run's FIRST row and the backward walk renders the newest first, so stopping on
+    /// the budget left the rows it had passed showing nothing at all.
+    #[test]
+    fn a_run_longer_than_the_window_still_draws_its_marker() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // Sixty hidden rows and no prose anywhere, so the whole transcript is one run.
+        for i in 0..60u64 {
+            let id = format!("s.{i}");
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id.clone(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("c{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("output {i}"),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        // A window far too short to hold the run, and the tail path taken on purpose by
+        // walking backward over it — which is the path that used to stop short.
+        a.invalidate_history();
+        a.fill_backward(10);
+        let screen = a.screen(110, 24).join("\n");
+        assert_eq!(
+            markers(&screen),
+            1,
+            "a run with no prose in it is one marker, however tall:\n{screen}"
+        );
+        assert!(
+            screen.contains("[60 tool calls"),
+            "and it counts every row it stands for:\n{screen}"
+        );
+    }
+
+    /// **A run of one row is one count**, and the *"adaptivity"* that once made it say what
+    /// the row was is superseded by the operator's final shape: the marker is the counts and
+    /// nothing else, at every size. `[1 tool call]` — not `[Read src/app.rs]`, which was a
+    /// summary wearing a count's clothes.
+    #[test]
+    fn a_run_of_one_row_is_one_count() {
         let mut a = app();
         a.apply(hello(
             "s",
@@ -28494,12 +28889,12 @@ mod tests {
         a.invalidate_history();
         let quiet = a.screen(110, 40).join("\n");
         assert!(
-            quiet.contains("[Read crates/tui/src/app.rs]"),
-            "one row says what it was, with no count nobody needed: {quiet}"
+            quiet.contains("[1 tool call]"),
+            "one row is one count, whatever size the run: {quiet}"
         );
         assert!(
-            !quiet.contains("1 tool call"),
-            "the count is dropped when there is nothing to add up: {quiet}"
+            !quiet.contains("Read crates/tui/src/app.rs"),
+            "the superseded summary half is not drawn even for one row: {quiet}"
         );
 
         // **And a single reasoning row keeps its count**, because the count is all there is to
@@ -28656,13 +29051,13 @@ mod tests {
         a_result_row(&mut a, 1, "s.0", "the payload");
         a.verbosity = Verbosity::Conversation;
         a.invalidate_history();
-        assert!(a.screen(110, 40).join("\n").contains("[Ran]"));
+        assert!(a.screen(110, 40).join("\n").contains("[1 tool call]"));
         for rung in [Verbosity::Terse, Verbosity::Normal, Verbosity::Loud] {
             a.verbosity = rung;
             a.invalidate_history();
             let shown = a.screen(110, 40).join("\n");
             assert!(
-                !shown.contains("[Ran]"),
+                !shown.contains("[1 tool call]"),
                 "a marker at {rung:?} would be a line about nothing hidden: {shown}"
             );
             assert!(
@@ -28788,28 +29183,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{needle}` is not on the screen:\n{}", screen.join("\n")))
         };
         let prose = at("this has to give:");
-        let marker = at("[Read crates/tui/src/app.rs]");
         let report = at("and that is what it says.");
-        // **The marker is GLUED to the sentence it continues**, which is the amendment's
-        // whole point: no blank line, because a blank line is what made it a row underneath
-        // the prose rather than the rest of it.
-        assert_eq!(
-            marker,
-            prose + 1,
-            "a blank line between the sentence and its work:\n{}",
-            screen.join("\n")
+        // **The marker is ON the sentence's own line**, which is the operator's own exemplar
+        // — `…has to give: [11 tool calls, 246 thinking lines]`. It is punctuation inside a
+        // sentence, so there is no second line to find and nothing that could be mistaken for
+        // a row: `at` would panic if `[1 tool call]` were anywhere else, and this says where
+        // the sentence has to end.
+        assert!(
+            lines[prose]
+                .trim_end()
+                .ends_with("this has to give: [1 tool call] · ctrl-t opens it"),
+            "the counts are not the end of the sentence that points at the work: {:?}",
+            lines[prose]
         );
-        // **And the report is the paragraph AFTER both**, with the air prose gets — the
-        // marker is the model's own working and this is the model speaking again. That air is
-        // also the economy: the conclusion is a neighbour the marker never has to state.
+        // **And the report is the paragraph after it**, with the air prose gets — the marker
+        // is the model's own working and this is the model speaking again. That air is also
+        // the economy: the conclusion is a neighbour the marker never has to state.
         assert_eq!(
             report,
-            marker + 2,
+            prose + 2,
             "the report is not the next paragraph:\n{}",
             screen.join("\n")
         );
         assert!(
-            lines[marker + 1].is_empty(),
+            lines[prose + 1].is_empty(),
             "paragraphs of prose are separated by a blank line: {lines:?}"
         );
     }
