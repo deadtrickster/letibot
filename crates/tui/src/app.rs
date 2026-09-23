@@ -1807,6 +1807,24 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("quit", "leave the head"),
 ];
 
+/// **How a save treats the retired set** — because one write cannot express both verbs.
+///
+/// A dismissal asserts that a key **is** retired. A restore asserts that the set is **not**,
+/// which is a removal. A union adds and never removes, so it can express the first and cannot
+/// express the second; a replacement can express both, but applying it to a dismissal would
+/// discard every key another head had retired since this one loaded — which is the operator's
+/// original report (*"i dismissed letibot notes but they stay"*).
+///
+/// So the verb decides the write, and the call site says which it is rather than a bool that
+/// could be passed by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetiredWrite {
+    /// Add to the file's set. A dismissal is an assertion no other head's save may contradict.
+    Union,
+    /// Take this head's set as the whole truth. A restore is an assertion of removal.
+    Replace,
+}
+
 impl App {
     pub fn new(cfg: RenderConfig) -> Self {
         App {
@@ -6496,7 +6514,21 @@ impl App {
                 self.dismissed.clear();
                 self.invalidate_history();
                 self.redraw = true;
-                let saved = self.save_prefs();
+                // **`Replace`, and this is the whole of the third item.** `restore` clears
+                // this head's list and saves; under a union that save wrote the FILE's keys
+                // straight back, so the dismissal survived on disk while the head believed it
+                // had undone it — two facts about one key, disagreeing, which is the defect
+                // `merge_retired` was written to end. A union can only ever ADD a key; an
+                // assertion that a key is *not* retired is a removal, and only a replacement
+                // can say it.
+                //
+                // **What this does not fix, said rather than implied:** another head that
+                // still holds that key in its own `dismissed` will union it back on its next
+                // save, because from *that* reader's seat nothing has changed. A restore is
+                // this head's statement about the whole set; it is not a push to anybody
+                // else. Making it one would need a second channel, and the operator asked for
+                // the shape that keeps the two verbs distinct.
+                let saved = self.save_prefs(RetiredWrite::Replace);
                 self.say(&if back == 0 {
                     "nothing was retired, so nothing came back".to_string()
                 } else {
@@ -6535,7 +6567,9 @@ impl App {
                     }
                 };
                 let hidden = self.retire(keys);
-                let saved = self.save_prefs();
+                // **Union.** A dismissal asserts a key IS retired, and no other head's save
+                // is evidence to the contrary — this is the write `merge_retired` exists for.
+                let saved = self.save_prefs(RetiredWrite::Union);
                 self.say(&format!(
                     "retired {hidden} note(s) — hidden, still counted on /status, and \
                      `/notes` shows them{saved}"
@@ -8190,17 +8224,18 @@ impl App {
     /// where it went, or why it did not — a change that silently failed to
     /// persist would be found at the next start, as a surprise.
     ///
-    /// **`retired` is merged with the file, never replaced by it.** The file is one
-    /// file for every head on the box and each head loads it once, so a plain write
-    /// discards the dismissals another head made since. See [`crate::prefs::merge_retired`]
-    /// for the measurement; the union is what makes "I dismissed it" survive a second
-    /// head's save, which is the operator's report of 2026-09-22.
-    fn save_prefs(&self) -> String {
+    /// **`retired` is written according to `retired`, and it cannot be one rule.** A
+    /// dismissal and a restore are *opposite* assertions about one key, so the write that
+    /// expresses one cannot express the other — see [`RetiredWrite`].
+    fn save_prefs(&self, retired: RetiredWrite) -> String {
         match &self.prefs_path {
             None => " (not saved: no $HOME or $XDG_CONFIG_HOME)".into(),
             Some(path) => {
                 let mut p = self.prefs();
-                p.retired = crate::prefs::merge_retired(path, &self.dismissed);
+                p.retired = match retired {
+                    RetiredWrite::Union => crate::prefs::merge_retired(path, &self.dismissed),
+                    RetiredWrite::Replace => self.dismissed.clone(),
+                };
                 match crate::prefs::save(path, &p) {
                     Ok(()) => String::new(),
                     Err(e) => format!(" (not saved: {e})"),
@@ -8350,7 +8385,9 @@ impl App {
                         self.invalidate_history();
                     }
                 }
-                let saved = self.save_prefs();
+                // **Union.** A fold or a raw-call toggle is not a statement about the retired
+                // set at all, so it must not discard another head's dismissals on its way past.
+                let saved = self.save_prefs(RetiredWrite::Union);
                 let rows = self.config_rows();
                 if let Some(r) = rows.get(self.config_sel) {
                     let line = format!("{} → {}{saved}", r.key, r.value);
@@ -14629,6 +14666,68 @@ mod tests {
         b.key(Key::Enter);
         let back = b.screen(100, 30).join("\n");
         assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+        // **And the FILE, which this test used to skip.** Restoring on the screen while the
+        // file kept the key is the defect leticl reported: the two disagreed and the next
+        // save by any head put the dismissal back, so `restore` lasted until somebody else
+        // saved. Asserted here because the screen alone could not tell the two apart.
+        let (p, _) = crate::prefs::load(&path);
+        assert!(
+            !p.retired.iter().any(|k| k == &key),
+            "restore did not reach the file: {:?}",
+            p.retired
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A dismissal unions; a restore replaces** — leticl's report, as a test.
+    ///
+    /// leticl found this rather than fixing it, and the shape of the fault is worth keeping:
+    /// a union can only ever ADD a key, so under a union a restore's save wrote the file's own
+    /// keys straight back, the head's `dismissed` went to `[]` while the file kept the key, and
+    /// the two disagreed — which is the SAME class of fault `merge_retired` was written to end,
+    /// arriving from the other direction. A restore is an assertion of removal, and only a
+    /// replacement can say it.
+    #[test]
+    fn a_restore_replaces_the_files_set_and_a_dismissal_unions_with_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+
+        // Another head retired one key before this head ever looked.
+        crate::prefs::save(
+            &path,
+            &crate::prefs::HeadPrefs {
+                retired: vec!["w|theirs|1|aaaa".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        a.dismissed = vec!["w|mine|2|bbbb".into()];
+
+        // A dismissal unions: the other head's key survives this head's save.
+        let _ = a.save_prefs(RetiredWrite::Union);
+        let (p, _) = crate::prefs::load(&path);
+        assert!(
+            p.retired.iter().any(|k| k == "w|theirs|1|aaaa"),
+            "a dismissal discarded another head's key: {:?}",
+            p.retired
+        );
+        assert!(p.retired.iter().any(|k| k == "w|mine|2|bbbb"), "{:?}", p.retired);
+
+        // A restore replaces: this head's set is the whole truth, and nothing comes back.
+        a.dismissed.clear();
+        let _ = a.save_prefs(RetiredWrite::Replace);
+        let (q, _) = crate::prefs::load(&path);
+        assert!(
+            q.retired.is_empty(),
+            "a restore did not remove the keys — the next save by any head would put them \
+             back and `restore` would be a verb whose effect lasts until somebody else \
+             saves: {:?}",
+            q.retired
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -14828,7 +14927,7 @@ mod tests {
         let mut a = app();
         a.prefs_path = Some(path.clone());
         a.dismissed = vec!["w|promote_idle|2|bbbb".into()];
-        let _ = a.save_prefs();
+        let _ = a.save_prefs(RetiredWrite::Union);
 
         let (p, _) = crate::prefs::load(&path);
         assert!(
