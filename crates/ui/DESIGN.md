@@ -414,11 +414,22 @@ What moved, and what did not:
   an 8K display at a small monospace font is ~960, so 2048 covers the latter with 2× to
   spare. It still *exists*: an untrimmed field on the wire is a hazard, not a feature, and
   a command line can be arbitrarily long.
-- **Each head cuts to its own viewport.** That is not a new behaviour and needs no new
-  code: `Card::header` already ends in `width::truncate(&s, cfg.width)` when the target and
-  its tail cannot both fit, and `width::truncate` **works in columns and appends `…`**. It
-  was simply never reached, because the field arrived already cut. 227 shows 227; 80 shows
-  80; neither number is in the daemon.
+- **Each head is the layer that cuts.** `Card::header` here already ends in
+  `width::truncate(&s, cfg.width)` when the target and its tail cannot both fit, and
+  `width::truncate` **works in columns and appends `…`**. It was simply never reached, because
+  the field arrived already cut. 227 shows 227 on this head; 80 shows 80; neither number is in
+  the daemon.
+- **What this side SENDS is the whole of what R25 changed here, and it is all this document can
+  speak for.** The sentence this bullet replaced said leticl's head needed *"nothing to match —
+  your column rule is the one that now decides, unchanged"*. **That was wrong, and the way it
+  was wrong is the lesson.** It was not a column rule over there: it was a constant,
+  `target-max-cols` = 120, applied inside that head's own `display-target` the moment it derived
+  the subject — so after this wire cap went to 2048, that head went on spending 120 columns, and
+  the operator's complaint would have survived the fix. leticl found it and fixed it in
+  `5976427`. **I asserted a fact about a tree I cannot read.** The rule this leaves behind: *say
+  what your side sends, and let the other head report what its side does.* A claim about
+  somebody else's code is a claim about a thing not in front of you, and it fails in exactly the
+  direction that looks like agreement — the other side reads *"nothing to do"* and stops.
 - **The elision stays DISCLOSED where it happens.** Two cuts, two marks, each at the layer
   that made it. A target that fits is marked not at all — a `…` on a complete command is
   the same class of lie as hiding a cut.
