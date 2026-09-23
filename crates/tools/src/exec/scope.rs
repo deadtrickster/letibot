@@ -877,6 +877,7 @@ fn sanitise(name: &str) -> String {
 /// - `$1` is the scope's `cgroup.procs`; `$$` is this shell's own pid.
 /// - the write happens **first**, so every descendant the command later forks is
 ///   a member by inheritance and there is no window to escape through;
+/// - `$2` is a path the HOST owns, and it is touched **only on the branch that joined**;
 /// - `exec` replaces this shell, so the argv a later `/proc/<pid>/cmdline` shows
 ///   is the command's own and not a wrapper's;
 /// - **`|| exit 125` is the fail-closed half**: a process that could not be owned
@@ -885,14 +886,25 @@ fn sanitise(name: &str) -> String {
 /// Everything after the script is a separate argv element, so nothing here is a
 /// quoting question: the command text never passes through a second parser.
 ///
-/// **The marker sentence is the evidence, and the code is not** (R21's sibling). 125 is a
-/// legitimate exit code, so `Some(EXIT_NOT_SCOPED) => JobState::NotScoped` called
-/// `bash -c "exit 125"` a command that never ran — see
-/// [`letibot_tools::exec::host`]'s `launcher_failed`, which requires [`NOT_SCOPED_MARKER`]
-/// before it believes the code. The sentence below and the const are one string, and the
-/// test at the foot of this file is what keeps them one.
+/// # The evidence, three times over, and why the third was needed
+///
+/// **The code is not the evidence** (R21's sibling). 125 is a legitimate exit code, so
+/// `Some(EXIT_NOT_SCOPED) => JobState::NotScoped` called `bash -c "exit 125"` a command that
+/// never ran.
+///
+/// **The marker sentence is not the evidence either** (2026-09-23, leticl's measurement).
+/// It is a string a command can *print*: `echo 'letibot: could not join…' >&2; exit 125`
+/// reproduced the whole misclassification, because the check reads the command's own output.
+/// *An exit code is the process's own answer, and neither it nor a sentence the process wrote
+/// can be the evidence that there was no process.*
+///
+/// **`$2` is the evidence, and the host owns it.** The path is the daemon's, the file is
+/// created on the branch that joined and on no other, and the command's output cannot reach
+/// it — so `joined` is a fact the daemon observed rather than a sentence it read. It is a
+/// file and not a second exit code for the same reason `NOT_SCOPED_MARKER` is a string and
+/// not a number: one channel can only carry one meaning at a time.
 pub fn join_script() -> &'static str {
-    "echo $$ > \"$1\" || { echo 'letibot: could not join the scope cgroup; the command was NOT run' >&2; exit 125; }; shift; exec \"$@\""
+    "echo $$ > \"$1\" || { echo 'letibot: could not join the scope cgroup; the command was NOT run' >&2; exit 125; }; : > \"$2\"; shift 2; exec \"$@\""
 }
 
 /// **What the wrapper says when it could not own the process**, verbatim.
@@ -939,6 +951,24 @@ mod tests {
                 .count(),
             1,
             "the marker appears once, on the failure branch"
+        );
+        // **And the join token is written on that branch and no other.** `: > "$2"` sits
+        // after the `||` group, so a wrapper that could not join never reaches it — which is
+        // what makes its absence a fact the host can read. Asserted by position rather than
+        // by count, because a second occurrence anywhere after would still count as one
+        // string while making the token meaningless.
+        let script = join_script();
+        let token = script.find(": > \"$2\"").expect("the token write is gone");
+        let failure = script.find("exit 125").expect("the failure branch is gone");
+        assert!(
+            token > failure,
+            "the token is written BEFORE the failure branch exits, so a wrapper that could \
+             not join would touch it anyway:\n{script}"
+        );
+        assert_eq!(
+            script.matches(": > \"$2\"").count(),
+            1,
+            "one write, so `present` and `joined` cannot come apart"
         );
     }
 

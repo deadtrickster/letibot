@@ -780,11 +780,20 @@ impl ProcessHost for HostProcesses {
         };
 
         let procs = Cgroup2::procs_path(&cgroup);
+        // **The join token, which is the evidence and belongs to the daemon.**
+        //
+        // A path this process owns, passed to the wrapper as `$2`, created on the branch that
+        // joined the cgroup and on no other. The exit code is the process's own answer; the
+        // marker is a string the process can print; this is a file the command's output cannot
+        // reach, so `joined` is something the daemon OBSERVED rather than something it read.
+        let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
+        let _ = std::fs::remove_file(&token);
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(join_script())
             .arg("letibot-scope")
-            .arg(&procs);
+            .arg(&procs)
+            .arg(&token);
         // **The order is load-bearing.** `join_script` writes `$$` into
         // `cgroup.procs` and only then `exec`s `"$@"`, so the join happens on the
         // HOST, before any namespace exists — which is the only order that works:
@@ -919,7 +928,13 @@ impl ProcessHost for HostProcesses {
                         // and in the case this tests the marker is all there is: the
                         // command never ran, so there is nothing else to have pushed the
                         // marker out of the ring.
-                        Some(EXIT_NOT_SCOPED) if launcher_failed(&waiter) => JobState::NotScoped,
+                        // **Both halves, and the second is the daemon's own.** The marker
+                        // is what the wrapper says; the token is whether it got that far.
+                        // A command that printed the marker itself has the first and not
+                        // the second — it ran, and 125 is its own answer.
+                        Some(EXIT_NOT_SCOPED) if launcher_failed(&waiter) && !token.exists() => {
+                            JobState::NotScoped
+                        }
                         Some(c) => JobState::Exited { code: c },
                         None => JobState::Signalled {
                             signal: signal_of(&s),
@@ -929,6 +944,11 @@ impl ProcessHost for HostProcesses {
                         by: format!("the harness lost track of it: {e}"),
                     },
                 };
+                // **The token is consumed here, once, by the only reader.** It is the
+                // daemon's own file in the temp directory, so a job that settles must not
+                // leave it behind — and removing it after the read is what keeps
+                // `present` and `joined` the same fact for the whole of one job.
+                let _ = std::fs::remove_file(&token);
                 waiter.settle(state);
             })
             .map_err(|e| ExecError::Spawn(e.to_string()))?;

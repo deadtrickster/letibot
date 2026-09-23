@@ -266,3 +266,60 @@ fn the_procs_path_this_test_relies_on_is_the_real_one() {
         std::path::PathBuf::from("/sys/fs/cgroup/example/cgroup.procs")
     );
 }
+
+/// **A command that PRINTS the marker is not a command that never ran.**
+///
+/// The fix above replaced *the exit code alone* with *the marker in the output*, and that is
+/// still not the evidence the question needs: the marker is a string a command can print.
+/// The daemon holds a stronger fact than either — **whether a process was ever in the
+/// cgroup** — and this test is what says the difference is real.
+///
+/// leticl's framing, kept because it is the precise one: *only the daemon holds the evidence
+/// of whether a process was spawned. An exit code is the process's own answer and cannot be
+/// the evidence that there was no process* — and neither can a sentence the process wrote.
+///
+/// The command below does everything a launcher failure does except fail: it writes the
+/// marker to stderr, and exits 125. It **ran**, and its own answer is 125.
+#[test]
+fn a_command_that_prints_the_marker_ran_and_did_not_fail_to_join_its_scope() {
+    let mut h = runner!("marker_echo");
+    let host = h.processes.clone().unwrap();
+
+    // The marker, verbatim, from the same const the wrapper uses — so this test cannot drift
+    // from the string it is about.
+    let marker = "letibot: could not join the scope cgroup; the command was NOT run";
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": format!("echo '{marker}' >&2; exit 125"),
+            "background": true,
+        })
+        .to_string(),
+    );
+    let id = match &r.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => job_id_anywhere(&r.payload).unwrap_or_else(|| panic!("{other:?}: {}", r.render())),
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let view = loop {
+        let v = host.job(&JobId(id.clone())).expect("the job is known");
+        if !v.state.is_running() {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "never settled");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+
+    assert_eq!(
+        view.state,
+        JobState::Exited { code: 125 },
+        "a command that printed the marker and exited 125 RAN — the marker is a string a \
+         command can print, and the daemon's evidence is whether a process was ever in the \
+         cgroup, not what the output says"
+    );
+    assert!(
+        !view.state.never_ran(),
+        "and `never_ran` must be false: a process existed, and it answered 125"
+    );
+}
