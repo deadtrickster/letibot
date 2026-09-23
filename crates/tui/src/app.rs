@@ -4737,10 +4737,23 @@ impl App {
                 // [`App::newest_payload_row`] gives, and the seam names this chord only
                 // on that row — every other row names `/t`, because a chord may only be
                 // named where it acts.
+                //
+                // **Under `conversation` the same chord opens the run** (R37 AMENDED), and
+                // that is not a second meaning: the marker's own seam says `ctrl-t opens
+                // it`, and what it opens is the newest thing on the screen that has a rest
+                // to read — one result's window under every other rung, one run of hidden
+                // work under this one. [`App::newest_openable`] is the one place that
+                // choice is made, so the chord and the seam cannot come to disagree about
+                // which of the two it is.
                 if self.payload_sel.is_some() {
                     self.payload_sel = None;
                     self.payload_page = 0;
-                } else if let Some(id) = self.newest_payload_row() {
+                    // **And an open run closes.** It was opened by this key, so this key is
+                    // what closes it — the same bargain every other window in this file
+                    // makes, and without it the second press would open a payload window
+                    // inside a row that is only on screen because the run is open.
+                    self.invalidate_history();
+                } else if let Some(id) = self.newest_openable() {
                     self.payload_sel = Some(id);
                     self.payload_page = 0;
                 }
@@ -6200,6 +6213,14 @@ impl App {
         // consequence for R36), so the view moves onto its nearest surviving neighbour at the
         // moment of the change, where the fact is known for certain.
         self.reanchor_off_hidden();
+        // **And whatever was OPEN is closed, because it was open in the other rendering**
+        // (R37 AMENDED). `payload_sel` names one thing — a payload window under every other
+        // rung, the run `ctrl-t` opened under this one — and the same id means a different
+        // thing on either side of the change. Carrying it across opened a payload window on
+        // a row the reader had not asked about, which is the surprise this field exists to
+        // avoid: *I opened a run, changed my mind about the rung, and a window appeared.*
+        self.payload_sel = None;
+        self.payload_page = 0;
         self.invalidate_history();
         self.say(&if self.verbosity.hides_the_working() {
             format!(
@@ -8441,67 +8462,114 @@ impl App {
             .as_ref()
             .map(|t| t.appended.iter().cloned().collect())
             .unwrap_or_default();
-        // (row, class, lines) for each row, newest first as they are built. The row index
-        // rides along for R36: the block these are assembled into is PREPENDED to the
+        // (row, class, lines, tight) for each row, newest first as they are built. The row
+        // index rides along for R36: the block these are assembled into is PREPENDED to the
         // history, so every span already in `spans` shifts by its length and the new ones
         // have to be recorded here rather than recovered later.
-        let mut built: Vec<(usize, RowClass, Vec<String>)> = Vec::new();
+        //
+        // `tight` is R37 AMENDED's: a run of hidden rows draws one marker line that must
+        // read as the continuation of the prose above it, so the separator's blank line is
+        // suppressed for that row. It rides in this tuple rather than being recomputed in
+        // the assembly loop because the assembly has only the row index and the class.
+        let mut built: Vec<(usize, RowClass, Vec<String>, bool)> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(usize, RowClass, Vec<String>)]| {
-            self.hist_lines.len() + built.iter().map(|(_, _, l)| l.len() + 1).sum::<usize>()
+        let mut covered = |built: &[(usize, RowClass, Vec<String>, bool)]| {
+            self.hist_lines.len() + built.iter().map(|(_, _, l, _)| l.len() + 1).sum::<usize>()
         };
         // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
         // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
         // the whole session — 400 rows where a screen was asked for, found by the debug
         // print and not by reading it. `None` is the lines-only walk.
+        // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
+        // once: the seam names the chord only where it acts.
+        let newest_run = newest_hidden_run(&self.items, self.verbosity);
         while k > 0 && (covered(&built) < want || stop_row.is_some_and(|r| k > r)) {
             k -= 1;
             let targets = targets_before(&self.items, k);
             let answered = round_results(&self.items, k);
-            let (class, rows) = item_lines(
-                &self.items[k],
-                &ItemCtx {
-                    cfg: &cfg,
-                    think,
-                    tools: tool,
-                    raw,
-                    targets: &targets,
-                    answered: &answered,
-                    drawn_live: in_flight.contains(self.items[k].item_id.as_str()),
-                    elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
-                    edit: self.call_edits.get(&self.items[k].item_id),
-                    decision: self.call_decisions.get(&self.items[k].item_id),
-                    bound: self
-                        .bound_prompts
-                        .get(&self.items[k].item_id)
-                        .map(String::as_str),
-                    // **What this head knows about the echo and nothing about the text.**
-                    // A bound row keeps the echo's mark: whether the snapshot that put
-                    // this row here carried the words is the head's history, and the same
-                    // string is `queued` in one session and `unconfirmed` in another.
-                    echo_mark: match self
-                        .bound_prompts
-                        .get(&self.items[k].item_id)
-                        .map(String::as_str)
-                    {
-                        Some(t) if self.unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
-                        _ => QUEUED,
-                    },
-                    echo_open: self.echo_open,
-                    rung: self.verbosity,
-                    diff_split,
-                    payload_view: self
-                        .payload_sel
-                        .as_deref()
-                        .map(|id| (id, self.payload_page)),
-                    payload_newest: newest_payload.as_deref(),
-                },
+            // **The marker, or the row** — R37 AMENDED, and the same three states the
+            // forward walk keeps. Both walks decide *which row of a run owns the line* the
+            // same way — the run's first — so the two agree about a block without either of
+            // them having to remember what the other drew.
+            let open_run = run_open_at(
+                &self.items,
+                self.verbosity,
+                self.payload_sel.as_deref(),
+                k,
             );
+            let marker = if open_run {
+                None
+            } else {
+                hidden_run_at(&self.items, self.verbosity, k)
+            };
+            let tight = marker.is_some();
+            let (class, rows) = match marker {
+                Some((start, end)) if start == k => (
+                    RowClass::Activity,
+                    hidden_run_lines(
+                        &self.items,
+                        start,
+                        end,
+                        &targets,
+                        &cfg,
+                        newest_run == Some(start),
+                    ),
+                ),
+                Some(_) => (RowClass::Other, Vec::new()),
+                None => item_lines(
+                    &self.items[k],
+                    &ItemCtx {
+                        cfg: &cfg,
+                        think,
+                        tools: tool,
+                        raw,
+                        targets: &targets,
+                        answered: &answered,
+                        drawn_live: in_flight.contains(self.items[k].item_id.as_str()),
+                        elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
+                        edit: self.call_edits.get(&self.items[k].item_id),
+                        decision: self.call_decisions.get(&self.items[k].item_id),
+                        bound: self
+                            .bound_prompts
+                            .get(&self.items[k].item_id)
+                            .map(String::as_str),
+                        // **What this head knows about the echo and nothing about the text.**
+                        // A bound row keeps the echo's mark: whether the snapshot that put
+                        // this row here carried the words is the head's history, and the same
+                        // string is `queued` in one session and `unconfirmed` in another.
+                        echo_mark: match self
+                            .bound_prompts
+                            .get(&self.items[k].item_id)
+                            .map(String::as_str)
+                        {
+                            Some(t) if self.unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
+                            _ => QUEUED,
+                        },
+                        echo_open: self.echo_open,
+                        // See the forward walk: an open run IS the rung lifted for its rows.
+                        rung: if open_run {
+                            Verbosity::Normal
+                        } else {
+                            self.verbosity
+                        },
+                        diff_split,
+                        payload_view: if open_run {
+                            None
+                        } else {
+                            self.payload_sel
+                                .as_deref()
+                                .filter(|id| !id.is_empty())
+                                .map(|id| (id, self.payload_page))
+                        },
+                        payload_newest: newest_payload.as_deref(),
+                    },
+                ),
+            };
             if !rows.iter().all(|l| l.trim().is_empty()) {
-                built.push((k, class, rows));
+                built.push((k, class, rows, tight));
             }
         }
         let rendered = self.hist_floor - k;
@@ -8511,9 +8579,9 @@ impl App {
             let mut block: Vec<String> = Vec::new();
             let mut fresh: Vec<Span> = Vec::new();
             let mut prev: Option<RowClass> = None;
-            for (row, class, rows) in built.iter().rev() {
+            for (row, class, rows, tight) in built.iter().rev() {
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
-                if !block.is_empty() && !pack {
+                if !block.is_empty() && !pack && !tight {
                     block.push(String::new());
                 }
                 // **The span, before the lines go in.** `block` is in forward row order
@@ -8529,12 +8597,19 @@ impl App {
             // And one at the seam: the row this block now precedes is the old head.
             if !self.hist_lines.is_empty() {
                 let pack = self.hist_first_class == Some(RowClass::Activity)
-                    && built.first().map(|(_, c, _)| *c) == Some(RowClass::Activity);
-                if !pack {
+                    && built.last().map(|(_, c, _, _)| *c) == Some(RowClass::Activity);
+                // **And the marker keeps its sentence across the seam as well.** A fill
+                // renders older rows and prepends them, so the row at the top of the old
+                // buffer sits directly under the oldest row of the new block — and a marker
+                // there is the continuation of prose that is also in that block, so the
+                // blank goes. `built.first()` is the OLDEST row of the block (the vector is
+                // newest-first and walked in reverse above).
+                let tight = built.first().is_some_and(|(_, _, _, t)| *t);
+                if !pack && !tight {
                     block.push(String::new());
                 }
             }
-            let first = built.last().map(|(_, c, _)| *c);
+            let first = built.last().map(|(_, c, _, _)| *c);
             // **Every line offset already recorded moves down by what was prepended** — and
             // that is the whole reason the anchor is a row rather than a line number. A head
             // holding a line index would creep by this amount on every fill; a head holding
@@ -8562,6 +8637,24 @@ impl App {
     /// difference is what was drawn.
     fn rendered_rows(&self) -> usize {
         self.hist_upto.saturating_sub(self.hist_floor)
+    }
+
+    /// **The row `ctrl-t` opens, asked of the whole head** — and the answer depends on the
+    /// rung, which is the one thing R37 AMENDED changed here.
+    ///
+    /// Under `conversation` the long rows are not rows any more: they are inside a run that
+    /// draws as one marker line, so a chord that opened a result's payload window would be
+    /// naming something that is not on the screen. What there is to open is **the run**, and
+    /// the one a reader reaching for the key means is the newest — exactly the rule
+    /// [`App::newest_payload_row`] already follows one level down.
+    ///
+    /// One function, so the chord and the marker's seam cannot come to disagree about which
+    /// of the two things the key is about to open.
+    fn newest_openable(&self) -> Option<String> {
+        if let Some(start) = newest_hidden_run(&self.items, self.verbosity) {
+            return Some(self.items[start].item_id.clone());
+        }
+        self.newest_payload_row()
     }
 
     /// The newest transcript row that has a payload to page: a tool result with more
@@ -8822,31 +8915,37 @@ impl App {
 
     /// **The rung's name, when the rung is the one that hides things** — R37.
     ///
-    /// R29's rule for a disclosure is that it carries the act that undoes it, and R37 says
-    /// which form that takes here: **the MODE is named on the screen rather than a
-    /// placeholder per hidden row** — a placeholder per row is the thing the operator asked
-    /// to be rid of. Drawn only under `Conversation`, because naming the ordinary rung on
-    /// every frame is the furniture this head keeps deleting.
+    /// R29's rule for a disclosure is that it carries the act that undoes it, and this is one
+    /// half of that: the mode is named, and the name is also the verb (`/verbosity`) that
+    /// puts the working back. Drawn only under `Conversation`, because naming the ordinary
+    /// rung on every frame is the furniture this head keeps deleting.
+    ///
+    /// **The other half is the marker** — R37 AMENDED, and the correction is worth keeping in
+    /// view here because this comment used to argue the opposite. R37 as filed said R29 was
+    /// satisfied "by the mode being NAMED on the screen rather than by a placeholder per
+    /// hidden row" — and the second half of that was wrong. The operator never asked for no
+    /// marker; they asked not to read the rows. **One marker per RUN is not a placeholder per
+    /// row**, and without it the rung does not hide the work — it makes the model's own prose
+    /// lie, because the sentence introducing the work ends in a colon pointing at nothing.
+    /// See [`hidden_run_lines`], and [`App::newest_openable`] for what opens one.
     pub fn rung_state(&self) -> Option<&'static str> {
         self.verbosity
             .hides_the_working()
             .then_some(Verbosity::Conversation.as_str())
     }
 
-    /// **Does this rung draw this row at all** — R37, and the one place the question is
+    /// **Does this rung draw this row as a row** — R37, and the one place the question is
     /// asked about a row rather than about an item.
     ///
     /// A row with no body yet is not hidden by the rung: it is drawn from this head's own
     /// echo of what the operator typed, and that is the conversation. A row whose *item* the
     /// rung does not keep is hidden, which is the same test `item_lines` makes.
+    ///
+    /// **Hidden no longer means absent** (R37 AMENDED): a hidden row's *run* draws one marker
+    /// line, and this predicate is what says which rows are inside one — the anchor repair and
+    /// the run finder both ask it, and neither should be asking the question a second way.
     pub fn hidden_by_rung(&self, row: usize) -> bool {
-        if !self.verbosity.hides_the_working() {
-            return false;
-        }
-        match self.items.get(row).and_then(|it| it.item.as_ref()) {
-            Some(item) => !self.verbosity.keeps(item),
-            None => false,
-        }
+        row_hidden(&self.items, self.verbosity, row)
     }
 
     /// **Move a held viewport off a row this rung hides** — R37's consequence for R36.
@@ -9032,6 +9131,11 @@ impl App {
             } = self;
             let diff_split = *diff_split;
             let echo_open = *echo_open;
+            // **The run `ctrl-t` opens, computed once per frame** (R37 AMENDED): the same
+            // shape `newest_payload` has above, and for the same reason — the seam names the
+            // chord only on the run the chord acts on, and asking per row would be a scan of
+            // the transcript for every row drawn.
+            let newest_run = newest_hidden_run(items, *verbosity);
             loop {
                 // **A note from before this window is stepped over, not drawn** (R19).
                 // It is a disclosure this head holds — `/notes` lists it and `/status`
@@ -9114,42 +9218,95 @@ impl App {
                         answered = round_results(items, *hist_upto);
                     }
                     *hist_renders += 1;
-                    let (class, rows) = item_lines(
-                        &items[*hist_upto],
-                        &ItemCtx {
-                            cfg: &cfg,
-                            think,
-                            tools: tool,
-                            raw,
-                            targets: call_targets,
-                            answered: &answered,
-                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
-                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
-                            edit: call_edits.get(&items[*hist_upto].item_id),
-                            decision: call_decisions.get(&items[*hist_upto].item_id),
-                            bound: bound_prompts
-                                .get(&items[*hist_upto].item_id)
-                                .map(String::as_str),
-                            echo_mark: match bound_prompts
-                                .get(&items[*hist_upto].item_id)
-                                .map(String::as_str)
-                            {
-                                Some(t) if unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
-                                _ => QUEUED,
+                    // **The run this row belongs to, and whether it is the one that is open**
+                    // (R37 AMENDED). Three states, and only one of them is a row:
+                    //
+                    // * the row is inside the OPEN run — the rung is lifted for it, so it
+                    //   draws itself, and the marker for that run must not also be drawn;
+                    // * the row is the FIRST row of a closed run — the marker stands for the
+                    //   whole run and is drawn here, at the run's first row, in both walk
+                    //   directions (which is what makes the two walks agree without either
+                    //   of them having to remember anything);
+                    // * any other row of a closed run — nothing at all, which is R37 as
+                    //   filed, and the walk treats a row that renders to nothing as no row.
+                    let open_run =
+                        run_open_at(items, *verbosity, payload_sel.as_deref(), *hist_upto);
+                    let marker = if open_run {
+                        None
+                    } else {
+                        hidden_run_at(items, *verbosity, *hist_upto)
+                    };
+                    // **No blank line in front of a marker.** The operator's shape is prose
+                    // ending in a colon and the work under it, and the marker has to read as
+                    // the continuation of that sentence — a separator's blank line between
+                    // them is what makes it a row underneath instead. See
+                    // [`hidden_run_lines`].
+                    let tight = marker.is_some();
+                    let (class, rows) = match marker {
+                        Some((start, end)) if start == *hist_upto => (
+                            RowClass::Activity,
+                            hidden_run_lines(
+                                items,
+                                start,
+                                end,
+                                call_targets,
+                                &cfg,
+                                newest_run == Some(start),
+                            ),
+                        ),
+                        Some(_) => (RowClass::Other, Vec::new()),
+                        None => item_lines(
+                            &items[*hist_upto],
+                            &ItemCtx {
+                                cfg: &cfg,
+                                think,
+                                tools: tool,
+                                raw,
+                                targets: call_targets,
+                                answered: &answered,
+                                drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                                elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                                edit: call_edits.get(&items[*hist_upto].item_id),
+                                decision: call_decisions.get(&items[*hist_upto].item_id),
+                                bound: bound_prompts
+                                    .get(&items[*hist_upto].item_id)
+                                    .map(String::as_str),
+                                echo_mark: match bound_prompts
+                                    .get(&items[*hist_upto].item_id)
+                                    .map(String::as_str)
+                                {
+                                    Some(t) if unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
+                                    _ => QUEUED,
+                                },
+                                echo_open,
+                                // **An open run lifts the rung for its own rows**, which is
+                                // what "it opens" means: the reader sees the very rows the
+                                // rung was hiding, with their own headlines, payloads and
+                                // diffs, rather than a second rendering of them.
+                                rung: if open_run {
+                                    Verbosity::Normal
+                                } else {
+                                    *verbosity
+                                },
+                                diff_split,
+                                // Rebuilt per row inside the walk, so it cannot be hoisted
+                                // out of this borrow — it reads two fields the walk is
+                                // holding. **Closed for an open run**: that run is being
+                                // read whole, and opening a payload window inside a row that
+                                // is only on screen because the run is open would be two
+                                // unfoldings of one thing.
+                                payload_view: if open_run {
+                                    None
+                                } else {
+                                    payload_sel
+                                        .as_deref()
+                                        .filter(|id| !id.is_empty())
+                                        .map(|id| (id, *payload_page))
+                                },
+                                payload_newest: newest_payload.as_deref(),
                             },
-                            echo_open,
-                            rung: *verbosity,
-                            diff_split,
-                            // Rebuilt per row inside the walk, so it cannot be hoisted
-                            // out of this borrow — it reads two fields the walk is
-                            // holding.
-                            payload_view: payload_sel
-                                .as_deref()
-                                .filter(|id| !id.is_empty())
-                                .map(|id| (id, *payload_page)),
-                            payload_newest: newest_payload.as_deref(),
-                        },
-                    );
+                        ),
+                    };
                     // A row that rendered nothing gets no separator either. An
                     // assistant row whose text is `"\n\n\n"` and whose every call
                     // is drawn by its own result row is a real and common shape —
@@ -9163,7 +9320,7 @@ impl App {
                         // first column already separates.
                         let pack =
                             *hist_class == Some(RowClass::Activity) && class == RowClass::Activity;
-                        if !hist_lines.is_empty() && !pack {
+                        if !hist_lines.is_empty() && !pack && !tight {
                             hist_lines.push(String::new());
                         }
                         if hist_first_class.is_none() {
@@ -9314,6 +9471,14 @@ impl App {
                 // **And a card for a call in flight is the working too.** Kept out for the
                 // same reason: this rung shows the conversation, and a spinner over a tool
                 // call is the head reporting its own machinery.
+                //
+                // **A live call has no marker, and that is the one window R37 AMENDED does
+                // not close.** A run of hidden *rows* collapses to one line; a call that has
+                // not returned is not a row yet, so while the first call of a round is still
+                // running there is nothing for a marker to count. It closes itself: the
+                // moment that call's result row lands, the run exists and the line appears
+                // above it. The rung's liveness obligation is elsewhere and unbroken — the
+                // footer says a turn is running and for how long (R13/§5.6).
                 let live = calls.get(*settled_calls..).unwrap_or(&[]);
                 let live = if rung.hides_the_working() { &[][..] } else { live };
                 if !live.is_empty() {
@@ -12381,6 +12546,242 @@ fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     }
 }
 
+/// **How many display lines a reasoning block is** — wrapped, not counted by newline.
+///
+/// One implementation with two callers, because R37's marker and the thinking row's own
+/// header must not disagree about the same block: the header says `▸ Thought · 43 lines`
+/// and the marker says `43 thinking lines`, and a reader who opens the run sees the 43.
+/// A long unwrapped line is several display lines and counts as several — the same
+/// arithmetic, and the same reason, as `visible_width(...).div_ceil(w)`.
+fn reasoning_display_lines(text: &str, w: usize) -> usize {
+    let w = w.max(20);
+    let text = without_control_lines(text);
+    text.lines()
+        .map(|l| visible_width(l).div_ceil(w).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+/// **Does this rung hide this row** — R37, the row-level question in one place.
+///
+/// The item-level answer is [`Verbosity::keeps`]; this is the same test asked about a row,
+/// which is what the walks, the run finder and [`App::hidden_by_rung`] all need.
+///
+/// A row with no body yet is **not** hidden: it is drawn from this head's own echo of what
+/// the operator typed, and that is the conversation. A row the head never got an item for
+/// cannot be judged, and the honest default for unjudgeable is *show it*.
+fn row_hidden(items: &[SnapshotItem], rung: Verbosity, row: usize) -> bool {
+    if !rung.hides_the_working() {
+        return false;
+    }
+    match items.get(row).and_then(|it| it.item.as_ref()) {
+        Some(item) => !rung.keeps(item),
+        None => false,
+    }
+}
+
+/// **The contiguous run of hidden rows `row` belongs to**, as `[start, end)` — R37 AMENDED.
+///
+/// A run is what the marker replaces, and it is *contiguous rows* rather than a round or a
+/// turn: an assistant row is kept, so the prose that introduces a batch of work and the
+/// paragraph that reports it both break a run naturally. That is exactly the operator's
+/// shape — *prompt → narration → work → report* — with the work in the middle.
+///
+/// `None` when the row is not hidden, which is the question most callers are really asking.
+fn hidden_run_at(items: &[SnapshotItem], rung: Verbosity, row: usize) -> Option<(usize, usize)> {
+    if row >= items.len() || !row_hidden(items, rung, row) {
+        return None;
+    }
+    let mut start = row;
+    while start > 0 && row_hidden(items, rung, start - 1) {
+        start -= 1;
+    }
+    let mut end = row + 1;
+    while end < items.len() && row_hidden(items, rung, end) {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+/// **Is this row inside the run that is currently OPEN** — R37 AMENDED's "it opens".
+///
+/// Opening a run is not a second rendering of it: it is **the rung lifted for those rows
+/// and no others**, so the reader gets the very rows the rung was hiding — their own
+/// headlines, payloads, diffs and decisions — and gets them from the one renderer that has
+/// always drawn them. A bespoke "expanded run" view would be a second way to draw a tool
+/// row, which is the copy this file keeps refusing to make.
+///
+/// `open` is `payload_sel`, which is the same field the payload window uses. One field for
+/// both because they are the same act — *show me the whole of this* — and because a reader
+/// can only be reading one thing at a time.
+fn run_open_at(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    open: Option<&str>,
+    row: usize,
+) -> bool {
+    let Some(id) = open.filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    let Some(start) = items.iter().position(|it| it.item_id == id) else {
+        return false;
+    };
+    hidden_run_at(items, rung, start).is_some_and(|(s, e)| row >= s && row < e)
+}
+
+/// **The newest run of hidden rows, by its first row** — what `ctrl-t` opens.
+///
+/// The same shape `App::newest_payload_row` has for a long result, and for the same reason:
+/// there is no cursor in this head, so exactly one run can be addressed by a chord, and the
+/// one a reader reaching for the key means is the newest. A chord may only be named where
+/// it acts, so only this run's marker names `ctrl-t`.
+fn newest_hidden_run(items: &[SnapshotItem], rung: Verbosity) -> Option<usize> {
+    if !rung.hides_the_working() {
+        return None;
+    }
+    (0..items.len())
+        .rev()
+        .find(|r| hidden_run_at(items, rung, *r).is_some_and(|(start, _)| start == *r))
+}
+
+/// How many distinct verbs a marker lists before it stops naming them.
+///
+/// The operator's *"adaptivity"* means the line is sized to what it describes, and this is
+/// the one number in that: a run of forty tool calls does not get forty verbs, it gets four
+/// and an ellipsis, because past four the reader is not reading a list any more — they are
+/// deciding whether to open it, and the counts above are what that decision needs.
+const RUN_VERBS: usize = 4;
+
+/// **The one line a run of hidden rows collapses to** — R37 AMENDED, and the whole point
+/// of the amendment.
+///
+/// The operator, reading a screen where the model's prose ended in a colon:
+/// *"if toolcalls and thinking are just hidden completely the narrative breaks. something
+/// like `[5 tool calls and 43 thinking lines, \"summary line\"]` would fit better here."*
+/// The sentence pointed at work that was not there, so the rung did not hide the work — it
+/// made the model's own prose lie.
+///
+/// # What it carries, and what it deliberately does not
+///
+/// **How much and what it touched.** The counts are `N tool calls` and `N thinking lines`,
+/// because *how much* is the fact a reader uses to decide whether to open it. The subject is
+/// the verbs and targets the head already computed for the rows it is standing for —
+/// `card::Verb`'s own labels and `display_target`'s own elision — so `Ran, Edited
+/// src/chrome.lisp, Read` is TRUE by construction rather than a summary of anything.
+///
+/// **It does not say what was concluded, and that is the economy rather than a gap.** The
+/// marker has two visible neighbours: the line introducing the work and the paragraph
+/// reporting it. The conclusion is already on the screen, written by the model, for free —
+/// so the expensive part of a summary is the part this line must not attempt, and the
+/// remaining part is exactly the part that is missing. That is why there is no model here:
+/// the operator said *potentially* using one for summarisation, and measured against what
+/// the two neighbours already carry, there is nothing left for it to add.
+///
+/// # Adaptivity, stated so it is not a licence
+///
+/// *"A run of one row may simply say what that row was."* So a run of one drops the counts
+/// clause when it has a subject to show instead: `[Read src/app.rs]` rather than `[1 tool
+/// call — Read src/app.rs]`, which is the same sentence with a number nobody needed. It does
+/// **not** mean the head writes prose about the work — every word here is a word the head
+/// already had.
+///
+/// # It reads as a continuation, not as a row
+///
+/// Faint, bracketed, and at the prose's own column — no `▸`, no card, and no blank line
+/// before it (both walks are told so). A boxed row underneath the sentence that points at it
+/// is the rendering the operator said does not read correctly.
+fn hidden_run_lines(
+    items: &[SnapshotItem],
+    start: usize,
+    end: usize,
+    targets: &std::collections::HashMap<String, String>,
+    cfg: &RenderConfig,
+    newest: bool,
+) -> Vec<String> {
+    let mut calls = 0usize;
+    let mut think_lines = 0usize;
+    // Verb → the first target seen with it. Deduped by verb, so a round that read six files
+    // says `Read` once and names one of them; the reader who wants the rest opens the run.
+    let mut verbs: Vec<(String, Option<String>)> = Vec::new();
+    for it in &items[start..end] {
+        match it.item.as_ref() {
+            Some(letibot_transcript::TranscriptItem::ToolResult { name, call_id, .. }) => {
+                calls += 1;
+                let verb = card::Verb::of(name).label(false).to_string();
+                if !verbs.iter().any(|(v, _)| *v == verb) {
+                    let target = targets
+                        .get(call_id)
+                        .filter(|t| !t.is_empty())
+                        .cloned();
+                    verbs.push((verb, target));
+                }
+            }
+            Some(letibot_transcript::TranscriptItem::Reasoning { text, .. }) => {
+                think_lines += reasoning_display_lines(text, cfg.width);
+            }
+            // A `keeps`-false row of any other kind — a system update, a segment mark.
+            // Counted by nothing, and named by nothing: the requirement's own two counts
+            // are the two the operator named, and inventing a third kind of count for a
+            // row nobody classified would be the head describing work it cannot name.
+            _ => {}
+        }
+    }
+
+    let plural = |n: usize, one: &str, many: &str| {
+        format!("{n} {}", if n == 1 { one } else { many })
+    };
+    let mut counts: Vec<String> = Vec::new();
+    if calls > 0 {
+        counts.push(plural(calls, "tool call", "tool calls"));
+    }
+    if think_lines > 0 {
+        counts.push(plural(think_lines, "thinking line", "thinking lines"));
+    }
+    let counts = counts.join(", ");
+
+    let named: Vec<String> = verbs
+        .iter()
+        .take(RUN_VERBS)
+        .map(|(v, t)| match t {
+            Some(t) => format!("{v} {t}"),
+            None => v.clone(),
+        })
+        .collect();
+    let mut subject = named.join(", ");
+    if verbs.len() > RUN_VERBS {
+        subject.push_str(", …");
+    }
+
+    // **One row says what it was.** See the note above: this is the whole of "adaptivity",
+    // and it only applies when there is a subject to say it with — a single reasoning row
+    // has nothing but its count, so the count stays.
+    let body = if end - start > 1 || subject.is_empty() {
+        if counts.is_empty() {
+            subject.clone()
+        } else if subject.is_empty() {
+            counts.clone()
+        } else {
+            format!("{counts} — {subject}")
+        }
+    } else {
+        subject.clone()
+    };
+
+    // **The seam, and the chord only on the run it acts on.** The newest run is the one
+    // `ctrl-t` opens, so that marker names the chord; every other run's marker names
+    // `/verbosity`, which is the verb that does reach it. `ctrl-t` silent-with-nothing-to-open
+    // is the same rule from the other side: a chord may only be named where it acts.
+    let seam = if newest {
+        " · ctrl-t opens it"
+    } else {
+        " · /verbosity"
+    };
+    let w = cfg.width.max(20);
+    vec![trim_to(
+        &cfg.palette()
+            .paint(Role::Faint, &format!("[{body}]{seam}")),
+        w,
+    )]
+}
 /// The fold's own header, which is also where its key is advertised.
 ///
 /// `card::reasoning` supplies the word and the tense; this adds the two things
@@ -12393,6 +12794,7 @@ fn reasoning_decor(cfg: &RenderConfig) -> Decor {
 /// working-out as a handful of very long paragraphs, so "3 lines" beside a fold
 /// that opens to half a screen is a number that answers the wrong question. What
 /// the reader wants to know is how much of the terminal this is about to cost.
+/// See [`reasoning_display_lines`], which computes it for this header and for R37's marker.
 fn thinking_header(
     cfg: &RenderConfig,
     raw: &str,
@@ -12401,11 +12803,7 @@ fn thinking_header(
     elapsed_ms: Option<u64>,
 ) -> String {
     let w = cfg.width.max(20);
-    let lines: usize = raw
-        .lines()
-        .map(|l| visible_width(l).div_ceil(w).max(1))
-        .sum::<usize>()
-        .max(1);
+    let lines = reasoning_display_lines(raw, cfg.width);
     let mark = if open { "▾" } else { "▸" };
     let word = card::reasoning(&[], running, elapsed_ms, &card_cfg(cfg, Fold::Folded))
         .into_iter()
@@ -14064,10 +14462,15 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
     } = *ctx;
     // **The rung, before anything else** (R37). A row this rung does not keep renders to
     // nothing, and the walk already treats a row that renders to nothing as no row at all —
-    // no separator, no span, no height — so the whole of hiding is this one early return.
-    // Returning empty rather than a placeholder is the requirement: a placeholder per hidden
-    // row is the thing the operator asked to be rid of, and the mode being named on screen is
-    // what stands in for it (R29).
+    // no separator, no span, no height — so a hidden row costs this function one early
+    // return.
+    //
+    // **R37 AMENDED, and the two are not alternatives.** A row inside an OPEN run arrives here
+    // as a `Normal` rung, because opening a run is the rung lifted for its rows and nothing
+    // else — so this function does not know about runs at all. A row inside a CLOSED run is
+    // never drawn as a row: the walk answers that one line for the whole run, at the run's
+    // first row ([`hidden_run_lines`]), and the rows behind it render to nothing here. That is
+    // one line per RUN, which is what the amendment asks for and is not a placeholder per row.
     if let Some(item) = it.item.as_ref()
         && !rung.keeps(item)
     {
@@ -27892,6 +28295,549 @@ mod tests {
     /// card. The card states every value **and what it means** — `conversation`, `terse`,
     /// `normal`, `loud` are names, and a reader choosing between them is choosing between *what
     /// will be on my screen*, which the name does not say.
+
+    /// **R37 AMENDED: a run of hidden rows is ONE line, and it is the sentence's
+    /// continuation.**
+    ///
+    /// The operator, reading a real screen where the model's prose ended in a colon:
+    /// *"if toolcalls and thinking are just hidden completely the narrative breaks."*
+    /// The colon pointed at work that was not there. So a contiguous run of hidden rows
+    /// collapses to one line carrying **how much** (`N tool calls`, `N thinking lines`) and
+    /// **what it touched** (the verbs and targets the head already computed), drawn at the
+    /// prose's own column with no blank in front of it.
+    #[test]
+    fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **The operator's own shape**: an answer that ENDS IN A COLON, then the work. An
+        // assistant row is the conversation, so it is kept — and the marker has to read as
+        // the continuation of the sentence it points at.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        // **The row carries the calls as well as the prose**, which is the shape the daemon
+        // writes and the only place a row's *target* survives: `targets_before` reads the
+        // nearest assistant row's `tool_calls` arguments, so a fixture that published only
+        // proposals would leave every target empty — and this test would then be asserting
+        // that a marker with no target is a marker with the right target.
+        let calls: Vec<(&str, &str, &str)> = vec![
+            ("c0", "read", "crates/tui/src/app.rs"),
+            ("c1", "grep", "ctrl-t"),
+            ("c2", "edit", "crates/tui/src/chrome.lisp"),
+            ("c3", "read", "crates/tui/src/term.rs"),
+        ];
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "here is what I am about to do:".into(),
+                    tool_calls: calls
+                        .iter()
+                        .map(|(id, name, arg)| letibot_transcript::ToolCall {
+                            id: (*id).into(),
+                            name: (*name).into(),
+                            arguments: format!("{{\"path\": \"{arg}\"}}"),
+                        })
+                        .collect(),
+                    truncated: false,
+                }),
+            },
+        )));
+        // One reasoning block, then four tool results — all hidden, all contiguous.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.1".into(),
+                kind: "reasoning".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::Reasoning {
+                    text: "let me check the file\nand then the other one\nand then the tests"
+                        .into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
+                }),
+            },
+        )));
+        for (i, (call, name, _arg)) in calls.iter().enumerate() {
+            let id = format!("s.{}", i + 2);
+            a.apply(ServerFrame::Event(env(
+                (i as u64) * 2 + 5,
+                testing::appended(&id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                (i as u64) * 2 + 6,
+                SessionEvent::TranscriptContent {
+                    item_id: id.clone(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: (*call).into(),
+                        name: (*name).into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("CONTENTS-{i}"),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        // Wide enough for the whole marker: at 110 columns it is trimmed, which is its own
+        // rule (one line, always) and not a missing fact — but then the assertion below would
+        // be about the trim rather than about what the marker says.
+        let quiet = a.screen(200, 40).join("\n");
+
+        // **One line for the whole run**, carrying both counts and the verbs.
+        assert_eq!(
+            quiet.matches("[4 tool calls").count(),
+            1,
+            "the run must draw exactly one marker:\n{quiet}"
+        );
+        assert!(quiet.contains("3 thinking lines"), "{quiet}");
+        assert!(
+            quiet.contains("Read crates/tui/src/app.rs")
+                && quiet.contains("Edited crates/tui/src/chrome.lisp"),
+            "the marker names the verbs and the targets the head already had: {quiet}"
+        );
+        // The rows themselves are still gone — the point of the rung is that the reader does
+        // not read them.
+        for hidden in ["CONTENTS-0", "CONTENTS-3", "let me check the file"] {
+            assert!(!quiet.contains(hidden), "`{hidden}` is the working: {quiet}");
+        }
+
+        // **It is the continuation of the sentence, not a row underneath it.** The prose ends
+        // in a colon and the marker is the very next line.
+        let lines: Vec<&str> = quiet.lines().collect();
+        let prose = lines
+            .iter()
+            .position(|l| l.contains("here is what I am about to do:"))
+            .expect("the prose is on the screen");
+        let marker = lines
+            .iter()
+            .position(|l| l.contains("[4 tool calls"))
+            .expect("the marker is on the screen");
+        assert_eq!(
+            marker,
+            prose + 1,
+            "a blank line between the sentence and its work is what makes the marker a row \
+             underneath: {quiet}"
+        );
+    }
+
+    /// **A run of one row says what that row was** — the operator's *"adaptivity"*, which
+    /// means the line is sized to what it describes and **not** that the head invents prose.
+    #[test]
+    fn a_run_of_one_row_says_what_that_row_was() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "reading it now:".into(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "c0".into(),
+                        name: "read".into(),
+                        arguments: "{\"path\": \"crates/tui/src/app.rs\"}".into(),
+                    }],
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("s.1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "CONTENTS".into(),
+                    edit: None,
+                    origin: None,
+                }),
+            },
+        )));
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let quiet = a.screen(110, 40).join("\n");
+        assert!(
+            quiet.contains("[Read crates/tui/src/app.rs]"),
+            "one row says what it was, with no count nobody needed: {quiet}"
+        );
+        assert!(
+            !quiet.contains("1 tool call"),
+            "the count is dropped when there is nothing to add up: {quiet}"
+        );
+
+        // **And a single reasoning row keeps its count**, because the count is all there is to
+        // say about it — the clause is dropped when a subject replaces it, not always.
+        let mut b = app();
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        b.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "reasoning".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        b.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Reasoning {
+                    text: "one line".into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
+                }),
+            },
+        )));
+        b.verbosity = Verbosity::Conversation;
+        b.invalidate_history();
+        let quiet = b.screen(110, 40).join("\n");
+        assert!(
+            quiet.contains("[1 thinking line]"),
+            "a single reasoning row has only its count to report: {quiet}"
+        );
+    }
+
+    /// **The chord is named only on the run it acts on**, and every other run names the verb
+    /// that does reach it — `ctrl-t` opens the newest run because that is the only one a head
+    /// with no cursor can address (R10's rule, one level up).
+    #[test]
+    fn the_chord_is_named_on_one_run_and_the_verb_on_the_others() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // Two runs, separated by an assistant row — which is kept, and is what makes them two
+        // runs rather than one.
+        a_result_row(&mut a, 1, "s.0", "first output");
+        a.apply(ServerFrame::Event(env(
+            20,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.1".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            21,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "and now the second thing:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a_result_row(&mut a, 30, "s.2", "second output");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let quiet = a.screen(110, 40).join("\n");
+        assert_eq!(
+            quiet.matches("ctrl-t opens it").count(),
+            1,
+            "the chord is named exactly once, on the newest run: {quiet}"
+        );
+        assert_eq!(
+            quiet.matches("· /verbosity").count(),
+            1,
+            "the older run names the verb that does reach it: {quiet}"
+        );
+        // And the newest run is the LOWER of the two markers.
+        let lines: Vec<&str> = quiet.lines().collect();
+        let chord = lines
+            .iter()
+            .position(|l| l.contains("ctrl-t opens it"))
+            .expect("the chord is named");
+        let verb = lines
+            .iter()
+            .position(|l| l.contains("· /verbosity"))
+            .expect("the verb is named");
+        assert!(chord > verb, "the newest run is the lower one: {quiet}");
+    }
+
+    /// **A marker that cannot be opened is the elision this document refuses everywhere else.**
+    /// `ctrl-t` opens the newest run — and opening it is **the rung lifted for its rows**, so
+    /// the reader gets the very rows the rung was hiding rather than a second rendering of them.
+    #[test]
+    fn the_marker_opens_and_the_run_draws_its_own_rows() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a_result_row(&mut a, 1, "s.0", "first output");
+        a_result_row(&mut a, 20, "s.1", "second output");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let closed = a.screen(110, 40).join("\n");
+        assert!(closed.contains("[2 tool calls"), "{closed}");
+        assert!(!closed.contains("first output"), "{closed}");
+
+        // **The chord.** It opens the newest run — both rows here, since they are contiguous.
+        a.key(Key::CtrlT);
+        let open = a.screen(110, 40).join("\n");
+        assert!(
+            !open.contains("[2 tool calls"),
+            "the marker is replaced by the run it stood for: {open}"
+        );
+        assert!(
+            open.contains("second output"),
+            "opening a run draws its rows: {open}"
+        );
+        // **And it draws them as ROWS** — the head's own headline for a settled tool result,
+        // which is the same thing `/verbosity normal` gives, reached without leaving the rung
+        // the reader chose.
+        assert!(
+            open.contains("Ran") && open.contains("second output"),
+            "the rows are the head's own, with their headlines and payloads: {open}"
+        );
+        // The same key closes it, and the marker comes back.
+        a.key(Key::CtrlT);
+        let shut = a.screen(110, 40).join("\n");
+        assert!(shut.contains("[2 tool calls"), "{shut}");
+        assert!(!shut.contains("second output"), "{shut}");
+    }
+
+    /// **The rung is still a view, and the marker does not change that.** Switching back draws
+    /// every row again — and the marker is drawn at no other rung, because there is nothing
+    /// hidden for it to stand for.
+    #[test]
+    fn the_marker_exists_only_at_the_rung_that_hides_what_it_stands_for() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a_result_row(&mut a, 1, "s.0", "the payload");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        assert!(a.screen(110, 40).join("\n").contains("[Ran]"));
+        for rung in [Verbosity::Terse, Verbosity::Normal, Verbosity::Loud] {
+            a.verbosity = rung;
+            a.invalidate_history();
+            let shown = a.screen(110, 40).join("\n");
+            assert!(
+                !shown.contains("[Ran]"),
+                "a marker at {rung:?} would be a line about nothing hidden: {shown}"
+            );
+            assert!(
+                shown.contains("Ran") && shown.contains("the payload"),
+                "the row itself is drawn at {rung:?}: {shown}"
+            );
+        }
+    }
+
+    /// **Changing the rung closes what was open, because it was open in the other
+    /// rendering.** `payload_sel` names a payload window under every other rung and the run
+    /// `ctrl-t` opened under this one, so carrying the same id across the change put a window
+    /// on the screen that the reader had not asked for.
+    #[test]
+    fn changing_the_rung_closes_the_run_it_opened() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a_result_row(&mut a, 1, "s.0", "the payload");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        a.key(Key::CtrlT);
+        assert!(a.payload_sel.is_some(), "the run is open");
+        assert!(a.screen(110, 40).join("\n").contains("the payload"));
+        // Now leave the rung. The run is not a run any more, and the id must not be read as
+        // a payload window on the row that wore it.
+        assert_eq!(a.command("verbosity normal"), None);
+        assert!(
+            a.payload_sel.is_none(),
+            "a run left open across a rung change came back as a payload window"
+        );
+        let shown = a.screen(110, 40).join("\n");
+        assert!(
+            !shown.contains("pages down"),
+            "no window is open: {shown}"
+        );
+    }
+
+    /// **The three lines read as one paragraph** — the requirement's own claim, asserted in
+    /// the only form that can: the order.
+    ///
+    /// The operator's shape is *prompt → narration → work → report*, and the marker sits
+    /// between the last two. So the assertion is that the screen carries the prose, then the
+    /// marker, then the report, **with no blank line anywhere between them** — which is what
+    /// "the marker does not have to say what was concluded" is worth in practice. Run with
+    /// `--nocapture` to see it: the paragraph is the evidence and the three positions are the
+    /// claim.
+    #[test]
+    fn the_marker_reads_as_one_paragraph() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        for (seq, item_id, kind, item) in [
+            (
+                1u64,
+                "s.0",
+                "assistant",
+                TranscriptItem::Assistant {
+                    text: "let me look at the four places this has to give:".into(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "c0".into(),
+                        name: "read".into(),
+                        arguments: "{\"path\": \"crates/tui/src/app.rs\"}".into(),
+                    }],
+                    truncated: false,
+                },
+            ),
+            (
+                3,
+                "s.1",
+                "tool_result",
+                TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "SOMETHING LONG ENOUGH TO HIDE".into(),
+                    edit: None,
+                    origin: None,
+                },
+            ),
+            (
+                5,
+                "s.2",
+                "assistant",
+                TranscriptItem::Assistant {
+                    text: "and that is what it says.".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            ),
+        ] {
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptAppended {
+                    item_id: item_id.into(),
+                    kind: kind.into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: item_id.into(),
+                    item: Box::new(item),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(100, 30);
+        eprintln!("\n{}", screen.join("\n"));
+        let lines: Vec<&str> = screen.iter().map(String::as_str).collect();
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("`{needle}` is not on the screen:\n{}", screen.join("\n")))
+        };
+        let prose = at("this has to give:");
+        let marker = at("[Read crates/tui/src/app.rs]");
+        let report = at("and that is what it says.");
+        // **The marker is GLUED to the sentence it continues**, which is the amendment's
+        // whole point: no blank line, because a blank line is what made it a row underneath
+        // the prose rather than the rest of it.
+        assert_eq!(
+            marker,
+            prose + 1,
+            "a blank line between the sentence and its work:\n{}",
+            screen.join("\n")
+        );
+        // **And the report is the paragraph AFTER both**, with the air prose gets — the
+        // marker is the model's own working and this is the model speaking again. That air is
+        // also the economy: the conclusion is a neighbour the marker never has to state.
+        assert_eq!(
+            report,
+            marker + 2,
+            "the report is not the next paragraph:\n{}",
+            screen.join("\n")
+        );
+        assert!(
+            lines[marker + 1].is_empty(),
+            "paragraphs of prose are separated by a blank line: {lines:?}"
+        );
+    }
+
+    /// **R37's own invariant, still true: a warning is not the working.** The amendment adds a
+    /// line back to the screen; it must not have let anything else back in or out.
+    #[test]
+    fn the_marker_does_not_hide_a_warning() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.note(Note::Warned(Warned {
+            code: "gate_timeout".into(),
+            detail: "nobody answered the ask".into(),
+            ts: 3,
+        }));
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let quiet = a.screen(110, 40).join("\n");
+        assert!(
+            quiet.contains("nobody answered the ask"),
+            "a warning is not the working and the rung does not hide it: {quiet}"
+        );
+    }
+
     #[test]
     fn the_verbosity_card_shows_every_rung_with_its_meaning_and_marks_the_current_one() {
         let mut a = app();
