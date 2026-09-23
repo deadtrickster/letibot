@@ -2521,6 +2521,52 @@ impl App {
             // The arm is explicit rather than a wildcard so that the day the head starts
             // asking, a frame that arrives unhandled is visible here rather than swallowed
             // by a `_ =>`.
+            // **R11's locator, answered.** The bytes go to the pane that asked, on the same
+            // channel `Peeked` and `JobOutput` use — a pane, not the conversation, because a
+            // head asked for them to READ and a brief scrolled past in the chat is a brief
+            // nobody finds again.
+            //
+            // **`None` reads as *not recorded*, never as empty.** The store holds `NULL` on
+            // every row written before R11 kept the exchange, and an oracle that never answered
+            // has no reply either — the two are one sentence to a reader and neither is *"here
+            // it is, and it is nothing"*.
+            ServerFrame::Diagnostic {
+                request_id,
+                kind,
+                body,
+                total,
+            } => {
+                let what = match kind {
+                    letibot_sessionlog::protocol::DiagnosticKind::Brief => "the brief it was shown",
+                    letibot_sessionlog::protocol::DiagnosticKind::Reply => "the reply it gave",
+                };
+                let mut lines: Vec<String> = vec![format!("{request_id} — {what}")];
+                match &body {
+                    Some(b) if b.is_empty() => {
+                        lines.push(String::new());
+                        lines.push("(recorded, and zero bytes)".into());
+                    }
+                    Some(b) => {
+                        lines.push(String::new());
+                        lines.extend(b.lines().map(str::to_string));
+                        lines.push(String::new());
+                        lines.push(format!("  {total} bytes"));
+                    }
+                    None => {
+                        lines.push(String::new());
+                        lines.push(
+                            "not recorded. A row written before the exchange was kept has no \
+                             brief and no reply, and an oracle that never answered has no \
+                             reply either — this says which case it is not."
+                                .into(),
+                        );
+                    }
+                }
+                self.slash_out = Some(("diagnostic".to_string(), lines));
+                self.pane_scroll = 0;
+                self.redraw = true;
+                Disposition::Control
+            }
             ServerFrame::RowFetched { .. } => Disposition::Control,
             ServerFrame::Peeked {
                 session_id,
@@ -9357,8 +9403,41 @@ impl App {
             // rule — and rendering it as `model says unavailable: …` claims a model
             // spoke. The distinction is the field this commit added, and the sentence
             // is the same one `letibot_tools`' own `ModelAdvice::line()` writes.
+            // **R12's four non-answers, and the fifth fact that is an answer** (leticl's
+            // ask). Without this field all five reached the glass as `model says ask: <prose>`
+            // — one line for facts whose remedies differ: raise the ceiling, read the bytes,
+            // re-ask, or accept the refusal. leticl measured it on three real frames: every
+            // field a head controls was identical across them.
+            //
+            // **The head AUTHORS the classification; the daemon's prose follows it as the
+            // detail.** That is the division the field makes possible and it is why the two
+            // cannot disagree: the word is derived from a token, the sentence is the
+            // server's own `basis`, and the head parses nothing.
             let said = if a.consulted {
-                format!("  model says {}: {}", a.would, a.basis)
+                match a.unsure.as_deref() {
+                    Some("out_of_room") => format!(
+                        "  the guard ran out of room before it answered — {} (a budget, not an \
+                         opinion; `--oracle-max-tokens` is the knob)",
+                        a.basis
+                    ),
+                    Some("unreadable") => format!(
+                        "  the guard's reply was not a verdict — {}",
+                        a.basis
+                    ),
+                    Some("could_not_decide") => {
+                        format!("  the guard answered unsure — {}", a.basis)
+                    }
+                    Some("between_thresholds") => format!(
+                        "  the guard's two scores fell between the thresholds — {}",
+                        a.basis
+                    ),
+                    // **A token this head does not know is SHOWN, not swallowed.** A daemon
+                    // that gains a fifth kind must be visible rather than silently reading as
+                    // one of the four — which is the defect this whole field exists to end.
+                    Some(other) => format!("  the guard did not decide ({other}) — {}", a.basis),
+                    // The fifth fact: a consulted oracle that answered, and answered *no*.
+                    None => format!("  model says {}: {}", a.would, a.basis),
+                }
             } else {
                 format!("  no model verdict — {}", a.basis)
             };
@@ -13064,6 +13143,7 @@ mod tests {
             basis: "the verdict could not be read".into(),
             cites: Vec::new(),
             latency_ms: 4_000,
+            unsure: None,
         });
         let drawn = a.decision_lines(&d, 100).join("\n");
         assert!(
@@ -15041,6 +15121,67 @@ mod tests {
         assert_eq!(a.notes_before(), 3, "only the snapshot's three are prior");
     }
 
+    /// **Five facts, five lines — leticl's measurement, as a test.**
+    ///
+    /// leticl ran three real `decision_requested` frames through a scratch head and read the
+    /// cards: **every field a head controls was identical** across *could not decide*,
+    /// *unreadable* and *out of room* — `would: "ask"`, `consulted: true`, `cites: []` — and
+    /// the card echoed the daemon's prose and authored nothing. `would: "ask"` is *also* what
+    /// `NotAuthorised` sets, so five distinct facts reached the glass as one line.
+    ///
+    /// The assertion is **pairwise difference**: for each of the five, the rendered line must
+    /// differ from every other. A test that only checked "the field is carried" would pass
+    /// against a head that ignored it, which is the half that was already broken.
+    #[test]
+    fn the_five_facts_behind_one_ask_are_five_lines_on_the_card() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+        let rendered = |unsure: Option<&str>, would: &str| -> String {
+            let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+            d.advice = Some(letibot_sessionlog::event::ModelAdvice {
+                consulted: true,
+                would: would.into(),
+                by: "model:test".into(),
+                basis: "THE-BASIS".into(),
+                cites: Vec::new(),
+                unsure: unsure.map(str::to_string),
+                latency_ms: 12,
+            });
+            a.decision_lines(&d, 100).join("\n")
+        };
+
+        // The four ways of NOT answering, and the fifth which is an answer.
+        let five = [
+            ("could_not_decide", "ask"),
+            ("between_thresholds", "ask"),
+            ("unreadable", "ask"),
+            ("out_of_room", "ask"),
+            // The fifth: consulted, answered, and the answer was no. `unsure: None`.
+            ("", "ask"),
+        ];
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for (unsure, would) in five {
+            let screen = rendered(if unsure.is_empty() { None } else { Some(unsure) }, would);
+            assert!(
+                screen.contains("THE-BASIS"),
+                "the daemon's sentence must still be there ({unsure:?}):\n{screen}"
+            );
+            for (other_unsure, other_screen) in &seen {
+                assert_ne!(
+                    &screen, other_screen,
+                    "`{unsure}` and `{other_unsure}` render identically — which is the five-\
+                     facts-one-line defect this field exists to end"
+                );
+            }
+            seen.push((unsure.to_string(), screen));
+        }
+        // And a kind this head does not know is shown rather than folded into one of the
+        // four, so a daemon that gains a fifth is visible.
+        let unknown = rendered(Some("fifth_kind"), "ask");
+        assert!(unknown.contains("fifth_kind"), "{unknown}");
+    }
+
+
     /// **R19's second fault: routine is painted as failure.**
     ///
     /// `compacted` and `auto_compact` are the session doing exactly what it should, and
@@ -15907,6 +16048,7 @@ mod tests {
                     basis: "the operator asked for a clean rebuild in this turn".into(),
                     cites: vec!["rebuild it from scratch".into()],
                     latency_ms: 2_100,
+                    unsure: None,
                 }),
                 deadline: None,
                 on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
@@ -15987,6 +16129,7 @@ mod tests {
                 basis: "it looks routine".into(),
                 cites: Vec::new(),
                 latency_ms: 40,
+                unsure: None,
             }),
             late: false,
         };

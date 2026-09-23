@@ -265,7 +265,18 @@ use crate::view::Snapshot;
 /// [`HEAD_RUN_TOOLS`] **by the daemon**, which is the only place the check means anything:
 /// a head is going to run the thing either way, so what the list bounds is *what may be
 /// recorded as part of the conversation*, not what may be executed.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// # 25: a head can fetch the bytes that justified a decision
+///
+/// [`ClientFrame::FetchDiagnostic`] and [`ServerFrame::Diagnostic`] are a new client frame and
+/// its answer, so a version-24 daemon would fail to parse the first — the version-4 argument,
+/// and the same ATTACH-time refusal. R11 put the oracle's brief and its reply on the corpus row
+/// (`shown`, `oracle_reply`) and neither reached a head; this is the locator that lets one ask,
+/// by the same shape `FetchRow` already uses for a row the daemon's window has trimmed.
+///
+/// **This version is also where the signpost learned about `ServerFrame`.** The check that every
+/// frame is accounted for covered the two directions that already existed and not the third, so
+/// a new server frame broke an old head with nothing asking about it — found by adding one.
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -351,6 +362,25 @@ pub fn protocol_skew(daemon: u32, head: u32) -> Option<String> {
              make them the same build."
         )
     })
+}
+
+/// **Which half of the oracle's exchange a head is asking for** — R11's locator.
+///
+/// A head draws a decision card and may want the bytes that justified it. It must not be
+/// handed them on every frame: the brief runs to kilobytes and a session makes hundreds of
+/// decisions. So a head asks for one, by name, and this is the name.
+///
+/// **Why a `kind` and not two client frames.** The two halves are one subject — the exchange
+/// between this daemon and its oracle about one call — they are stored on one row, they are
+/// read from one place, and a head that wants one very often wants the other next. Two frames
+/// would be two round trips and two chances to disagree about the id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticKind {
+    /// The bytes the oracle was shown — `adjudication.shown`.
+    Brief,
+    /// The bytes it answered with — `adjudication.oracle_reply`.
+    Reply,
 }
 
 /// One setting, as the daemon resolved it for this session.
@@ -886,6 +916,20 @@ pub enum ClientFrame {
         outcome: letibot_transcript::ToolOutcome,
         payload: String,
     },
+    /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
+    ///
+    /// A LOCATOR, not a payload: a head names one decision and one half of its exchange and
+    /// the daemon answers with those bytes or with *not recorded*. The same shape as
+    /// [`ClientFrame::FetchRow`] — *the head asks the daemon for something big it does not
+    /// normally hold* — and for the same reason: the brief and the reply are on the corpus row
+    /// and on no frame, so without this a head can only show a sentence ABOUT them.
+    ///
+    /// `request_id` is the adjudication's own id, the one `/gate` takes and the row is keyed by.
+    /// Answered with [`ServerFrame::Diagnostic`].
+    FetchDiagnostic {
+        request_id: String,
+        kind: DiagnosticKind,
+    },
     /// List the settings this session runs under. Answered with
     /// [`ServerFrame::Settings`]; never moves the connection.
     Settings,
@@ -1042,6 +1086,22 @@ pub enum ServerFrame {
         /// The whole body's length in bytes, so a head can say what is on either side.
         total: usize,
     },
+    /// **The bytes a head asked for, or that there are none** — the answer to
+    /// [`ClientFrame::FetchDiagnostic`].
+    ///
+    /// **`body: None` is "not recorded" and it is not an empty string.** The store holds `NULL`
+    /// on every row written before R11 kept the exchange, and an oracle that never answered has
+    /// no reply either; a head must tell *"nobody kept this"* from *"here it is, and it is
+    /// empty"*, which is the rule [`ServerFrame::RowFetched`]'s own doc states one field over.
+    Diagnostic {
+        request_id: String,
+        kind: DiagnosticKind,
+        body: Option<String>,
+        /// Bytes the field holds, or 0 when there is none. Present rather than inferred, so a
+        /// head renders a length from a fact and not from `body.map(len).unwrap_or(0)` — which
+        /// cannot tell "empty" from "absent" either.
+        total: usize,
+    },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),
     /// The head's queue overflowed, or its resume gap was too large. **Not an
@@ -1149,6 +1209,7 @@ mod tests {
                 | ClientFrame::Attach { .. }
                 | ClientFrame::CompactSession { .. }
                 | ClientFrame::Detach { .. }
+                | ClientFrame::FetchDiagnostic { .. }
                 | ClientFrame::FetchRow { .. }
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs { .. }
@@ -1210,11 +1271,39 @@ mod tests {
                 | crate::SessionEvent::Warning { .. } => {}
             }
         }
+        // **And the server frames, which this did not cover until 2026-09-23.**
+        //
+        // A new `ServerFrame` reaches a head that cannot parse it exactly as a new
+        // `ClientFrame` reaches a daemon that cannot — and this match was written for the two
+        // directions that were already here, so the third had no signpost at all. Found by
+        // adding `Diagnostic` and noticing nothing asked about it.
+        fn server(f: &ServerFrame) {
+            match f {
+                // The first line is unindented because this list was generated from the enum's
+                // own body; the tuple variant `Event(_)` had to be added by hand, which is
+                // itself the argument for the match existing.
+                ServerFrame::Hello { .. }
+                | ServerFrame::Event(_)
+                | ServerFrame::Secret { .. }
+                | ServerFrame::Sessions { .. }
+                | ServerFrame::Todos { .. }
+                | ServerFrame::Settings { .. }
+                | ServerFrame::Jobs { .. }
+                | ServerFrame::Peeked { .. }
+                | ServerFrame::RowFetched { .. }
+                | ServerFrame::Diagnostic { .. }
+                | ServerFrame::Resync { .. }
+                | ServerFrame::Accepted { .. }
+                | ServerFrame::Rejected { .. }
+                | ServerFrame::Bye { .. } => {}
+            }
+        }
         let _ = client;
         let _ = event;
+        let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 24,
-            "the match above was last reconciled with the frame list at 24"
+            PROTOCOL_VERSION, 25,
+            "the match above was last reconciled with the frame list at 25"
         );
     }
 

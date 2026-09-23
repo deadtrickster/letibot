@@ -624,6 +624,9 @@ fn run() -> Result<i32, String> {
         // registry is not holding, and answers `FetchRow` for a row its bounded view has
         // trimmed. Both are set here because this is the one place that knows there is a
         // store at all.
+        // **One store, three questions** now: the same instance lists sessions, answers
+        // `FetchRow`, and serves R11's locator for the oracle's brief and reply.
+        registry.set_diagnostic_source(src.clone());
         registry.set_row_source(src.clone());
         registry.set_source(src);
     }

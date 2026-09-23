@@ -709,6 +709,26 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **R11's locator, leticl's ask.** A head names one decision and one half of its
+            // exchange; the daemon answers with the bytes or with *not recorded*. The same
+            // shape `FetchRow` uses, and for the same reason: this is the head asking for
+            // something big it does not normally hold.
+            //
+            // **Answered even when there is nothing**, and that is the point of
+            // `body: Option`: an empty `body` and a `body` of `""` are different facts, and a
+            // head that could not tell them apart would draw "the oracle said nothing" over
+            // "nobody kept this".
+            Ok(ClientFrame::FetchDiagnostic { request_id, kind }) => {
+                let body = registry.diagnostic(&request_id, kind);
+                let total = body.as_ref().map(|b| b.len()).unwrap_or(0);
+                let f = ServerFrame::Diagnostic {
+                    request_id,
+                    kind,
+                    body,
+                    total,
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Settings) => {
                 let f = ServerFrame::Settings {
                     rows: registry.settings(&seat.hub.session_id()),

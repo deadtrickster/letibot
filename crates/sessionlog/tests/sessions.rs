@@ -112,6 +112,15 @@ fn frame_kind(f: &ServerFrame) -> String {
             events,
             ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),
+        ServerFrame::Diagnostic {
+            request_id,
+            body,
+            total,
+            ..
+        } => format!(
+            "Diagnostic({request_id}, {} of {total})",
+            body.as_ref().map(|b| b.len()).unwrap_or(0)
+        ),
         ServerFrame::Settings { rows } => format!("Settings({} rows)", rows.len()),
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),

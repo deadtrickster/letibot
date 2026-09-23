@@ -219,6 +219,37 @@ pub struct ModelAdvice {
     /// head should render the emptiness rather than the absence of a list.
     #[serde(default)]
     pub cites: Vec<String>,
+    /// **Whether the answer was a NON-answer, and which kind** (R12) — leticl's ask, and it
+    /// closes a five-facts-one-line defect rather than adding a field for its own sake.
+    ///
+    /// Without it, `consulted: true` + `would: "ask"` + `cites: []` is what **five** distinct
+    /// facts arrive as, and leticl measured that against three real frames on a scratch head:
+    ///
+    /// ```text
+    ///     the model answered UNSURE                     UnsureKind::CouldNotDecide
+    ///     two scores landed between the thresholds      UnsureKind::BetweenThresholds
+    ///     the bytes are not a verdict at all            UnsureKind::Unreadable
+    ///     the generation stopped at its ceiling         UnsureKind::OutOfRoom
+    ///     the model found nothing that authorises it    OracleAnswer::NotAuthorised
+    /// ```
+    ///
+    /// The last is a real ANSWER — the oracle looked and said no — and the four above are
+    /// four different ways of not answering. A head that renders all five as "the guard
+    /// asks" is rendering one line for facts whose remedies differ: raise the ceiling, read
+    /// the bytes, re-ask, or accept the refusal.
+    ///
+    /// **The token, not the prose.** `basis` carries a sentence for each of the five and both
+    /// trees' own docs forbid parsing it (*re-parsing prose to recover a label is how a corpus
+    /// rots*). This is `UnsureKind::as_str()` — the same string the corpus column
+    /// `oracle_reading` already stores, so one vocabulary has two destinations rather than two
+    /// vocabularies that drift.
+    ///
+    /// **`None` with `would: "ask"` is the fifth fact**: a consulted oracle that answered, and
+    /// answered *no*. `None` with `would: "unavailable"` is nobody spoke. `#[serde(default)]`
+    /// and no version bump — an older head ignores it and renders what it rendered before, and
+    /// a daemon from before the field sends none, which reads as `None`.
+    #[serde(default)]
+    pub unsure: Option<String>,
     /// How long it took, in milliseconds. A verdict that spent its whole budget is
     /// a different fact from one that came back in 40 ms.
     pub latency_ms: u64,

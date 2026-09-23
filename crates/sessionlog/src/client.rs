@@ -330,6 +330,24 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
+    ///
+    /// A locator and not a payload: the head names one decision and one half of its exchange
+    /// and the daemon answers with those bytes or with *not recorded*. Answered with
+    /// `ServerFrame::Diagnostic`, which a head reads from the same receive loop it reads
+    /// everything else on — this returns nothing, the answer is a frame.
+    pub fn fetch_diagnostic(
+        &mut self,
+        request_id: &str,
+        kind: crate::protocol::DiagnosticKind,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::FetchDiagnostic {
+            request_id: request_id.to_string(),
+            kind,
+        })?;
+        Ok(())
+    }
+
     /// **Ask the daemon to admit a call this head will run itself** — R24 part two,
     /// decision 4, the first of the two frames.
     ///

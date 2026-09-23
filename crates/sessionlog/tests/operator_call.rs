@@ -201,3 +201,86 @@ fn a_head_that_goes_away_between_the_frames_leaves_a_sentence_not_a_silent_admis
         "and must say what is missing rather than that something failed: {detail}"
     );
 }
+
+/// **R11's locator, end to end: a head asks by `(kind, id)` and gets bytes or *not recorded*.**
+///
+/// Three facts and they must be three: bytes that exist, a field that was recorded and is
+/// empty, and a field nobody kept. The store holds `NULL` on every row written before R11 kept
+/// the exchange, so *"nobody kept this"* and *"here it is, and it is empty"* are both real and
+/// a head that could not tell them apart would draw one sentence over the other.
+#[test]
+fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things() {
+    use letibot_sessionlog::protocol::DiagnosticKind;
+    use std::sync::Arc;
+
+    /// A source with the three cases, since the wire test has no store.
+    struct Three;
+    impl letibot_sessionlog::registry::DiagnosticSource for Three {
+        fn diagnostic(&self, request_id: &str, kind: DiagnosticKind) -> Option<String> {
+            match (request_id, kind) {
+                ("has-bytes", DiagnosticKind::Brief) => Some("brief — a file was read".into()),
+                ("has-bytes", DiagnosticKind::Reply) => Some("ALLOW 0".into()),
+                ("empty", DiagnosticKind::Brief) => Some(String::new()),
+                _ => None,
+            }
+        }
+    }
+
+    let r = Registry::new();
+    r.create("a", "", SessionWiring::default()).unwrap();
+    r.set_diagnostic_source(Arc::new(Three));
+    let h = serve_registry(r.clone(), socket_path("diag")).expect("bind");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(h.path(), "a", 0, "tui", "dead", Caps::default()).expect("attach");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _t = std::thread::spawn(move || pump(reader, tx));
+
+    let ask = |client: &mut HeadClient, id: &str, kind: DiagnosticKind| {
+        client.fetch_diagnostic(id, kind).expect("write");
+    };
+
+    // 1. Bytes.
+    ask(&mut client, "has-bytes", DiagnosticKind::Brief);
+    match next_frame(&rx, 3000) {
+        Some(ServerFrame::Diagnostic { body, total, .. }) => {
+            assert_eq!(body.as_deref(), Some("brief — a file was read"));
+            assert_eq!(total, body.as_ref().unwrap().len());
+        }
+        other => panic!("no bytes came back: {other:?}"),
+    }
+
+    // 2. Recorded, and zero bytes — `Some("")` and NOT `None`.
+    ask(&mut client, "empty", DiagnosticKind::Brief);
+    match next_frame(&rx, 3000) {
+        Some(ServerFrame::Diagnostic { body, total, .. }) => {
+            assert_eq!(
+                body.as_deref(),
+                Some(""),
+                "a recorded-but-empty brief must not read as *not recorded*"
+            );
+            assert_eq!(total, 0);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // 3. Not recorded — `None`, which is a different fact from 2.
+    ask(&mut client, "nobody-kept-this", DiagnosticKind::Reply);
+    match next_frame(&rx, 3000) {
+        Some(ServerFrame::Diagnostic { body, total, .. }) => {
+            assert_eq!(body, None, "an unkept field must not read as empty");
+            assert_eq!(total, 0);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // **The kind is carried, not inferred.** The same id asked for the other half is a
+    // different answer, which is what makes `(kind, id)` a locator rather than an id.
+    ask(&mut client, "has-bytes", DiagnosticKind::Reply);
+    match next_frame(&rx, 3000) {
+        Some(ServerFrame::Diagnostic { kind, body, .. }) => {
+            assert_eq!(kind, DiagnosticKind::Reply);
+            assert_eq!(body.as_deref(), Some("ALLOW 0"));
+        }
+        other => panic!("{other:?}"),
+    }
+}

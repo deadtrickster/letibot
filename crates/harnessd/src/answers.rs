@@ -416,6 +416,10 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
             by: a.by.clone(),
             basis: a.basis.clone(),
             cites: a.cites.clone(),
+            // **R12's third outcome, as a token** — see `WireAdvice::unsure`. `as_str()` and
+            // not the debug name, because this is the same string the corpus column
+            // `oracle_reading` stores and one vocabulary with two destinations does not drift.
+            unsure: a.unsure.map(|k| k.as_str().to_string()),
             latency_ms: a.latency_ms,
         }),
         deadline: Some(deadline_ms),

@@ -1732,6 +1732,34 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// **One half of one decision's oracle exchange** — R11's locator, leticl's ask.
+    ///
+    /// `column` is the field's own name and is matched against a closed pair rather than
+    /// interpolated: a caller that could name any column would be a caller that could read the
+    /// whole table through a locator, and this one is for two fields.
+    ///
+    /// **`None` is "not recorded" and not "empty".** The column is `NULL` on every row written
+    /// before R11 kept it, and an oracle that never answered has no reply either — a reader has
+    /// to be able to tell *"nobody kept this"* from *"here it is, and it is empty"*, which is
+    /// why this answers `Option<String>` and the wire answers `Option<String>`.
+    pub fn diagnostic(&self, request_id: &str, column: &str) -> Result<Option<String>> {
+        let field = match column {
+            "brief" => "shown",
+            "reply" => "oracle_reply",
+            // `Refused`, not `Corrupt`: the store is fine and the caller named a field that
+            // is not one of the two this locator answers for.
+            other => return Err(StoreError::Refused(format!("`{other}` is not a diagnostic field"))),
+        };
+        let sql = format!("SELECT {field} FROM adjudication WHERE request_id = ?1");
+        let out: Option<Option<String>> = self
+            .conn
+            .query_row(&sql, rusqlite::params![request_id], |r| r.get(0))
+            .optional()?;
+        // Nothing flattened: a row that is not there and a column that is `NULL` are the same
+        // sentence to a reader ("not recorded"), and the caller cannot act differently on them.
+        Ok(out.flatten())
+    }
+
     /// The corpus, newest first. `only_labelled` narrows to rows the operator
     /// ruled on — the labelled set — because "every decision" and "every
     /// decision a human checked" are different datasets and a caller must say

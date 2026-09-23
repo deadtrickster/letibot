@@ -386,6 +386,24 @@ pub trait RowSource: Send + Sync {
     fn row_body(&self, session_id: &str, row: usize) -> Option<String>;
 }
 
+/// **Where the oracle's exchange for one decision can be read** — R11's locator.
+///
+/// A second trait and not a method on [`RowSource`], for the reason that one is a trait: the
+/// two read different things out of different tables and a source that can answer one is not
+/// thereby able to answer the other. A registry with no source behaves exactly as it did
+/// before, which is what every existing test asserts.
+///
+/// **`None` means "not recorded", and the caller must not render it as empty.** The store holds
+/// `NULL` on every row written before R11 kept `oracle_reply`, and an oracle that never answered
+/// has no reply either — see [`crate::protocol::Diagnostic`]'s own doc.
+pub trait DiagnosticSource: Send + Sync {
+    fn diagnostic(
+        &self,
+        request_id: &str,
+        kind: crate::protocol::DiagnosticKind,
+    ) -> Option<String>;
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -394,6 +412,8 @@ pub struct Registry {
     source: Mutex<Option<Arc<dyn SessionSource>>>,
     /// Set once at startup by the daemon, beside [`Registry::source`]. See [`RowSource`].
     rows: Mutex<Option<Arc<dyn RowSource>>>,
+    /// Set once at startup, beside [`Registry::rows`]. See [`DiagnosticSource`].
+    diagnostics: Mutex<Option<Arc<dyn DiagnosticSource>>>,
 }
 
 /// What the worker was woken for.
@@ -455,6 +475,7 @@ impl Registry {
             bell: Bell::new(),
             source: Mutex::new(None),
             rows: Mutex::new(None),
+            diagnostics: Mutex::new(None),
         })
     }
 
@@ -615,6 +636,30 @@ impl Registry {
     /// did.
     pub fn set_row_source(&self, rows: Arc<dyn RowSource>) {
         *self.rows.lock().unwrap_or_else(|e| e.into_inner()) = Some(rows);
+    }
+
+    /// Where the oracle's exchange can be read. See [`DiagnosticSource`].
+    pub fn set_diagnostic_source(&self, diagnostics: Arc<dyn DiagnosticSource>) {
+        *self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(diagnostics);
+    }
+
+    /// One half of one decision's exchange, or `None` when there is no source or no record.
+    pub fn diagnostic(
+        &self,
+        request_id: &str,
+        kind: crate::protocol::DiagnosticKind,
+    ) -> Option<String> {
+        // Cloned out before the call, so the lock is not held across a SQLite read — the same
+        // rule `row_body_from_store` keeps one screen up.
+        let source = self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        source.diagnostic(request_id, kind)
     }
 
     /// **The body of a session ordinal, from the store** — or `None` when there is no

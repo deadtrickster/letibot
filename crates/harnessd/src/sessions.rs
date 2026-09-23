@@ -1892,6 +1892,28 @@ impl StoreSessions {
 /// One instance does both jobs because they are one store asked two questions, and
 /// because a third connection would be a third thing to keep in WAL's reader set. The
 /// daemon passes this same `Arc` to `Registry::set_source` and `Registry::set_row_source`.
+/// **R11's locator, against the store** — leticl's ask, second half.
+///
+/// The same shape as [`RowSource`]: one implementation over the daemon's second connection,
+/// set once at startup, and a registry with none answers `None` exactly as it did before.
+impl letibot_sessionlog::registry::DiagnosticSource for StoreSessions {
+    fn diagnostic(
+        &self,
+        request_id: &str,
+        kind: letibot_sessionlog::protocol::DiagnosticKind,
+    ) -> Option<String> {
+        // The wire name and the column name are two vocabularies on purpose: the first is what
+        // a head asks for, the second is what the store has always called it. The map lives
+        // here, in the one place that knows both, rather than being flattened into either.
+        let column = match kind {
+            letibot_sessionlog::protocol::DiagnosticKind::Brief => "brief",
+            letibot_sessionlog::protocol::DiagnosticKind::Reply => "reply",
+        };
+        let store = self.store.lock().ok()?;
+        store.diagnostic(request_id, column).ok().flatten()
+    }
+}
+
 impl letibot_sessionlog::registry::RowSource for StoreSessions {
     fn row_body(&self, session_id: &str, row: usize) -> Option<String> {
         // A session is not going to have four billion rows; a `usize` that does not fit is
