@@ -1,0 +1,66 @@
+R35 — the write scan, measured on the operator's own corpus
+
+Reproduce: python3 docs/evidence/heredoc-writes-2026-09-23.py
+(the script checks out the parent commit, builds `classify`, sweeps, restores and sweeps
+again — the only honest "before" is the classifier as it was)
+
+The corpus: ~/.local/share/letibot/etalon.jsonl, 138,540 rows, 120,593 of them bash.
+The population R35 is about: every command that hands a program to an interpreter on
+stdin — 11,060 rows (the requirement's "11,101" was approximate; the regex here is
+`python3? <<`, and `python3` in the store is 11,060 of the 12,105 total heredocs).
+
+THE NUMBERS
+
+  write intent      before   5,029      after   8,225
+  GAIN a write intent              3,196
+  secret region     before     992      after     992
+  workspace region  before     799      after     808
+
+  tiers before   may_approve 9,425   always_ask   656   blocked   979
+  tiers after    may_approve 9,418   always_ask   663   blocked   979
+
+  GAIN a PROMPT                          7      (of which a BLOCK: 0)
+  LOSE a prompt/block                    0
+  rows whose tier changed at all         7
+
+WHICH IS THE NUMBER THAT DECIDES AFFORDABILITY, AND IT IS 7 IN 11,060 = 0.063%.
+The first version of the capability scan, counting every host and every secret path
+mentioned in a body, was 1,854 prompts and 893 blocks. This is 265x cheaper, and it
+reports 3,196 files that no rule had ever seen.
+
+THE SEVEN, AND THEY ARE ONE CAUSE — named rather than left as a number
+
+Every one fires `changes_its_own_rules`, and none of them is the write scan reporting a
+wrong target:
+
+  cd ~/Projects/letibot && python3 - <<'EOF'
+  p='crates/tools/src/adjudicate.rs'; s=open(p).read()
+  … rep("""    permission: crate::permission::Ruleset,""", …) …
+
+The scan is right: the script writes `crates/tools/src/adjudicate.rs`, inside the
+workspace. What fires is the rule about a call that writes the session's OWN config — and
+its `seen` list includes `cmd.source`, the whole command string, which the operator asked
+for in as many words (*"the whole damn string should go thru regex"*) with the stated
+asymmetry: a false positive here is one prompt, a false negative is a session that quietly
+granted itself something.
+
+These seven bodies MENTION `letibot/permission.json`, `letibot/providers.toml` or
+`letibot/modes.tsv` in the text they replace — permission.json in 4 of 7, providers.toml
+in 2, modes.tsv in 1 — and they write none of them. R35's write intent is the gate that
+rule keys on, so giving these calls a write turned a mention into a prompt.
+
+That is a real consequence of R35, it is one prompt each, and it is the direction the
+operator chose for that rule. It is reported rather than fixed: narrowing `cmd.source`
+would weaken a rule that was deliberately widened, and the number does not ask for it.
+
+THE ASYMMETRY WITH A REDIRECT, which the requirement asked to be checked and is NOT zero
+
+  echo x >> <key file>                 may_approve   (ask)
+  open("<key file>","w") in a heredoc  blocked
+
+The block is not this scan's: `scan_script` already treats a secret path named inside a
+script as `SecretFlowUnknown`, because it cannot state the data flow, and it does not
+distinguish a read from a write. That rule predates R35 and R35 does not move it:
+secret regions are 992 before and 992 after, and blocked is 979 before and 979 after.
+Pinned by `a_script_writing_into_a_secret_store_is_recorded_not_blocked`, which asserts
+the block and says why it is left standing.

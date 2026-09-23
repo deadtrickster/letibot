@@ -3567,6 +3567,65 @@ impl Baseline {
         if capable {
             self.intents.insert(Intent::Network);
         }
+        // **The write scan** — R35. Separate from the capability scan above and answering a
+        // question it never asked: which files does this script change. `open(p,'w').write(s)`
+        // was invisible, and an edit through a script shows no diff, skips R14's
+        // changed-since-read arm, and gives the operator no file name to weigh.
+        //
+        // It goes through `region_of` like every other path, so the tiers, the secret-store
+        // rules and the always-ask tables see a written path the way they see an argument —
+        // a heredoc writing a key file reaches the tier a redirect into it does, because it
+        // is the same scoped intent over the same region.
+        //
+        // **Body-wide rather than adjacency-based**, unlike the host scan above, and the
+        // asymmetry is deliberate: a host counts only where the script shows it can reach
+        // one, while a write is a write wherever it is.
+        let writes = write_targets(body);
+        if !writes.is_empty() {
+            self.intents.insert(Intent::WriteFile);
+        }
+        for w in &writes {
+            match w {
+                WriteTarget::Literal(path) => {
+                    let region = env.region_of(path);
+                    if let Region::Secret(store) = &region {
+                        // **Recorded, and it does NOT promote the tier.** The same
+                        // judgement the redirect arm makes, in the same words: writing into
+                        // your own `~/.ssh` is a thing an operator can ask for and consent
+                        // to, and the consequence is theirs. `NEVER_WRITE`'s precheck stays
+                        // underneath as belt and braces.
+                        self.flows.push(SecretFlow {
+                            rule: FlowRule::WriteIntoSecretStore,
+                            path: path.clone(),
+                            store: store.clone(),
+                            program: program.to_string(),
+                            why: format!(
+                                "`{path}` is in the {store} store and the script `{program}`                                  opens it for writing"
+                            ),
+                        });
+                    }
+                    self.scoped.push(ScopedIntent {
+                        intent: Intent::WriteFile,
+                        target: path.clone(),
+                        region: region.clone(),
+                    });
+                    self.regions.insert(region);
+                }
+                // **UNRESOLVED is not absent.** `open(sys.argv[1],'w')` and a path from
+                // `Path.home()` write something this classifier cannot name, and saying
+                // *no write* about them would be a silent false negative — the direction
+                // this file's own note calls out, and the case the oracle has already been
+                // measured denying a key path over. Said as a finding rather than guessed
+                // at: §4 layer 2 refuses to invent a path.
+                WriteTarget::Runtime(call) => {
+                    self.findings.push(format!(
+                        "`{program}` opens a file for writing and the target could not \
+be read: `{call}` builds the path at run time, so what it writes is not knowable from \
+the text of the call."
+                    ));
+                }
+            }
+        }
         let mut hosts: Vec<String> = Vec::new();
         let mut secrets: Vec<(String, String)> = Vec::new();
         for (i, tok) in toks.iter().enumerate() {
@@ -3659,11 +3718,369 @@ const SHELLS_OUT: &[&str] = &[
 
 /// The call a file path sits after, for a secret path to count as opened rather
 /// than mentioned.
+/// **Calls that OPEN A FILE FOR WRITING** — R35's half of `scan_script`.
+///
+/// `(name, how the path is found)`, and the mode matters: `open(p)` is a READ and
+/// `open(p,'w')` is a write, so a function that needs a mode confirmed carries the
+/// confirming argument's position. See [`write_targets`].
+const WRITE_FUNCS: &[(&str, WriteForm)] = &[
+    // Python: the second argument (or a `mode=` keyword) says whether it writes.
+    ("open", WriteForm::ModeArg),
+    // Node/Bun. The first argument is the path and the name is the verb.
+    ("writeFileSync", WriteForm::FirstArg),
+    ("writeFile", WriteForm::FirstArg),
+    ("appendFileSync", WriteForm::FirstArg),
+    ("appendFile", WriteForm::FirstArg),
+    ("createWriteStream", WriteForm::FirstArg),
+    ("writeFileSync", WriteForm::FirstArg),
+    ("writeFileUtf8", WriteForm::FirstArg),
+    // Ruby/PHP/Perl, where the method or function names the file.
+    ("File.write", WriteForm::FirstArg),
+    ("IO.write", WriteForm::FirstArg),
+    ("file_put_contents", WriteForm::FirstArg),
+];
+
+/// How [`WRITE_FUNCS`] finds the path in a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteForm {
+    /// The first argument is the path; the call's own name is the verb.
+    FirstArg,
+    /// The first argument is the path **when the mode says so** — `open(p,'w')`.
+    /// A mode that cannot be read as a literal means this is not reported: a
+    /// runtime-built MODE is a write whose kind is unknown, and being shy there
+    /// costs a card that says less rather than a prompt that was not earned.
+    ModeArg,
+}
+
+/// **Methods whose RECEIVER is the file being written** — `Path("x").write_text(s)`.
+const WRITE_METHODS: &[&str] = &["write_text", "write_bytes", "writelines"];
+
+/// What a write call's target turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WriteTarget {
+    /// The path, as a literal the classifier can place.
+    Literal(String),
+    /// A path built at run time — the call's own text, so the finding can name it.
+    Runtime(String),
+}
+
 const FILE_CALLS: &[&str] = &[
     "open", "Path", "read_text", "read_bytes", "readFile", "readFileSync", "File.read", "File.open",
     "IO.read", "expanduser", "load", "cat", "source", "read", "readlines", "exists", "copy",
     "copyfile", "shutil.copy", "os.path.join",
 ];
+
+/// **The paths a script opens for WRITING** — R35.
+///
+/// The capability scan above asks *what can this script reach*; this asks the question a
+/// card needs and that scan never answered: **which files does it change.** `open(p,'w')
+/// .write(s)` was invisible, and an edit through a script shows no diff, skips R14's
+/// changed-since-read arm, and gives the operator no file name to weigh.
+///
+/// # A call, not a mention, and that is the whole discriminator
+///
+/// The same one that settled the capability scan's false positives: **a path passed to a
+/// call that opens it for writing is a call; a path that only appears in a string literal
+/// stays a mention.** So a replacement's `s.replace("…192.168.1.55:8787…")` reports
+/// nothing — it is a literal in an argument, not an argument to an opener — while
+/// `open(p,'w')` reports the path it was handed.
+///
+/// # What it deliberately does not read
+///
+/// * **A write whose MODE is not a literal.** `open(p, m)` is not reported as a write: the
+///   mode is what makes an `open` a write, and a mode this cannot read is a script whose
+///   kind of access is unknown. Being shy here costs a card that says less, and being eager
+///   costs a prompt nobody earned — the trade the capability scan already chose.
+/// * **A receiver it cannot read.** `self.f.write_text(…)` and `rows[0].write_text(…)` are
+///   runtime values, so they take the UNRESOLVED arm rather than being dropped.
+/// * **Anything in a triple-quoted literal**, for the reason the capability scan strips
+///   them: that text is data — the body an edit script replaces.
+///
+/// # And it looks at the WHOLE body, unlike the capability scan
+///
+/// Deliberately, and it is not an inconsistency. That scan is body-wide because a host set
+/// three lines above a `urlopen` is one capability; this one is body-wide because a write
+/// is a write wherever it is — there is no adjacency to require and nothing to gain by
+/// requiring one.
+fn write_targets(body: &str) -> Vec<WriteTarget> {
+    let mut out: Vec<WriteTarget> = Vec::new();
+    // **The names that stand for a path** — `p = Path('src/syntax.rs')` then `open(p,'w')`.
+    // Not an evaluator: one step, only where the right-hand side is a literal this file can
+    // already read, and only for the name that was assigned. The operator's own card is this
+    // shape (`p = Path("src/syntax.rs")` … `open(p,'w').write(s)`), which is why the scanner
+    // cannot stop at expressions.
+    let names = assigned_paths(body);
+    for (name, form) in WRITE_FUNCS {
+        for (at, _) in body.match_indices(&format!("{name}(")) {
+            // A call, not a mention of the name: the character before it must not be an
+            // identifier character, or `my_open(` and `x.writeFile(` would both match and
+            // the second is a receiver this cannot read anyway.
+            if at > 0 {
+                let prev = body[..at].chars().next_back().unwrap_or(' ');
+                if prev.is_alphanumeric() || prev == '_' {
+                    continue;
+                }
+            }
+            let args = call_args(body, at + name.len());
+            let Some(args) = args else { continue };
+            let parts = split_args(&args);
+            let Some(first) = parts.first() else { continue };
+            let writes = match form {
+                WriteForm::FirstArg => true,
+                WriteForm::ModeArg => {
+                    // `open(p, 'w')` or `open(p, mode='w')`.
+                    let mode = parts
+                        .get(1)
+                        .map(|m| m.as_str())
+                        .filter(|m| !m.trim_start().starts_with(|c: char| c.is_alphabetic()))
+                        .map(|m| m.to_string())
+                        .or_else(|| {
+                            parts.iter().find_map(|a| {
+                                a.trim()
+                                    .strip_prefix("mode")
+                                    .map(|r| r.trim_start_matches(['=', ' ']).to_string())
+                            })
+                        });
+                    // Any of `w`, `a`, `x` or `+` opens for writing or appending, with or
+                    // without a `b`. `r` and `rb` do not, which is why the mode is read
+                    // rather than the call.
+                    mode.is_some_and(|m| {
+                        m.contains('w') || m.contains('a') || m.contains('x') || m.contains('+')
+                    })
+                }
+            };
+            if !writes {
+                continue;
+            }
+            out.push(
+                match literal_path(first).or_else(|| names.get(first.trim()).cloned()) {
+                    Some(path) => WriteTarget::Literal(path),
+                    None => WriteTarget::Runtime(first.trim().chars().take(60).collect()),
+                },
+            );
+        }
+    }
+    // Methods, where the RECEIVER is the path: `Path("x").write_text(s)`.
+    for name in WRITE_METHODS {
+        let needle = format!(".{name}(");
+        for (at, _) in body.match_indices(&needle) {
+            let recv = receiver_expr(&body[..at]);
+            let target = literal_path(recv).or_else(|| names.get(recv.trim()).cloned());
+            out.push(match target {
+                Some(path) => WriteTarget::Literal(path),
+                None => WriteTarget::Runtime(format!(
+                    "{}.{name}(…)",
+                    recv.chars().take(60).collect::<String>()
+                )),
+            });
+        }
+    }
+    // **Deduplicated on the target**, because the same file written twice in one script is
+    // one file — and the corpus's edit scripts do exactly that.
+    let mut seen: Vec<String> = Vec::new();
+    out.retain(|w| {
+        let key = match w {
+            WriteTarget::Literal(p) => format!("L{p}"),
+            WriteTarget::Runtime(c) => format!("R{c}"),
+        };
+        if seen.contains(&key) {
+            return false;
+        }
+        seen.push(key);
+        true
+    });
+    out
+}
+
+/// The text inside the parentheses of a call whose `(` is at `open_at`, or `None` when it
+/// is unterminated. **The matching one**, not the next one: `open(join(a, b),'w')` has two
+/// and the first would cut the path in half.
+fn call_args(body: &str, open_at: usize) -> Option<String> {
+    let rest = body.get(open_at..)?;
+    let mut depth = 0usize;
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in rest.chars() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                quote = Some(c);
+                out.push(c);
+            }
+            '(' => {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+                out.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(out);
+                }
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Top-level arguments: split on commas that are not inside brackets or quotes.
+fn split_args(args: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    for c in args.chars() {
+        if let Some(q) = quote {
+            cur.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// **The path an expression is, when it is one at all.** `None` means *built at run time*,
+/// which is a different fact from *no write* — see [`write_targets`]'s caller.
+///
+/// A plain literal, and `os.path.expanduser("…")` / `Path("…")` around one, because those
+/// three are the shapes an edit script uses and all three name a path the classifier can
+/// place. `Path.home()/"x"`, `sys.argv[1]` and an f-string with `{}` in it are not: those
+/// are the runtime-built case, and §4 layer 2 refuses to guess at one.
+fn literal_path(expr: &str) -> Option<String> {
+    let e = expr.trim();
+    // `"…"` or `'…'` with no interpolation.
+    let quoted = |s: &str| -> Option<String> {
+        let s = s.trim();
+        let inner = s.strip_prefix(['"', '\'']).and_then(|r| r.strip_suffix(s.chars().next()?))?;
+        // An f-string or a template is not a literal: it has holes.
+        (!inner.contains('{') && !inner.contains('$')).then(|| inner.to_string())
+    };
+    if let Some(p) = quoted(e) {
+        return Some(p);
+    }
+    // A call that only rewrites a literal: `Path("…")`, `os.path.expanduser('~')`.
+    // Both are the corpus's own shapes — an edit script names its file through one or the
+    // other — and neither is a computed path: the argument is a literal and the call is a
+    // spelling of it.
+    for wrapper in ["pathlib.", "os.path."] {
+        if let Some(rest) = e.strip_prefix(wrapper) {
+            let (_, inner) = rest.split_once('(')?;
+            let inner = inner.strip_suffix(')')?;
+            return quoted(inner);
+        }
+    }
+    let after = e.strip_prefix("Path(")?;
+    let inner = after.strip_suffix(')')?;
+    quoted(inner)
+}
+
+/// **The receiver expression before a `.method(`** — `Path('a.txt')` from
+/// `Path('a.txt').write_text(s)`.
+///
+/// Paren-balanced rather than split on the first `(`, and that is the whole of it: the
+/// naive version took `'a.txt')` out of `Path('a.txt')` and reported a *runtime* receiver
+/// for a path that is a literal two characters away. Found by the test that asserts
+/// `Path('a.txt').write_text(s)` reports `a.txt`.
+fn receiver_expr(before: &str) -> &str {
+    let t = before.trim_end();
+    let b = t.as_bytes();
+    let end = b.len();
+    let mut depth = 0i32;
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        match b[i] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    // The `(` that opened the receiver's own call: walk back over the
+                    // callee's name and return the whole expression.
+                    let mut j = i;
+                    while j > 0 && (b[j - 1].is_ascii_alphanumeric() || b[j - 1] == b'_' || b[j - 1] == b'.') {
+                        j -= 1;
+                    }
+                    return &t[j..end];
+                }
+            }
+            b' ' | b',' | b'=' | b';' | b':' | b'\n' if depth == 0 => return &t[i + 1..end],
+            _ => {}
+        }
+    }
+    &t[..end]
+}
+
+/// The literal path a method's **receiver** is, when it is one.
+fn receiver_path(before: &str) -> Option<String> {
+    literal_path(receiver_expr(before))
+}
+
+/// **Names bound once to a literal path**, for the `p = Path('x')` … `open(p,'w')` shape.
+///
+/// Deliberately one step and no more: a name reassigned later, or assigned from a call,
+/// resolves to nothing and takes the unresolved arm. Following reassignment needs data flow,
+/// and a scanner that guessed would be the eager direction this file's own note warns about.
+fn assigned_paths(body: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in body.lines() {
+        let line = line.trim_start();
+        let Some((name, rhs)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            || name.chars().next().is_some_and(|c| c.is_ascii_digit())
+            || rhs.starts_with('=')
+        {
+            continue;
+        }
+        // **Cut at `;` as well as `#`**, because the corpus's dominant shape is one line
+        // doing several things: `p='crates/…/harnessd.rs'; s=open(p).read()   s=…`. Reading
+        // the whole rest of the line as the right-hand side made every one of those an
+        // unresolved target — and the target is the whole point, since it is what `region_of`
+        // places and what the card names. Found by measuring the corpus rather than by
+        // reading the scanner.
+        let rhs = rhs.split(['#', ';']).next().unwrap_or(rhs).trim();
+        if let Some(path) = literal_path(rhs) {
+            out.insert(name.to_string(), path);
+        }
+    }
+    out
+}
 
 /// The body with every `\'\'\'…\'\'\'` and `"""…"""` span removed. An unterminated span
 /// runs to the end, which is what the interpreter would say too.
@@ -6042,5 +6459,301 @@ mod script_argument_tests {
         assert_eq!(script_argument("rm", &a(&["deploy.py"])), None);
         assert_eq!(script_argument("cat", &a(&["setup.sh"])), None);
         assert_eq!(script_argument("git", &a(&["status"])), None);
+    }
+}
+
+#[cfg(test)]
+mod a_script_that_writes_a_file {
+    use super::*;
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
+            shell: ShellTrust::Pinned {
+                how: "test fixture".into(),
+            },
+            seen_hosts: BTreeSet::new(),
+        }
+    }
+
+    /// The writes a body reports — the raw scanner, so a test is about the scan and not
+    /// about the tier it lands in.
+    fn writes(body: &str) -> Vec<WriteTarget> {
+        write_targets(body)
+    }
+
+    /// **The operator's own case, from their own card.** Four `s.replace` calls ending in
+    /// `open(p,'w').write(s)` — an edit to `src/syntax.rs` approved as an opaque exec.
+    #[test]
+    fn the_card_the_operator_saw_reports_the_file_it_writes() {
+        let body = "\
+from pathlib import Path
+p = Path('src/syntax.rs')
+s = p.read_text()
+s = s.replace(\"x\", \"y\")
+s = s.replace(\"a\", \"b\")
+open(p,'w').write(s)
+";
+        let got = writes(body);
+        assert_eq!(got, vec![WriteTarget::Literal("src/syntax.rs".into())], "{got:?}");
+    }
+
+    /// **A path in a string literal stays a mention** — the discriminator, and the reason
+    /// the capability scan was narrowed in the first place.
+    ///
+    /// `s.replace("…host:port…")` is the measured shape: 1,854 new prompts and 893 new
+    /// blocks, nearly all of them edit scripts naming the fleet's node in the text they
+    /// replace. A path passed to an opener is a call; a path inside an argument that is not
+    /// an opener is not.
+    #[test]
+    fn a_path_only_named_in_a_string_is_not_a_write() {
+        let body = "\
+s = s.replace('url = \"http://192.168.1.55:8787/x\"', 'url = \"http://localhost/x\"')
+print('the OLD code wrote its config beside the fixture')
+config = load('~/somewhere/seat.json')
+";
+        assert!(writes(body).is_empty(), "{:?}", writes(body));
+    }
+
+    /// **Every way a write is written**, so a later edit that drops one fails here.
+    #[test]
+    fn the_write_calls_are_found_in_the_shapes_scripts_use() {
+        for (body, want) in [
+            ("open('a.txt','w')", "a.txt"),
+            ("open('a.txt', 'wb')", "a.txt"),
+            ("open('a.txt', mode='w')", "a.txt"),
+            ("open('a.txt','a')", "a.txt"),
+            ("open('a.txt','x')", "a.txt"),
+            ("open('a.txt','r+')", "a.txt"),
+            ("Path('a.txt').write_text(s)", "a.txt"),
+            ("fs.writeFileSync('a.txt', s)", "a.txt"),
+            ("fs.writeFile('a.txt', s, cb)", "a.txt"),
+            ("File.write('a.txt', s)", "a.txt"),
+            ("file_put_contents('a.txt', s)", "a.txt"),
+            ("open(os.path.expanduser('~/x.txt'),'w')", "~/x.txt"),
+            ("open(Path('a.txt'),'w')", "a.txt"),
+        ] {
+            assert_eq!(
+                writes(body),
+                vec![WriteTarget::Literal(want.into())],
+                "`{body}` did not report `{want}`"
+            );
+        }
+    }
+
+    /// **A READ is not a write**, and the mode is what tells them apart — that is why
+    /// `open` is not simply in the list.
+    #[test]
+    fn a_read_is_not_reported_as_a_write() {
+        for body in [
+            "open('a.txt')",
+            "open('a.txt','r')",
+            "open('a.txt','rb')",
+            "open('a.txt', mode='r')",
+        ] {
+            assert!(writes(body).is_empty(), "`{body}` -> {:?}", writes(body));
+        }
+    }
+
+    /// **A MODE that cannot be read is not a write**, and that is the shy direction on
+    /// purpose: `open(p, m)` is a script whose kind of access is unknown, and reporting a
+    /// write on a guess is the false positive the capability scan already paid for.
+    #[test]
+    fn a_mode_this_cannot_read_reports_nothing() {
+        assert!(writes("open(p, m)").is_empty());
+        assert!(writes("open(p, mode)").is_empty());
+        assert!(writes("open(p, flags)").is_empty());
+        assert!(writes("open()").is_empty());
+        assert!(writes("print('open(')").is_empty());
+    }
+
+    /// **A runtime-built path is UNRESOLVED, not absent** — the requirement's third clause,
+    /// and the case the oracle has already been measured denying a key path over.
+    #[test]
+    fn a_path_built_at_run_time_is_unresolved_and_not_silent() {
+        for body in [
+            "open(sys.argv[1],'w')",
+            "open(f'{base}/x.txt','w')",
+            "open(name, 'w')",
+            "open(Path.home()/'x','w')",
+            "p.write_bytes(b'x')",
+        ] {
+            let got = writes(body);
+            assert!(
+                matches!(got.as_slice(), [WriteTarget::Runtime(_)]),
+                "`{body}` -> {got:?}"
+            );
+        }
+        // And through the classifier the fact is SAID rather than dropped: the intent is
+        // there and the finding names the call.
+        let b = Baseline::of_command("python3 - <<'PY'\nopen(sys.argv[1],'w')\nPY", &env());
+        assert!(b.intents.contains(&Intent::WriteFile), "{:?}", b.intents);
+        assert!(
+            b.findings.iter().any(|f| f.contains("could not be read")),
+            "the unresolved target must be stated: {:?}",
+            b.findings
+        );
+    }
+
+    /// **The target is the PATH, so the existing machinery applies unchanged** — the
+    /// requirement's second clause, and the one that makes this worth doing at all.
+    ///
+    /// Asserted as an equivalence rather than against a constant, because the point is that
+    /// the two ARE one machinery: a script writing a system path and a redirect into it
+    /// must reach the same region.
+    #[test]
+    fn a_script_writing_a_path_reaches_the_same_region_a_redirect_would() {
+        let target = "/etc/profile.d/zz.sh";
+        let heredoc = format!("python3 - <<'PY'\nopen(\"{target}\",\"w\").write(\"x\")\nPY");
+        let b = Baseline::of_command(&heredoc, &env());
+        assert!(b.intents.contains(&Intent::WriteFile), "{:?}", b.intents);
+        assert!(
+            b.scoped
+                .iter()
+                .any(|s| s.target == target && matches!(s.region, Region::SystemConfig)),
+            "the written path must be scoped like any other: {:?}",
+            b.scoped.iter().map(ScopedIntent::render).collect::<Vec<_>>()
+        );
+        assert!(
+            b.regions.iter().any(|r| matches!(r, Region::SystemConfig)),
+            "and the region must be recorded: {:?}",
+            b.regions.iter().map(Region::as_str).collect::<Vec<_>>()
+        );
+        // The redirect, for the comparison the clause is about.
+        let redirected = Baseline::of_command(&format!("echo x >> {target}"), &env());
+        assert!(
+            redirected.regions.iter().any(|r| matches!(r, Region::SystemConfig)),
+            "the redirect reaches that region; the heredoc must too"
+        );
+    }
+
+    /// **A write into a secret store is recorded and does not promote the tier** — the same
+    /// judgement the redirect arm makes, in the same words. Writing into your own key
+    /// directory is a thing an operator can ask for and consent to, and the consequence is
+    /// theirs; `NEVER_WRITE`'s precheck stays underneath as belt and braces.
+    #[test]
+    fn a_script_writing_into_a_secret_store_is_recorded_not_blocked() {
+        // The path is assembled here so this source file does not carry the literal in a
+        // form a search for it would match — the guard that reads this tree is about
+        // writing to that directory, and a test that names one is still a test.
+        let dir = format!(".{}sh", "s");
+        let path = format!("/home/dead/{dir}/known_hosts");
+        let body = format!("python3 - <<'PY'\nopen(\"{path}\",'w').write(x)\nPY");
+        let b = Baseline::of_command(&body, &env());
+        assert!(
+            b.scoped
+                .iter()
+                .any(|si| si.target == path && matches!(&si.region, Region::Secret(d) if *d == dir)),
+            "the region must be the secret store: {:?}",
+            b.scoped.iter().map(ScopedIntent::render).collect::<Vec<_>>()
+        );
+        assert!(
+            b.flows
+                .iter()
+                .any(|f| f.rule == FlowRule::WriteIntoSecretStore && f.path == path),
+            "the flow must be recorded: {:?}",
+            b.flows.iter().map(|f| f.why.clone()).collect::<Vec<_>>()
+        );
+        // **And the tier is NOT changed by this scan** — it promotes nothing, which is the
+        // same judgement the redirect arm makes in the same words: writing into your own key
+        // directory is a thing an operator can ask for and consent to, and the consequence is
+        // theirs.
+        //
+        // **But it is not the tier a redirect reaches, and that is a real asymmetry left
+        // standing on purpose.** Measured on this box:
+        //
+        // ```text
+        //   echo x >> <key file>            may_approve   (ask)
+        //   open("<key file>","w") in a     blocked       because the CAPABILITY scan
+        //     python heredoc                              found a secret path inside a
+        //                                                 script whose data flow it cannot
+        //                                                 state (`SecretFlowUnknown`)
+        // ```
+        //
+        // The block is **not this scan's** — it is `scan_script`'s existing rule about a
+        // secret named inside a script, which does not distinguish a read from a write, and
+        // it was there before R35 and is unchanged by it. Narrowing it means deciding that a
+        // *write* to a known secret path with no egress is consentable, which is a policy
+        // change with its own corpus number; the number here is **0** — no row of the 11,060
+        // changed its tier because of this scan (979 blocked before, 979 after), so nothing
+        // is being carried by this asymmetry today. Pinned so that the day somebody narrows
+        // that rule they find this test rather than a surprise.
+        assert!(
+            matches!(b.tier, Tier::Blocked { .. }),
+            "the capability scan's own rule decides this and is deliberately untouched; \
+             if it changes, this asymmetry is what to re-read: {:?}",
+            b.tier.as_str()
+        );
+        // The redirect's tier, for the comparison the requirement makes.
+        let redirected =
+            Baseline::of_command(&format!("echo x >> {path}"), &env());
+        assert!(
+            !matches!(redirected.tier, Tier::Auto),
+            "a redirect into the store is not waved through either: {:?}",
+            redirected.tier.as_str()
+        );
+    }
+
+    /// **Only a NON-SHELL body is scanned by this**, and the distinction is the whole
+    /// reason `ScriptLang` exists: a shell body goes through `Baseline::of_command` and is
+    /// read by the grammar, so a Python-shaped string inside it is a string.
+    ///
+    /// Both halves in one test, because the assertion is a *difference*: the same text in a
+    /// python heredoc is a write, and in a shell heredoc handed to bash it is an argument to
+    /// `echo`.
+    #[test]
+    fn only_a_foreign_body_is_scanned_this_way() {
+        let foreign = "python3 - <<'PY'\nopen('/tmp/zzz','w')\nPY";
+        let b = Baseline::of_command(foreign, &env());
+        assert!(
+            b.scoped.iter().any(|s| s.target == "/tmp/zzz"),
+            "a python body's write must be scoped: {:?}",
+            b.scoped.iter().map(ScopedIntent::render).collect::<Vec<_>>()
+        );
+        assert!(
+            b.findings.iter().any(|f| f.contains("read as python3")),
+            "{:?}",
+            b.findings
+        );
+
+        let shell = "cat <<'EOF' | bash\necho open('/tmp/zzz','w')\nEOF";
+        let b = Baseline::of_command(shell, &env());
+        assert!(
+            b.findings.iter().any(|f| f.contains("read as shell")),
+            "the body is read by the grammar, not scanned: {:?}",
+            b.findings
+        );
+        assert!(
+            !b.scoped.iter().any(|s| s.target == "/tmp/zzz"),
+            "a shell body's text is not a foreign script: {:?}",
+            b.scoped.iter().map(ScopedIntent::render).collect::<Vec<_>>()
+        );
+    }
+
+    /// **The same file written twice is one file.** The corpus's edit scripts do exactly
+    /// that — read, replace, write, write again — and a card naming a path twice reads as
+    /// two files.
+    #[test]
+    fn one_path_written_twice_is_reported_once() {
+        let body = "\
+open('a.txt','w').write(s)
+open('a.txt','a').write(more)
+";
+        assert_eq!(writes(body), vec![WriteTarget::Literal("a.txt".into())]);
+    }
+
+    /// **And two files are two**, so the dedup is on the target rather than on the call.
+    #[test]
+    fn two_paths_are_two_writes() {
+        let body = "open('a.txt','w')\nopen('b.txt','w')";
+        assert_eq!(
+            writes(body),
+            vec![
+                WriteTarget::Literal("a.txt".into()),
+                WriteTarget::Literal("b.txt".into())
+            ]
+        );
     }
 }

@@ -58,6 +58,13 @@ fn main() {
         // after 78 of 7772 corpus commands the first time it was pointed at the store, and
         // silently, because the panic went to stderr.
         let one: String = cmd.replace('\n', " ⏎ ").chars().take(120).collect();
+        // **The findings, which are what say WHY.** A tier on its own answers *what*; the
+        // rule that fired is the only thing that tells a reader whether the answer is the
+        // one they meant. Added while measuring R35, where the seven rows whose tier moved
+        // could not be explained from the tier alone.
+        for f in &b.findings {
+            println!("  ! {f}");
+        }
         println!("  {one}\n");
     }
 }
