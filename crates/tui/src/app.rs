@@ -263,7 +263,7 @@ impl Pick {
 /// actually choosing between: **what will be on the screen.** Written as *what you get*, not
 /// as *what is filtered*, because a reader picking a rung is not reasoning about the event
 /// stream.
-const VERBOSITY_VALUES: &[(&str, &str)] = &[
+pub const VERBOSITY_VALUES: &[(&str, &str)] = &[
     (
         "conversation",
         "your messages and the model's answers — nothing the head did to produce the words, \
@@ -682,6 +682,11 @@ enum ConfigEdit {
 #[derive(Debug, Clone, Copy)]
 enum HeadSetting {
     Diff,
+    /// **The rung of the ladder** (R37/R38), persisted like the rest. The pane's row is a
+    /// *reader* of the setting rather than a second way to set it: Enter says which verb
+    /// opens the card, because four values are chosen from a card and not cycled (R38) — a
+    /// pane row that cycled them would be the interface R38 removed, one screen over.
+    Verbosity,
     Thinking,
     Tools,
     RawCalls,
@@ -6223,18 +6228,23 @@ impl App {
         self.payload_sel = None;
         self.payload_page = 0;
         self.invalidate_history();
+        // **And it is written down**, which is what *"persists headrestarts"* asks for: the
+        // change and the file are one act from here, so a rung cannot be chosen and then
+        // forgotten. `RetiredWrite::Union` because a rung is not a statement about the retired
+        // set — the fold and diff toggles pass it for the same reason.
+        let saved = self.save_prefs(RetiredWrite::Union);
         self.say(&if self.verbosity.hides_the_working() {
             format!(
                 "verbosity conversation (was {}) — the conversation and nothing the head did \
                  to produce it. Tool calls, reasoning and head arrivals are HIDDEN, not \
                  dropped: `/verbosity` brings them back and the span you had it on is drawn \
-                 again. This applies to the whole transcript, already drawn.",
+                 again. This applies to the whole transcript, already drawn.{saved}",
                 was.as_str()
             )
         } else {
             format!(
                 "verbosity {} (was {}) — this applies to the whole transcript, already drawn, \
-                 not only to what comes next.",
+                 not only to what comes next.{saved}",
                 self.verbosity.as_str(),
                 was.as_str()
             )
@@ -8472,13 +8482,17 @@ impl App {
         // read as the continuation of the prose above it, so the separator's blank line is
         // suppressed for that row. It rides in this tuple rather than being recomputed in
         // the assembly loop because the assembly has only the row index and the class.
-        let mut built: Vec<(usize, RowClass, Vec<String>, Option<String>)> = Vec::new();
+        // `(row, class, lines, marker, joinable)`: the marker's TEXT and whether the model's
+        // own sentence introduces it. Two facts rather than one, because a marker that stands
+        // alone still needs the separator's blank — which is the operator's *"add an empty
+        // line between them"* — and a marker that joins must not have it.
+        let mut built: Vec<(usize, RowClass, Vec<String>, Option<String>, bool)> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<String>)]| {
-            self.hist_lines.len() + built.iter().map(|(_, _, l, _)| l.len() + 1).sum::<usize>()
+        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<String>, bool)]| {
+            self.hist_lines.len() + built.iter().map(|(_, _, l, _, _)| l.len() + 1).sum::<usize>()
         };
         // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
         // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
@@ -8557,6 +8571,7 @@ impl App {
                 unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, k)
             };
             carry = unseen.is_some_and(|(start, _)| start < k);
+            let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
             // **The marker's text, when this row is the first of the run.** The joining is
             // the assembly loop's, because that is where forward order exists — this walk
             // renders newest first, so the prose this marker continues has not been reached
@@ -8631,8 +8646,11 @@ impl App {
             if !rows.iter().all(|l| l.trim().is_empty()) {
                 // A marker that is about to be the top of the block needs the row above it,
                 // or it cannot join and will be drawn as a row of its own.
-                need_speaker = marker.is_some();
-                built.push((k, class, rows, marker));
+                // Only when the marker will be glued: a marker standing on its own line has
+                // no sentence to fetch, and fetching one would put a row on the screen that
+                // the budget did not ask for.
+                need_speaker = marker.is_some() && joinable;
+                built.push((k, class, rows, marker, joinable));
             }
         }
         let rendered = self.hist_floor - k;
@@ -8642,7 +8660,7 @@ impl App {
             let mut block: Vec<String> = Vec::new();
             let mut fresh: Vec<Span> = Vec::new();
             let mut prev: Option<RowClass> = None;
-            for (row, class, rows, marker) in built.iter().rev() {
+            for (row, class, rows, marker, joinable) in built.iter().rev() {
                 // **The marker, glued into the sentence it continues** — R37 AMENDED's final
                 // shape, and this is the walk where the joining has to happen HERE rather
                 // than at the row: forward order exists only in this loop, and the prose the
@@ -8654,6 +8672,7 @@ impl App {
                 // are not a marker. Then it stands alone instead — `marker.is_none()` below
                 // leaves it without a blank, so it still hugs rather than starts a row.
                 if let Some(text) = marker
+                    && *joinable
                     && prev == Some(RowClass::Speech)
                     && let Some(at) = block.iter().rposition(|l| !l.trim().is_empty())
                 {
@@ -8664,7 +8683,9 @@ impl App {
                     }
                 }
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
-                if !block.is_empty() && !pack && marker.is_none() {
+                // **A marker that stands alone keeps the air prose gets** — which is what the
+                // operator asked for after their own message. Only a JOINED marker loses it.
+                if !block.is_empty() && !pack && (marker.is_none() || !*joinable) {
                     block.push(String::new());
                 }
                 // **The span, before the lines go in.** `block` is in forward row order
@@ -8680,19 +8701,21 @@ impl App {
             // And one at the seam: the row this block now precedes is the old head.
             if !self.hist_lines.is_empty() {
                 let pack = self.hist_first_class == Some(RowClass::Activity)
-                    && built.last().map(|(_, c, _, _)| *c) == Some(RowClass::Activity);
+                    && built.last().map(|(_, c, _, _, _)| *c) == Some(RowClass::Activity);
                 // **And the marker keeps its sentence across the seam as well.** A fill
                 // renders older rows and prepends them, so the row at the top of the old
                 // buffer sits directly under the oldest row of the new block — and a marker
                 // there is the continuation of prose that is also in that block, so the
                 // blank goes. `built.first()` is the OLDEST row of the block (the vector is
                 // newest-first and walked in reverse above).
-                let tight = built.last().is_some_and(|(_, _, _, m)| m.is_some());
+                let tight = built
+                    .last()
+                    .is_some_and(|(_, _, _, m, joinable)| m.is_some() && *joinable);
                 if !pack && !tight {
                     block.push(String::new());
                 }
             }
-            let first = built.last().map(|(_, c, _, _)| *c);
+            let first = built.last().map(|(_, c, _, _, _)| *c);
             // **Every line offset already recorded moves down by what was prepended** — and
             // that is the whole reason the anchor is a row rather than a line number. A head
             // holding a line index would creep by this amount on every fill; a head holding
@@ -9347,7 +9370,9 @@ impl App {
                     // it rather than standing as a row of its own, so the separator's blank —
                     // which exists to say *a new kind of thing starts here* — is the opposite
                     // of what it means. See [`hidden_run_marker`].
-                    let tight = unseen.is_some();
+                    let joinable =
+                        unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
+                    let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
                             let text = hidden_run_marker(
@@ -9364,7 +9389,7 @@ impl App {
                             // still fits the frame. Otherwise it stands alone, which is the
                             // honest degradation: counts with no sentence are still the fact,
                             // and a marker clipped to fit would lose them.
-                            let joined = if *hist_class == Some(RowClass::Speech) {
+                            let joined = if joinable && *hist_class == Some(RowClass::Speech) {
                                 hist_lines
                                     .iter()
                                     .rposition(|l| !l.trim().is_empty())
@@ -10170,6 +10195,13 @@ impl App {
         };
         let (p, notes) = crate::prefs::load(&path);
         self.diff_split = p.diff == crate::prefs::DiffPref::Split;
+        // **The rung comes back too.** It is the one setting the card could change and the
+        // file did not keep, so a reader who chose `conversation` got `normal` on every
+        // restart. `Verbosity::parse` is the same word-to-rung rule the card and the verb use,
+        // so a name this build reads here is a name it reads there.
+        if let Some(rung) = Verbosity::parse(&p.verbosity) {
+            self.verbosity = rung;
+        }
         self.reasoning = if p.thinking == "open" {
             Fold::Open
         } else {
@@ -10202,6 +10234,7 @@ impl App {
             thinking: fold_word(self.reasoning).into(),
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
+            verbosity: self.verbosity.as_str().to_string(),
             retired: self.dismissed.clone(),
         }
     }
@@ -10277,6 +10310,11 @@ impl App {
                 "unified".into()
             },
             ConfigEdit::Head(HeadSetting::Diff),
+        ));
+        rows.push(head(
+            "verbosity",
+            self.verbosity.as_str().to_string(),
+            ConfigEdit::Head(HeadSetting::Verbosity),
         ));
         rows.push(head(
             "thinking",
@@ -10357,6 +10395,13 @@ impl App {
                     HeadSetting::Diff => {
                         self.diff_split = !self.diff_split;
                         self.invalidate_history();
+                    }
+                    HeadSetting::Verbosity => {
+                        // **It opens the card rather than cycling.** Four values are chosen
+                        // from a card and not walked through (R38), so the pane points at the
+                        // verb instead of doing the thing the card exists to stop.
+                        self.say("`/verbosity` with nothing after it opens the card");
+                        return None;
                     }
                     HeadSetting::Thinking => {
                         self.reasoning = self.reasoning.flip();
@@ -12844,6 +12889,26 @@ fn newest_unseen_run(
         .find(|r| unseen_run_at(items, rung, bound, *r).is_some_and(|(start, _)| start == *r))
 }
 
+/// **Does the MODEL's own sentence introduce this run.**
+///
+/// The marker continues the sentence the colon points at, and that sentence is the model's
+/// narration — never the operator's message. Measured on their screen: they typed a prompt,
+/// the model worked with no prose, and the counts landed on the end of *their* line. Their
+/// words: *"the [] thing comes right after my message … add an empty line between them."*
+///
+/// So a run is continued by prose only when the row above it is an assistant row with text
+/// the reader can see. After anything else — their own message, a system row, the top of the
+/// transcript — the marker stands as a line of its own, and the separator gives it the air
+/// prose gets.
+fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool {
+    start > 0
+        && matches!(
+            items[start - 1].item.as_ref(),
+            Some(letibot_transcript::TranscriptItem::Assistant { text, .. })
+                if !text.trim().is_empty()
+        )
+}
+
 /// **Does a run begin at the very next row**, and if so what would its marker say — R37
 /// AMENDED, and the answer to *"sometimes you do it same line - sometimes dont."*
 ///
@@ -12869,6 +12934,12 @@ fn reserved_for_run(
     }
     let (start, end) = unseen_run_at(items, rung, bound, row + 1)?;
     if start != row + 1 {
+        return None;
+    }
+    // **Only when the counts will actually be glued to this row.** A marker that stands on
+    // its own line needs no room left for it, and narrowing the prose for one would be a
+    // sentence wrapped short for nothing.
+    if !run_continues_prose(items, start) {
         return None;
     }
     let text = hidden_run_marker(items, start, end, rung, cfg, newest);
@@ -20275,8 +20346,14 @@ mod tests {
         let screen = a.screen(120, 30).join("\n");
         assert!(screen.contains("writes-allowed"), "{screen}");
         assert!(screen.contains("20.0s"), "{screen}");
-        // Down to the mode row (four head rows first).
-        for _ in 0..4 {
+        // **The rung is a row too**, and it points at the verb rather than cycling (R38).
+        assert!(
+            screen.contains("verbosity") && screen.contains("normal"),
+            "the pane does not show the rung: {screen}"
+        );
+        // Down to the mode row (five head rows first: diff view, verbosity, thinking, tool
+        // output, raw tool calls).
+        for _ in 0..5 {
             a.key(Key::Down);
         }
         // The next name after `writes-allowed` in the DAEMON's list — the head
@@ -20316,6 +20393,7 @@ mod tests {
                 thinking: "open".into(),
                 tools: "open".into(),
                 raw_calls: true,
+                verbosity: "loud".into(),
                 retired: vec!["w|gate|1|0000000000000000".into()],
             },
         )
@@ -28915,6 +28993,191 @@ mod tests {
         assert!(
             screen.contains("[60 tool calls"),
             "and it counts every row it stands for:\n{screen}"
+        );
+    }
+
+    /// **The rung survives a head restart** — the operator's *"make versbosity a config option
+    /// so it persists headrestarts."*
+    ///
+    /// Asserted through `load_prefs` **and nothing else** — the loader is the thing a fresh
+    /// head runs, so driving it is the whole of what "persists a restart" means. A test that
+    /// set `a.verbosity` by hand after loading would be asserting that a field can be
+    /// assigned, which is the shape of test that passes while the file says nothing.
+    #[test]
+    fn the_rung_is_written_down_and_comes_back_on_the_next_head() {
+        let dir = std::env::temp_dir().join(format!("letibot-rung-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+
+        // The head the reader is in: they choose a rung.
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        assert_eq!(a.verbosity, Verbosity::Normal, "the head starts here");
+        assert_eq!(a.command("verbosity conversation"), None);
+        assert_eq!(a.verbosity, Verbosity::Conversation);
+        assert!(
+            path.is_file(),
+            "choosing a rung did not write it down: {}",
+            path.display()
+        );
+        // The confirmation says where it went, like every other persisted setting here.
+        let notice = a.notice.clone().unwrap();
+        assert!(!notice.contains("not saved"), "{notice}");
+
+        // The next head: a fresh app, the same file, and `load_prefs` is all it runs.
+        let mut fresh = app();
+        fresh.prefs_path = Some(path.clone());
+        fresh.load_prefs();
+        assert_eq!(
+            fresh.verbosity,
+            Verbosity::Conversation,
+            "the rung did not come back on a restarted head"
+        );
+
+        // **And a rung the file names that this build does not know is REPORTED, not obeyed.**
+        // §13.2b's rule for a setting: silently starting at the default would make a typo and
+        // a deliberate `normal` the same screen.
+        std::fs::write(&path, "verbosity = \"chatty\"\n").unwrap();
+        let mut third = app();
+        third.prefs_path = Some(path.clone());
+        third.load_prefs();
+        assert_eq!(third.verbosity, Verbosity::Normal, "an unknown rung was obeyed");
+        assert!(
+            third.notice.clone().unwrap_or_default().contains("chatty"),
+            "an unreadable rung was swallowed: {:?}",
+            third.notice
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **After the operator's own message the counts stand on their own line, with air.**
+    ///
+    /// The operator: *"the [] thing comes right after my message if my message arrives your
+    /// mid turn. add an empty line between them"* — and then, reading it again: *"literally
+    /// just happened without mid turns."* They were right twice: the count was gluing to
+    /// **their** line, not the model's, and it did so on any turn where the model worked
+    /// without narrating first.
+    ///
+    /// The rule is that the marker continues **the model's sentence** — the one the colon
+    /// points at. Anything else above it, their message included, and it stands as a line of
+    /// its own with the blank prose gets.
+    #[test]
+    fn the_counts_after_the_operators_own_message_stand_on_their_own_line() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // Their message, and then work — with no narration at all, which is the shape that
+        // reproduced it.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: "make verbosity a config option".into(),
+                    }],
+                }),
+            },
+        )));
+        for i in 0..2u64 {
+            let id = format!("s.{}", i + 1);
+            a.apply(ServerFrame::Event(env(
+                3 + i * 2,
+                testing::appended(&id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                4 + i * 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id,
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("c{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("output {i}"),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(120, 30);
+        let lines: Vec<&str> = screen.iter().map(String::as_str).collect();
+        let mine = lines
+            .iter()
+            .position(|l| l.contains("make verbosity a config option"))
+            .expect("the message is on the screen");
+        assert!(
+            !lines[mine].contains("[2 tool calls]"),
+            "the counts are glued to the operator's own line: {:?}",
+            lines[mine]
+        );
+        assert!(
+            lines[mine + 1].is_empty(),
+            "no empty line between their message and the counts: {screen:?}"
+        );
+        assert!(
+            lines[mine + 2].contains("[2 tool calls]"),
+            "the counts are not on the line after the blank: {screen:?}"
+        );
+    }
+
+    /// **And the model's own sentence still takes them glued** — the other half of the rule,
+    /// asserted beside it so the two cannot drift apart.
+    #[test]
+    fn the_counts_after_the_models_own_sentence_are_glued_to_it() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "first the helpers:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        // **Contiguous seqs.** `a_result_row` publishes three events, and a gap in the
+        // numbering makes the head file a `log_gap` NOTE — which is a row, which is drawn
+        // between the prose and the counts, which is a different scene from the one this test
+        // is about. Found by debug print, after the assertion failed for that reason.
+        a_result_row(&mut a, 3, "s.1", "one");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(120, 30).join("\n");
+        let line = screen
+            .lines()
+            .find(|l| l.contains("first the helpers:"))
+            .expect("the prose is on the screen");
+        assert!(
+            line.trim_end().ends_with("helpers: [1 tool call] · ctrl-t opens it"),
+            "the model's sentence did not take the counts: {line:?}"
         );
     }
 

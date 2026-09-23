@@ -38,6 +38,19 @@ pub struct HeadPrefs {
     pub tools: String,
     /// Show the model's `<function=…>` markup under each call.
     pub raw_calls: bool,
+    /// **Which rung of the ladder this head draws at** (R37/R38) — `conversation`, `terse`,
+    /// `normal` or `loud`.
+    ///
+    /// The operator: *"make versbosity a config option so it persists headrestarts."* It was
+    /// the one setting the card could change and the file did not keep, so a reader who chose
+    /// `conversation` got `normal` back on every restart — a setting that forgets is a setting
+    /// the reader has to keep re-making.
+    ///
+    /// A `String` rather than the ladder's own enum, because this module is deliberately free
+    /// of the app's vocabulary: it is a reader and writer of four words, and which words those
+    /// are is [`crate::app::VERBOSITY_VALUES`]'s to say. A name this build does not know is
+    /// kept in the file and reported, exactly as an unknown key is.
+    pub verbosity: String,
     /// **The notes this reader has retired**, by key (R10).
     ///
     /// Written as one comma-separated value because a key is built to contain no
@@ -83,6 +96,8 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
+            // The rung the head has always started at when nothing said otherwise.
+            verbosity: "normal".into(),
             retired: Vec::new(),
         }
     }
@@ -182,6 +197,25 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
+            // **A rung by NAME, listed from the ladder itself.** The names live in
+            // `app::VERBOSITY_VALUES` and are not repeated here: a second list is a second
+            // answer to *what is a rung*, and this file's whole comment is about not keeping
+            // one. An unknown word is reported by name and LEFT IN THE FILE — the reader gets
+            // the default rung and a sentence saying which word this build could not read.
+            "verbosity" => {
+                if crate::app::VERBOSITY_VALUES.iter().any(|(n, _)| *n == v) {
+                    p.verbosity = v;
+                } else {
+                    notes.push(format!(
+                        "head.toml: verbosity = {v:?} is not one of {}",
+                        crate::app::VERBOSITY_VALUES
+                            .iter()
+                            .map(|(n, _)| *n)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
             // R10. An empty value is a real value — "nothing is retired" — and not
             // a key this build does not know, so it is not reported as one.
             "retired" => {
@@ -206,11 +240,12 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build — where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 5] = [
+    let ours: [(&str, String); 6] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
         ("raw_calls", p.raw_calls.to_string()),
+        ("verbosity", format!("\"{}\"", p.verbosity)),
         // Quoted like the rest, and never multi-line: no key contains a comma or a
         // space, which is what keeps a hand-edited file honest.
         ("retired", format!("\"{}\"", p.retired.join(","))),
@@ -339,6 +374,8 @@ mod tests {
             thinking: "open".into(),
             tools: "folded".into(),
             raw_calls: true,
+            // The rung, which is the operator's *"persists headrestarts"*.
+            verbosity: "conversation".into(),
             // R10's half of the round trip, in one key: the comma is the separator
             // and the key contains none, which is what makes this one line.
             retired: vec!["w|gate-timeout|1789000000000|5f2c9a0b1d3e4f67".into()],
