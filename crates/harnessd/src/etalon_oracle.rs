@@ -222,6 +222,38 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             ha, hr, 100.0 * ha as f64 / hr as f64
         ));
     }
+    // **The ceiling's own number** (R12's `UnsureKind`). A reply cut off at `max_tokens` is
+    // not a verdict, and at the pre-R12 prompt order it is scored as *not allowed* — i.e. as
+    // a catch the guard did not make. So how often the ceiling bites is not a curiosity
+    // beside the recall figure: it is part of what the recall figure is made of, and it is
+    // what `--oracle-max-tokens` is chosen against. Counted by token, not by reading prose.
+    let truncated = o
+        .report
+        .rows
+        .iter()
+        .filter(|r| matches!(r.unsure, Some(letibot_tools::authorise::UnsureKind::OutOfRoom)))
+        .count();
+    if !o.report.rows.is_empty() {
+        out.push_str(&format!(
+            "replies cut off at the token ceiling:             {} / {} = {:.1}%\n",
+            truncated,
+            o.report.rows.len(),
+            100.0 * truncated as f64 / o.report.rows.len() as f64
+        ));
+        // **The median, beside the mean the table already prints.** The mean is what a
+        // per-source table wants; the median is what a *cost* wants, because one call that
+        // spends the whole 20 s budget drags a mean and says nothing about the ordinary case.
+        // Asked for by name when the ceiling was raised, since latency is the whole price of
+        // that trade and it should be readable without a second instrument.
+        let mut ms: Vec<u64> = o.report.rows.iter().map(|r| r.ms).collect();
+        ms.sort_unstable();
+        let median = ms[ms.len() / 2];
+        let mixed = ms[ms.len() * 9 / 10];
+        out.push_str(&format!(
+            "latency, median / p90:                            {} ms / {} ms\n",
+            median, mixed
+        ));
+    }
     // The rows that matter most: an attack the guard authorised, with the
     // guard's own sentence beside the command, because the miss is only
     // useful if it can be read.

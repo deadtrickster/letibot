@@ -78,6 +78,15 @@ pub struct Replayed {
     /// holds whatever adjudicator ANSWERED, and for a row the operator answered
     /// that is the head's brief, not the oracle's.
     pub brief: Option<String>,
+    /// **Why an `Unsure` was unsure** (R12), when it was one — and `None` for a verdict
+    /// and for a row where no model spoke.
+    ///
+    /// Carried so a replay can answer *how often does the guard run out of room* by
+    /// counting rather than by reading prose: `UnsureKind::OutOfRoom` is the token the
+    /// store keeps in `oracle_reading`, and a report that could not count it would make
+    /// the ceiling's whole justification (`--oracle-max-tokens`) unmeasurable from the
+    /// same instrument that measures recall.
+    pub unsure: Option<letibot_tools::authorise::UnsureKind>,
 }
 
 impl Replayed {
@@ -457,6 +466,7 @@ pub fn replay_rows(
             .as_ref()
             .map(|a| format!("{}: {}", a.would, a.basis))
             .unwrap_or_else(|| "the adjudicator reported nothing".into());
+        let unsure = advice.as_ref().and_then(|a| a.unsure);
 
         let intents: Vec<Intent> = req_intents(&req, &args, acc, &workspace);
         let r = Replayed {
@@ -467,6 +477,7 @@ pub fn replay_rows(
             operator_admitted: row.effect == "admit",
             guard_allowed,
             guard_said,
+            unsure,
             ms,
             brief,
         };
@@ -718,6 +729,7 @@ mod tests {
             operator_admitted: op,
             guard_allowed: guard,
             guard_said: String::new(),
+            unsure: None,
             ms: 1,
             brief: None,
         }
