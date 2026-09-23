@@ -5328,6 +5328,15 @@ impl<'a> Harness<'a> {
             // the harness: the gate reads its mode at decision time, so the very
             // next call is governed by it.
             self.apply_queued_mode();
+            // **And a tool the operator ran while this turn was running** — R31's deposit,
+            // which is what the door is FOR.
+            //
+            // The operator watches the model go down a wrong path and drops the doc in; the
+            // row lands here, at the round boundary, and the next round of this same turn
+            // reads it. The alternative was measured rather than feared: a door call sat in
+            // the worker's queue until the turn ended, and a turn can run for minutes — see
+            // `Hub::try_head_run_command`, which is where the mechanism is written down.
+            self.apply_queued_head_run();
             self.persist()?;
             // The calls of this round have run; if the model revised its plan,
             // the store and the heads hear about it now, at the round boundary —
@@ -5414,6 +5423,70 @@ impl<'a> Harness<'a> {
     /// Reported exactly as the between-turns path reports it — same sentence,
     /// same codes — because "what did my mode change do" must not depend on
     /// whether a turn happened to be running when it was typed.
+    /// **A door call the operator made while this turn is running**, run and appended here.
+    ///
+    /// Called at the round boundary beside [`Harness::apply_queued_mode`] and for the same
+    /// reason: it is a command whose whole point is to act *during* a turn, so it is taken by
+    /// the thread that owns this harness rather than waiting for the worker — which is
+    /// inside the turn.
+    ///
+    /// # The admission is the same one, and it is not a second door
+    ///
+    /// The name was checked against [`letibot_sessionlog::HEAD_RUN_TOOLS`] on the connection's
+    /// thread before this command was ever queued, and the corpus row is written by
+    /// [`Harness::admit_operator_call`] — the same function the worker's path calls. So the
+    /// sugar does not skip the door: **the same list, the same row, the same `human:<who>`**,
+    /// and only the thread that runs the tool differs.
+    ///
+    /// # It loops, because the operator may drop two things in
+    ///
+    /// A round is long and the boundary is the only moment this can be done, so a queue that
+    /// held two documents would otherwise deliver one per round.
+    fn apply_queued_head_run(&mut self) {
+        while let Some(cmd) = self.hub.try_head_run_command() {
+            let CommandKind::OperatorCall {
+                call_id,
+                name,
+                arguments,
+                who,
+                ..
+            } = &cmd.kind
+            else {
+                // The picker matched an `OperatorCall`; anything else here would be a bug in
+                // the picker, and returning rather than panicking leaves the command queued
+                // for the worker, which is where it belongs.
+                return;
+            };
+            let (call_id, name, arguments, who) = (
+                call_id.clone(),
+                name.clone(),
+                arguments.clone(),
+                who.clone(),
+            );
+            // **Noted and taken around a synchronous run**, exactly as the worker's path does.
+            // With the daemon running the tool there is no window in which the pending entry
+            // is the only record of the call, so the note is normally a no-op — but keeping
+            // the pair means a head that detaches during the run still gets the sentence, and
+            // a future reader sees one pattern rather than two.
+            self.hub.note_operator_call(&call_id, &cmd.head_id, &name, &who);
+            let said = self.run_operator_call(&call_id, &name, &arguments, &who);
+            self.hub.take_operator_call(&call_id);
+            if let Err(e) = said {
+                // **Said, because there is nothing to return it to.** The worker's path
+                // reports a failure as `Outcome::Failed`, which the daemon prints; this one
+                // has no caller to answer, so the failure goes on the log or it goes
+                // nowhere — and a call that ran with its row unpinned is exactly the kind of
+                // silence this tree exists against.
+                self.import_note(
+                    "transcript_store",
+                    format!(
+                        "`{who}` ran `{name}` from their own console and the transcript could                          not be written: {e}. The call ran; what is missing is the record of                          it, which is what the next turn would have read."
+                    ),
+                );
+            }
+        }
+    }
+
     fn apply_queued_mode(&mut self) {
         let Some(cmd) = self.hub.try_mode_command() else {
             return;

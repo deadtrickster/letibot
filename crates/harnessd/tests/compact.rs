@@ -777,3 +777,85 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
         "and with no tail there is nothing to disclose: {text}"
     );
 }
+
+/// **The door's call is a DEPOSIT: it lands in the transcript and nothing replies to it.**
+///
+/// R31's whole reason for the door, and the three facts that make it one rather than a
+/// request:
+///
+/// 1. the row is in `items` — the next turn reads it, and no turn was started to produce it;
+/// 2. it carries `origin: Operator { who }`, so every head draws it as the person's act and
+///    no head has to infer it (`dd81999`);
+/// 3. **the size is said before the row lands**, which is the one thing the operator chose to
+///    buy and would otherwise discover at the next compaction.
+///
+/// Run through `run_operator_call`, which is the same function both paths call — the worker's
+/// between-turns arm and the round boundary a running turn polls
+/// (`Harness::apply_queued_head_run`) — so what this asserts is the deposit itself and not one
+/// caller of it.
+#[test]
+fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
+    let dir = TempDir::new("harnessd-door-deposit");
+    let path = dir.path().join("sessions.db");
+    let cfg = config(&path, "door-deposit-test");
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+    let before = h.items().len();
+
+    h.run_operator_call("h1-1", "read", r#"{"path":"Cargo.toml"}"#, "dead")
+        .expect("the call runs and its row lands");
+
+    let after = h.items();
+    assert_eq!(after.len(), before + 1, "exactly one row");
+    let letibot_transcript::TranscriptItem::ToolResult {
+        call_id,
+        name,
+        origin,
+        payload,
+        ..
+    } = &after[after.len() - 1]
+    else {
+        panic!("the door's row is a tool result: {:?}", after.last());
+    };
+    assert_eq!(call_id, "h1-1");
+    assert_eq!(name, "read");
+    // **The provenance, which only this mechanism gives.** Pasted into the composer the text
+    // would be indistinguishable from the operator's own opinion of it; through the door it is
+    // evidence supplied, and a model may weigh the two differently.
+    assert_eq!(
+        origin,
+        &Some(letibot_transcript::CallOrigin::Operator {
+            who: "dead".into()
+        }),
+        "the row must say the person ran it, and name them"
+    );
+    assert!(!payload.is_empty(), "the file's text is the payload");
+
+    // **And the size was said while the operator could still act on it.** The note names the
+    // bytes that reach the model and the tokens they cost — the figure R31 asks for, and the
+    // one thing about this call they chose to buy.
+    let said: Vec<String> = h
+        .hub()
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
+                if code == "operator_call_ran" =>
+            {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "one disclosure, one call: {said:#?}");
+    assert!(
+        said[0].contains("reach the model from its next turn"),
+        "the note says what the model will read: {}",
+        said[0]
+    );
+    assert!(
+        said[0].contains("No reply is generated"),
+        "and that nothing replies to it: {}",
+        said[0]
+    );
+}

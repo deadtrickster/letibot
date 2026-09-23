@@ -1999,7 +1999,6 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
 /// them. And the daemon's verbs are not this head's to enumerate — they arrive on a
 /// `SettingRow` (`daemon.verbs`), because a head that guessed at them is precisely how
 /// `/gate` and `/flowy` came to be missing while working perfectly.
-const HEAD_COMMAND_ALIASES: &[&str] = &["?", "h", "q", "r", "s", "t", "v", "i"];
 
 /// **How a save treats the retired set** — because one write cannot express both verbs.
 ///
@@ -11302,12 +11301,13 @@ fn warn_line(cfg: &RenderConfig, s: &str) -> String {
 /// reader greps the log for. Which codes are routine is [`letibot_sessionlog::warning`]'s
 /// table and not this head's opinion: the codes are the log's vocabulary and both heads
 /// render them.
-fn note_line(cfg: &RenderConfig, routine: bool, s: &str) -> String {
-    if routine {
-        dim(cfg, s)
-    } else {
-        warn_line(cfg, s)
-    }
+/// **One note line, in the register its code was classified into** — R19, R29 part two.
+///
+/// The colour comes in rather than being decided here, because the decision is
+/// `letibot_sessionlog::warning`'s and this is only where it is painted. The three are named
+/// at the call site so the whole mapping is readable in one place.
+fn note_line(cfg: &RenderConfig, sgr_code: &str, s: &str) -> String {
+    colour(cfg, sgr_code, s)
 }
 
 fn fold_word(f: Fold) -> &'static str {
@@ -13111,7 +13111,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         if let Some(text) = bound {
             return (
                 RowClass::Speech,
-                queued_lines(text, cfg, ctx.echo_mark, ctx.echo_open),
+                queued_lines(text, cfg, echo_mark, echo_open),
             );
         }
         // **The announcement arrived and the body has not — so draw nothing.**
@@ -13842,22 +13842,35 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     // transcript row and `/notes`, which is why it is one place and not two.
     match n {
         Note::Warned(w) => {
-            // **The code decides the register, and the code is the log's word rather
-            // than this head's** (`letibot_sessionlog::warning`, R19). A routine fact —
-            // a compaction, a mode that moved, a round being retried — is drawn dim with
-            // the bullet this head already uses for a factual line; everything else is
-            // the red it always was. The `!` and the colour go together, because they are
-            // one claim: *look at this now*.
-            let routine = letibot_sessionlog::is_routine(&w.code);
-            let said = format!(
-                "{} {} — {}",
-                if routine { "·" } else { "!" },
-                w.code,
-                w.detail
-            );
+            // **The code decides the register, and the code is the log's word rather than
+            // this head's** (`letibot_sessionlog::warning`, R19 and R29 part two).
+            //
+            // Three registers, and each is a claim about where the reader's attention should
+            // be. The mark goes with the colour, because colour is a no-op under
+            // `--replay`, a pipe and a light theme — R20's own argument — and three
+            // registers that collapse to one appearance in half the terminals they are read
+            // in are one register with extra steps.
+            //
+            // ```text
+            //   · code — sentence      dim      housekeeping: nothing to do
+            //   × code — sentence      notice   the answer to what you just typed; retype
+            //   ! code — sentence      red      the session is in trouble; stop and look
+            // ```
+            //
+            // The middle one is R29 part two, and the reasoning for a third register rather
+            // than two is in `Class`'s own docs: seven codes of forty-six, and they are the
+            // seven a reader meets *most often* because they fire while they are typing.
+            use letibot_sessionlog::warning::Class;
+            let class = letibot_sessionlog::warning::class(&w.code);
+            let (mark, colour) = match class {
+                Class::Routine => ("·", sgr::DIM),
+                Class::Refused => ("×", sgr::YELLOW),
+                Class::Failure => ("!", sgr::RED),
+            };
+            let said = format!("{mark} {} — {}", w.code, w.detail);
             wrap(&without_control_lines(&said), cfg.width)
                 .into_iter()
-                .map(|l| note_line(cfg, routine, &l))
+                .map(|l| note_line(cfg, colour, &l))
                 .collect()
         }
         // No `!`, no red, no request id: nothing here is answerable, and the id is
@@ -16691,6 +16704,69 @@ mod tests {
         );
     }
 
+    /// **R29 part two: the reader's own input refused is a THIRD register**, and it is
+    /// neither of the two above.
+    ///
+    /// The operator, on a red note for a mistyped `/qwe` sitting in the same colour as
+    /// `ledger_chain_mismatch`: *"red is stop the world event … a mistyped /qwe is not a
+    /// session in trouble."* The census is 7 of 46 failure codes (`Class`'s docs), and this
+    /// asserts what the *head* does with them: its own mark, the notice colour, and neither
+    /// of the two things the other registers use.
+    ///
+    /// **All three in one frame**, because the defect is a *comparison* — a reader learns the
+    /// register by seeing two notes side by side — and a test that drew them one at a time
+    /// could pass while they looked identical.
+    #[test]
+    fn the_three_registers_are_three_marks() {
+        const RED: &str = "\u{1b}[31m";
+        const YELLOW: &str = "\u{1b}[33m";
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        for (code, detail) in [
+            ("compacted", "compacted: 940188 → 9181 tokens"),
+            ("slash_refused", "/qwe is not a daemon verb; /help lists the head's"),
+            ("ledger_chain_mismatch", "row 41's head is not the one that was stored"),
+        ] {
+            a.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::Warning {
+                    code: code.into(),
+                    detail: detail.into(),
+                    compaction: None,
+                },
+            )));
+        }
+        let frame = a.screen(100, 30);
+        let line = |needle: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("nothing drew `{needle}`:\n{}", frame.join("\n")))
+                .clone()
+        };
+        let (routine, refused, failure) = (
+            line("compacted"),
+            line("slash_refused"),
+            line("ledger_chain_mismatch"),
+        );
+        // The three marks, and they are three DIFFERENT marks — which is what survives a
+        // `--replay`, a pipe and a light theme, where the colours do not.
+        assert!(routine.contains("· compacted"), "{routine:?}");
+        assert!(refused.contains("× slash_refused"), "{refused:?}");
+        assert!(failure.contains("! ledger_chain_mismatch"), "{failure:?}");
+        // The colours: a typo is not red, and it is not the housekeeping dim either.
+        assert!(!refused.contains(RED), "a typo in the failure colour: {refused:?}");
+        assert!(refused.contains(YELLOW), "not the notice register: {refused:?}");
+        assert!(failure.contains(RED), "the chain mismatch lost its red: {failure:?}");
+        // And the reason the register exists, in one assertion: the reader's own mistake is
+        // not the same event as a session in trouble, and neither is housekeeping.
+        assert_ne!(refused, failure);
+        assert_ne!(refused, routine);
+    }
+
     /// **A note that is a document folds to its head, and `/notes` still has all of it.**
     ///
     /// The other half of R10: the operator's wall was *two* gate timeouts at about
@@ -19201,6 +19277,10 @@ mod tests {
             Some(Action::Slash { .. })
         ));
     }
+
+    /// The short spellings `command()` keeps taking and the table deliberately does not
+    /// carry: offering both spellings doubles the list to teach the same actions.
+    const HEAD_COMMAND_ALIASES: &[&str] = &["?", "h", "q", "r", "s", "t", "v", "i"];
 
     /// **The completion table and the dispatcher are not two lists that agree by
     /// maintenance** (R32).

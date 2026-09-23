@@ -82,6 +82,7 @@ pub use protocol::{
     head_run_tool, head_run_verb, protocol_skew,
 };
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
+pub use warning::{Class, class, is_failure, is_routine};
 pub use view::{
     CallState, CallView, OpenDecision, SessionView, SettledDecision, Snapshot, SnapshotItem,
     TurnState, TurnView, ViewBounds,
@@ -90,7 +91,6 @@ pub use view::{
     body_of,
 };
 
-pub use warning::{Class, class, is_routine};
 
 #[cfg(feature = "turn")]
 pub use lift::{LogSink, from_turn_event};

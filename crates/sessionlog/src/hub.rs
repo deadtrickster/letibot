@@ -1240,6 +1240,43 @@ impl Hub {
         g.commands.remove(i)
     }
 
+    /// **The next operator's own call a running turn can act on** — R31's deposit.
+    ///
+    /// The door's whole value is that it is issued **while a turn is running**: the operator
+    /// watches the model go down a wrong path and drops the doc in. That was not true until
+    /// this existed, and the mechanism that made it false is worth stating because it is not
+    /// obvious from any one file:
+    ///
+    /// * `ClientFrame::OperatorCall` → `hub.submit(CommandKind::OperatorCall)` → the queue;
+    /// * the queue is drained by the **single worker** (`harnessd`'s `Daemon::run`);
+    /// * `Sessions::run_prompt` runs the whole turn **inside** that drain, so the worker is
+    ///   inside the turn and cannot reach anything else;
+    /// * `try_steering_command` takes `Prompt` and `Interrupt`, and `try_mode_command` takes
+    ///   `Mode` — so a door call sat behind the turn, and a turn can run for minutes.
+    ///
+    /// So this is the third of the same picker, and it is the same shape for the same reason
+    /// `try_mode_command`'s own comment gives: **a command whose whole point is to act during
+    /// a turn has to be taken by the thread that owns the harness, at a round boundary.**
+    ///
+    /// # Scoped to `execute: true`, and the scoping is the design
+    ///
+    /// A call with `execute: false` is one a HEAD runs itself and reports back about; the
+    /// admission is what it waits for and nothing about that needs to beat the turn — the
+    /// head is already doing the work in its own process. A call with `execute: true` is the
+    /// DAEMON's to run, and the row it appends is the deposit the next reader sees, so it is
+    /// the one that has to land mid-turn. Leaving the other kind here would hand a head's
+    /// call to the worker and its result to nobody.
+    pub fn try_head_run_command(&self) -> Option<QueuedCommand> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len()).find(|&i| {
+            matches!(
+                g.commands[i].kind,
+                CommandKind::OperatorCall { execute: true, .. }
+            )
+        })?;
+        g.commands.remove(i)
+    }
+
     /// The next take-back a **running turn** can act on, dropping the issuing
     /// head's still-queued prompts with it.
     ///
@@ -1873,6 +1910,83 @@ mod mode_steering_tests {
                 Some(CommandKind::Compact)
             ),
             "the compaction was eaten"
+        );
+    }
+
+    /// **A door call issued during a turn is taken by the turn** — R31's deposit.
+    ///
+    /// The requirement: *"it must be issuable WHILE A TURN IS RUNNING — the operator watches
+    /// the model go down a wrong path and drops the doc in. A door that only opens at idle is
+    /// worth a fraction of this."* Before this, it was idle-only, and the mechanism is in
+    /// `Hub::try_head_run_command`'s own docs: the door's frame queues a `CommandKind` that
+    /// only the single worker drains, and the worker is inside the turn.
+    ///
+    /// Three assertions, and the second is the one that keeps it honest:
+    ///
+    /// 1. an `execute: true` call is taken here, mid-turn;
+    /// 2. **an `execute: false` call is NOT** — that head runs its own tool and reports back,
+    ///    so admitting it here would hand its result to a worker that never saw the call;
+    /// 3. it is taken once, and a prompt queued in front of it is left alone.
+    #[test]
+    fn a_door_call_issued_during_a_turn_is_taken_by_the_turn() {
+        let hub = Hub::new("s");
+        let head = hub.attach("tui", "dead", Caps::default(), 0);
+
+        // A head with its own tool runtime: the daemon admits and the HEAD runs it.
+        hub.submit(
+            &head.head_id,
+            "c1",
+            0,
+            CommandKind::OperatorCall {
+                call_id: "h1-1".into(),
+                name: "web_fetch".into(),
+                arguments: r#"{"url":"http://example.invalid"}"#.into(),
+                who: "dead".into(),
+                execute: false,
+            },
+        );
+        assert!(
+            hub.try_head_run_command().is_none(),
+            "a call the head runs itself is not the daemon's to run mid-turn"
+        );
+
+        // And one the daemon runs, which is the deposit.
+        hub.submit(
+            &head.head_id,
+            "c2",
+            0,
+            CommandKind::OperatorCall {
+                call_id: "h1-2".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"crates/tui/src/app.rs"}"#.into(),
+                who: "dead".into(),
+                execute: true,
+            },
+        );
+        let got = hub.try_head_run_command().expect("the daemon's own call");
+        match got.kind {
+            CommandKind::OperatorCall {
+                call_id,
+                name,
+                who,
+                execute,
+                ..
+            } => {
+                assert_eq!(call_id, "h1-2");
+                assert_eq!(name, "read");
+                assert_eq!(who, "dead", "the identity the corpus records as `human:<who>`");
+                assert!(execute, "and the daemon is the one that runs it");
+            }
+            other => panic!("took the wrong command: {other:?}"),
+        }
+        // Once, and the head's own call is STILL THERE for the worker — not dropped, which
+        // would leave its result arriving for a call nothing admitted.
+        assert!(hub.try_head_run_command().is_none());
+        let left = hub.try_command().expect("the head's own call is still queued");
+        assert!(
+            matches!(left.kind, CommandKind::OperatorCall { execute: false, .. }),
+            "{:?}",
+            left.kind
         );
     }
 }

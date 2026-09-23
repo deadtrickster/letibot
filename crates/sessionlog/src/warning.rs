@@ -59,20 +59,75 @@
 //!    forgetting one is a red line somebody asks about rather than a quiet line nobody
 //!    notices. The safe direction to be wrong in is the register that gets read.
 
-/// **A warning's severity, for the register it is drawn in.**
+/// **A warning's register, for how it is drawn.** Three, and the middle one is new:
+/// R29 part two, ruled 2026-09-23.
+///
+/// # Why two was not enough, and the census that decided it
+///
+/// The operator, having been shown a red note for a mistyped `/qwe` sitting in the same
+/// colour as `ledger_chain_mismatch`: *"red is stop the world event … a mistyped /qwe is not
+/// a session in trouble."* The instruction was to **measure before ruling**, and this is the
+/// count over the table: **69 codes — 23 Routine, 46 Failure** — of which **7** are *the
+/// reader asked for something that is not there*:
+///
+/// ```text
+/// slash_refused        the verb they typed is not one
+/// mode_unknown         the mode they named does not exist
+/// mode_set_refused     the mode exists and this session cannot carry it
+/// job_output_refused   there is no job by that id here
+/// reseat_refused       there is nothing to re-seat (or the attempt did not land)
+/// import_no_session    there is no such session in the other store
+/// import_no_db         there is nothing to import from
+/// ```
+///
+/// **Seven of forty-six, so the register is not diluted and the two-register rule was not
+/// wrong** — and the operator allowed for exactly that outcome (*"if it is two codes out of
+/// forty, the right answer may be to move those two and leave the rule alone"*). What settles
+/// it for a third register rather than for leaving the rule alone is **where those seven
+/// fire**: at the moment the operator is typing. `slash_refused` is emitted on a typo, in
+/// front of the reader, while `ledger_chain_mismatch` is emitted at a replay nobody is
+/// watching. So the seven are not merely 15% of the table — they are the codes a reader meets
+/// *most often*, and they teach the red reflex on the occasions when nothing is wrong.
+///
+/// # The discriminator, which is *not* "was it refused"
+///
+/// **Whose act, and what is at risk beyond it.** A `Refused` note is the answer to something
+/// the reader just did, the correction is theirs to make now, and nothing but the line they
+/// typed is at stake. A `Failure` is a fact about the session — its integrity, its room, its
+/// ability to run the work at all — and the reader cannot fix it by typing something else.
+///
+/// **Two refusals of the reader's own act are not `Refused`**, and both are worth naming
+/// because they look like it: `mode_unpersisted` (the mode moved, and the *next* session will
+/// not carry it — at risk is a session that is not this one) and `title_not_stored` (the name
+/// is lost at restart). The reader's line worked; what did not is the durable half.
+///
+/// **Nothing moved to `Routine`**, and the table's own rule forbids it: *routine is a
+/// sentence you can delete with the reader no worse off*, and deleting a refusal leaves the
+/// reader believing a command took effect. That is why the middle is its own register rather
+/// than the quiet end of the other two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     /// Housekeeping, a command's own answer, or a hiccup being handled. Drawn in the
-    /// dim register — no `!`, no red.
+    /// dim register — no mark, no red.
     Routine,
-    /// Something did not work, did not happen, was refused, or could not be checked.
-    /// Drawn as a failure: red, prefixed `!`.
+    /// **The reader asked for something that is not there, and the fix is theirs.** Drawn
+    /// in the notice register — a mark, no red — because it is the *answer* to what they
+    /// typed, and the sentence already says what to do instead.
+    Refused,
+    /// Something did not work, did not happen, or could not be checked, and **what is at
+    /// risk is the session rather than the line**. Drawn as a failure: red, prefixed `!`.
     Failure,
 }
 
 impl Class {
     pub fn is_routine(self) -> bool {
         matches!(self, Class::Routine)
+    }
+
+    /// **The red one.** What a reader is being asked to *stop for* — and the reason the
+    /// middle register exists is so this answer stays rare enough to carry that weight.
+    pub fn is_failure(self) -> bool {
+        matches!(self, Class::Failure)
     }
 }
 
@@ -158,7 +213,15 @@ pub const TABLE: &[(&str, Class)] = &[
     ("test", Class::Routine),
     // ───────────────────────── failure ─────────────────────────
     //
-    // The turn did not do what it should, or the session is out of room.
+    // The turn did not do what it should, the session is out of room, or something could not
+    // be checked. **What is at risk here is the session, not the line** — which is the whole
+    // of the test the reader applies when deciding whether to stop and look.
+    //
+    // **Not ordered by register, and that is deliberate.** The rows are grouped by where the
+    // code COMES FROM — the `mode` codes together, the store's together, this head's own
+    // together — because that is what a reader looking one up is doing, and a `Refused` row
+    // among its siblings says so on its own line. See `Class` for the census and the
+    // discriminator.
     ("turn_failed", Class::Failure),
     ("context_wall", Class::Failure),
     // *At* the wall, and nothing was compacted because automatic compaction is off for
@@ -192,7 +255,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // window, and the monitors will be polled rather than woken.
     ("reseat_unchecked", Class::Failure),
     ("monitor_wake_not_armed", Class::Failure),
-    ("reseat_refused", Class::Failure),
+    // **Refused**: the dominant case is *there is nothing to re-seat*, which the sentence
+    // says outright (*"this conversation's prompt already carries exactly the tools that are
+    // seated"*), and the other branch — a summary turn that proposed a tool call — leaves the
+    // transcript unchanged with *"try again"*. Both put nothing at risk but the attempt.
+    ("reseat_refused", Class::Refused),
     // The capture of a refused frame did not happen, which is the one branch of that
     // trio that is not the mechanism working.
     ("frame_capture_failed", Class::Failure),
@@ -200,18 +267,30 @@ pub const TABLE: &[(&str, Class)] = &[
     // given up, or another head answered first — so the call that needed the password did
     // not get one.
     ("secret_late", Class::Failure),
-    // The mode they named does not exist, or the session cannot carry the one they asked
-    // for. A refusal of their own command, and it has to be read: the point did NOT move.
-    ("mode_unknown", Class::Failure),
-    ("mode_set_refused", Class::Failure),
+    // **Refused, and it must be read.** The mode they named does not exist, or the session
+    // cannot carry the one they asked for: the point did NOT move, and the fix is their next
+    // line. *"this session stays at `writes-allowed`: …"* is an answer, not a fault.
+    //
+    // **And one of the three stays a Failure**, which is the test of the discriminator rather
+    // than an exception to it: `mode_unpersisted` means the mode MOVED and the *next* session
+    // will not carry it. The reader's line worked; what did not is the durable half, and what
+    // is at risk is a session that is not this one.
+    ("mode_unknown", Class::Refused),
+    ("mode_set_refused", Class::Refused),
     ("mode_unpersisted", Class::Failure),
     // A seat is attached to this session and nothing said on the fabric can wake it.
     ("flowy_not_seated", Class::Failure),
     // An answer reached the queue with nothing waiting for it — one of the two branches
     // says outright that this is a defect.
     ("answer_unclaimed", Class::Failure),
-    ("job_output_refused", Class::Failure),
-    ("slash_refused", Class::Failure),
+    // **Refused, and these two are the clearest case in the table.** Each sits one `match`
+    // arm from a Routine twin on the SAME emission — `code: if reply.ok { "slash" } else
+    // { "slash_refused" }` — and `mode_set`/`mode_set_refused` are the same shape. One
+    // channel's two verdicts belong in one register; only one of the two verdicts means the
+    // session is in trouble; and a red `slash_refused` is the code that taught a reader to
+    // skim red.
+    ("job_output_refused", Class::Refused),
+    ("slash_refused", Class::Refused),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript store cannot be written, the decision corpus cannot be consulted, the
     // title cannot be recorded, the session the operator asked for does not resume, and
@@ -221,8 +300,12 @@ pub const TABLE: &[(&str, Class)] = &[
     ("decision_corpus", Class::Failure),
     ("title_not_stored", Class::Failure),
     ("resume_failed", Class::Failure),
-    ("import_no_db", Class::Failure),
-    ("import_no_session", Class::Failure),
+    // **Refused**: there is nothing to import from, or no session by that name in the other
+    // store — *"the session stays up and empty"*, which is the sentence of something whose
+    // remedy is the reader's. `import_failed` stays a Failure: an import that stopped
+    // part-way is a half-filled transcript, and that is a fact about this session.
+    ("import_no_db", Class::Refused),
+    ("import_no_session", Class::Refused),
     ("import_failed", Class::Failure),
     ("fabric_refresh_failed", Class::Failure),
     // **This head's own failures.** Events that never reached it, a frame it could not
@@ -253,9 +336,15 @@ pub fn class(code: &str) -> Class {
     }
 }
 
-/// [`class`], as the question the renderer actually asks.
+/// [`class`], as the question a renderer asks about the quiet end.
 pub fn is_routine(code: &str) -> bool {
     class(code).is_routine()
+}
+
+/// [`class`], as the question a renderer asks about the **red** end — and the one R29 part
+/// two is about, because `Refused` is neither.
+pub fn is_failure(code: &str) -> bool {
+    class(code).is_failure()
 }
 
 #[cfg(test)]
@@ -263,13 +352,23 @@ mod tests {
     use super::*;
 
     /// The four the operator was met by, and the one that must never go quiet.
+    ///
+    /// **This test asserted `slash_refused` was a `Failure` and R29 part two overturned
+    /// exactly that** — it is the register the operator was disputing, and the sentence they
+    /// gave is in this file's own history: *"a mistyped `/qwe` is not a session in trouble,
+    /// and on the same screen in the same colour sit `ledger_chain_mismatch`, `context_wall`
+    /// and `prefix_divergence`."* So the pin moved rather than being deleted: a refusal is
+    /// neither the quiet register nor the red one, and this test now says so.
     #[test]
     fn the_complaint_is_routine_and_a_refusal_is_not() {
         for code in ["daemon_stopping", "compacted", "auto_compact", "reseated"] {
             assert_eq!(class(code), Class::Routine, "{code}");
         }
-        for code in ["turn_failed", "context_wall", "slash_refused"] {
+        for code in ["turn_failed", "context_wall", "prefix_divergence"] {
             assert_eq!(class(code), Class::Failure, "{code}");
+        }
+        for code in ["slash_refused", "mode_unknown", "job_output_refused"] {
+            assert_eq!(class(code), Class::Refused, "{code}");
         }
     }
 
@@ -296,5 +395,123 @@ mod tests {
         }
         // The floor, so a table that was emptied passes no test at all.
         assert!(seen.len() > 50, "{} codes classified", seen.len());
+    }
+}
+
+#[cfg(test)]
+mod the_register_census {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// **The seven codes the middle register exists for**, named so a new code has to be
+    /// classified deliberately rather than by whoever adds it copying the neighbour.
+    ///
+    /// This list is the *finding*, not a rule: the rule is `Class`'s discriminator — whose act,
+    /// and what is at risk beyond it. If a future code is the answer to something the reader
+    /// just typed and nothing but that line is at stake, it belongs here and the count below
+    /// moves with it, on purpose.
+    const READER_INPUT: &[&str] = &[
+        "import_no_db",
+        "import_no_session",
+        "job_output_refused",
+        "mode_set_refused",
+        "mode_unknown",
+        "reseat_refused",
+        "slash_refused",
+    ];
+
+    /// **The census, pinned.** 69 codes, of which **7** are the reader's own input refused.
+    ///
+    /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
+    /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
+    /// added without a thought fails here rather than silently changing what a reader is
+    /// taught by the colour of the screen.
+    #[test]
+    fn the_table_is_23_routine_7_refused_and_39_failures() {
+        let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        assert_eq!(TABLE.len(), 69, "the table's size");
+        assert_eq!(count(Class::Routine), 23);
+        assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
+        assert_eq!(count(Class::Failure), 39);
+        // And the census the ruling turns on, as a ratio a reader can check: **the red
+        // register is 39 of 69 and the middle is 7**, which is why the third register is a
+        // correction rather than a redefinition — 85% of the failures were already the right
+        // kind of thing.
+    }
+
+    /// **Every code in `READER_INPUT` is `Refused`, and every `Refused` code is in it.**
+    ///
+    /// Both directions, because each failure mode is different: a code that should have moved
+    /// and did not keeps a red note on a typo, and a code that moved without being named here
+    /// is a register being widened by accident.
+    #[test]
+    fn refused_is_exactly_the_readers_own_input() {
+        let refused: BTreeSet<&str> = TABLE
+            .iter()
+            .filter(|(_, k)| *k == Class::Refused)
+            .map(|(c, _)| *c)
+            .collect();
+        let named: BTreeSet<&str> = READER_INPUT.iter().copied().collect();
+        assert_eq!(refused, named, "the refused set and READER_INPUT disagree");
+    }
+
+    /// **The two emission sites that decided this are one channel's two verdicts**, and they
+    /// are in the same register on purpose.
+    ///
+    /// `slash`/`slash_refused` is literally one `match` on one boolean
+    /// (`harnessd/src/sessions.rs`: `code: if reply.ok { "slash" } else { "slash_refused" }`),
+    /// and `mode_set`/`mode_set_refused` is the same shape in `harness.rs`. Drawing the two
+    /// verdicts of one channel in two registers is what taught a reader that red sometimes
+    /// means *you made a typo* — which is the whole of R29 part two.
+    #[test]
+    fn one_channels_two_verdicts_share_a_register() {
+        for (ok, refused) in [("slash", "slash_refused"), ("mode_set", "mode_set_refused")] {
+            assert_ne!(
+                class(ok),
+                Class::Failure,
+                "`{ok}` is the acceptance half and was a Failure"
+            );
+            assert_eq!(
+                class(refused),
+                Class::Refused,
+                "`{refused}` is the same emission as `{ok}` with the other verdict, and \\
+                 red on a typo is the defect"
+            );
+        }
+    }
+
+    /// **The three that look like the reader's act and are not**, kept as failures on the
+    /// discriminator rather than on the name: what is at risk is beyond the line they typed.
+    ///
+    /// This is the test that stops the middle register becoming the place everything goes when
+    /// a code is hard to classify. Each of these three is a code somebody could argue into
+    /// `Refused` — a mode that did not persist, a title that did not store, a password that
+    /// arrived late — and each is worse than that: the durable half did not happen, or a
+    /// privileged call did not run.
+    #[test]
+    fn what_is_at_risk_beyond_the_line_stays_a_failure() {
+        for code in ["mode_unpersisted", "title_not_stored", "secret_late"] {
+            assert_eq!(
+                class(code),
+                Class::Failure,
+                "`{code}` is not the reader's input being wrong"
+            );
+        }
+        // And the other direction: a code that is a fact about the session, however much the
+        // reader prompted it, stays red.
+        for code in ["context_wall", "ledger_chain_mismatch", "prefix_divergence", "turn_failed"] {
+            assert_eq!(class(code), Class::Failure, "`{code}`");
+        }
+    }
+
+    /// The predicate the head used to render with still answers for the quiet end, and a code
+    /// the table has never heard of is still drawn loudly — the safe direction to be wrong in.
+    #[test]
+    fn the_unknown_code_is_still_a_failure() {
+        assert!(is_routine("compacted"));
+        assert!(!is_routine("slash_refused"), "a refusal is not housekeeping");
+        assert!(!is_failure("slash_refused"), "and it is not red either");
+        assert_eq!(class("a_code_from_the_future"), Class::Failure);
+        assert!(is_failure("a_code_from_the_future"));
     }
 }
