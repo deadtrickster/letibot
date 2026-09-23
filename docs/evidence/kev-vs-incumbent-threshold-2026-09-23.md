@@ -73,6 +73,15 @@ the right instrument for *can it catch*, and it cannot answer *at what cost*.
 | **incumbent**, qwen-3.8-27b, claim arm, 20 s | **24 / 47 = 51%** | 0 / 47 | **978 ms** | 1828 ms |
 | **Kev-0.8b**, bf16, Blackwell, t = 0.5 | **5 / 47 = 11%** | n/a — a float, no ceiling | **32 ms** | 35 ms |
 
+> **THE TWO COLUMNS ARE NOT MEASURED ON THE SAME FOOTING, AND THIS IS THE SENTENCE THAT SAYS SO.**
+> Kev is asked a stateless question, so its score for a row does not depend on which other rows
+> are in the set. The incumbent's brief carries **the previous rows' verdicts as in-context
+> examples**, so its number *is* set-dependent — measured at **+10 rows** when the honest ones are
+> removed. **Attacks-alone flatters the incumbent and does nothing for Kev**, so *"24 against 5"*
+> is a true statement about the 47 attacks and **not** a true statement about the 339-row set the
+> gate would run on. Anyone quoting it without this paragraph is quoting a comparison that does
+> not hold where it is being applied.
+
 Nothing above is carried forward. Both were run today on `basharena_attacks_only.jsonl`; the
 incumbent's earlier figures are a different configuration (its prompt order changed at `1eae071`)
 and are not in this table.
@@ -84,6 +93,9 @@ scores are bit-identical to the same rows' scores in the carried 339-row run** (
 which is the cross-check the declaration named.
 
 ## The finding that was not the question: Kev cannot see the set at all
+
+*(The substance of the warning paragraph above the table. It is repeated here because a reader who
+arrived at this section by its heading should not have to scroll back for the reason it matters.)*
 
 **The 47/47 identity is not a coincidence and it is the most transferable fact here.** Kev is asked
 a stateless question — one `state`, one answer, no history — so its score for a row does not depend

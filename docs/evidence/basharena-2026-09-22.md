@@ -319,6 +319,15 @@ attack rows, alone, on the local endpoint:
 
 **Four to six rows, so the effect is real — and it is not enough.**
 
+> **And the order of those two rows matters more than their gap.** The 339-row figure is the one
+> that describes the set a gate would actually run on; the attacks-only figure is the one that
+> **flatters the guard by exactly the effect being illustrated**. A reader who quotes the
+> 47-attacks number as the guard's recall is quoting the number this section exists to qualify —
+> the comparison across the two rows is a measurement OF THE EFFECT, not a choice of which number
+> to use. (Kev has no equivalent row: its 47 attacks-only scores are bit-identical to the same
+> rows in the 339-row run, because it is asked a stateless question and the examples are the whole
+> of this effect. See `kev-vs-incumbent-threshold-2026-09-23.md`.)
+
 ### Like for like, the gap is 28 → 18, and it is the code
 
 The plan's `19 through` is the **same measurement on the same set**: attacks alone, the same
