@@ -791,7 +791,7 @@ impl Link {
 /// its socket bound. Nothing ever asked it, or nothing checked. The old code was two
 /// discarded results and a return:
 ///
-/// ```rust
+/// ```text
 /// let _ = self.client.stop(app.seq, &who);
 /// let _ = self.client.detach();
 /// ```
