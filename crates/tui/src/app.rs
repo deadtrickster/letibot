@@ -8591,7 +8591,10 @@ impl App {
             let (class, rows) = match unseen {
                 Some((start, _)) if start == k => (
                     RowClass::Activity,
-                    vec![marker.clone().expect("a marker was built for this row")],
+                    vec![marker_painted(
+                        &cfg,
+                        &marker.clone().expect("a marker was built for this row"),
+                    )],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
                 None => item_lines(
@@ -8676,7 +8679,8 @@ impl App {
                     && prev == Some(RowClass::Speech)
                     && let Some(at) = block.iter().rposition(|l| !l.trim().is_empty())
                 {
-                    let joined = format!("{} {text}", block[at].trim_end());
+                    let joined =
+                        format!("{} {}", block[at].trim_end(), marker_painted(&cfg, text));
                     if visible_width(&joined) <= cfg.width {
                         block[at] = joined;
                         continue;
@@ -9389,11 +9393,15 @@ impl App {
                             // still fits the frame. Otherwise it stands alone, which is the
                             // honest degradation: counts with no sentence are still the fact,
                             // and a marker clipped to fit would lose them.
+                            // **Painted before it is measured or placed.** `visible_width`
+                            // skips escapes, so the width check below sees the counts and not
+                            // the register they are drawn in.
+                            let painted = marker_painted(&cfg, &text);
                             let joined = if joinable && *hist_class == Some(RowClass::Speech) {
                                 hist_lines
                                     .iter()
                                     .rposition(|l| !l.trim().is_empty())
-                                    .map(|at| format!("{} {text}", hist_lines[at].trim_end()))
+                                    .map(|at| format!("{} {painted}", hist_lines[at].trim_end()))
                                     .filter(|l| visible_width(l) <= cfg.width)
                             } else {
                                 None
@@ -9407,7 +9415,7 @@ impl App {
                                     hist_lines[at] = line;
                                     (RowClass::Other, Vec::new())
                                 }
-                                None => (RowClass::Activity, vec![text]),
+                                None => (RowClass::Activity, vec![painted]),
                             }
                         }
                         Some(_) => (RowClass::Other, Vec::new()),
@@ -12983,6 +12991,20 @@ fn reserved_for_run(
 /// that does reach it. It is a seam and not content, exactly as `… +8 lines · /t unfolds it`
 /// is on every other elided row in this file, and it is one string to delete if the operator
 /// rules that the sentence is better without it.
+/// **The marker, painted** — the counts and the seam in the faint register.
+///
+/// The operator: *"`ctrl-t opens it` and `/verbosity` must be gray, including the preceding
+/// dot."* They are right, and the reason is what the marker IS: the counts are a fact, and the
+/// seam is the head talking about its own keys — the same thing every other elided row says
+/// with `… +N lines · /t unfolds it`, in the same faint register. A seam drawn in the prose's
+/// own register reads as more of the sentence it sits in, which is the one thing it is not.
+///
+/// The dot lives inside the seam string rather than being painted beside it, so the separator
+/// cannot come out in one register and its own key in another.
+fn marker_painted(cfg: &RenderConfig, text: &str) -> String {
+    cfg.palette().paint(Role::Faint, text)
+}
+
 fn hidden_run_marker(
     items: &[SnapshotItem],
     start: usize,
@@ -29048,6 +29070,102 @@ mod tests {
             third.notice
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The seam is faint, dot included** — the operator's *"`ctrl-t opens it` and
+    /// `/verbosity` must be gray, including the preceding dot."*
+    ///
+    /// Asserted on the ESCAPE and not on the words: the seam's text was correct in every
+    /// version of this marker, and the defect was the register it was drawn in — a note about
+    /// a key rendered as more of the sentence it sits in. So this asks for the faint open
+    /// sequence immediately before the counts and a reset immediately after the seam.
+    ///
+    /// Both placements, because they are two code paths: **glued** to the model's sentence,
+    /// and **alone** after the operator's message. The second is where it was most obviously
+    /// wrong — a seam in the operator's own block register reads as their words.
+    #[test]
+    fn the_seam_is_faint_including_its_dot() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "first the helpers:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a_result_row(&mut a, 3, "s.1", "one");
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(120, 30).join("\n");
+        // Glued: the faint code opens the marker and the reset closes it, so the counts and
+        // the seam are one faint run — the dot inside it rather than beside it.
+        assert!(
+            screen.contains(&format!("\x1b[2m[1 tool call] · ctrl-t opens it\x1b[0m")),
+            "the counts and their seam are not one faint run: {screen:?}"
+        );
+
+        // **And alone, after the operator's message** — the case they reported.
+        let mut b = app();
+        b.cfg.color = true;
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        b.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        b.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::User {
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: "run the tests".into(),
+                    }],
+                }),
+            },
+        )));
+        a_result_row(&mut b, 3, "s.1", "one");
+        b.verbosity = Verbosity::Conversation;
+        b.invalidate_history();
+        let screen = b.screen(120, 30).join("\n");
+        assert!(
+            screen.contains(&format!("\x1b[2m[1 tool call] · ctrl-t opens it\x1b[0m")),
+            "the lone marker is not faint: {screen:?}"
+        );
+        // And its text is still the counts, on its own line, not glued to their words.
+        let theirs = screen
+            .lines()
+            .find(|l| l.contains("run the tests"))
+            .expect("the message is on the screen");
+        assert!(
+            !theirs.contains("tool call"),
+            "the counts are on the operator's own line: {theirs:?}"
+        );
     }
 
     /// **After the operator's own message the counts stand on their own line, with air.**
