@@ -452,7 +452,7 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
     // …and the OTHER head was told who did it, while the hub was still up.
     let seen = until(&rx2, |f| {
         matches!(f, ServerFrame::Event(e)
-            if matches!(&e.event, SessionEvent::Warning { code, detail }
+            if matches!(&e.event, SessionEvent::Warning { code, detail, .. }
                 if code == "daemon_stopping" && detail.contains("dead")))
     });
     assert!(

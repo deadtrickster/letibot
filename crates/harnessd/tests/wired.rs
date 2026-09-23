@@ -24,6 +24,7 @@
 //! asserted is that the fix is **in** the sentence, never a particular wording.
 
 use letibot_harnessd::config::{Config, Seat};
+use letibot_harnessd::harness::ForkTail;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
 use letibot_tools::Adjudicator;
@@ -765,7 +766,7 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
         generated_tokens: 0,
     };
     let fork = h
-        .fork_to_summary(&outcome, None, None, &[], None)
+        .fork_to_summary(&outcome, None, None, ForkTail::NONE)
         .expect("the fork");
 
     // The new base is the prefix PLUS the summary — not the summary alone. If

@@ -128,6 +128,8 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
         TurnEvent::Warning { code, detail } => SessionEvent::Warning {
             code: code.to_string(),
             detail,
+        
+            compaction: None,
         },
     }
 }

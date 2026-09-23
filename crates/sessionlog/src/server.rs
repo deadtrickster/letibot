@@ -408,6 +408,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                              or another head answered first",
                             identity
                         ),
+                    
+                        compaction: None,
                     });
                 }
             }
@@ -874,6 +876,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                  --continue` reopens it. A turn already generating \
                                  finishes its round; nothing new is started."
                             ),
+                        
+                            compaction: None,
                         });
                     }
                 }

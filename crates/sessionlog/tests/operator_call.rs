@@ -188,7 +188,7 @@ fn a_head_that_goes_away_between_the_frames_leaves_a_sentence_not_a_silent_admis
 
     hub.detach(&head.head_id);
     let said = hub.retained().into_iter().find_map(|e| match e.event {
-        SessionEvent::Warning { code, detail } if code == "operator_call_abandoned" => Some(detail),
+        SessionEvent::Warning { code, detail, .. } if code == "operator_call_abandoned" => Some(detail),
         _ => None,
     });
     let detail = said.expect("the admission must be accounted for when the head is gone");

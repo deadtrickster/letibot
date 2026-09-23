@@ -867,6 +867,117 @@ pub fn tail_split_of(items: &[TranscriptItem], from: usize) -> Option<TailSplit>
     })
 }
 
+/// **The sections the WIRE carries, in wire order — the template's leaves.**
+///
+/// Seven of the template's eight headings: `Work State` is a grouping heading with no
+/// body of its own, so a wire entry for it would be a section that is always empty by
+/// construction, and a head drawing it would print *nothing here* about a heading that
+/// was never a question. Its three children are the sections.
+///
+/// **These names are the daemon's and a head must not hold a copy** — the reason
+/// `head-run.tools` and `SettingRow.choices` exist. The daemon publishes this list on a
+/// `SettingRow` under `compaction.sections`, so a renamed section reaches a head that
+/// was never rebuilt.
+pub const WIRE_SECTIONS: [&str; 7] = [
+    "Objective",
+    "Important Details",
+    "Completed",
+    "Active",
+    "Blocked",
+    "Next Move",
+    "Relevant Files",
+];
+
+/// **Split a summary the model wrote into the sections the template asked for.**
+///
+/// A heading is a line that is `#`s, a space, and one of [`WIRE_SECTIONS`]'s names
+/// (trimmed, case-insensitively). Its body is everything after it, up to the next
+/// heading line at any level.
+///
+/// **Only headings the model actually wrote come back, and that is the point.** An
+/// entry with an empty body means the model wrote the heading and nothing under it; a
+/// name missing from the result means it wrote no such heading at all. `"there is
+/// nothing here"` and `"nobody said"` are different facts, and it is exactly the pair
+/// the template's *keep every section, even when empty* rule exists to keep apart — the
+/// rule tells the model to write `(none)`, and the return shape records what it did
+/// instead when it did not.
+///
+/// `Work State`'s own body is never returned: its content is its children, and a
+/// grouping heading is not a section. Anything before the first recognised heading is
+/// dropped, which is where a model that ignored the template entirely ends up — an
+/// empty result is read by a caller as *the structure was not followed*, and the
+/// caller has the raw text either way.
+pub fn parse_summary_sections(summary: &str) -> Vec<(String, String)> {
+    // Every heading line, at any level, so a body stops at the next one whatever
+    // level it is: `## Work State` followed immediately by `### Completed` gives the
+    // parent no body at all, which is what it has.
+    let mut found: Vec<(usize, String)> = Vec::new();
+    for (i, line) in summary.lines().enumerate() {
+        let Some(name) = heading_name(line) else {
+            continue;
+        };
+        found.push((i, name));
+    }
+    let lines: Vec<&str> = summary.lines().collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (n, (start, name)) in found.iter().enumerate() {
+        let end = found.get(n + 1).map(|(i, _)| *i).unwrap_or(lines.len());
+        let Some(want) = WIRE_SECTIONS.iter().find(|w| w.eq_ignore_ascii_case(name)) else {
+            continue;
+        };
+        let body = lines[start + 1..end].join("\n");
+        out.push(((*want).to_string(), body.trim().to_string()));
+    }
+    // **In the template's order, not the model's.** A summary that wrote its sections
+    // back to front should still read the way the next reader expects them, and the
+    // wire is where that is decided rather than left to each head.
+    let mut ordered: Vec<(String, String)> = Vec::new();
+    for want in WIRE_SECTIONS {
+        if let Some((_, body)) = out.iter().find(|(n, _)| n == want) {
+            ordered.push((want.to_string(), body.clone()));
+        }
+    }
+    ordered
+}
+
+/// The section name a line is a heading for, or `None`.
+fn heading_name(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let hashes = t.len() - t.trim_start_matches('#').len();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = t[hashes..].strip_prefix(' ')?;
+    let rest = rest.trim().trim_end_matches('#').trim();
+    let rest = rest.trim_matches('*').trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Any heading, known or not: an unknown one still ends the section before it.
+    // A model that invents `## Also` must not have its body swallowed into
+    // `Important Details`.
+    Some(rest.to_string())
+}
+
+/// **Why a compaction's tail is what it is**, for a report's `tail.because`.
+///
+/// R27's ruled conditional has three ways to be empty and one way to be bounded, and
+/// the fourth is here because the first three do not describe a tail that *was*
+/// carried: `"nothing_fits"` over a tail of three turns would be false. The operator's
+/// list named the three; the shape is ours to finish, and an axis bound is a different
+/// fact from a failure to fit.
+pub const TAIL_BECAUSE: [&str; 4] = ["budget", "local_model", "nothing_fits", "no_turns"];
+
+/// The `because` for a plan.
+pub fn tail_because(plan: &TailPlan, remote: bool, had_history: bool) -> &'static str {
+    match plan {
+        TailPlan::Whole { .. } | TailPlan::Split { .. } => "budget",
+        TailPlan::None if !remote => "local_model",
+        TailPlan::None if !had_history => "no_turns",
+        TailPlan::None => "nothing_fits",
+    }
+}
+
 pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> OverrunPlan {
     let resident = prefix_tokens + item_tokens.iter().sum::<u64>();
     if resident + MIN_SUMMARY_ROOM <= window {
@@ -1099,6 +1210,113 @@ mod the_tail_and_the_template {
             "the harness refuses a fork whose summary turn proposed a call; the \
              instruction is what makes that refusal rare rather than a trap"
         );
+    }
+    /// **The record, split into the template's sections, with the two absences kept
+    /// apart.**
+    ///
+    /// Three facts are held apart by one call and each is one assertion: a heading the
+    /// model wrote with words under it, a heading it wrote with NOTHING under it (an
+    /// empty body — *there is nothing here*), and a heading it never wrote at all
+    /// (absent from the list — *nobody said*). Collapsing any two of those is the
+    /// defect the whole shape exists against, and it is the same distinction the
+    /// template's *keep every section, even when empty* rule is written for.
+    #[test]
+    fn the_record_splits_into_the_sections_it_was_asked_for() {
+        // Written with `Blocked` BEFORE `Active`, which is the other order, and with
+        // `Blocked` empty — so the two things this test is about are both exercised.
+        let summary = "## Objective\n\nFix the stale echoes.\n\n## Work State\n\n### \
+                       Completed\n\n- the rule\n\n### Blocked\n\n### Active\n\n- \
+                       measuring\n\n## Next Move\n\n1. push";
+        let got = parse_summary_sections(summary);
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Objective", "Completed", "Active", "Blocked", "Next Move"],
+            "in the template's order — which is NOT the order the model wrote them in — \
+             and only the headings it wrote at all"
+        );
+        let body = |n: &str| -> String {
+            got.iter()
+                .find(|(name, _)| name == n)
+                .unwrap_or_else(|| panic!("no `{n}` section"))
+                .1
+                .clone()
+        };
+        assert_eq!(body("Objective"), "Fix the stale echoes.");
+        assert_eq!(body("Completed"), "- the rule");
+        // **Written and empty** — *nothing is blocked*.
+        assert_eq!(body("Blocked"), "");
+        // **Never written** — *nobody said*. Two facts, two shapes.
+        assert!(!names.contains(&"Important Details") && !names.contains(&"Relevant Files"));
+        // `Work State` is a grouping heading: its own body is never returned, because
+        // a head drawing it would print *nothing here* about a heading that was never
+        // a question.
+        assert!(!names.contains(&"Work State"));
+    }
+
+    /// **A model that ignored the template gets an empty list, not a guess.** An
+    /// unknown heading still ENDS the section before it — a model that invents
+    /// `## Also` must not have its words swallowed into `Important Details` — and a
+    /// record with no recognised heading at all yields nothing, which a caller reads
+    /// as *the structure was not followed*. The raw text is the caller's either way,
+    /// so nothing is lost by refusing to invent sections.
+    #[test]
+    fn headings_the_template_does_not_know_stay_out_and_still_end_a_section() {
+        assert!(parse_summary_sections("just some prose\nand more").is_empty());
+        let got = parse_summary_sections("## Objective\n\n- a\n\n## Also\n\n- b");
+        assert_eq!(got, vec![("Objective".to_string(), "- a".to_string())]);
+        // A heading at any level ends the body, including one deeper than its parent.
+        let deep = parse_summary_sections("## Next Move\n\n1. ship\n\n#### Relevant Files\n\n- a.rs");
+        assert_eq!(
+            deep,
+            vec![
+                ("Next Move".to_string(), "1. ship".to_string()),
+                ("Relevant Files".to_string(), "- a.rs".to_string()),
+            ]
+        );
+    }
+
+    /// The parse is **case-insensitive and trimmed**, because a model that writes
+    /// `## objective` or `## **Objective**` has still answered the question the
+    /// section asks; refusing it would turn a formatting habit into a lost fact.
+    #[test]
+    fn a_heading_is_recognised_whatever_case_or_emphasis_it_carries() {
+        assert_eq!(
+            parse_summary_sections("## objective\n\n- a"),
+            vec![("Objective".to_string(), "- a".to_string())]
+        );
+        assert_eq!(
+            parse_summary_sections("## **Relevant Files**\n\n- a.rs"),
+            vec![("Relevant Files".to_string(), "- a.rs".to_string())]
+        );
+        // And the names that come out are the DAEMON's spelling, never the model's:
+        // a head must not hold a second copy of a list.
+        assert_eq!(
+            wire_names(&parse_summary_sections("### active\n\n- x")),
+            vec!["Active"]
+        );
+    }
+
+    fn wire_names(s: &[(String, String)]) -> Vec<&str> {
+        s.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// **Why a tail is what it is**, the four answers, one per arm — so a report's
+    /// `tail.because` cannot be a word the daemon never produces.
+    #[test]
+    fn every_tail_reason_is_reachable_and_named() {
+        let whole = TailPlan::Whole {
+            from: 0,
+            tokens: 1,
+            exchanges: 1,
+        };
+        assert_eq!(tail_because(&whole, true, true), "budget");
+        assert_eq!(tail_because(&TailPlan::None, false, true), "local_model");
+        assert_eq!(tail_because(&TailPlan::None, true, false), "no_turns");
+        assert_eq!(tail_because(&TailPlan::None, true, true), "nothing_fits");
+        for why in TAIL_BECAUSE {
+            assert!(!why.is_empty());
+        }
     }
 }
 

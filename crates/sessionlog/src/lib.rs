@@ -67,8 +67,10 @@ pub mod lift_tools;
 
 pub use cursor::{Batch, ReadMark};
 pub use event::{
-    Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason, OnTimeout,
-    OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES, Timings, Usage, display_target,
+    COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, CompactionReport, CompactionSection,
+    CompactionTail, CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope,
+    FinishReason, OnTimeout, OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES, Timings,
+    Usage, display_target,
 };
 pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
 pub use question::{AnswerDefect, QuestionAnswer};

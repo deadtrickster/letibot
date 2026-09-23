@@ -17,6 +17,8 @@ pub fn warn(detail: &str) -> SessionEvent {
     SessionEvent::Warning {
         code: "test".into(),
         detail: detail.into(),
+    
+        compaction: None,
     }
 }
 

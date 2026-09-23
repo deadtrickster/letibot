@@ -2774,13 +2774,13 @@ impl App {
         // holds has landed, and its echo stands down the way `record_item` would
         // have stood it down had the row arrived live.
         for it in &s.items {
-            if let Some(TranscriptItem::User { parts }) = &it.item
-                && let Some(text) = parts.iter().find_map(|p| match p {
-                    UserPart::Text { text } => Some(text.clone()),
+            if let Some(TranscriptItem::User { parts }) = &it.item {
+                for text in parts.iter().filter_map(|p| match p {
+                    UserPart::Text { text } => Some(text.as_str()),
                     _ => None,
-                })
-            {
-                self.retire_pending(&text);
+                }) {
+                    self.retire_pending(text);
+                }
             }
         }
         // The snapshot's in-flight calls are **not** seeded into `call_targets`.
@@ -3768,7 +3768,7 @@ impl App {
                 }));
                 Disposition::Rendered
             }
-            SessionEvent::Warning { code, detail } => {
+            SessionEvent::Warning { code, detail, .. } => {
                 // `turn_failed` is the log's grep-able record of the same fact
                 // `TurnFailed` puts under the turn, and the daemon publishes both
                 // on purpose — one is state, the other is history. On a *screen*
@@ -5999,12 +5999,41 @@ impl App {
 
     /// Stand down the echo of a queued prompt whose row has landed.
     ///
-    /// The transcript takes the words over by being their text, so the exact
-    /// match is the rule. One refinement: behind a running turn the operator's
-    /// consecutive messages are **one** message — the engine merges them — and
-    /// a notice landing between them splits the run, so a landing row may be a
-    /// *piece* of a coalesced echo. A row that is the front piece of an echo
-    /// strips itself off it, and the rest stays queued until its own rows land.
+    /// **The unit is a LINE, not a message, and that is the whole of the fix.** The
+    /// old rule asked whether the landing row *was* the echo, or began with it, and
+    /// both questions are about whole strings while the thing being compared is a
+    /// **run of prompts**: the engine merges the operator's consecutive prompts into
+    /// ONE user item joined by newlines (`SteeringMessage::to_item`), and a head only
+    /// sometimes does the same joining itself ([`App::submit`]'s coalescing is
+    /// conditional on a turn it thinks is running). So the shapes that meet are
+    /// "six prompts in the queue, one six-line row" and "two prompts joined in the
+    /// queue, one five-line row" — and against a whole-string rule every one of them
+    /// compares NO, which leaves the echo on the screen for the rest of the session.
+    ///
+    /// Measured on this head, 2026-09-23: six `queued ·` echoes of the R27
+    /// instruction's six paragraphs, every one of them answered, none retired —
+    /// because the row that answered them was their **join** (2752 characters, six
+    /// lines) while the queue held two hundred-to-five-hundred characters per entry.
+    ///
+    /// So: a row's lines are consumed, once each, by the pending pieces that equal
+    /// them as **whole lines**, from the front of the queue backwards. A piece that
+    /// consumes nothing keeps its place; an entry left with nothing retires. The
+    /// word *whole* is the correctness: a prompt `second thing` is NOT retired by a
+    /// row reading `first thing\nsecond thing-guess`, which is the failure that
+    /// matters — a head that swallows a prompt the daemon has not answered has put a
+    /// sentence the operator typed where nobody will ever see it.
+    ///
+    /// **What is deliberately not done: matching a substring, or matching pieces out
+    /// of order.** A piece is claimed only by a whole line at or after the last line
+    /// claimed, so a queue whose pieces appear reversed in a row keeps them (an echo
+    /// left standing costs a stale line; an echo wrongly retired costs the
+    /// sentence), and a piece that is a *fragment* of a line claims nothing at all.
+    ///
+    /// A prompt coincidentally EQUAL to one whole line of a longer prompt the
+    /// operator typed separately would still retire. That residue is accepted and
+    /// older than this fix — it is the same risk [`App::retire_pending`]'s old
+    /// front-piece branch carried, and the alternative (never retiring a piece) is
+    /// the defect measured above.
     ///
     /// **This is the only thing that retires an echo, and it takes content.** The
     /// announcement of a user row says nothing about whose words it carries — a
@@ -6013,22 +6042,27 @@ impl App {
     /// prompt still sitting in the hub's queue, and the operator would watch their
     /// own sentence vanish. See [`App::bound_prompts`] for the half that *is* drawn
     /// from an announcement.
-    fn retire_pending(&mut self, text: &str) {
-        if let Some(at) = self.pending_prompts.iter().position(|p| *p == text) {
-            self.pending_prompts.remove(at);
-            return;
-        }
-        let prefix = format!("{text}\n");
-        if let Some(at) = self
-            .pending_prompts
-            .iter()
-            .position(|p| p.starts_with(&prefix))
-        {
-            let rest = self.pending_prompts[at][prefix.len()..].to_string();
-            if rest.is_empty() {
-                self.pending_prompts.remove(at);
-            } else {
-                self.pending_prompts[at] = rest;
+    fn retire_pending(&mut self, row: &str) {
+        let lines: Vec<&str> = row.split('\n').collect();
+        // **A line is spent once.** Two prompts that say the same thing stay queued
+        // separately until each of their rows lands — the property the equality rule
+        // gave, which a rule retiring every matching entry would lose.
+        let mut claimed = vec![false; lines.len()];
+        let mut cursor = 0usize;
+        let mut i = 0usize;
+        while i < self.pending_prompts.len() {
+            match strip_landed(&self.pending_prompts[i], &lines, &mut claimed, &mut cursor) {
+                // Nothing of this entry is in the row. It keeps its place.
+                None => i += 1,
+                // Every piece of it has landed. The echo stands down.
+                Some(rest) if rest.is_empty() => {
+                    self.pending_prompts.remove(i);
+                }
+                // Some of it has. The echo shrinks to what is still owed.
+                Some(rest) => {
+                    self.pending_prompts[i] = rest;
+                    i += 1;
+                }
             }
         }
     }
@@ -11748,6 +11782,46 @@ fn queued_lines(text: &str, cfg: &RenderConfig) -> Vec<String> {
     out
 }
 
+/// **One pending echo against one landing row**: what of the echo is still owed.
+///
+/// `None` when the row says nothing about this echo — no whole line of it is a whole
+/// piece of the echo. `Some("")` when the echo is fully accounted for. `Some(rest)`
+/// when a run of its lines landed and the rest has not.
+///
+/// `claimed` and `cursor` are the row's lines, spent across the whole queue in one
+/// call: each line of the row answers at most one piece, and only in the order the
+/// queue holds them, which is the order the daemon appended them in. See
+/// [`App::retire_pending`] for why the unit is a line and why the two guards —
+/// whole-line equality and no going backwards — are what make it safe.
+fn strip_landed(
+    entry: &str,
+    lines: &[&str],
+    claimed: &mut [bool],
+    cursor: &mut usize,
+) -> Option<String> {
+    let pieces: Vec<&str> = entry.split('\n').collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(pieces.len());
+    let mut hit = false;
+    for piece in &pieces {
+        // **A blank line is not a claim.** It carries no words, so it can say
+        // nothing about whether a prompt landed — and two prompts that differ only
+        // in blank lines would otherwise retire each other.
+        if piece.is_empty() {
+            kept.push(piece);
+            continue;
+        }
+        match (*cursor..lines.len()).find(|k| !claimed[*k] && lines[*k] == *piece) {
+            Some(k) => {
+                claimed[k] = true;
+                *cursor = k + 1;
+                hit = true;
+            }
+            None => kept.push(piece),
+        }
+    }
+    hit.then(|| kept.join("\n"))
+}
+
 /// `14:32:07` in the local zone, or empty when the row carries no timestamp.
 ///
 /// Zero is *unknown*, not the epoch: a log recorded before `SnapshotItem::ts`
@@ -13834,6 +13908,243 @@ mod tests {
         assert_eq!(a.pending_prompts.len(), 2);
     }
 
+    /// **The shape that actually happens on this box, and it retired nothing.**
+    ///
+    /// Measured 2026-09-23 on the live head: six `queued ·` echoes, one per paragraph
+    /// of the R27 instruction, every one of them answered — and the row that answered
+    /// them was their JOIN. Six sends while the head did not think a turn was running
+    /// became six separate entries (`App::submit`'s coalescing is conditional on
+    /// `turn_running`), the engine merged them into ONE user item joined by newlines,
+    /// and against a whole-string rule every comparison was *no*.
+    ///
+    /// Then the seventh thing: the operator's next message was sent while a turn WAS
+    /// running, so the head appended it to the last entry — making an entry that is a
+    /// *superset* of one row and a *prefix* of another. Every one of these three shapes
+    /// is here, in one test, against the text lengths the real session had.
+    #[test]
+    fn the_engine_join_of_several_prompts_retires_every_echo_it_answered() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // The first six: idle submits (the turn state is not Running), so they stay
+        // separate entries.
+        let six = [
+            "THE OPERATOR'S RULING, and it came with a split",
+            "My reasoning for why that split is right",
+            "One consequence to build in rather than discover",
+            "What is still yours to rule",
+            "And two corrections you owe your own documentation",
+            "Finally, one thing I did NOT establish",
+        ];
+        for p in six {
+            typed(&mut a, p);
+            a.key(Key::Enter);
+        }
+        assert_eq!(a.pending_prompts.len(), 6, "one entry per send");
+
+        // Then a seventh send while the turn IS running: the head joins it onto the
+        // last entry, which is the whole reason one entry can be a superset of one
+        // row and a prefix of another.
+        a.apply(ServerFrame::Event(env(2, testing::turn_started("t2"))));
+        let seventh = "The operator is looking at six queued echoes";
+        typed(&mut a, seventh);
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts.len(), 6, "joined, not pushed");
+        assert_eq!(
+            a.pending_prompts[5],
+            format!("{}\n{seventh}", six[5]),
+            "the last entry is the sixth prompt with the seventh under it"
+        );
+
+        // The row the six landed as: the engine's join, one item, six lines.
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: six.join("\n"),
+                }],
+            },
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec![seventh.to_string()],
+            "all six are answered by that one row; only the seventh is still owed"
+        );
+
+        // And the seventh's own row, which is where its echo goes.
+        a.record_item(
+            "s.1",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: seventh.to_string(),
+                }],
+            },
+        );
+        assert!(
+            a.pending_prompts.is_empty(),
+            "every echo is retired: {:?}",
+            a.pending_prompts
+        );
+
+        // The screen agrees — no `queued` tag left anywhere.
+        let screen = a.screen(120, 40).join("\n");
+        assert!(!screen.contains("queued"), "{screen}");
+    }
+
+    /// **The negative assertion: a prompt is not retired by a row that merely
+    /// CONTAINS it.**
+    ///
+    /// This is the failure that matters, and it is the one the whole-line rule
+    /// exists against. leticl's wording: a prompt `second thing` must not be retired
+    /// by a row reading `first thing\nsecond thing-guess`, or the head swallows a
+    /// prompt the daemon has not answered — the operator's sentence, gone from the
+    /// screen with nothing else holding it.
+    ///
+    /// Three ways to be *contained but not a line*, because they fail differently: a
+    /// row that continues the echo's text, a row that precedes it, and a row that
+    /// holds the echo's words inside one longer line.
+    #[test]
+    fn a_row_that_only_contains_the_prompt_does_not_retire_it() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **No turn**, deliberately: `App::submit` joins consecutive sends onto one
+        // entry only while it thinks a turn is running, and these two have to be two
+        // entries for the rule under test to be about matching and not about joining.
+        typed(&mut a, "second thing");
+        a.key(Key::Enter);
+        typed(&mut a, "fourth thing");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts.len(), 2, "two entries, two sends");
+
+        for row in [
+            // The echo is the FIRST LINE of a longer row: contained, not a line.
+            "second thing-guess\nand another line",
+            // The echo is preceded by other text in the same line.
+            "first thing\nsecond thing and more",
+            // The echo's words are inside one longer line.
+            "first thing\nprefixed second thing suffixed",
+        ] {
+            a.record_item(
+                "s.contains",
+                TranscriptItem::User {
+                    parts: vec![UserPart::Text { text: row.into() }],
+                },
+            );
+            assert_eq!(
+                a.pending_prompts,
+                vec!["second thing".to_string(), "fourth thing".to_string()],
+                "`{row}` contains the echo and did not answer it"
+            );
+        }
+
+        // And the answer that IS one — a whole line — retires exactly that one.
+        a.record_item(
+            "s.4",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "something else\nsecond thing".into(),
+                }],
+            },
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec!["fourth thing".to_string()],
+            "the second is a whole line of that row, so it landed"
+        );
+    }
+
+    /// **A line is spent once**, which is the property the old equality rule gave
+    /// and which a rule that retires every matching entry would lose: two prompts that
+    /// say the same thing stay queued separately until each of their rows lands.
+    #[test]
+    fn one_row_does_not_retire_two_identical_prompts() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // No turn: see the note in the test above about the head's own joining.
+        typed(&mut a, "say it twice");
+        a.key(Key::Enter);
+        typed(&mut a, "say it twice");
+        a.key(Key::Enter);
+        assert_eq!(a.pending_prompts.len(), 2);
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "say it twice".into(),
+                }],
+            },
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec!["say it twice".to_string()],
+            "one landing row answers one of the two"
+        );
+    }
+
+    /// **A blank line is not a claim.** A piece that is empty carries no words, so it
+    /// cannot say whether a prompt landed — and a row of blank lines must not retire
+    /// the queue by matching them.
+    #[test]
+    fn blank_lines_claim_nothing() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "a real prompt");
+        a.key(Key::Enter);
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "\n\n\n".into(),
+                }],
+            },
+        );
+        assert_eq!(a.pending_prompts, vec!["a real prompt".to_string()]);
+    }
+
+    /// The piece arithmetic itself, where it is easier to read than through an `App`.
+    #[test]
+    fn strip_landed_reads_lines_not_strings() {
+        fn go(entry: &str, row: &str) -> Option<String> {
+            let lines: Vec<&str> = row.split('\n').collect();
+            let mut claimed = vec![false; lines.len()];
+            let mut cursor = 0;
+            strip_landed(entry, &lines, &mut claimed, &mut cursor)
+        }
+        // Equality, by lines.
+        assert_eq!(go("one", "one"), Some(String::new()));
+        assert_eq!(go("one\ntwo", "one\ntwo"), Some(String::new()));
+        // The row is the front run of the echo.
+        assert_eq!(go("one\ntwo", "one"), Some("two".into()));
+        // The row is a middle and a tail run.
+        assert_eq!(
+            go("one\ntwo\nthree", "two\nthree"),
+            Some("one".into())
+        );
+        // Contained but not a line: untouched, every one of them.
+        assert_eq!(go("two", "one\ntwo-guess"), None);
+        assert_eq!(go("two", "one\nxtwo x"), None);
+        assert_eq!(go("two", "one\ntwo is a longer line"), None);
+        // A blank piece claims nothing, so an echo of blank lines is not retired by
+        // a row of blank lines.
+        assert_eq!(go("\n", "\n\n"), None);
+    }
+
     #[test]
     fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
         let mut a = app();
@@ -14345,10 +14656,14 @@ mod tests {
         hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
             detail: "938065 of 999999 tokens resident — compacting now".into(),
+        
+            compaction: None,
         });
         hub.publish(SessionEvent::Warning {
             code: "compacted".into(),
             detail: "compacted: 940188 → 9181 tokens, on transcript s#t25".into(),
+        
+            compaction: None,
         });
         hub.publish(SessionEvent::TranscriptAppended {
             item_id: "s#t25.0".into(),
@@ -14391,10 +14706,14 @@ mod tests {
         hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
             detail: "compacting again".into(),
+        
+            compaction: None,
         });
         hub.publish(SessionEvent::Warning {
             code: "compacted".into(),
             detail: "compacted again".into(),
+        
+            compaction: None,
         });
         feed(&mut a, &hub, &att.head_id);
         let last = a.screen(100, 24).join("\n");
@@ -14419,6 +14738,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "compacted".into(),
                 detail: "compacted".into(),
+            
+                compaction: None,
             },
         )));
         assert!(b.pending_prompts.is_empty(), "the manual fork resolved nothing");
@@ -14614,6 +14935,8 @@ mod tests {
             let e = hub.publish(SessionEvent::Warning {
                 code: code.into(),
                 detail: detail.into(),
+            
+                compaction: None,
             });
             a.apply(ServerFrame::Event(e));
         }
@@ -14678,6 +15001,8 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "denied: nobody answered before the deadline".into(),
+        
+            compaction: None,
         });
         a.apply(ServerFrame::Event(live.clone()));
         assert!(a.screen(100, 30).join("\n").contains("gate_timeout"));
@@ -14767,6 +15092,8 @@ mod tests {
         let published = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "denied: nobody answered before the deadline".into(),
+        
+            compaction: None,
         });
         a.apply(ServerFrame::Event(published.clone()));
         let screen = a.screen(100, 30).join("\n");
@@ -15051,6 +15378,8 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "nobody answered within 300s".into(),
+        
+            compaction: None,
         });
         let mut a = app();
         a.prefs_path = Some(path.clone());
@@ -15177,6 +15506,8 @@ mod tests {
             hub.publish(SessionEvent::Warning {
                 code: code.into(),
                 detail: detail.into(),
+            
+                compaction: None,
             });
         }
 
@@ -15220,6 +15551,8 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "context_wall".into(),
             detail: "stopping this turn: the window is full".into(),
+        
+            compaction: None,
         });
         a.apply(ServerFrame::Event(live));
         let after = a.screen(100, 30).join("\n");
@@ -15320,6 +15653,8 @@ mod tests {
                 SessionEvent::Warning {
                     code: code.into(),
                     detail: detail.into(),
+                
+                    compaction: None,
                 },
             )));
         }
@@ -20223,6 +20558,8 @@ mod tests {
         let published = hub.publish(letibot_sessionlog::SessionEvent::Warning {
             code: "reseated".into(),
             detail: "THE-WARNING".into(),
+        
+            compaction: None,
         });
 
         let att = hub.attach("tui", "d", letibot_sessionlog::protocol::Caps::default(), 0);
@@ -22949,6 +23286,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "turn_failed".into(),
                 detail: "http io: Connection refused (os error 111)".into(),
+            
+                compaction: None,
             },
         )));
         assert_eq!(a.filtered - before, 1);
@@ -25057,6 +25396,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/job j89\nline one\nline two\nline three\nline four".into(),
+            
+                compaction: None,
             },
         )));
         assert!(
@@ -25079,6 +25420,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/mode automode\nthis session is at `automode`".into(),
+            
+                compaction: None,
             },
         )));
         assert!(a.slash_out.is_none(), "a sentence is not a listing");
@@ -25098,6 +25441,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/job j1\n\u{1b}[2m dim \u{1b}[0m\nb\nc\nd".into(),
+            
+                compaction: None,
             },
         )));
         let (_, lines) = a.slash_out.clone().expect("a listing");
@@ -25468,6 +25813,8 @@ mod tests {
             SessionEvent::Warning {
                 code: "job_output_refused".into(),
                 detail: "no job `j4` here; `/job` with no argument lists them".into(),
+            
+                compaction: None,
             },
         )));
         let v = a.job_out.as_ref().expect("the pane is still open");

@@ -665,7 +665,7 @@ impl SessionView {    // (the free function `body_of` at the foot of this file i
             SessionEvent::HeadDetached { head_id, .. } => {
                 self.heads.retain(|h| &h.head_id != head_id);
             }
-            SessionEvent::Warning { code, detail } => {
+            SessionEvent::Warning { code, detail, .. } => {
                 self.warnings.push(Warned {
                     code: code.clone(),
                     detail: detail.clone(),

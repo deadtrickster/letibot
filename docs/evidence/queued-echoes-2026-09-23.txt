@@ -1,0 +1,24 @@
+transcript s-1789462738453908838#t30
+  row 172:    2752 chars, 6 line(s)  <- the six paragraphs, ONE user item
+  row 583:  2661 chars, 7 line(s)  <- the next message, also ONE item
+
+the head's queue, reconstructed: 6 entr(ies)
+  [0]   302 chars, 1 line(s)  "THE OPERATOR'S RULING, and it came with a split: reuse t"
+  [1]   450 chars, 1 line(s)  'My reasoning for why that split is right is in the row a'
+  [2]   332 chars, 1 line(s)  'One consequence to build in rather than discover: both p'
+  [3]   526 chars, 1 line(s)  'What is still yours to rule, not to implement on my say-'
+  [4]   708 chars, 1 line(s)  'And two corrections you owe your own documentation. docs'
+  [5]  3091 chars, 8 line(s)  'Finally, one thing I did NOT establish and you must befo'
+
+shipped  after row 172: 6 left   after row 583: 6 left
+           still owed: "THE OPERATOR'S RULING, and it came with a split: reuse t"
+           still owed: 'My reasoning for why that split is right is in the row a'
+           still owed: 'One consequence to build in rather than discover: both p'
+           still owed: 'What is still yours to rule, not to implement on my say-'
+           still owed: 'And two corrections you owe your own documentation. docs'
+           still owed: 'Finally, one thing I did NOT establish and you must befo'
+fixed    after row 172: 1 left   after row 583: 0 left
+
+the shipped rule retires nothing: it asks whether the row IS the echo, or
+begins with it, and BOTH directions are wrong here — the row is the echo's
+join. The fix retires all six, and leaves nothing owed once both rows land.

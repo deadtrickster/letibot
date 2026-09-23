@@ -235,6 +235,8 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
             SessionEvent::Warning {
                 code: "gap".into(),
                 detail: "this is what you missed".into(),
+            
+                compaction: None,
             },
         )))
         .unwrap();

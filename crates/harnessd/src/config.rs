@@ -1059,6 +1059,19 @@ impl Config {
             "default",
             "",
         ));
+        // **The sections a compaction's record has** — R27, and the same argument as the
+        // row above it: a list a head holds is a list that drifts, and this one is the
+        // daemon's own template. A head reads `value` and splits on `,`, and an absent
+        // row means a daemon older than this — *no structure to draw*, so the sentence in
+        // the warning's `detail` is all there is and it draws exactly what it drew
+        // before. `choices` is empty for the reason `head-run.tools`' is: this is not a
+        // closed set of values for a setting, it is the list.
+        out.push(row(
+            letibot_sessionlog::COMPACTION_SECTIONS_KEY,
+            letibot_turn::WIRE_SECTIONS.join(","),
+            "default",
+            "",
+        ));
         // What the session is.
         out.push(row("session", self.session_id.clone(), "", ""));
         out.push(row("seat", self.seat.as_str().to_string(), "--role", ""));

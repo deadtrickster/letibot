@@ -509,8 +509,134 @@ fn truncate_target(s: &str) -> String {
     format!("{}{ELLIPSIS}", &s[..end])
 }
 
-/// One event. `(session_id, seq, ts)` live on [`Envelope`], not here, because an
-/// event that has not been appended yet has none of them.
+/// **One section of a compaction's record, as the daemon read it back.**
+///
+/// `name` is one of the template's headings (`letibot_turn::SUMMARY_SECTIONS`), spelled by
+/// the daemon and not by the head (see [`COMPACTION_SECTIONS_KEY`]).
+///
+/// **Present with an empty body and absent are two different facts**, and the whole
+/// reason the sections are a list rather than one string: an empty body is the model
+/// saying *there is nothing here*, and a name missing from [`CompactionReport::sections`]
+/// is the model having written no such heading at all — *nobody said*. Collapsing them
+/// is how *nothing is blocked* becomes indistinguishable from *nobody asked*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionSection {
+    pub name: String,
+    /// The text between this heading and the next, trimmed. Empty when the model
+    /// wrote the heading and nothing under it.
+    pub body: String,
+}
+
+/// One exchange carried through a compaction verbatim rather than summarised.
+///
+/// `role` is `operator` or `agent`, the vocabulary [`Speaker`] already uses — a head
+/// that draws it has a word for each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionTurn {
+    pub role: String,
+    pub text: String,
+}
+
+/// **What was kept verbatim, and why not more** — R27's ruled tail.
+///
+/// Present on every compaction, including a local one, where it is an object with
+/// zero turns. That is deliberate and it is the requirement: *the local artefact is
+/// the remote one with an empty tail*, so a session compacted locally and resumed
+/// against a remote model (or the reverse) does not meet a record its reader cannot
+/// read. One shape, one reader.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionTail {
+    pub turns: Vec<CompactionTurn>,
+    /// **How many items were carried.** Items, not turns: the tail is made of
+    /// transcript items, and a turn is however many of them happened between two
+    /// operator messages. `turns.len()` is the count of turns and is a different
+    /// number on purpose.
+    pub carried: u64,
+    /// **Why this much and no more**, one of `"local_model"` (the ruled split: a local
+    /// model is bounded by the KV cache in VRAM, where a tail competes with the
+    /// pressure the compaction was called to relieve), `"nothing_fits"` (one item was
+    /// larger than the whole tail budget), or `"no_turns"` (there was nothing to
+    /// carry).
+    ///
+    /// **A string rather than an enum, and an unknown value is printed raw.** A head
+    /// that met an unrecognised reason would otherwise have to choose between dropping
+    /// the fact and inventing one, and R27's whole point is that a head does not hold
+    /// the daemon's vocabulary — the same argument as `head-run.tools`.
+    pub because: String,
+    /// **Items of the newest exchange left out of the front of the tail**, when the tail
+    /// could not start at an exchange boundary — one big file read is larger than the
+    /// whole budget, so the tail begins inside the exchange still in progress. Non-zero
+    /// means its first turn answers something that is no longer here, which the reader
+    /// has to be told.
+    #[serde(default)]
+    pub dropped: u64,
+}
+
+/// **A compaction's account of itself, beside its sentence rather than inside it.**
+///
+/// R27. The `Warning` that already announces a compaction carries a `detail` written for
+/// a person; a head that wants to draw a *row* — the section list, the numbers, the
+/// verbatim tail — otherwise has to parse English, which is the same defect R24's frame 2
+/// had one layer down: a prose description of a shape is not the shape.
+///
+/// **Inline on the warning, not an R11-style locator.** leticl's reason, and it is the
+/// right one: two events can drift about which compaction they describe, and a locator
+/// would have to be reachable from the snapshot too or a head attaching after a
+/// compaction draws a row it can never fill. Nothing here is large — a record is a few
+/// thousand tokens and this is a fraction of it, published once per compaction rather
+/// than once per turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionReport {
+    /// **Which kind of compaction this was**, in the vocabulary the warning code already
+    /// uses: `"compacted"`, `"reseated"`, `"overrun"`. Carried here as well as in
+    /// `Warning::code` so a head holding only the report can still name it.
+    pub kind: String,
+    /// The conversation's size before, in LEDGER tokens — the daemon's own count, the
+    /// same number the detail sentence was rendered from.
+    pub tokens_before: u64,
+    /// And after: the new base, which is the prefix plus the record plus any tail.
+    pub tokens_after: u64,
+    /// The transcript the fork opened, e.g. `s-123#t2`.
+    pub transcript: String,
+    /// `tokens_before` plus the prompt, as the daemon measured it when it decided — the
+    /// number that was compared against `window`.
+    pub resident: u64,
+    /// The window it was compared against.
+    pub window: u64,
+    /// The reserve that comparison subtracted, so a head can reproduce the decision
+    /// rather than only read its outcome.
+    pub headroom: u64,
+    /// **The record ran out of room before it finished.** A bool on the structure and not
+    /// a phrase parsed out of a body, because a templated record is exactly where
+    /// *truncated* stops being readable out of any one section: the cut falls wherever the
+    /// model ran out, which with eight sections can be inside `Relevant Files`.
+    pub cut_off: bool,
+    /// **Which wording of the instruction produced this record**, the way a corpus row
+    /// carries `brief_sha`. Bump it when `letibot_turn::SUMMARY_INSTRUCTION` changes what it
+    /// asks for: records produced under different templates are two datasets, and a
+    /// head that saw the tag move knows the sections may differ.
+    pub template: String,
+    /// The headings the daemon found, in `letibot_turn::SUMMARY_SECTIONS`'s order and spelling. A heading it did not find is absent — see [`CompactionSection`].
+    pub sections: Vec<CompactionSection>,
+    pub tail: CompactionTail,
+}
+
+/// **The template tag a `CompactionReport::template` carries.**
+///
+/// A date, like `BRIEF_FORMAT`, and bumped by hand when `letibot_turn::SUMMARY_INSTRUCTION`
+/// changes what it asks for — the same rule for the same reason, one layer over.
+pub const COMPACTION_TEMPLATE: &str = "compaction/2026-09-23";
+
+/// **The sections a compaction's record has, from the daemon that asks for them.**
+///
+/// A `SettingRow` key on the existing `ServerFrame::Settings`, exactly as
+/// [`crate::protocol::HEAD_RUN_TOOLS_KEY`] is, and for the reason R24 decided that one:
+/// **a head that held its own copy of a list would drift.** This key's `value` is
+/// comma-joined with no spaces, and an absent row means a daemon older than this one —
+/// which a head reads as *no structure to draw*, so the sentence in `detail` is all there
+/// is and the head draws exactly what it drew before.
+pub const COMPACTION_SECTIONS_KEY: &str = "compaction.sections";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
@@ -817,7 +943,22 @@ pub enum SessionEvent {
         identity: String,
     },
     /// §18's post-flight assertions land here, and so do §8.5's guards.
-    Warning { code: String, detail: String },
+    ///
+    /// **`compaction` is the structure behind the sentence** (R27). The sentence stays and
+    /// is unchanged — it is the fallback every unreadable path lands on — and this is what
+    /// a head draws a row from instead of parsing English out of `detail`.
+    ///
+    /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing variant,
+    /// the precedent `ModelAdvice::consulted` and `DecisionRequested::access` set. An older
+    /// head ignores an unknown field and renders exactly what it rendered before; a newer
+    /// head reading an older daemon sees `None` and falls back to the sentence. Both
+    /// directions are safe, which is the test for whether a bump is owed.
+    Warning {
+        code: String,
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compaction: Option<Box<CompactionReport>>,
+    },
     /// **A tool asked what the operator is looking at.** Every attached head that
     /// can render should answer with [`crate::protocol::ClientFrame::Screen`];
     /// the first answer wins and the rest are ignored. Carries nothing but the

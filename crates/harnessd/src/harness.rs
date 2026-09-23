@@ -63,7 +63,7 @@ use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
     CompactionOutcome, Endpoint, EventSink, OverrunPlan, Session, SteeringMessage, SteeringSource,
     TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_compaction_tail,
-    plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun,
+    plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun, tail_because,
     tail_split_of,
 };
 
@@ -899,6 +899,30 @@ pub struct ResumeReport {
     pub notes: Vec<String>,
 }
 
+/// **What a fork carries verbatim, and why** — R27's ruled tail, as the fork needs it.
+///
+/// Bundled rather than passed as three arguments because the three are one fact: a tail
+/// has contents, it may have started mid-exchange, and it has a reason for being what it
+/// is. Splitting them is how one of the three comes to be updated without the others.
+pub struct ForkTail<'a> {
+    pub items: &'a [TranscriptItem],
+    /// Non-zero when the tail could not start at an exchange boundary.
+    pub split: Option<TailSplit>,
+    /// One of [`letibot_turn::TAIL_BECAUSE`], on the wire as `tail.because`. Empty for a
+    /// fork that carries no tail *and* is not a compaction — a re-seat, a re-ingest —
+    /// where a reason would be a claim about a decision nobody made.
+    pub because: &'static str,
+}
+
+impl ForkTail<'_> {
+    /// No tail at all, and no reason. What a re-seat and a re-ingest pass.
+    pub const NONE: ForkTail<'static> = ForkTail {
+        items: &[],
+        split: None,
+        because: "",
+    };
+}
+
 /// What a compaction fork actually did — numbers, not the word "compacted".
 ///
 /// The same rule as [`ResumeReport`]: the claim is cheap and the evidence is what
@@ -940,6 +964,15 @@ pub struct ForkReport {
     /// mid-exchange opens with an answer to something that is no longer present,
     /// and the model reading the new base is the reader who has to know that.
     pub tail_dropped: Option<usize>,
+    /// **The tail as the wire carries it** — role and text, in order, so a head can draw
+    /// the recent past instead of parsing the note's count.
+    ///
+    /// Role is `operator` or `agent`, the vocabulary `Speaker` already uses. Empty for a
+    /// fork with no tail, which is every local compaction and every re-seat.
+    pub tail_turns: Vec<letibot_sessionlog::event::CompactionTurn>,
+    /// Why the tail is what it is — [`ForkTail::because`], carried through so the report
+    /// can put it on the wire without recomputing a decision that has already been made.
+    pub tail_because: String,
 }
 
 /// What a compaction left behind: the fork's numbers and the summary turn's.
@@ -1026,6 +1059,46 @@ fn first_sentence(d: &str) -> String {
     } else {
         one.to_string()
     }
+}
+
+/// **The tail as the wire carries it**: role and text, in order.
+///
+/// Only the two item kinds that are *words somebody said*. A `ToolResult` in a tail is a
+/// payload — the thing a summary is worst at and the thing this tail exists to keep — but
+/// the wire's `CompactionTurn` is `{role, text}` and a tool result is not a turn. Rather
+/// than invent a third role for it here, the payload stays in the transcript where it
+/// already is and the wire carries the conversation; the count in `tail_items` is what
+/// says how much was carried, including anything this mapping does not render.
+fn wire_turns(items: &[TranscriptItem]) -> Vec<letibot_sessionlog::event::CompactionTurn> {
+    use letibot_sessionlog::event::CompactionTurn;
+    items
+        .iter()
+        .filter_map(|it| match it {
+            TranscriptItem::User { parts } => {
+                let text = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        UserPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!text.is_empty()).then(|| CompactionTurn {
+                    role: "operator".into(),
+                    text,
+                })
+            }
+            // Reasoning is deliberately NOT a turn: it is the model thinking, not its
+            // answer — the same line `compaction::harvest` draws, and the same one
+            // `subagent_out_lines` draws. A tail is the literal recent past; the
+            // reasoning block is the one part of it nothing downstream reads.
+            TranscriptItem::Assistant { text, .. } if !text.is_empty() => Some(CompactionTurn {
+                role: "agent".into(),
+                text: text.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
@@ -1658,6 +1731,8 @@ impl<'a> Harness<'a> {
                                 hub.publish(SessionEvent::Warning {
                                     code: "transcript_store".into(),
                                     detail: e,
+                                
+                                    compaction: None,
                                 });
                                 Arc::new(letibot_tools::builtins::transcript::NoTranscript)
                             }
@@ -1684,6 +1759,8 @@ impl<'a> Harness<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "decision_corpus".into(),
                                 detail: e,
+                            
+                                compaction: None,
                             });
                             Arc::new(letibot_tools::builtins::decisions::NoDecisions)
                         }
@@ -2896,6 +2973,8 @@ impl<'a> Harness<'a> {
         self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
             code: code.to_string(),
             detail,
+        
+            compaction: None,
         });
     }
 
@@ -4053,6 +4132,8 @@ impl<'a> Harness<'a> {
                      which over-counts what a provider is sent. If the next turn does not \
                      fit, `/compact` is the way back."
                 ),
+            
+                compaction: None,
             });
         }
 
@@ -4074,7 +4155,20 @@ impl<'a> Harness<'a> {
         };
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
-            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &items, None)?;
+            // **The whole conversation, carried as it is** — that is what a re-ingest is,
+            // and an empty `because` says no decision about a tail was taken. It goes
+            // through `ForkTail` rather than a bare slice because the fork needs one
+            // shape for both callers, not because this is a compaction.
+            let fork = self.fork_to_summary(
+                &outcome,
+                Some(&next),
+                Some(&next_id),
+                ForkTail {
+                    items: &items,
+                    split: None,
+                    because: "",
+                },
+            )?;
             Ok(ReseatReport {
                 fork,
                 summary_turn: outcome,
@@ -4131,7 +4225,8 @@ impl<'a> Harness<'a> {
                     outcome.tool_calls
                 )));
             }
-            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &[], None)?;
+            let fork =
+                self.fork_to_summary(&outcome, Some(&next), Some(&next_id), ForkTail::NONE)?;
             // Only after the fork has landed: until then this harness is still
             // speaking the old prompt, and a `self.prefix` that ran ahead of the
             // transcript would make every later turn build the wrong bytes.
@@ -4235,12 +4330,8 @@ impl<'a> Harness<'a> {
                 // reason. A local model gets the template and nothing else,
                 // because a tail here would be resident tokens competing with the
                 // KV pressure that called this compaction in the first place.
-                let tail_plan = plan_compaction_tail(
-                    &items,
-                    &per_item,
-                    window,
-                    self.provider.is_some(),
-                );
+                let remote = self.provider.is_some();
+                let tail_plan = plan_compaction_tail(&items, &per_item, window, remote);
                 let tail: Vec<TranscriptItem> = match tail_plan.from() {
                     Some(from) => items[from..].to_vec(),
                     None => Vec::new(),
@@ -4249,8 +4340,11 @@ impl<'a> Harness<'a> {
                     &outcome,
                     reseat.as_ref().map(|(p, _)| p),
                     reseat.as_ref().map(|(_, id)| id.as_str()),
-                    &tail,
-                    tail_plan.split(),
+                    ForkTail {
+                        split: tail_plan.split(),
+                        because: tail_because(&tail_plan, remote, !items.is_empty()),
+                        items: &tail,
+                    },
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
                 Ok(CompactReport {
@@ -4296,6 +4390,8 @@ impl<'a> Harness<'a> {
                                     "over budget: summarising the first {split} item(s) and \
                                      continuing on the summary plus the rest, verbatim"
                                 ),
+                            
+                                compaction: None,
                             });
                             let answerer = Self::answerer(&self.provider, &self.prefix);
                             let h = summarise_first_half(
@@ -4343,6 +4439,8 @@ impl<'a> Harness<'a> {
                              move until it lands.",
                             items.len() - tail_from
                         ),
+                    
+                        compaction: None,
                     });
                     let answerer = Self::answerer(&self.provider, &self.prefix);
                     let h = summarise_overrun(
@@ -4367,12 +4465,21 @@ impl<'a> Harness<'a> {
                     reusable: 0,
                     generated_tokens: 0,
                 };
+                // The overrun fold's own reason, not `plan_tail`'s: this tail was placed
+                // by arithmetic on the window, half way BY TOKENS, and the reason the
+                // whole tail is what it is has nothing to do with a budget it was
+                // measured against. Empty when there is no tail at all — a local
+                // overrun summarises both halves and carries nothing.
+                let because = if tail.is_empty() { "" } else { "fold" };
                 let fork = self.fork_to_summary(
                     &outcome,
                     reseat.as_ref().map(|(p, _)| p),
                     reseat.as_ref().map(|(_, id)| id.as_str()),
-                    &tail,
-                    tail_split,
+                    ForkTail {
+                        items: &tail,
+                        split: tail_split,
+                        because,
+                    },
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
                 Ok(CompactReport {
@@ -4429,9 +4536,10 @@ impl<'a> Harness<'a> {
         outcome: &CompactionOutcome,
         onto: Option<&StablePrefix>,
         onto_id: Option<&str>,
-        tail: &[TranscriptItem],
-        tail_split: Option<TailSplit>,
+        tail: ForkTail<'_>,
     ) -> Result<ForkReport, HarnessError> {
+        let tail_items: &[TranscriptItem] = tail.items;
+        let tail_split = tail.split;
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
         // The prefix the FORK opens under, which is the caller's choice and not
@@ -4515,7 +4623,7 @@ impl<'a> Harness<'a> {
         // newest exchanges verbatim: the reader can see both, and a note that
         // claims a region was replaced while showing it is the same class of
         // contradiction as the re-ingest case above.
-        let carried = match tail.len() {
+        let carried = match tail_items.len() {
             0 => String::new(),
             n => format!(
                 " The last {n} item(s) of it follow this note VERBATIM — as they were \
@@ -4553,12 +4661,16 @@ impl<'a> Harness<'a> {
         // Compaction used to keep none of it: the new base was the summary and
         // nothing else, so a session came back from a compaction unable to see the
         // turn it was in the middle of -- that turn was now a sentence about a
-        // turn. `tail` is the newest items, under their own budget, appended after
+        // turn. The tail is the newest items, under their own budget, appended after
         // the summary so the order of the conversation is preserved: everything
         // old as prose, then the last stretch as itself.
-        let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail.len());
+        //
+        // **Mapped to the wire's role/text as it is appended**, so the report and the
+        // bytes cannot describe different tails: one pass over one slice.
+        let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail_items.len());
         body.push(note);
-        body.extend_from_slice(tail);
+        body.extend_from_slice(tail_items);
+        let tail_turns = wire_turns(tail_items);
 
         let mut sink = CapturingSink::new(self.hub.clone());
         next.append_items(&self.engine, &body, &mut sink)?;
@@ -4592,8 +4704,10 @@ impl<'a> Harness<'a> {
             was_tokens,
             base_tokens: self.session.ledger.len(),
             truncated: outcome.truncated,
-            tail_items: tail.len(),
+            tail_items: tail_items.len(),
             tail_dropped: tail_split.map(|s| s.dropped),
+            tail_turns,
+            tail_because: tail.because.to_string(),
         })
     }
 
@@ -4656,6 +4770,8 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "title_not_stored".into(),
                     detail: format!("this session could not be named in the store: {e}"),
+                
+                    compaction: None,
                 });
                 return;
             }
@@ -4799,6 +4915,8 @@ impl<'a> Harness<'a> {
                              before the next turn — this is the wall, not a failure of \
                              the work."
                         ),
+                    
+                        compaction: None,
                     });
                     eprintln!(
                         "  context wall: stopped after {round} round(s) at {resident} of {window} tokens"
@@ -4854,6 +4972,8 @@ impl<'a> Harness<'a> {
                         wait.as_secs_f64(),
                         self.cfg.http_retries,
                     ),
+                
+                    compaction: None,
                 });
                 if !self.sleep_unless_closed(wait) {
                     break Err(TurnFailure::Http(e));
@@ -5184,6 +5304,8 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_unknown".into(),
                     detail: e,
+                
+                    compaction: None,
                 });
                 return;
             }
@@ -5198,12 +5320,16 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_set".into(),
                     detail: format!("{said}. {}", applied.summary),
+                
+                    compaction: None,
                 });
             }
             Err(why) => {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_set_refused".into(),
                     detail: format!("this session stays at `{}`: {why}", self.cfg.mode.name),
+                
+                    compaction: None,
                 });
             }
         }
@@ -5296,6 +5422,8 @@ impl<'a> Harness<'a> {
                     ids.len(),
                     items.len()
                 ),
+            
+                compaction: None,
             });
         }
         for (id, item) in ids.iter().zip(items) {

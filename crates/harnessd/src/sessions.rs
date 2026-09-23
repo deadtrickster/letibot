@@ -612,6 +612,8 @@ impl<'a> Sessions<'a> {
                          tool still speaks; `flowy status` shows what is pending.",
                         seat.name()
                     ),
+                
+                    compaction: None,
                 });
             }
             return;
@@ -635,6 +637,8 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "flowy_not_seated".into(),
                         detail: format!("the `flowy` monitor could not be declared: {e}"),
+                    
+                        compaction: None,
                     });
                 }
             }
@@ -684,6 +688,8 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "resume_note".into(),
                                 detail: note.clone(),
+                            
+                                compaction: None,
                             });
                         }
                     }
@@ -693,6 +699,8 @@ impl<'a> Sessions<'a> {
                         hub.publish(SessionEvent::Warning {
                             code: "open_note".into(),
                             detail: note.clone(),
+                        
+                            compaction: None,
                         });
                     }
                 }
@@ -704,6 +712,8 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "resume_failed".into(),
                         detail: e.to_string(),
+                    
+                        compaction: None,
                     });
                 }
                 Err(e)
@@ -832,6 +842,8 @@ impl<'a> Sessions<'a> {
                         detail: format!(
                             "this session could not be opened, so nothing was run: {e}"
                         ),
+                    
+                        compaction: None,
                     });
                 }
                 return Err(e);
@@ -897,6 +909,8 @@ impl<'a> Sessions<'a> {
                             "off"
                         }
                     ),
+                
+                    compaction: None,
                 });
             }
         }
@@ -1068,6 +1082,8 @@ impl<'a> Sessions<'a> {
                      not a judgement about the conversation.",
                     headroom
                 ),
+            
+                compaction: None,
             });
         }
         match self.compact(session_id) {
@@ -1079,6 +1095,14 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "compacted".into(),
                         detail: compaction_said(&report, scale),
+                        compaction: Some(Box::new(compaction_wire(
+                            &report,
+                            "compacted",
+                            scale,
+                            resident,
+                            window,
+                            headroom,
+                        ))),
                     });
                 }
                 let after = self
@@ -1115,6 +1139,8 @@ impl<'a> Sessions<'a> {
                                  if the server really has more.",
                                 headroom
                             ),
+                        
+                            compaction: None,
                         });
                     }
                 } else {
@@ -1139,6 +1165,8 @@ impl<'a> Sessions<'a> {
                             detail: format!(
                                 "compacted: {after} tokens resident now, was {resident}.{cut}"
                             ),
+                        
+                            compaction: None,
                         });
                     }
                 }
@@ -1158,6 +1186,8 @@ impl<'a> Sessions<'a> {
                              and the next turn may hit the context wall. `/compact` \
                              retries it.",
                         ),
+                    
+                        compaction: None,
                     });
                 }
             }
@@ -1196,6 +1226,8 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "fabric_refresh_failed".into(),
                         detail: e.to_string(),
+                    
+                        compaction: None,
                     });
                 }
                 Ok(r)
@@ -1303,6 +1335,8 @@ impl<'a> Sessions<'a> {
                              between turns reaches the model only when something calls \
                              `job_list`."
                         ),
+                    
+                        compaction: None,
                     });
                 }
             }
@@ -1390,15 +1424,38 @@ impl<'a> Sessions<'a> {
                         hub.publish(SessionEvent::Warning {
                             code: "reseated".into(),
                             detail: said,
+                        
+                            compaction: None,
                         });
                     }
                     if let Some(hub) = &hub {
+                        let scale = self.harness_of(session_id).and_then(|h| h.config().ledger_scale);
+                        // The same three numbers the sentence was built from, read off
+                        // the harness rather than recomputed: a report that judged the
+                        // window differently from the decision would be two answers to
+                        // one question.
+                        let (resident, window, headroom) = self
+                            .harness_of(session_id)
+                            .map(|h| {
+                                let c = h.config();
+                                (
+                                    c.shown_tokens(h.ledger_len() as u64),
+                                    c.shown_tokens(c.planning_window().unwrap_or(0)),
+                                    c.shown_tokens(c.headroom()),
+                                )
+                            })
+                            .unwrap_or((0, 0, 0));
                         hub.publish(SessionEvent::Warning {
                             code: "compacted".into(),
-                            detail: compaction_said(
+                            detail: compaction_said(&r, scale),
+                            compaction: Some(Box::new(compaction_wire(
                                 &r,
-                                self.harness_of(session_id).and_then(|h| h.config().ledger_scale),
-                            ),
+                                "compacted",
+                                scale,
+                                resident,
+                                window,
+                                headroom,
+                            ))),
                         });
                     }
                     Outcome::Compacted(Box::new(r))
@@ -1465,9 +1522,38 @@ impl<'a> Sessions<'a> {
                                  that is what keeping it costs. `/reseat summarise` is the \
                                  cheaper, lossy way."
                             });
+                            // **A summarising re-seat is a compaction**, so it carries
+                            // the structure too: the record it produced is the base
+                            // every later turn reads, and a head drawing a row for the
+                            // tool-list change should be able to draw the same row it
+                            // draws for `/compact`. A bare re-seat is not a compaction —
+                            // nothing was summarised — and carries none, which is why
+                            // ``because`` is empty rather than ``local_model``.
+                            let compaction = summarise.then(|| {
+                                let c = self
+                                    .harness_of(session_id)
+                                    .map(|h| h.config().clone())
+                                    .unwrap_or_else(|| self.base.clone());
+                                let resident = c.shown_tokens(r.fork.was_tokens as u64);
+                                Box::new(compaction_wire(
+                                    &crate::harness::CompactReport {
+                                        fork: r.fork.clone(),
+                                        summary_turn: r.summary_turn.clone(),
+                                        gained: Vec::new(),
+                                        lost: Vec::new(),
+                                        summary_was_streamed: true,
+                                    },
+                                    "reseated",
+                                    c.ledger_scale,
+                                    resident,
+                                    c.shown_tokens(c.planning_window().unwrap_or(0)),
+                                    c.shown_tokens(c.headroom()),
+                                ))
+                            });
                             hub.publish(SessionEvent::Warning {
                                 code: "reseated".into(),
                                 detail: said,
+                                compaction,
                             });
                         }
                         Outcome::Compacted(Box::new(crate::harness::CompactReport {
@@ -1484,6 +1570,8 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "reseat_refused".into(),
                                 detail: e.to_string(),
+                            
+                                compaction: None,
                             });
                         }
                         Outcome::Failed(e.to_string())
@@ -1497,6 +1585,8 @@ impl<'a> Sessions<'a> {
                         detail: format!(
                             "interrupt ({reason}) arrived between turns; nothing was generating"
                         ),
+                    
+                        compaction: None,
                     });
                 }
                 Outcome::Ignored
@@ -1588,6 +1678,8 @@ impl<'a> Sessions<'a> {
                         detail: "a background request arrived between turns; nothing \
                                  was running to move"
                             .into(),
+                    
+                        compaction: None,
                     });
                 }
                 Outcome::Ignored
@@ -1617,6 +1709,8 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "answer_unclaimed".into(),
                         detail,
+                    
+                        compaction: None,
                     });
                 }
                 Outcome::Ignored
@@ -1632,6 +1726,8 @@ impl<'a> Sessions<'a> {
                             "slash_refused".into()
                         },
                         detail: format!("/{line}\n{}", reply.lines.join("\n")),
+                    
+                        compaction: None,
                     });
                 }
                 if reply.ok {
@@ -1674,6 +1770,8 @@ impl<'a> Sessions<'a> {
                         Err(e) => hub.publish(SessionEvent::Warning {
                             code: "job_output_refused".into(),
                             detail: e,
+                        
+                            compaction: None,
                         }),
                     };
                 }
@@ -1687,6 +1785,8 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "mode_unknown".into(),
                                 detail: e,
+                            
+                                compaction: None,
                             });
                         }
                         return Outcome::Failed("unknown mode".into());
@@ -1727,6 +1827,8 @@ impl<'a> Sessions<'a> {
                              here starts where it did before, and asks again.",
                             workspace.display()
                         ),
+                    
+                        compaction: None,
                     });
                 }
                 if let Err(e) = (if persist {
@@ -1742,6 +1844,8 @@ impl<'a> Sessions<'a> {
                                 mode.name,
                                 workspace.display()
                             ),
+                        
+                            compaction: None,
                         });
                     }
                     return Outcome::Failed(format!("persisting mode: {e}"));
@@ -1814,6 +1918,8 @@ impl<'a> Sessions<'a> {
                                     applied.summary
                                 )
                             },
+                        
+                            compaction: None,
                         }),
                         Err(why) => hub.publish(SessionEvent::Warning {
                             code: "mode_set_next_session_only".into(),
@@ -1824,6 +1930,8 @@ impl<'a> Sessions<'a> {
                                 workspace.display(),
                                 mode.name
                             ),
+                        
+                            compaction: None,
                         }),
                     };
                 }
@@ -1857,6 +1965,8 @@ fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::Warning {
         code: "turn_failed".into(),
         detail: e.to_string(),
+    
+        compaction: None,
     });
 }
 
@@ -1933,6 +2043,23 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
     }
 }
 
+/// **Ledger tokens as the operator's screen counts them.**
+///
+/// One function for the two callers that render a compaction — the sentence and the
+/// structure beside it — because two copies of this arithmetic is how a head comes to
+/// print two different numbers for one quantity. `None` scale is the ledger's own figure,
+/// which is the right answer on a local endpoint and the only one available before a
+/// metered turn has measured the ratio.
+fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
+    move |ledger: usize| -> u64 {
+        let n = ledger as u64;
+        match scale {
+            Some((l, p)) if l > 0 && p > 0 => ((n as u128 * p as u128) / l as u128) as u64,
+            _ => n,
+        }
+    }
+}
+
 /// **What a compaction tells the head.**
 ///
 /// The result used to go to the daemon's stderr and nowhere else. On the
@@ -1950,13 +2077,7 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
 /// `Sessions::base` is the command line, where it is always `None`, so reading it
 /// there would convert nothing and quietly print the ledger's figures again.
 fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>) -> String {
-    let shown = |ledger: usize| -> u64 {
-        let n = ledger as u64;
-        match scale {
-            Some((l, p)) if l > 0 && p > 0 => ((n as u128 * p as u128) / l as u128) as u64,
-            _ => n,
-        }
-    };
+    let shown = shown_tokens(scale);
     // **An empty summary is a re-ingest**, which is the same signal
     // `fork_to_summary` reads to decide what note to write. Nothing was
     // summarised, so "compacted" would be a lie and `was → base` would be one
@@ -2005,6 +2126,61 @@ fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>)
     said
 }
 
+/// **The structure behind the sentence** — R27's `warning.compaction`.
+///
+/// The `detail` sentence is written for a person and stays exactly as it was, because it
+/// is the fallback every reader that cannot use this lands on. This is the same
+/// compaction as fields: the numbers the sentence spells out, the record split into the
+/// template's sections, and the verbatim tail. A head that draws a *row* needs these and
+/// cannot get them by parsing English out of the sentence — which is R24 frame 2's defect
+/// one layer up.
+///
+/// `kind` is the warning code the caller is publishing under, so the two cannot disagree
+/// about which compaction this is.
+///
+/// **The units are the shown ones**, the same conversion the sentence was rendered
+/// through. A head that printed a ledger figure beside this sentence would be printing
+/// two different numbers for one quantity — the defect `Config::shown_tokens`' own
+/// comment records.
+fn compaction_wire(
+    r: &crate::harness::CompactReport,
+    kind: &str,
+    scale: Option<(u64, u64)>,
+    resident: u64,
+    window: u64,
+    headroom: u64,
+) -> letibot_sessionlog::event::CompactionReport {
+    let shown = shown_tokens(scale);
+    use letibot_sessionlog::event::{CompactionReport, CompactionSection, CompactionTail};
+    CompactionReport {
+        kind: kind.to_string(),
+        tokens_before: shown(r.fork.was_tokens),
+        tokens_after: shown(r.fork.base_tokens),
+        transcript: r.fork.transcript_id.clone(),
+        resident,
+        window,
+        headroom,
+        cut_off: r.fork.truncated,
+        template: letibot_sessionlog::event::COMPACTION_TEMPLATE.to_string(),
+        // **The record, split by the daemon, not by the head.** A missing section here
+        // means the model wrote no such heading; an empty body means it wrote the
+        // heading and nothing under it. Two facts, and the list is the only shape that
+        // keeps them apart.
+        sections: letibot_turn::parse_summary_sections(&r.summary_turn.summary)
+            .into_iter()
+            .map(|(name, body)| CompactionSection { name, body })
+            .collect(),
+        // **Present on every compaction, including a local one**, where it is an object
+        // with zero turns. The local artefact is the remote one with an empty tail.
+        tail: CompactionTail {
+            turns: r.fork.tail_turns.clone(),
+            carried: r.fork.tail_items as u64,
+            because: r.fork.tail_because.clone(),
+            dropped: r.fork.tail_dropped.unwrap_or(0) as u64,
+        },
+    }
+}
+
 impl SessionSource for StoreSessions {
     fn set_title(&self, session_id: &str, title: &str) -> Result<(), String> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -2044,5 +2220,149 @@ impl SessionSource for StoreSessions {
                 },
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod the_wire_report {
+    //! **R27's `warning.compaction`, built and read back.**
+    //!
+    //! The builder is private to this module and takes a `CompactReport`, so this is
+    //! where it can be exercised without a store, a model or a turn: what a head
+    //! draws a row from is exactly this function's output, and every field of it is a
+    //! fact the daemon already owned and was spelling out in English.
+
+    use super::*;
+    use crate::harness::{CompactReport, ForkReport};
+    use letibot_sessionlog::event::CompactionTurn;
+
+    fn report(summary: &str, tail: Vec<CompactionTurn>, carried: usize, because: &str) -> CompactReport {
+        CompactReport {
+            fork: ForkReport {
+                transcript_id: "s-1#t2".into(),
+                parent_id: "s-1#t1".into(),
+                forked_at: 42,
+                was_tokens: 240_000,
+                base_tokens: 9_000,
+                truncated: true,
+                tail_items: carried,
+                // A fork with no tail cannot have dropped any of it: the daemon
+                // derives this from the plan, and a plan that carries nothing has no
+                // split. Set here the same way, so the test cannot assert one.
+                tail_dropped: (carried > 0).then_some(2),
+                tail_turns: tail,
+                tail_because: because.into(),
+            },
+            summary_turn: letibot_turn::CompactionOutcome {
+                turn_id: "s-1#t1#9".into(),
+                summary: summary.into(),
+                tool_calls: 0,
+                truncated: true,
+                cached_tokens: 0,
+                reusable: 0,
+                generated_tokens: 0,
+            },
+            gained: Vec::new(),
+            lost: Vec::new(),
+            summary_was_streamed: false,
+        }
+    }
+
+    /// **A local compaction carries the template and an empty tail, and that is not
+    /// an absent field.** The ruled split (R27) says a local model gets no verbatim
+    /// turns; the *shape* still has to be the remote one, because a session compacted
+    /// locally and resumed against a remote model must not meet a record its reader
+    /// cannot read. So the tail is an object with zero turns and a reason saying why.
+    #[test]
+    fn a_local_compaction_carries_an_empty_tail_and_still_says_why() {
+        let r = report("## Objective\n\n- ship it", Vec::new(), 0, "local_model");
+        let wire = compaction_wire(&r, "compacted", None, 240_000, 262_144, 16_384);
+        assert_eq!(wire.kind, "compacted");
+        assert_eq!(wire.tail.turns, Vec::new());
+        assert_eq!(wire.tail.carried, 0);
+        assert_eq!(wire.tail.because, "local_model");
+        assert_eq!(wire.tail.dropped, 0);
+        assert_eq!(wire.template, letibot_sessionlog::event::COMPACTION_TEMPLATE);
+        assert!(wire.cut_off, "the report's cut-off is the wire's");
+        assert_eq!(wire.transcript, "s-1#t2");
+        assert_eq!(wire.resident, 240_000);
+        assert_eq!(wire.window, 262_144);
+        assert_eq!(wire.headroom, 16_384);
+    }
+
+    /// **A remote compaction carries the turns themselves**, in order, with a role
+    /// each — and the two facts about a mid-exchange start are both here rather than
+    /// left to be parsed out of the sentence.
+    #[test]
+    fn a_remote_compaction_carries_the_turns_and_the_split() {
+        let r = report(
+            "## Objective\n\n- ship it\n\n## Blocked\n\n",
+            vec![
+                CompactionTurn {
+                    role: "operator".into(),
+                    text: "carry the recent past".into(),
+                },
+                CompactionTurn {
+                    role: "agent".into(),
+                    text: "working on it".into(),
+                },
+            ],
+            7,
+            "budget",
+        );
+        let wire = compaction_wire(&r, "compacted", None, 1, 2, 3);
+        assert_eq!(wire.tail.carried, 7, "items, not turns");
+        assert_eq!(wire.tail.turns.len(), 2, "turns");
+        assert_eq!(wire.tail.turns[0].role, "operator");
+        assert_eq!(wire.tail.because, "budget");
+        assert_eq!(wire.tail.dropped, 2);
+    }
+
+    /// **The record is split section by section, and the two absences stay apart.**
+    /// `Blocked` is present with an empty body — *nothing is blocked* — while
+    /// `Relevant Files` is absent altogether — *nobody said*. A reader that collapsed
+    /// them would report silence as a clean bill of health.
+    #[test]
+    fn the_sections_keep_written_and_empty_apart_from_never_written() {
+        let r = report(
+            "## Objective\n\n- ship it\n\n## Work State\n\n### Blocked\n\n### Active\n\n- going",
+            Vec::new(),
+            0,
+            "local_model",
+        );
+        let wire = compaction_wire(&r, "compacted", None, 1, 2, 3);
+        let names: Vec<&str> = wire.sections.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Objective", "Active", "Blocked"]);
+        let blocked = wire.sections.iter().find(|s| s.name == "Blocked").unwrap();
+        assert_eq!(blocked.body, "", "written and empty");
+        assert!(
+            !names.contains(&"Relevant Files"),
+            "never written at all, which is a different fact"
+        );
+        // And a record that ignored the template yields an empty list rather than
+        // invented sections — the raw text is still in `detail`.
+        let prose = report("I could not follow the format.", Vec::new(), 0, "local_model");
+        assert!(
+            compaction_wire(&prose, "compacted", None, 1, 2, 3)
+                .sections
+                .is_empty()
+        );
+    }
+
+    /// **The units are the operator's, the same conversion the sentence uses**, so a
+    /// head cannot print one number beside a sentence carrying another: this is the
+    /// defect `Config::shown_tokens` was written for, one layer along.
+    #[test]
+    fn the_numbers_are_the_same_units_the_sentence_is_in() {
+        // 3 ledger tokens to 2 provider tokens: 240,000 ledger is 160,000 shown.
+        let scale = Some((3u64, 2u64));
+        let r = report("## Objective\n\n- x", Vec::new(), 0, "local_model");
+        let wire = compaction_wire(&r, "compacted", scale, 300, 300_000, 18_000);
+        assert_eq!(wire.tokens_before, 160_000);
+        assert_eq!(wire.tokens_after, 6_000);
+        assert_eq!(wire.resident, 300, "the caller's own conversion, passed through");
+        // And the sentence beside it agrees, which is the property that matters.
+        let said = compaction_said(&r, scale);
+        assert!(said.contains("160000 → 6000"), "{said}");
     }
 }

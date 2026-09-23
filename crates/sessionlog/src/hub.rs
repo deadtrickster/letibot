@@ -836,6 +836,8 @@ impl Hub {
                      `admit` for a call whose outcome nobody knows, and this sentence is the \
                      only thing that says so. Nothing by that name is pending any more."
                 ),
+            
+                compaction: None,
             });
         }
     }

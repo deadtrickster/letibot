@@ -83,7 +83,7 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
                     if let letibot_sessionlog::client::Inbound::Frame(
                         letibot_sessionlog::protocol::ServerFrame::Event(env),
                     ) = frame
-                        && let SessionEvent::Warning { code, detail } = env.event
+                        && let SessionEvent::Warning { code, detail, .. } = env.event
                         && code.starts_with("slash")
                     {
                         return detail;

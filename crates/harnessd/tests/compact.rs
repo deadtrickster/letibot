@@ -26,6 +26,7 @@
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
+use letibot_harnessd::harness::ForkTail;
 use letibot_tokencore::store::Store;
 use letibot_turn::CompactionOutcome;
 
@@ -93,7 +94,7 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let summary = "decided A because B; changed crates/x/src/lib.rs; `cargo test` green; \
                    the open question is whether Y holds";
     let report = h
-        .fork_to_summary(&outcome(summary), None, None, &[], None)
+        .fork_to_summary(&outcome(summary), None, None, ForkTail::NONE)
         .expect("the fork must land");
 
     // (1) The store now holds two transcripts for the session, and the second is
@@ -154,10 +155,10 @@ fn a_second_compaction_forks_off_the_first_fork() {
     let mut h = opened(&cfg, &parts);
 
     let first = h
-        .fork_to_summary(&outcome("first summary"), None, None, &[], None)
+        .fork_to_summary(&outcome("first summary"), None, None, ForkTail::NONE)
         .expect("the first fork");
     let second = h
-        .fork_to_summary(&outcome("second summary"), None, None, &[], None)
+        .fork_to_summary(&outcome("second summary"), None, None, ForkTail::NONE)
         .expect("the second fork");
     assert_eq!(first.transcript_id, format!("{session_id}#t1"));
     assert_eq!(second.transcript_id, format!("{session_id}#t2"));
@@ -190,7 +191,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
     let e = h
-        .fork_to_summary(&outcome("anything"), None, None, &[], None)
+        .fork_to_summary(&outcome("anything"), None, None, ForkTail::NONE)
         .expect_err("no store, no fork");
     assert!(
         e.to_string().contains("store"),
@@ -427,7 +428,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         .retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::Warning { code, detail } => Some((code.clone(), detail.clone())),
+            SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
             _ => None,
         })
         .collect();
@@ -535,7 +536,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
         "an unchanged daemon re-seats nothing"
     );
     let first = h
-        .fork_to_summary(&outcome("the first summary"), None, None, &[], None)
+        .fork_to_summary(&outcome("the first summary"), None, None, ForkTail::NONE)
         .expect("the first fork lands");
     drop(h);
 
@@ -565,8 +566,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
             &outcome("the second summary"),
             Some(&next_prefix),
             Some(&next_id),
-            &[],
-            None,
+            ForkTail::NONE,
         )
         .expect("the re-seating fork lands");
     h2.adopt_reseat(Some(target));
@@ -678,13 +678,37 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
             &outcome("## Objective\n- carry the recent past"),
             None,
             None,
-            &tail,
-            Some(letibot_turn::TailSplit { dropped: 2 }),
+            ForkTail {
+                items: &tail,
+                split: Some(letibot_turn::TailSplit { dropped: 2 }),
+                because: "budget",
+            },
         )
         .expect("the fork lands");
 
     assert_eq!(report.tail_items, 3, "three items went in verbatim");
     assert_eq!(report.tail_dropped, Some(2), "and two of them are missing");
+    // **The tail on the wire is the words, in order, with a role each** — so a head
+    // draws the recent past instead of parsing a count out of the note. Two agent
+    // turns and one operator turn, and an empty assistant row would be no turn at all.
+    assert_eq!(
+        report.tail_turns,
+        vec![
+            letibot_sessionlog::event::CompactionTurn {
+                role: "operator".into(),
+                text: "the turn in progress".into()
+            },
+            letibot_sessionlog::event::CompactionTurn {
+                role: "agent".into(),
+                text: "working on it".into()
+            },
+            letibot_sessionlog::event::CompactionTurn {
+                role: "agent".into(),
+                text: "and its second half".into()
+            },
+        ]
+    );
+    assert_eq!(report.tail_because, "budget", "why this much and no more");
 
     let store = Store::open(&path).expect("reopening");
     let words = store
@@ -730,7 +754,7 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
     let mut h = opened(&cfg, &parts);
 
     let report = h
-        .fork_to_summary(&outcome("a summary"), None, None, &[], None)
+        .fork_to_summary(&outcome("a summary"), None, None, ForkTail::NONE)
         .expect("the fork lands");
     assert_eq!(report.tail_items, 0);
     assert_eq!(report.tail_dropped, None);
