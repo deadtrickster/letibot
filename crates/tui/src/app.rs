@@ -8357,7 +8357,37 @@ impl App {
         } else if !self.open.is_empty() {
             "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
-            "ctrl-s sessions · ctrl-n notes · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t long output · ctrl-q jobs · tab completes /commands · /help"
+            // **What a chord says must be what the chord does** (R40), and this bar was the
+            // last place that was not true. It read `ctrl-t long output` — long, output, the
+            // conversation-wide reading, and exactly the reading R10 spent a ruling
+            // removing — while `/t`, which DOES the conversation-wide unfold, was on the bar
+            // nowhere. So the key advertised at the bottom of the screen no longer did what
+            // the bar said and the verb that did was not advertised at all. That is R29's
+            // rule failing on the bar instead of on a note: a remedy the reader has to go
+            // looking for was not offered.
+            //
+            // **The pair is adjacent on purpose.** `ctrl-t` and `/t` are the two things a
+            // reader confuses, so the bar states both and states the difference in its own
+            // nouns: one result against all of them. The seams follow the same rule from the
+            // other end — the newest long result's own row names `ctrl-t` (a chord may only
+            // be named where it acts) and every other elided row names `/t`.
+            //
+            // **`tab completes /commands` gave up its space, and it is the one that
+            // should.** This bar is over capacity by construction at 80 columns — nine
+            // entries, about five of which fit — so *which* are visible is a decision and
+            // not an accident. It was R22 that measured that (same bar, 136 columns then,
+            // which is why `ctrl-n` sits second rather than last), and the measurement
+            // applies to every entry added since. What gives way is the entry that **answers
+            // before it is ever named**: press Tab on a half-typed `/models` and it
+            // completes, unasked, which is the one thing on this bar a reader cannot fail to
+            // find out. Its fact is still in `/help`, on the row a reader is looking at when
+            // they go there. `/help` itself stays, because it is the index and R29's remedy
+            // rule needs the index on the screen.
+            //
+            // Measured after the swap, 2026-09-23: 146 columns, so at 80 the bar reads
+            // through `ctrl-r thinki`; at 100, through `ctrl-t newest r`; at 120 the pair is
+            // whole; at the operator's own 210, all of it is.
+            "ctrl-s sessions · ctrl-n notes · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t newest result · /t all tool rows · ctrl-q jobs · /help"
         };
         // The separator belongs between two halves, not in front of one: with
         // the editor's half suppressed the bar used to open with a bare `·`.
@@ -18485,6 +18515,118 @@ mod tests {
             a.command("tools"),
             None,
             "`/tools` is the listing verb, not a second fold"
+        );
+    }
+
+    /// **R40: the bar says what `ctrl-t` does, and names the verb that does the rest.**
+    ///
+    /// The operator, reading a real screen: *"als why Ct stopped expanding tools??? at least in
+    /// letibt"*. Two defects, and only one of them was letibot's.
+    ///
+    /// **This one was letibot's, and it is R29's rule failing on the bar instead of on a
+    /// note.** `ctrl-t` was narrowed deliberately (R10, above) — it opens one row's window and
+    /// the conversation-wide unfold is `/t` — and the bar still read `ctrl-t long output`,
+    /// which is the reading the ruling removed. So the key advertised at the bottom of the
+    /// screen did not do what the bar said, and `/t` was on the bar nowhere: the remedy the
+    /// operator needed was real, existed, and was not offered.
+    ///
+    /// **The bar's own arithmetic is R22's and it is measured here rather than asserted.**
+    /// This bar is longer than 80 columns whatever it says — nine entries and room for about
+    /// five — so what is *visible* is a decision. Two of them are pinned (R22: `ctrl-s` first,
+    /// `ctrl-n` second, because a reflex worth advertising has to be inside the frame) and the
+    /// rest are ordered by what a reader cannot find out any other way. That is the test's last
+    /// assertion, and it is the reason `tab completes /commands` is the entry that gave way.
+    #[test]
+    fn the_bar_says_what_ctrl_t_does_and_names_the_verb_that_does_the_rest() {
+        let mut a = app();
+        let bar = a.screen(210, 24).pop().unwrap_or_default();
+
+        // The words are true: one row, not the conversation.
+        assert!(bar.contains("ctrl-t"), "the chord left the bar: {bar}");
+        assert!(
+            !bar.contains("long output"),
+            "the bar still says the conversation-wide thing ctrl-t stopped doing: {bar}"
+        );
+        // And the verb that DOES fold the conversation is on it.
+        assert!(
+            bar.contains("/t"),
+            "`/t` is the whole fold and the bar does not name it: {bar}"
+        );
+        // Adjacent, because they are the two a reader confuses: one result, all of them.
+        assert!(
+            bar.contains("ctrl-t newest result · /t all tool rows"),
+            "the pair is not stated as a pair: {bar}"
+        );
+
+        // **Both halves of the claim are driven, on one screen.** A bar that is right about a
+        // chord that does something else is the defect respelled.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        a_result_row(&mut a, 2, "i1", &long);
+        a.key(Key::CtrlT);
+        assert_eq!(
+            a.payload_sel.as_deref(),
+            Some("i1"),
+            "the bar says `newest result` and ctrl-t opened no window"
+        );
+        assert!(
+            !a.tools.is_open(),
+            "the bar says one result and ctrl-t folded them all"
+        );
+        a.key(Key::CtrlT);
+        assert_eq!(a.command("t"), None);
+        assert!(
+            a.tools.is_open(),
+            "the bar says `/t all tool rows` and /t did not unfold them"
+        );
+        assert!(
+            a.payload_sel.is_none(),
+            "`/t` is the conversation-wide fold and it opened a row's window"
+        );
+
+        // **Tab gave up its space, and gets to keep its fact.** The bar no longer names it —
+        // it is the entry that answers before it is named — and `/help` still does, on the row
+        // a reader is looking at when they go there. Dropping it from both would have been a
+        // different change.
+        assert!(
+            !bar.contains("tab completes"),
+            "the bar still spends 23 columns on the one entry that needs no advertisement: {bar}"
+        );
+        assert!(
+            !bar.contains("tab"),
+            "tab is still on the bar under another spelling: {bar}"
+        );
+        let help = help_lines(&a.cfg, 140).join("\n");
+        assert!(
+            help.contains("tab"),
+            "tab left the bar AND the help screen, which is not the trade: {help}"
+        );
+        assert!(
+            bar.contains("/help"),
+            "the index has to stay on the bar — R29's remedy rule needs it there: {bar}"
+        );
+
+        // **The measurement, recorded.** R22's arithmetic is that a chord past the frame's
+        // width is a chord nobody has, so the numbers are pinned rather than remembered.
+        // (`trim` is the frame's gutter, which is not the bar's own width.)
+        assert_eq!(
+            bar.trim().chars().count(),
+            146,
+            "the bar's width changed; re-measure what is visible at 80: {bar}"
+        );
+        let at80 = a.screen(80, 24).pop().unwrap_or_default();
+        assert!(
+            at80.contains("ctrl-s sessions") && at80.contains("ctrl-n notes"),
+            "R22's two pinned entries left the first 80 columns: {at80}"
+        );
+        assert!(
+            !at80.contains("ctrl-t"),
+            "the pair now fits at 80 — better than the measurement, so update it: {at80}"
+        );
+        let at120 = a.screen(120, 24).pop().unwrap_or_default();
+        assert!(
+            at120.contains("ctrl-t newest result · /t all"),
+            "the pair is not whole at 120, which is where it was measured to be: {at120}"
         );
     }
 
