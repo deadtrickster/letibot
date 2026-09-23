@@ -139,6 +139,7 @@ fn fresh(engine: &TurnEngine<'_>, tag: &str) -> Session {
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }

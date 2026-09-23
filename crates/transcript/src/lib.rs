@@ -41,6 +41,40 @@ pub enum CallOrigin {
 /// Reasoning-as-a-field forces last-write-wins when one turn emits several
 /// reasoning blocks around several tool calls, and loses the interleaving. GLM and
 /// Qwen both interleave, so a field would be wrong for every model we target.
+/// **Who a `User` row's words came from** — R42.
+///
+/// Two values, and they are the two the requirement names as needing to be distinguishable:
+/// *the operator typed this* and *this session appended it*. The names are
+/// [`letibot_tools::authorise::Speaker`]'s own — `operator` and `agent` — so a head has one
+/// vocabulary for the fact wherever it meets it, and the authorisation trail's record and the
+/// transcript row cannot spell the same speaker two ways.
+///
+/// **Why not the tools' type.** This crate is what the wire is made of and it must not depend
+/// on the classifier that judges it (`letibot-tools` depends on *this*, not the reverse), so
+/// the vocabulary is repeated here rather than imported. Two strings, one meaning, and both
+/// endpoints of the same sentence about who spoke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Speaker {
+    /// **The person at the keyboard.** Every row written before this field existed reads as
+    /// this, which is what a head already drew for them.
+    #[default]
+    Operator,
+    /// **This session appended it** — a job completion, a salvage notice, a steering line,
+    /// the intent check. Never an authorisation, and never to be drawn as the operator's
+    /// words.
+    Agent,
+}
+
+impl Speaker {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Speaker::Operator => "operator",
+            Speaker::Agent => "agent",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 
@@ -51,6 +85,39 @@ pub enum TranscriptItem {
     },
     User {
         parts: Vec<UserPart>,
+        /// **Who these words came from** — R42.
+        ///
+        /// Everything this session appends is a `User` item: the operator's prompt, a head's
+        /// steering, §5.7's salvage notice, the intent check's *"you said you would X"*, and a
+        /// job settlement (`harnessd::harness`). On the wire they were indistinguishable, so a
+        /// head drew a job's completion exactly as it drew the person typing — the operator's
+        /// own report: *"why job completion events arrive as my messages?"*
+        ///
+        /// **The daemon has known all along.** It records the same fact on its authorisation
+        /// trail, with its own words for why it matters (`harness.rs`): *"Walking the
+        /// transcript and calling all of them the operator's words would let the harness
+        /// authorise itself, and an agent whose own text can authorise an action is the shape
+        /// a prompt injection would most like to take."* That record was built for the oracle
+        /// and stopped there; this carries it to the head. The provenance is known only at the
+        /// moment of appending, so it is recorded there.
+        ///
+        /// **And the reader is the other party the gate serves.** The oracle already refuses
+        /// to let agent text authorise an action; a head that draws agent text as the
+        /// operator's is showing the reader the exact lie the oracle is defended against.
+        ///
+        /// # Absent means `Operator`, and that is the same reading `TrailMirror::seed` takes
+        ///
+        /// A row written before this field existed cannot say who spoke, and the honest
+        /// reading available is the operator — which is what a head drew for it anyway, so
+        /// nothing regresses and no version bumps. The alternative (a third *unknown* value)
+        /// would put a new word on every old row for no gain: what the field is FOR is telling
+        /// the two apart going forward, and *absent* is not a fact about the future.
+        ///
+        /// `None` and `Some(Operator)` are therefore the same rendering, while
+        /// `Some(Agent)` is a different one — the distinction the requirement asks a head to
+        /// be able to draw.
+        #[serde(default)]
+        speaker: Speaker,
     },
     Reasoning {
         text: String,
@@ -177,7 +244,7 @@ impl TranscriptItem {
             TranscriptItem::System { text, .. }
             | TranscriptItem::Reasoning { text, .. }
             | TranscriptItem::Assistant { text, .. } => text.len(),
-            TranscriptItem::User { parts: p } => parts(p),
+            TranscriptItem::User { parts: p, .. } => parts(p),
             TranscriptItem::ToolResult { payload, edit, .. } => {
                 // The excerpt is what makes a `read` or an `edit` row large, and it is
                 // carried to the head, so it counts.
@@ -568,5 +635,47 @@ mod tests {
         assert_ne!(promoted, operator);
         assert!(promoted.contains("did not ask"), "{promoted}");
         assert!(operator.contains("deadtrickster"), "{operator}");
+    }
+
+    /// **A `User` row with no `speaker` reads as the operator, and an `agent` row does not** —
+    /// R42's wire half, and the two facts the requirement asks to be distinguishable.
+    ///
+    /// The absent case is the one leticl named as the reason a head cannot infer this: a row
+    /// written before the field existed says nothing about who spoke, so the honest reading is
+    /// the one a head already drew — and the alternative, a third *unknown* value, would put a
+    /// new word on every old row for no gain.
+    #[test]
+    fn a_user_row_says_who_spoke_and_an_old_row_reads_as_the_operator() {
+        let wire = r#"{"type":"user","parts":[{"kind":"text","text":"hi"}]}"#;
+        let item: TranscriptItem = serde_json::from_str(wire).unwrap();
+        let TranscriptItem::User { speaker, .. } = item else {
+            panic!("a user row");
+        };
+        assert_eq!(speaker, Speaker::Operator, "an absent speaker is the operator");
+        assert_eq!(speaker.as_str(), "operator");
+
+        let wire = r#"{"type":"user","speaker":"agent","parts":[{"kind":"text","text":"hi"}]}"#;
+        let item: TranscriptItem = serde_json::from_str(wire).unwrap();
+        let TranscriptItem::User { speaker, .. } = item else {
+            panic!("a user row");
+        };
+        // **The word is the authorisation trail's own** — `agent` — so the row and the record
+        // the oracle reads cannot spell the same speaker two ways.
+        assert_eq!(speaker, Speaker::Agent);
+        assert_eq!(speaker.as_str(), "agent");
+
+        // And a row the daemon writes says which, so the two are never the same bytes.
+        let operator = serde_json::to_string(&TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![UserPart::Text { text: "hi".into() }],
+        })
+        .unwrap();
+        let agent = serde_json::to_string(&TranscriptItem::User {
+            speaker: Speaker::Agent,
+            parts: vec![UserPart::Text { text: "hi".into() }],
+        })
+        .unwrap();
+        assert_ne!(operator, agent);
+        assert!(agent.contains(r#""speaker":"agent""#), "{agent}");
     }
 }

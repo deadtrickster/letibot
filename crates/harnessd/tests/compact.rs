@@ -229,7 +229,7 @@ fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
     // and asks for the work back.
     let items = h.items();
     let last = items.last().expect("the continuation was appended");
-    let letibot_transcript::TranscriptItem::User { parts: user_parts } = last else {
+    let letibot_transcript::TranscriptItem::User { parts: user_parts, .. } = last else {
         panic!("the continuation is a user item, got {last:?}");
     };
     let letibot_transcript::UserPart::Text { text } = &user_parts[0] else {
@@ -489,7 +489,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     let notices = items
         .iter()
         .filter(|i| {
-            matches!(i, letibot_transcript::TranscriptItem::User { parts }
+            matches!(i, letibot_transcript::TranscriptItem::User { parts, .. }
                 if matches!(&parts[..],
                     [letibot_transcript::UserPart::Text { text }]
                     // Against the constant, not a copy of its words: this test
@@ -658,6 +658,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
 
     let tail = vec![
         letibot_transcript::TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![letibot_transcript::UserPart::Text {
                 text: "the turn in progress".into(),
             }],

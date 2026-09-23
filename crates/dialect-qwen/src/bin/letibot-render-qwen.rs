@@ -242,7 +242,7 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({"role": "system", "content": text}));
             }
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({"role": "user", "content": user_content(parts)}));
             }

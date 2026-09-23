@@ -19,6 +19,7 @@ use letibot_transcript::{SystemOrigin, ToolOutcome, TranscriptItem, UserPart};
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }

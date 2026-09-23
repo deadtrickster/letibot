@@ -29,6 +29,7 @@ fn prefix() -> StablePrefix {
 
 fn user(t: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text { text: t.into() }],
     }
 }

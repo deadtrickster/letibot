@@ -235,6 +235,9 @@ fn run_once(
                 truncated: false,
             },
             _ => TranscriptItem::User {
+                // The HTTP client's `user` role is whoever is driving that client, so it is
+                // the operator's; this head injects nothing of its own into a session.
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: m.content.clone(),
                 }],

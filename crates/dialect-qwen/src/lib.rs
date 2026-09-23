@@ -279,6 +279,7 @@ impl ReasoningEffort {
 /// second update from a repeat of the first.
 pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![letibot_transcript::UserPart::Text {
             text: format!("<system-update seq={seq}>\n{text}\n</system-update>"),
         }],
@@ -292,7 +293,7 @@ pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
 pub fn is_system_update(item: &TranscriptItem) -> bool {
     match item {
         TranscriptItem::System { origin, .. } => *origin == SystemOrigin::Update,
-        TranscriptItem::User { parts } => parts.iter().any(|p| {
+        TranscriptItem::User { parts, .. } => parts.iter().any(|p| {
             matches!(p, letibot_transcript::UserPart::Text { text }
                 if text.starts_with("<system-update seq="))
         }),

@@ -160,7 +160,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 ctl(out, &IM_END);
                 text(out, "\n");
             }
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 close_turn(st, out);
                 ctl(out, &IM_START);
                 text(out, "user\n");

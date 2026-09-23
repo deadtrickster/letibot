@@ -190,6 +190,7 @@ pub fn content(item_id: &str, text: &str) -> SessionEvent {
     SessionEvent::TranscriptContent {
         item_id: item_id.into(),
         item: Box::new(letibot_transcript::TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![letibot_transcript::UserPart::Text { text: text.into() }],
         }),
     }
@@ -389,6 +390,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
         (
             "s.1".into(),
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "Why is the prefix cache missing?".into(),
                 }],

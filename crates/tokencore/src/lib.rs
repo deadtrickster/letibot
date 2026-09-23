@@ -473,7 +473,7 @@ mod tests {
                 RenderSpan::Text(format!("system\n{text}\n")),
                 ctl(ControlRole::TurnEnd),
             ],
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 let mut body = String::from("user\n");
                 for part in parts {
                     if let UserPart::Text { text } = part {
@@ -520,6 +520,7 @@ mod tests {
         let mut items = Vec::new();
         for k in 0..turns {
             items.push(TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     // Adversarial content in half the turns: a user who pastes a
                     // control literal must not move a turn boundary.

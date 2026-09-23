@@ -76,6 +76,16 @@ impl SteeringMessage {
     /// invariant regresses the first time somebody adds "helpful" metadata here.
     pub fn to_item(&self) -> TranscriptItem {
         TranscriptItem::User {
+            // **`from_operator` is exactly this field's question**, and it was already on the
+            // message: a steering line the model asked for is the session's own words, and one
+            // an operator typed is theirs. R42's rule is that a head draws a completion, a
+            // salvage notice and a steering line as the second — so the ones that are the
+            // operator's say so and the rest do not.
+            speaker: if self.from_operator {
+                letibot_transcript::Speaker::Operator
+            } else {
+                letibot_transcript::Speaker::Agent
+            },
             parts: vec![UserPart::Text {
                 text: self.text.clone(),
             }],
@@ -262,7 +272,7 @@ mod tests {
     #[test]
     fn a_steering_message_becomes_a_plain_user_item_with_no_envelope() {
         let m = SteeringMessage::normal("the spec changed - RFC 2812 rather than 1459");
-        let TranscriptItem::User { parts } = m.to_item() else {
+        let TranscriptItem::User { parts, .. } = m.to_item() else {
             panic!("steering must not invent a role")
         };
         assert_eq!(parts.len(), 1);
@@ -313,7 +323,7 @@ mod tests {
             .take_items()
             .into_iter()
             .map(|i| match i {
-                TranscriptItem::User { parts } => match &parts[0] {
+                TranscriptItem::User { parts, .. } => match &parts[0] {
                     UserPart::Text { text } => text.clone(),
                     _ => unreachable!(),
                 },
@@ -337,7 +347,7 @@ mod tests {
         assert_eq!(pending.len(), 1, "one held message, not three fragments");
         let items = pending.take_items();
         assert_eq!(items.len(), 1);
-        let TranscriptItem::User { parts } = &items[0] else {
+        let TranscriptItem::User { parts, .. } = &items[0] else {
             panic!("steering is a user item")
         };
         let UserPart::Text { text } = &parts[0] else {
@@ -408,7 +418,7 @@ mod tests {
         pending.absorb(&mut src);
         assert_eq!(pending.len(), 1, "the notice is not the operator's to drop");
         let items = pending.take_items();
-        let TranscriptItem::User { parts } = &items[0] else {
+        let TranscriptItem::User { parts, .. } = &items[0] else {
             panic!("steering is a user item")
         };
         let UserPart::Text { text } = &parts[0] else {

@@ -444,7 +444,7 @@ fn a_message_queued_mid_turn_is_answered_not_just_appended() {
         .items()
         .iter()
         .filter_map(|i| match i {
-            TranscriptItem::User { parts } => match &parts[0] {
+            TranscriptItem::User { parts, .. } => match &parts[0] {
                 UserPart::Text { text } => Some(format!("user: {text}")),
                 _ => None,
             },

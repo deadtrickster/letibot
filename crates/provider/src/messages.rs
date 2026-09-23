@@ -37,7 +37,7 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
             TranscriptItem::System { text, .. } => {
                 out.push(json!({"role": "system", "content": text}));
             }
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 let text = parts
                     .iter()
                     .map(|p| match p {
@@ -230,6 +230,7 @@ mod tests {
                 origin: SystemOrigin::Bootstrap,
             },
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "list the crates".into(),
                 }],
@@ -299,6 +300,7 @@ mod pairing_tests {
 
     fn user(t: &str) -> TranscriptItem {
         TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text { text: t.into() }],
         }
     }

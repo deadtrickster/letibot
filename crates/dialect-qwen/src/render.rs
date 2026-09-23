@@ -286,7 +286,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 lit(out, "\n");
             }
 
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 close_assistant(st, out);
                 ctl(out, &tk::IM_START);
                 lit(out, "user\n");
@@ -553,6 +553,7 @@ mod tests {
 
     fn user(text: &str) -> TranscriptItem {
         TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text { text: text.into() }],
         }
     }

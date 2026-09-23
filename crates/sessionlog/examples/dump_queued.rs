@@ -61,7 +61,7 @@ fn main() {
             println!("  {:<26} NO BODY (announced, unfilled)", i.item_id);
             continue;
         };
-        let TranscriptItem::User { parts } = item else {
+        let TranscriptItem::User { parts, .. } = item else {
             println!("  {:<26} kind says user, item is something else", i.item_id);
             continue;
         };

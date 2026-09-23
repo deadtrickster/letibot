@@ -541,6 +541,10 @@ fn append_salvage_notice(
     text: &str,
 ) -> Result<(), TurnFailure> {
     let item = TranscriptItem::User {
+        // **`Agent`, and this crate is why the field is on the row rather than the trail.**
+        // The trail is harnessd's and says the same thing; the ROW is what a head draws, and
+        // a salvage notice drawn as the operator's words is the lie R42 is about.
+        speaker: letibot_transcript::Speaker::Agent,
         parts: vec![UserPart::Text { text: text.into() }],
     };
     session
@@ -1046,6 +1050,7 @@ mod the_tail_and_the_template {
 
     fn user(text: &str) -> TranscriptItem {
         TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text { text: text.into() }],
         }
     }

@@ -443,7 +443,7 @@ impl TrailMirror {
         g.items = items.len();
         g.said.clear();
         for (i, item) in items.iter().enumerate() {
-            if let TranscriptItem::User { parts } = item {
+            if let TranscriptItem::User { parts, .. } = item {
                 let text: String = parts
                     .iter()
                     .filter_map(|p| match p {
@@ -1074,7 +1074,7 @@ fn wire_turns(items: &[TranscriptItem]) -> Vec<letibot_sessionlog::event::Compac
     items
         .iter()
         .filter_map(|it| match it {
-            TranscriptItem::User { parts } => {
+            TranscriptItem::User { parts, .. } => {
                 let text = parts
                     .iter()
                     .filter_map(|p| match p {
@@ -3454,6 +3454,9 @@ impl<'a> Harness<'a> {
         self.trail
             .say(Speaker::Operator, text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
+            // **The one door the operator's own words come through**, and it says so on the
+            // row — the same speaker the trail records one line up (R42).
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text { text: text.into() }],
         })
     }
@@ -3963,6 +3966,9 @@ impl<'a> Harness<'a> {
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
+            // The same speaker the trail records, one line up: this is the session talking
+            // to itself, and a head must not draw it as the operator's words (R42).
+            speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
         })
         .map(Some)
@@ -3994,6 +4000,7 @@ impl<'a> Harness<'a> {
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text: text.into() }],
         })
     }
@@ -4873,7 +4880,7 @@ impl<'a> Harness<'a> {
             return;
         }
         let first_user = self.session.items.iter().find_map(|i| match i {
-            TranscriptItem::User { parts } => parts.iter().find_map(|p| match p {
+            TranscriptItem::User { parts, .. } => parts.iter().find_map(|p| match p {
                 UserPart::Text { text } => Some(text.as_str()),
                 _ => None,
             }),
@@ -5589,6 +5596,7 @@ impl<'a> Harness<'a> {
         // values rather than one.
         self.trail.say(Speaker::Agent, text, Some(Instant::now()));
         let item = TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text: text.into() }],
         };
         let mut sink = CapturingSink::new(self.hub.clone());
@@ -6831,6 +6839,7 @@ mod tests {
 
     fn user(text: &str) -> TranscriptItem {
         TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text { text: text.into() }],
         }
     }

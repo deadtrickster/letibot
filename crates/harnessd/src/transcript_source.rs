@@ -329,7 +329,7 @@ fn tool_name(item: &TranscriptItem) -> String {
 fn visible_text(item: &TranscriptItem) -> String {
     match item {
         TranscriptItem::System { text, .. } => text.clone(),
-        TranscriptItem::User { parts } => parts
+        TranscriptItem::User { parts, .. } => parts
             .iter()
             .map(|p| match p {
                 UserPart::Text { text } => text.clone(),

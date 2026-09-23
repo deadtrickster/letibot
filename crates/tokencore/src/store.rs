@@ -2020,6 +2020,7 @@ mod tests {
         let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
         let items = [
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: "first".into(),
                 }],
@@ -2108,6 +2109,7 @@ mod tests {
         let (tr, _) = seeded(&s);
         let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
         let item = TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
         };
         let row = ledger.append("it-0", &[10, 11]).unwrap().clone();
@@ -2233,6 +2235,7 @@ mod tests {
                 origin: SystemOrigin::Bootstrap,
             },
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: "hello".into(),
                 }],
@@ -2670,6 +2673,7 @@ mod tests {
             // Two items: 2 tokens and 3 tokens. The prefix carries 4.
             let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
             let item = TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
             };
             let row = ledger.append("it-0", &[10, 11]).unwrap().clone();

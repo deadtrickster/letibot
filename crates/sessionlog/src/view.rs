@@ -864,7 +864,7 @@ pub fn body_of(item: &TranscriptItem) -> String {
         TranscriptItem::Assistant { text, .. }
         | TranscriptItem::Reasoning { text, .. }
         | TranscriptItem::System { text, .. } => text.clone(),
-        TranscriptItem::User { parts } => parts
+        TranscriptItem::User { parts, .. } => parts
             .iter()
             .filter_map(|p| match p {
                 letibot_transcript::UserPart::Text { text } => Some(text.as_str()),
@@ -936,6 +936,7 @@ mod tests {
         // can construct without inventing the other variants' fields.
         assert_eq!(
             body_of(&TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![
                     UserPart::Text {
                         text: "first".into(),
@@ -1180,6 +1181,7 @@ mod tests {
         v.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
             },
         );
@@ -1195,6 +1197,7 @@ mod tests {
         assert_eq!(
             v.snapshot(2, 0).items[0].item,
             Some(TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
             })
         );

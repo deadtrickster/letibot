@@ -1395,6 +1395,7 @@ mod tests {
         hub.record_item(
             "s.0",
             letibot_transcript::TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: "the operator's own prompt".into(),
                 }],

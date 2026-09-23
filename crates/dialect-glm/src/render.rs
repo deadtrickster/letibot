@@ -248,7 +248,7 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             text(out, t.clone());
         }
 
-        TranscriptItem::User { parts } => {
+        TranscriptItem::User { parts, .. } => {
             close_turn(st);
             st.prev_was_tool_result = false;
             ctl(out, &tk::USER);

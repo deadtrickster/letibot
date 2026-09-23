@@ -3392,7 +3392,7 @@ impl App {
         // holds has landed, and its echo stands down the way `record_item` would
         // have stood it down had the row arrived live.
         for it in &s.items {
-            if let Some(TranscriptItem::User { parts }) = &it.item {
+            if let Some(TranscriptItem::User { parts, .. }) = &it.item {
                 for text in parts.iter().filter_map(|p| match p {
                     UserPart::Text { text } => Some(text.as_str()),
                     _ => None,
@@ -7334,7 +7334,7 @@ impl App {
         // (*"the live arm read only the FIRST text part where the snapshot path reads
         // every part"*). One call site each; the common case is one part holding the
         // engine's join, and a two-part item is two things said.
-        if let TranscriptItem::User { parts } = &item {
+        if let TranscriptItem::User { parts, .. } = &item {
             for text in parts.iter().filter_map(|p| match p {
                 UserPart::Text { text } => Some(text.as_str()),
                 _ => None,
@@ -14193,6 +14193,57 @@ fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
 ///   **omitted entirely when the row carries no `ts`** — a snapshot from a log
 ///   recorded before the field existed. The same rule as a replayed tool call
 ///   showing no duration.
+/// **A row this SESSION appended, drawn as the session's** — R42.
+///
+/// The operator: *"why job completion events arrive as my messages?"* Because every one of
+/// them arrives as a `User` item, and this head drew a `User` item the way it draws the person
+/// typing — `▌` and the raised block, which is the mark this file reserves for *your own
+/// words*. A job settlement, a §5.7 salvage notice, a steering line and the intent check are
+/// all *the harness talking*, and drawing them as the operator is exactly the lie the gate
+/// already refuses to let them tell the oracle: **the reader is the other party this gate
+/// serves.**
+///
+/// The shape is the opposite of the block, in the three ways the block is made of: no `▌`
+/// accent bar, no raised background, and the faint register rather than the operator's own.
+/// What it keeps is the label — `session ·`, the same place and shape `queued ·` takes on an
+/// echo — because a row nobody can attribute is the defect, not the fix. Wrapped like any
+/// prose and sanitised like any other content this head did not author.
+fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    let folded = fold_cells(text);
+    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
+    let text: &str = &clean;
+    let p = cfg.palette();
+    let w = cfg.width.max(20);
+    let mark = p.paint(Role::Faint, "session · ");
+    let stamp = clock_time(ts);
+    let head_w = w.saturating_sub(visible_width("session · ") + visible_width(&stamp) + 2);
+    let mut lines = wrap(text, head_w.max(8));
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let mut out = Vec::with_capacity(lines.len());
+    let indent = " ".repeat(visible_width("session · "));
+    for (i, l) in lines.iter().enumerate() {
+        let label = if i == 0 { mark.clone() } else { indent.clone() };
+        // The timestamp closes the last line rather than the first: this is a note about
+        // something that happened, and the block above it puts its stamp on the first row
+        // because that row is the person speaking.
+        let tail = if i + 1 == lines.len() && !stamp.is_empty() {
+            format!("  {stamp}")
+        } else {
+            String::new()
+        };
+        out.push(trim_to(
+            &format!(
+                "  {label}{}",
+                p.paint(Role::Faint, &format!("{l}{tail}"))
+            ),
+            w,
+        ));
+    }
+    out
+}
+
 fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
     // **The renderer sanitises its own input** (§3.1), so a caller cannot forget. The
@@ -15047,7 +15098,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             );
             (RowClass::Other, out)
         }
-        TranscriptItem::User { parts } => {
+        TranscriptItem::User { parts, speaker } => {
             let text = parts
                 .iter()
                 .map(|p| match p {
@@ -15063,7 +15114,17 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // rendered straight it is an instruction to the terminal they are reading
             // it on (§3.1). Their own keystrokes cannot contain one — the decoder hands
             // back `Key::Char` — so nothing a person typed is changed by this.
-            (RowClass::Speech, user_block(&text, it.ts, cfg))
+            //
+            // **And the two speakers are two renderings** (R42). A row this session appended
+            // — a job completion, a salvage notice, a steering line — is drawn as the
+            // session's, not as the person's; see [`session_block`]. The class is `Other`
+            // rather than `Speech` for the same reason it is not the block: it is not
+            // somebody in the conversation speaking, and the separator it draws around
+            // itself should say so.
+            match speaker {
+                letibot_transcript::Speaker::Operator => (RowClass::Speech, user_block(&text, it.ts, cfg)),
+                letibot_transcript::Speaker::Agent => (RowClass::Other, session_block(&text, it.ts, cfg)),
+            }
         }
         TranscriptItem::Reasoning { text, .. } => {
             // **The model's reasoning is text this head did not author** (§3.1), and it
@@ -16644,6 +16705,7 @@ mod tests {
         a.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: six.join("\n"),
                 }],
@@ -16659,6 +16721,7 @@ mod tests {
         a.record_item(
             "s.1",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: seventh.to_string(),
                 }],
@@ -16715,6 +16778,7 @@ mod tests {
             a.record_item(
                 "s.contains",
                 TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text { text: row.into() }],
                 },
             );
@@ -16729,6 +16793,7 @@ mod tests {
         a.record_item(
             "s.4",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "something else\nsecond thing".into(),
                 }],
@@ -16894,6 +16959,7 @@ mod tests {
         a.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "one of mine\nand another".into(),
                 }],
@@ -16928,6 +16994,7 @@ mod tests {
             a
         };
         let row = || TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text {
                 text: "first of mine\nsecond of mine".into(),
             }],
@@ -16974,6 +17041,7 @@ mod tests {
         a.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "say it twice".into(),
                 }],
@@ -17003,6 +17071,7 @@ mod tests {
         a.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "\n\n\n".into(),
                 }],
@@ -17110,6 +17179,7 @@ mod tests {
         a.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "first\nsecond".into(),
                 }],
@@ -17125,6 +17195,7 @@ mod tests {
         a.record_item(
             "s.1",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "third".into(),
                 }],
@@ -17134,6 +17205,7 @@ mod tests {
         a.record_item(
             "s.2",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "fourth".into(),
                 }],
@@ -17333,6 +17405,7 @@ mod tests {
             ledger_head: "beef".into(),
             ts: 0,
             item: Some(TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "from the snapshot".into(),
                 }],
@@ -17371,6 +17444,7 @@ mod tests {
         a.record_item(
             "s.11",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "still queued".into(),
                 }],
@@ -17733,6 +17807,7 @@ mod tests {
         // everything the head made out.
         use letibot_transcript::{ReasoningField, TranscriptItem as T};
         let user = T::User {
+            speaker: Default::default(),
             parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
         };
         let answer = T::Assistant {
@@ -18172,6 +18247,7 @@ mod tests {
         a.record_item(
             "s.gone",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "a prompt that fell out of a snapshot".into(),
                 }],
@@ -23116,6 +23192,7 @@ mod tests {
                 item_rows(
                     false,
                     T::User {
+                        speaker: Default::default(),
                         parts: vec![UserPart::Text {
                             text: format!("I pasted{HOSTILE} out of a log"),
                         }],
@@ -23337,6 +23414,7 @@ mod tests {
             (
                 "the operator's own paste",
                 render_one(T::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: format!("I pasted {EVIL} out of a log\nsecond line"),
                     }],
@@ -24804,6 +24882,7 @@ mod tests {
             hub.record_item(
                 &format!("r{i}"),
                 letibot_transcript::TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![letibot_transcript::UserPart::Text {
                         text: format!("row r{i}"),
                     }],
@@ -25527,6 +25606,7 @@ mod tests {
         hub.record_item(
             "s.0",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "why did the cache miss".into(),
                 }],
@@ -26031,6 +26111,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: "what is in the tree".into(),
                     }],
@@ -26330,6 +26411,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: "continue".into(),
                     }],
@@ -26378,6 +26460,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: "what crates are in this workspace".into(),
                     }],
@@ -26453,6 +26536,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: "hello".into(),
                     }],
@@ -27630,6 +27714,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "u2".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![UserPart::Text {
                         text: "also bump the retry budget".into(),
                     }],
@@ -27671,6 +27756,7 @@ mod tests {
         hub.record_item(
             "u1",
             TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![UserPart::Text {
                     text: "also bump the retry budget".into(),
                 }],
@@ -29323,6 +29409,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **A row this session appended is not drawn as the operator's** — R42, and the
+    /// operator's own question: *"why job completion events arrive as my messages?"*
+    ///
+    /// The two rows are the same variant with the same shape and the same text length; the only
+    /// difference is `speaker`, and the two renderings must differ in the three marks that make
+    /// the operator's block what it is: **no `▌`**, no raised background, and the faint
+    /// register. Asserted on the escape sequences for the background and the accent, because
+    /// the words are identical in both cases — the defect was never the text.
+    #[test]
+    fn a_session_row_is_not_drawn_as_the_operators() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        for (seq, id, speaker, text) in [
+            (1u64, "s.0", letibot_transcript::Speaker::Operator, "run the tests"),
+            (
+                3,
+                "s.1",
+                letibot_transcript::Speaker::Agent,
+                "job j89 exited 0 after 12.4s",
+            ),
+        ] {
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.into(),
+                    kind: "user".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(TranscriptItem::User {
+                        speaker,
+                        parts: vec![letibot_transcript::UserPart::Text { text: text.into() }],
+                    }),
+                },
+            )));
+        }
+        let screen = a.screen(120, 30);
+        let theirs = screen
+            .iter()
+            .find(|l| l.contains("run the tests"))
+            .expect("the operator's row is on the screen");
+        let ours = screen
+            .iter()
+            .find(|l| l.contains("job j89 exited 0"))
+            .expect("the session's row is on the screen");
+        // The mark that means *your own words*, and only on theirs.
+        assert!(theirs.contains('▌'), "the operator's row lost its bar: {theirs:?}");
+        assert!(
+            !ours.contains('▌'),
+            "a job completion is drawn as the operator's own words: {ours:?}"
+        );
+        // And the label that says whose it is, on ours.
+        assert!(
+            ours.contains("session ·"),
+            "the session's row does not say whose it is: {ours:?}"
+        );
+        // The raised block is `Role::UserBlock`'s background. Not on ours.
+        let block = a.cfg.palette().open(Role::UserBlock);
+        assert!(
+            theirs.contains(&block),
+            "the operator's row lost its block: {theirs:?}"
+        );
+        assert!(
+            !ours.contains(&block),
+            "the session's row wears the operator's block: {ours:?}"
+        );
+        // The faint register, on ours.
+        assert!(
+            ours.contains("\x1b[2m"),
+            "the session's row is not in the register this head keeps for notes about itself: {ours:?}"
+        );
+    }
+
     /// **A call in flight is counted before its row exists** — the operator's *"display looks
     /// frozen, while in fact it is just say cargo testing with yellow dot."*
     ///
@@ -29551,6 +29719,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "s.0".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![letibot_transcript::UserPart::Text {
                         text: "run the tests".into(),
                     }],
@@ -29610,6 +29779,7 @@ mod tests {
             SessionEvent::TranscriptContent {
                 item_id: "s.0".into(),
                 item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
                     parts: vec![letibot_transcript::UserPart::Text {
                         text: "make verbosity a config option".into(),
                     }],

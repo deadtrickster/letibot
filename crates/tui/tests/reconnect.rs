@@ -211,6 +211,7 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
                 SessionEvent::TranscriptContent {
                     item_id: "s.0".into(),
                     item: Box::new(TranscriptItem::User {
+                        speaker: Default::default(),
                         parts: vec![UserPart::Text {
                             text: "remember this row".into(),
                         }],

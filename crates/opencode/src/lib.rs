@@ -597,6 +597,10 @@ fn interpret(
             }
             let row = match role_of(_msg_data).as_deref() {
                 Some("user") => TranscriptItem::User {
+                    // An imported conversation's `user` role is the person's. Nothing this
+                    // importer reads is the harness's own voice, so R42's other value has no
+                    // site here — and saying so is cheaper than a reader wondering.
+                    speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![UserPart::Text { text }],
                 },
                 _ => TranscriptItem::Assistant {

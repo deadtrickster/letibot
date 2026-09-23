@@ -93,6 +93,7 @@ fn a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key
     let f = fake(SCRIPT, 200);
     let p = provider(&f.url);
     let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text {
             text: "read a.txt".into(),
         }],

@@ -89,6 +89,7 @@ fn session(engine: &TurnEngine<'_>, tag: &str) -> Session {
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }
@@ -657,7 +658,7 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
     // The row sits where it was read: immediately after what was already there,
     // and ahead of the model's own items. That ordering is what `steering_before`
     // exists to let the caller reconcile.
-    let TranscriptItem::User { parts } = &session.items[before_len] else {
+    let TranscriptItem::User { parts, .. } = &session.items[before_len] else {
         panic!("expected the steering row at {before_len}: {:?}", session.items)
     };
     let UserPart::Text { text } = &parts[0] else {
@@ -733,7 +734,7 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     );
     assert_eq!(ok.steering_applied.len(), 1);
     // It is a plain user item carrying exactly its own text — §18.1-I11.
-    let TranscriptItem::User { parts } = session.items.last().unwrap() else {
+    let TranscriptItem::User { parts, .. } = session.items.last().unwrap() else {
         panic!("the steering message must be the last item")
     };
     let UserPart::Text { text } = &parts[0] else {

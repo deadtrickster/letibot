@@ -171,6 +171,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
         let mut sink = LogSink::new(hub_for_turn.clone());
 
         let item = TranscriptItem::User {
+            speaker: Default::default(),
             parts: vec![UserPart::Text {
                 text: "Name the seven days of the week, one per line, nothing else.".into(),
             }],

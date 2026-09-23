@@ -83,6 +83,7 @@ fn session(engine: &TurnEngine<'_>, tag: &str) -> Session {
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
+        speaker: Default::default(),
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }
@@ -330,7 +331,7 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         .items
         .iter()
         .filter(|i| match i {
-            TranscriptItem::User { parts } => match &parts[..] {
+            TranscriptItem::User { parts, .. } => match &parts[..] {
                 [UserPart::Text { text }] => {
                     // The length notice, not the unfinished-reasoning one: both
                     // open the same sentence, and this is the phrase that is
@@ -451,7 +452,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
 
     // The notice is a user item directly after the instruction, carrying the
     // ask the way the tool loop's EmptyLength arm carries it.
-    let letibot_transcript::TranscriptItem::User { parts } = &session.items[instruction_at + 1]
+    let letibot_transcript::TranscriptItem::User { parts, .. } = &session.items[instruction_at + 1]
     else {
         panic!(
             "the salvage notice is a user item, got {:?}",

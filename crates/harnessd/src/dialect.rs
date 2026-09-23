@@ -210,6 +210,7 @@ mod tests {
                 tools_json: vec![],
             };
             let items = vec![TranscriptItem::User {
+                speaker: Default::default(),
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: "hello".into(),
                 }],

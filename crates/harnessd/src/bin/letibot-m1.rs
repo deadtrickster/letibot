@@ -636,7 +636,7 @@ fn judge(
         && &now[..prefix_at_open.len()] == prefix_at_open;
     let update_at = harness.items().iter().position(|i| {
         matches!(i, letibot_transcript::TranscriptItem::System { .. })
-            || matches!(i, letibot_transcript::TranscriptItem::User { parts }
+            || matches!(i, letibot_transcript::TranscriptItem::User { parts, .. }
                 if parts.iter().any(|p| matches!(p,
                     letibot_transcript::UserPart::Text { text }
                         if text.starts_with("<system-update seq="))))
