@@ -371,6 +371,43 @@ pub const HEAD_RUN_KIND_PATH: &str = "path";
 pub const HEAD_RUN_KIND_URL: &str = "url";
 pub const HEAD_RUN_KIND_TEXT: &str = "text";
 
+/// **The verb a person types for a door tool: hyphens and no shift** — R34.
+///
+/// The operator, having had to reach for the shift key: *"lets change /web_search to
+/// /web-search - no shift needed."*
+///
+/// The door's names were the only underscored verbs in either head's registry, and they were
+/// underscored for one reason: they are spelled straight from the **tool** names. That is the
+/// right spelling for the wire and the wrong one for a keyboard, and the two are not the same
+/// surface.
+///
+/// **This does not move the wire.** The tool is still `web_search` — [`HEAD_RUN_TOOLS`], the
+/// schema, the corpus row and the `CallOrigin` are untouched — and the head still holds no
+/// schema: hyphen-to-underscore is a textual transform, not knowledge about the tool. R31's
+/// *"the name is the daemon's spelling"* stands for the wire and is amended for the keyboard.
+///
+/// Lives here rather than in a head because **both** heads take it, and a transform written
+/// twice is a transform that can be written differently.
+pub fn head_run_verb(tool: &str) -> String {
+    tool.replace('_', "-")
+}
+
+/// **The tool a typed verb names**, or `None` if it names nothing in `list`.
+///
+/// Accepts both spellings — R34: *"an operator who types what the daemon calls it should not
+/// be told they are wrong."* `/web_search` and `/web-search` are the same verb; the first is
+/// how the daemon spells it and the second is how a keyboard does, and a head that refused one
+/// would be arguing with the person about a hyphen.
+///
+/// Case-folded, because a slash verb is typed by a hand: `/Web-Search` is the same verb and
+/// there is no second one that differs only in case.
+pub fn head_run_tool<'a>(typed: &str, list: &'a [&'a str]) -> Option<&'a str> {
+    let want = typed.trim().replace('_', "-").to_ascii_lowercase();
+    list.iter()
+        .copied()
+        .find(|t| head_run_verb(t).to_ascii_lowercase() == want)
+}
+
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
 /// head says, and `None` when they are the same.
 ///
@@ -1659,5 +1696,61 @@ mod skew_tests {
         for s in [newer, older] {
             assert!(!s.contains("quit"), "{s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod the_door_verbs_transform {
+    use super::*;
+
+    /// **The hyphen is a keyboard transform and the wire keeps the tool's name** (R34).
+    ///
+    /// Asserted against [`HEAD_RUN_TOOLS`] itself, so the day a door verb is added the test
+    /// says what its typed spelling is without anybody writing it down twice.
+    #[test]
+    fn every_door_tool_has_a_hyphened_verb_and_the_tool_keeps_its_own_name() {
+        for tool in HEAD_RUN_TOOLS {
+            let verb = head_run_verb(tool);
+            assert!(
+                !verb.contains('_'),
+                "`/{verb}` still needs the shift key"
+            );
+            // **The wire is unmoved**: the tool's own spelling answers, and the transform is
+            // `_` → `-` and nothing else.
+            assert_eq!(head_run_tool(&verb, &HEAD_RUN_TOOLS), Some(tool));
+            assert_eq!(head_run_tool(tool, &HEAD_RUN_TOOLS), Some(tool));
+        }
+        assert_eq!(head_run_verb("web_search"), "web-search");
+        assert_eq!(head_run_verb("read"), "read", "no underscore, no change");
+    }
+
+    /// **Both spellings are one verb**, which is R34's second clause: *an operator who types
+    /// what the daemon calls it should not be told they are wrong.* Case too, because a slash
+    /// verb is typed by a hand.
+    #[test]
+    fn the_underscore_spelling_is_accepted_and_resolves_to_the_same_tool() {
+        for typed in ["web_fetch", "web-fetch", "Web-Fetch", "WEB_FETCH", " web_fetch "] {
+            assert_eq!(
+                head_run_tool(typed, &HEAD_RUN_TOOLS),
+                Some("web_fetch"),
+                "`{typed}`"
+            );
+        }
+        // And a name that is not a door tool resolves to nothing, however it is spelled —
+        // the transform must not turn an unknown word into a known one.
+        for typed in ["bash", "write", "web-push", "re-ad", "read_"] {
+            assert_eq!(head_run_tool(typed, &HEAD_RUN_TOOLS), None, "`{typed}`");
+        }
+    }
+
+    /// **`read_` and `read` are not the same word.** The transform maps `_` to `-` on both
+    /// sides of the comparison, so a trailing underscore becomes a trailing hyphen and no
+    /// longer matches — which is the right answer: it is not how anybody spells it, and
+    /// accepting it would mean accepting anything one edit away from anything.
+    #[test]
+    fn the_transform_is_exact_and_not_fuzzy() {
+        assert_eq!(head_run_tool("read-", &HEAD_RUN_TOOLS), None);
+        assert_eq!(head_run_tool("re", &HEAD_RUN_TOOLS), None);
+        assert_eq!(head_run_tool("", &HEAD_RUN_TOOLS), None);
     }
 }

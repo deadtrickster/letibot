@@ -499,6 +499,21 @@ impl Link {
                     Action::Slash { line } => {
                         self.client.slash(app.seq, &line)?;
                     }
+                    // **The operator's own call through the door** (R34, R31).
+                    //
+                    // One frame, not two: `execute: true` means the daemon runs it and
+                    // appends the row, so there is no result for this head to hand back.
+                    // The admission is the same one a head-run call has always had, and
+                    // the permission to go is still `OperatorCallAllowed` — a head that
+                    // assumed its own request was admitted would be the R24 part two
+                    // defect with a new caller.
+                    Action::HeadRun { name, arguments } => {
+                        let n = app.next_head_run();
+                        let call_id = format!("{}-{n}", app.head_id());
+                        let _ = self
+                            .client
+                            .operator_call(app.seq, &call_id, &name, &arguments, true)?;
+                    }
                     Action::Secret { req_id, secret } => {
                         self.client.secret(&req_id, secret)?;
                     }

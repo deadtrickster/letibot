@@ -197,6 +197,22 @@ pub enum Action {
     Slash {
         line: String,
     },
+    /// **The operator's own tool call through the door** — R24 part two, R31, R34.
+    ///
+    /// `name` is the TOOL's spelling (`web_search`), never the typed verb; the hyphen is a
+    /// keyboard transform and this is the wire. `arguments` is the JSON object the head
+    /// built from the field the daemon published, and the head knows nothing else about the
+    /// tool — see [`App::head_run_call`].
+    ///
+    /// **`execute` is true and there is no result to send back.** This head has no tool
+    /// runtime and no HTTP client, so the daemon runs it, in this session, with the byte
+    /// caps and spill policy a model's call gets. That is not a convenience: a head that
+    /// fetched a page itself would write a corpus row saying *the operator ran `web_fetch`*
+    /// about another program's answer. See `ClientFrame::OperatorCall::execute`.
+    HeadRun {
+        name: String,
+        arguments: String,
+    },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
     Secret {
         req_id: String,
@@ -1573,6 +1589,12 @@ pub struct App {
     /// operator would otherwise take to `ps` — which is how the orphan this rule exists for
     /// was found, a day late.
     daemon_pid: Option<i32>,
+    /// **Names this head's door calls so the daemon can tell them apart.**
+    ///
+    /// The `call_id` is `{head}-{n}` and the count is per head, which is what makes it
+    /// unique within the session — the only property the daemon's pending set needs. A
+    /// second head's `h3-1` is a different call, and the daemon's set is keyed on the string.
+    head_run_seq: u64,
     /// **The echoes a snapshot could not resolve** (R16's third mark).
     ///
     /// `pending_prompts` asserts something about the DAEMON — *you owe me a row for
@@ -2123,6 +2145,7 @@ impl App {
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),
+            head_run_seq: 0,
             echo_open: false,
             stopping: None,
         }
@@ -2283,6 +2306,12 @@ impl App {
 
     pub fn head_id(&self) -> &str {
         &self.head_id
+    }
+
+    /// The next door call's number, for the `call_id` the daemon keys its pending set on.
+    pub fn next_head_run(&mut self) -> u64 {
+        self.head_run_seq += 1;
+        self.head_run_seq
     }
 
     /// Tell the head it is about to ask the daemon, so the frames it draws in the
@@ -5904,7 +5933,97 @@ impl App {
                 out.push((v, String::new()));
             }
         }
+        // **And the door's, hyphenated** — R34. Offered from the daemon's own row, so this
+        // head still holds no schema: it knows a name, a field and a kind, and the verb it
+        // offers is a textual transform of the name rather than a second list.
+        for t in self.door_tools() {
+            let verb = letibot_sessionlog::head_run_verb(&t.name);
+            if out.iter().any(|(n, _)| *n == verb) {
+                continue;
+            }
+            let hint = if t.field.is_empty() {
+                // **Said on the row rather than left to a refusal**, which is R31's own
+                // requirement: *the head says which kind it is refusing* rather than
+                // leaving the operator to guess which tools are which.
+                "JSON arguments".to_string()
+            } else {
+                format!("{} — {}", t.kind, t.field)
+            };
+            out.push((verb, hint));
+        }
         out
+    }
+
+    /// **The door's tools, as the daemon described them** — R31.
+    fn door_tools(&self) -> Vec<letibot_sessionlog::HeadRunTool> {
+        self.settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::HEAD_RUN_TOOLS_KEY)
+            .map(|r| r.tools.clone())
+            .unwrap_or_default()
+    }
+
+    /// **A door verb the operator typed, turned into the call the wire wants** — R31, R34.
+    ///
+    /// Returns the tool's OWN name and the arguments object, or a sentence saying why not.
+    /// The head's whole knowledge is the three facts on the row: **which field a bare line
+    /// goes into, what kind it is, and which fields have defaults.** Nothing here knows what
+    /// `web_search` does.
+    ///
+    /// * **No bare form** (`field` empty) — the row's own `why_json` sentence is returned, so
+    ///   the refusal names the reason the daemon gave rather than the head's guess at it.
+    /// * **A line with nothing after the verb** — refused by name, because a bare call to a
+    ///   tool that needs a query is a call nobody meant.
+    /// * **Anything that looks like a JSON object** goes through untouched, which is the form
+    ///   R31 keeps for a tool with several arguments. A line that *starts* with `{` is the
+    ///   operator asking for the JSON form; there is no tool whose bare text begins that way
+    ///   by accident and the ambiguity is resolved in favour of the form they can see.
+    fn head_run_call(&self, tool: &letibot_sessionlog::HeadRunTool, line: &str) -> Result<String, String> {
+        let line = line.trim();
+        if line.starts_with('{') {
+            // **Checked for BEING json and for nothing else** — the original rule, kept.
+            let v: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| format!("`{}` with `{{…}}` arguments: {e}", tool.name))?;
+            if !v.is_object() {
+                return Err(format!(
+                    "`{}` takes an object of arguments; `{line}` is a {}",
+                    tool.name,
+                    match v {
+                        serde_json::Value::Array(_) => "list",
+                        serde_json::Value::String(_) => "string",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Object(_) => "object",
+                    }
+                ));
+            }
+            return Ok(v.to_string());
+        }
+        if tool.field.is_empty() {
+            return Err(tool.why_json.clone());
+        }
+        if line.is_empty() {
+            return Err(format!(
+                "/{} WHAT — this one puts a bare line into `{}` ({})",
+                letibot_sessionlog::head_run_verb(&tool.name),
+                tool.field,
+                tool.kind
+            ));
+        }
+        // **The defaults travel with the line**, so the object the daemon runs is the one a
+        // model's minimal call would have produced. Without them the same tool answers two
+        // different questions depending on who asked — the daemon published them for exactly
+        // this and a head that dropped them would be editing the call.
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            tool.field.clone(),
+            serde_json::Value::String(line.to_string()),
+        );
+        for (k, v) in &tool.defaults {
+            obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
+        Ok(serde_json::Value::Object(obj).to_string())
     }
 
     /// The verbs the daemon published, from its settings row. Empty when it sent none.
@@ -5939,12 +6058,16 @@ impl App {
                 return;
             }
         }
-        let needle = &text[1..];
+        // **The needle is normalised the same way the lookup is** (R34), so a person who
+        // typed `/web_` because that is what the daemon calls the tool gets `/web-search`
+        // offered rather than *no /command starts with*. The transform runs on both sides
+        // of the comparison, which is what makes it a transform rather than a second list.
+        let needle = text[1..].replace('_', "-");
         let names: Vec<String> = self
             .command_names()
             .into_iter()
             .map(|(n, _)| n)
-            .filter(|n| n.starts_with(needle))
+            .filter(|n| n.replace('_', "-").starts_with(&needle))
             .collect();
         match names.first() {
             Some(first) => {
@@ -5980,11 +6103,11 @@ impl App {
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return None;
         }
-        let needle = &text[1..];
+        let needle = text[1..].replace('_', "-");
         let parts: Vec<String> = self
             .command_names()
             .into_iter()
-            .filter(|(name, _)| name.starts_with(needle))
+            .filter(|(name, _)| name.replace('_', "-").starts_with(&needle))
             .map(|(name, hint)| {
                 if hint.is_empty() {
                     format!("/{name}")
@@ -6029,6 +6152,41 @@ impl App {
     }
 
     fn command(&mut self, cmd: &str) -> Option<Action> {
+        // **The operator's own tool call** — R24 part two's door, R31's bare form, R34's
+        // hyphen.
+        //
+        // First, because a door verb is neither this head's nor the daemon's other half's:
+        // it is a TOOL, and it has to be matched against the list the daemon published
+        // before anything else gets to refuse it as an unknown word.
+        //
+        // **Both spellings are accepted and only one is offered** (R34): the operator who
+        // types `/web_search` because that is what the daemon calls it *"should not be told
+        // they are wrong"*, so the transform runs at the lookup and the tool's own name goes
+        // on the wire. The head holds no schema — it knows which field takes the line and
+        // what kind it is, both published on the row.
+        let (typed_verb, rest) = match cmd.trim().split_once(char::is_whitespace) {
+            Some((v, r)) => (v, r),
+            None => (cmd.trim(), ""),
+        };
+        if !typed_verb.is_empty() {
+            let tools = self.door_tools();
+            let allow = letibot_sessionlog::HEAD_RUN_TOOLS;
+            if let Some(tool) = letibot_sessionlog::head_run_tool(typed_verb, &allow)
+                .and_then(|name| tools.iter().find(|t| t.name == name))
+            {
+                return match self.head_run_call(tool, rest) {
+                    Ok(arguments) => Some(Action::HeadRun {
+                        name: tool.name.clone(),
+                        arguments,
+                    }),
+                    Err(why) => {
+                        self.say(&why);
+                        None
+                    }
+                };
+            }
+        }
+
         // **`/cells MESSAGE` — the message, and what is on this screen with it.**
         //
         // `harness what=screen` lets the model ASK; this is the operator pointing.
@@ -18814,6 +18972,236 @@ mod tests {
     ///
     /// One rule, three cards, and the same guard on each: the composer must be
     /// empty, so a line already being typed keeps its digits.
+    /// **The door's verbs are typed with hyphens** — R34.
+    ///
+    /// The operator: *"lets change /web_search to /web-search - no shift needed."* The door's
+    /// names were the only underscored verbs in either registry, and they were underscored
+    /// because they are spelled straight from the TOOL names. Right for the wire, wrong for a
+    /// keyboard.
+    ///
+    /// Three assertions, and they are the three clauses of the requirement: the hyphen form is
+    /// what is OFFERED, the underscore form is ACCEPTED, and **the wire still carries the
+    /// tool's own name** — this is a textual transform and not knowledge about the tool.
+    #[test]
+    fn a_door_verb_is_typed_with_hyphens() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(door_row("web_search", "query", "text"));
+
+        // **Offered hyphenated.** Tab from `/web-` reaches it.
+        typed(&mut a, "/web-");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/web-search");
+
+        // **And the underscore form is accepted rather than refused** — an operator who
+        // types what the daemon calls it should not be told they are wrong.
+        assert_eq!(
+            a.command("web-search blabla"),
+            Some(Action::HeadRun {
+                name: "web_search".into(),
+                arguments: r#"{"query":"blabla"}"#.into(),
+            }),
+            "the hyphen form sends the TOOL's name"
+        );
+        assert_eq!(
+            a.command("web_search blabla"),
+            Some(Action::HeadRun {
+                name: "web_search".into(),
+                arguments: r#"{"query":"blabla"}"#.into(),
+            }),
+            "and so does the underscore form: `/web-search` and `/web_search` are one verb"
+        );
+        // Case is a hand's, not a meaning's.
+        assert_eq!(
+            a.command("Web-Search blabla"),
+            Some(Action::HeadRun {
+                name: "web_search".into(),
+                arguments: r#"{"query":"blabla"}"#.into(),
+            })
+        );
+    }
+
+    /// **The head holds no schema: the arguments come off the row.**
+    ///
+    /// Four facts, and each is a different way for the head to be right without knowing what
+    /// the tool is: the field the line goes into, the defaults that travel with it, the
+    /// no-bare-form refusal in the daemon's own words, and the JSON form kept for a tool with
+    /// several arguments.
+    #[test]
+    fn the_bare_form_is_built_from_the_row_and_nothing_else() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(door_row("read", "path", "path"));
+        assert_eq!(
+            a.command("read crates/tui/src/app.rs"),
+            Some(Action::HeadRun {
+                name: "read".into(),
+                arguments: r#"{"path":"crates/tui/src/app.rs"}"#.into(),
+            })
+        );
+
+        // **A default travels with the line**, so a bare form sends what a model's minimal
+        // call would have sent.
+        let mut b = app();
+        b.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        let mut row = door_row("web_fetch", "url", "url");
+        if let ServerFrame::Settings { rows } = &mut row {
+            rows[0]
+                .tools[0]
+                .defaults
+                .insert("format".into(), "markdown".into());
+        }
+        b.apply(row);
+        // **Compared as a VALUE, not as a string.** Key order in a JSON object is not a fact
+        // about the call, and an assertion on it would fail the day the map's iteration
+        // changes while the call stayed the same.
+        let Some(Action::HeadRun { name, arguments }) = b.command("web-fetch http://example.invalid")
+        else {
+            panic!("the bare form did not produce a door call");
+        };
+        assert_eq!(name, "web_fetch");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&arguments).expect("an object"),
+            serde_json::json!({"url": "http://example.invalid", "format": "markdown"}),
+            "the field the line went into, and the default that travelled with it"
+        );
+
+        // **No bare form: the daemon's own sentence, not the head's guess.**
+        //
+        // Called on the function rather than through `command`, and the reason is worth
+        // stating: the door's three tools ALL have a single required field today, so this
+        // branch is unreachable through a real row — it exists for an allowlist entry with two
+        // required fields, and the sentence it returns is the daemon's `why_json`. A test that
+        // could not reach it would be no test at all.
+        let mut c = app();
+        c.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        let two_fields = letibot_sessionlog::HeadRunTool {
+            name: "pair".into(),
+            field: String::new(),
+            kind: String::new(),
+            defaults: Default::default(),
+            why_json: "`pair` needs 2 fields (a, b)".into(),
+        };
+        let why = c
+            .head_run_call(&two_fields, "a b")
+            .expect_err("a tool with no bare form is refused");
+        assert_eq!(why, "`pair` needs 2 fields (a, b)", "the daemon's own sentence");
+        // And a bare verb with nothing after it is refused by name, with the field named —
+        // a call to a tool that needs a query, with no query, is a call nobody meant.
+        let read = letibot_sessionlog::HeadRunTool {
+            name: "read".into(),
+            field: "path".into(),
+            kind: "path".into(),
+            defaults: Default::default(),
+            why_json: String::new(),
+        };
+        let why = c.head_run_call(&read, "   ").expect_err("no path, no call");
+        assert!(why.contains("/read WHAT") && why.contains("`path`"), "{why}");
+        assert!(why.contains("path"), "the kind is named: {why}");
+
+        // **And the JSON form stays**, which is what a tool with several arguments needs.
+        let Some(Action::HeadRun { arguments, .. }) = a.command(r#"read {"path":"x","limit":3}"#)
+        else {
+            panic!("the JSON form was not accepted");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&arguments).expect("an object"),
+            serde_json::json!({"path": "x", "limit": 3}),
+            "the JSON form goes through untouched — checked for BEING json and nothing else"
+        );
+        // **The JSON form is entered by the brace, and only by it.** A line with spaces is
+        // ONE bare argument, which is how a path with a space in it works; a line that opens
+        // with `{` is the operator asking for the JSON form and is parsed as one.
+        let Some(Action::HeadRun { arguments, .. }) = a.command("read x y") else {
+            panic!("a line with spaces is one bare path");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&arguments).unwrap(),
+            serde_json::json!({"path": "x y"})
+        );
+        assert_eq!(
+            a.command("read {not json"),
+            None,
+            "an opening brace promises JSON; a malformed one is refused, not read as a path"
+        );
+        assert!(
+            a.notice.as_deref().is_some_and(|n| n.contains("read")),
+            "and the refusal names the verb: {:?}",
+            a.notice
+        );
+        // **And the object is passed through unexamined** — checked for BEING json and for
+        // nothing else, which is R24's own rule kept: the head does not know `path` is
+        // required, so it does not pretend to, and the tool's own refusal is the one that
+        // reaches the operator.
+        let Some(Action::HeadRun { arguments, .. }) = a.command(r#"read {"limit":3}"#) else {
+            panic!("an object is accepted whatever is in it");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&arguments).unwrap(),
+            serde_json::json!({"limit": 3})
+        );
+    }
+
+    /// **The door's list is the daemon's allowlist, not the row.** A row naming a tool the
+    /// daemon does not admit is not a door verb — the row describes what is admitted, and a
+    /// head that trusted a row over the list would be offering a call the daemon refuses.
+    ///
+    /// This is the failure that taught me: the first version of the test above used a
+    /// two-required-field tool called `pair` and expected the door to refuse it. It did not —
+    /// `pair` is not in `HEAD_RUN_TOOLS`, so it fell through to the daemon as an ordinary
+    /// unknown verb, which is exactly right.
+    #[test]
+    fn a_row_naming_a_tool_outside_the_allowlist_is_not_a_door_verb() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(door_row("bash", "command", "text"));
+        assert!(
+            matches!(a.command("bash rm -rf /"), Some(Action::Slash { .. })),
+            "the door does not admit `bash` and the row cannot make it"
+        );
+    }
+
+    /// **A verb the head has no tool for is not swallowed by the door.** The door arm runs
+    /// first in `command`, so a name it does not match must fall through to everything else
+    /// — otherwise every verb in the registry would be refused by a door that never heard of
+    /// it.
+    #[test]
+    fn a_verb_that_is_not_a_door_tool_falls_through() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(door_row("read", "path", "path"));
+        // A daemon verb still goes to the daemon.
+        assert!(matches!(
+            a.command("gate recent"),
+            Some(Action::Slash { .. })
+        ));
+        // And a head verb still does what it did.
+        assert_eq!(a.command("t"), None);
+        assert!(a.tools.is_open());
+        // A door name with no row is not a door: nothing was published, so nothing is
+        // matched, and it goes to the daemon like any other unknown word.
+        assert!(matches!(
+            a.command("web-search blabla"),
+            Some(Action::Slash { .. })
+        ));
+    }
+
     /// **The completion table and the dispatcher are not two lists that agree by
     /// maintenance** (R32).
     ///
@@ -22458,6 +22846,35 @@ mod tests {
             dialect: "qwen3.8".into(),
             endpoint: "127.0.0.1:8080".into(),
             workspace: "/home/dead/Projects/letibot".into(),
+        }
+    }
+
+    /// **The daemon's door row**, as `harnessd` publishes it — R31, R32, R34.
+    ///
+    /// A `ServerFrame::Settings` carrying one `head-run.tools` row, because that is the only
+    /// way a head learns any of this: it holds no schema, and these tests would prove nothing
+    /// if they handed the app a struct it built itself from knowledge the head does not have.
+    /// Empty `field` and `why_json` is the no-bare-form case.
+    fn door_row(name: &str, field: &str, kind: &str) -> ServerFrame {
+        ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::HEAD_RUN_TOOLS_KEY.into(),
+                value: name.into(),
+                source: "default".into(),
+                editable: String::new(),
+                choices: Vec::new(),
+                tools: vec![letibot_sessionlog::HeadRunTool {
+                    name: name.into(),
+                    field: field.into(),
+                    kind: kind.into(),
+                    defaults: Default::default(),
+                    why_json: if field.is_empty() {
+                        format!("`{name}` takes its arguments as JSON: it needs 2 fields (a, b)")
+                    } else {
+                        String::new()
+                    },
+                }],
+            }],
         }
     }
 
