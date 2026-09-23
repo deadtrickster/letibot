@@ -1,0 +1,131 @@
+Bisecting: 153 revisions left to test after this (roughly 7 steps)
+[9606fc3bb0cd92dd9c7567d7e33f1073d946eaec] test: pin that a fence is coloured only if it names a language
+running '/tmp/bisect/test.sh'
+STEP 9606fc3 caught=25 -> GOOD
+Bisecting: 76 revisions left to test after this (roughly 6 steps)
+[25e3de0ba984dc072146296dec951e97527d2938] Merge: the round backstop is unbounded, and says so
+running '/tmp/bisect/test.sh'
+STEP 25e3de0 caught=26 -> GOOD
+Bisecting: 38 revisions left to test after this (roughly 5 steps)
+[ed56bcbc0247d0354b719641b93d3f1a0c8b58ac] a history walk gives the draft back
+running '/tmp/bisect/test.sh'
+STEP ed56bcb caught=25 -> GOOD
+Bisecting: 19 revisions left to test after this (roughly 4 steps)
+[3d8754d4e7d485af08483c7622498b300afd4320] R12 — an oracle that ran out of room is not an oracle that could not be read
+running '/tmp/bisect/test.sh'
+STEP 3d8754d caught=17 -> BAD
+Bisecting: 9 revisions left to test after this (roughly 3 steps)
+[775a86925464d031ad08f2b33a214a2d35cb7093] TODO: A's three of §11 are filed, and two of them are settled
+running '/tmp/bisect/test.sh'
+STEP 775a869 caught=27 -> GOOD
+Bisecting: 4 revisions left to test after this (roughly 2 steps)
+[d6f2d21f67beb1194d9245fb328d5ab2d51c2374] R19, fault 2 — a housekeeping notice and a refused call must not look alike
+running '/tmp/bisect/test.sh'
+STEP d6f2d21 caught=26 -> GOOD
+Bisecting: 2 revisions left to test after this (roughly 1 step)
+[a413f9a05ce906d982e7a05b88723f1153bfe943] R20 — the ladder is pinned to the bottom, and the wall above it scrolls
+running '/tmp/bisect/test.sh'
+STEP a413f9a caught=24 boundary, repeat=25
+STEP a413f9a caught=25 -> GOOD
+Bisecting: 0 revisions left to test after this (roughly 1 step)
+[06ec17b72b6b8b83542593d363977ea9b1f91720] R21's sibling — a command that exits 125 ran, and the wrapper's marker is the evidence
+running '/tmp/bisect/test.sh'
+STEP 06ec17b caught=24 boundary, repeat=26
+STEP 06ec17b caught=26 -> GOOD
+3d8754d4e7d485af08483c7622498b300afd4320 is the first bad commit
+commit 3d8754d4e7d485af08483c7622498b300afd4320
+Author: Iliia Khaprov <i.khaprov@gmail.com>
+Date:   Tue Sep 22 13:45:54 2026 +0200
+
+    R12 — an oracle that ran out of room is not an oracle that could not be read
+    
+    The operator: *"an oracle that ran out of budget is not an oracle that could not be read"*, and
+    they asked for the measurement first. **Measured against the store, 2026-09-22** (`adjudication`,
+    `arguments_json`/`model_verdict`/`oracle_reply`):
+    
+        175 rows recorded "gave no verdict this seam could read"
+          134  were the model ANSWERING `UNSURE`  — R11's defect (452d7dd re-worded it)
+           41  have no verdict line at all
+           38  of those end MID-CLAUSE — a word, no full stop: the ceiling's signature
+               (21 in this session's daemon, 15 in the other head's, 2 elsewhere)
+           the newest two are 11:05 today and 11:23 today, so it is live, not history
+          848 oracle consultations since R11, of which 3 recorded the sentence
+    
+    So the operator's "eleven of sixty-nine" was the count when they wrote it; the store now
+    says 41 of 175, and 38 of those are truncations. That is the distribution, and it is why
+    the third outcome is worth having.
+    
+    **Three things, and the first is the one that makes a truncated reply harmless.**
+    
+    **1. The verdict goes first.** The prompt asked for a sentence and then the verdict on the
+    LAST line, so a reply cut before that line was a *budget* recorded as an unreadable answer.
+    Now the verdict is asked for on its FIRST line, with the reasoning after it, and the parser
+    reads **either end** — so a cut reply still carries its answer and every reply written under
+    the old shape still parses. Measured live against this box's guard model
+    (`qwen-3.8-27b` at 127.0.0.1:8080), same brief, four calls:
+    
+        new prompt, max_tokens 120   3 of 3 samples: `ALLOW 0` on line 1, finish_reason stop
+        new prompt, max_tokens 8     finish_reason length, content "ALLOW 0\nYes, running the"
+    
+    The last line is the whole point: eight tokens used to be pure reasoning and no verdict, and
+    now the verdict is what survives the cut. (`parse_scores` reads either end for the same
+    reason; `verdict_line` asks the *verb* rather than the parse, because `UNSURE` alone parses
+    to the same `Verdict::Unsure` an unparseable line does.)
+    
+    **2. The third outcome, named.** `UnsureKind` — `could_not_decide`, `between_thresholds`,
+    `unreadable`, **`out_of_room`** — travels on `OracleAnswer::Unsure { why, kind }`, lands on
+    `ModelAdvice` and becomes **a column** (`oracle_reading`, schema **v11**). The sentence and
+    the token, because they answer different questions: the sentence is how the operator finds
+    out what happened, and the token is how a `GROUP BY` counts *the rate of each* — the same
+    move `verdict` makes beside `model_verdict`, and for the reason `store.rs` states
+    (*re-parsing prose to recover a label is how a corpus rots*). The ceiling's sentence names
+    the budget and the wheel that raises it:
+    
+        guard ran out of room: the reply stopped at its 120 output-token ceiling before it
+        reached a verdict, so this is a BUDGET and not an answer nobody could read.
+        `--oracle-max-tokens` raises it, and the bytes are kept either way — `oracle_reply`
+        on the corpus row holds what it did write.
+    
+    **3. The knob that sentence names is real.** `--oracle-max-tokens` (and `oracle.max_tokens`
+    on `/config`), plumbed to `HttpOracle::with_max_tokens`; the default is the measured 120,
+    named `DEFAULT_MAX_TOKENS`. The sentence came first and it named a knob that did not exist,
+    which is the defect this whole session has been chasing — a fact named after one thing and
+    read from another — so the knob was added rather than the sentence quietly reworded.
+    
+    **What is not the evidence**: `finish_reason` is the *only* thing that can tell a cut reply
+    from one that stopped, and an absent field reads as `false` — a server that does not report
+    it must not be read as the loudest case. `out_of_room` explains a **failure to parse** and
+    never overrides a verdict: a reply whose first line is `ALLOW 0` is an authorisation whatever
+    the server says about why it stopped.
+    
+    **No protocol change, no head change.** The card already carries the sentence, because R11
+    put the whole reply basis on the wire — so *which of the three happened* is on the card in
+    the operator's own words, and the corpus half is the column. leticl's head ignores the new
+    field and renders exactly what it rendered before.
+    
+    **Four tests, and one pre-existing red one fixed on the way.** The readings are asserted
+    apart (a cut reply with a verdict is an answer; the same bytes without the ceiling are
+    `unreadable`; `could_not_decide` and `between_thresholds` unchanged); the parse is asserted
+    at either end; the column round-trips, the rate of each is one `GROUP BY`, and a v10 store
+    comes back with the column and its old rows `NULL`. Found while adding the column:
+    `decisions_tool::counts_are_per_session_and_any_widens_to_everything` was **already failing
+    at HEAD** — the R11 fixture gave all three rows `consulted: Some(true)`, so *"one oracle
+    answered"* measured 3 — and the two rows a person and a boundary decided now say `false`.
+    
+    `letibot-tools` 618, `letibot-harnessd` 116 + `decisions_tool` 7, `letibot-tokencore` 63,
+    `letibot-tui` 326 — all green.
+
+ crates/harnessd/src/bin/harnessd.rs     |  16 ++
+ crates/harnessd/src/config.rs           |  25 ++
+ crates/harnessd/src/corpus.rs           |   4 +
+ crates/harnessd/src/etalon_oracle.rs    |   3 +
+ crates/harnessd/src/harness.rs          |   6 +
+ crates/harnessd/src/oracle.rs           | 401 ++++++++++++++++++++++++++------
+ crates/harnessd/tests/decisions_tool.rs |   9 +
+ crates/tokencore/src/store.rs           | 229 ++++++++++++++++--
+ crates/tools/src/adjudicate.rs          |  31 +++
+ crates/tools/src/authorise.rs           |  95 +++++++-
+ crates/tools/src/lib.rs                 |   2 +-
+ 11 files changed, 740 insertions(+), 81 deletions(-)
+bisect found first bad commit
+---BISECT DONE---
