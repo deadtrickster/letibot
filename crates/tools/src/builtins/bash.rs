@@ -94,7 +94,13 @@ impl Tool for Bash {
              would give you two. Every run is a job with an id: output is capped \
              inline and the rest is read with `job_output`, and a job's completion \
              **arrives on its own** when it ends — you are told, unprompted, so you \
-             do not sit and wait on it; a job is stopped with `job_kill`. Every process lands in a cgroup \
+             do not sit and wait on it. **That is the rule, and it is about clocks rather \
+             than about verbs: you are woken when the job finishes, so do not build your \
+             own clock.** `sleep 200`, a `tail -f` of a log, a `until … ; do sleep 5; \
+             done` — every one of them is the same mistake in a different spelling, and \
+             each spends the wait twice: it cannot be woken early when the work finishes \
+             in twenty seconds, and it cannot be ended cleanly when it fails. A job is \
+             stopped with `job_kill`. Every process lands in a cgroup \
              owned by a scope, so a foreground command dies with the turn and a \
              background one with the session unless you name an `scope`. Do not \
              write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
@@ -286,32 +292,62 @@ impl Tool for Bash {
 
         if background {
             let view = host.job(&id);
-            // **`Backgrounded`, not `Ok`, even though the model asked.** The
-            // outcome names a fact about the world — *this command is running and
-            // has not answered yet* — and that fact does not depend on who wanted
-            // it. Reporting `Ok` here would make a `bash --background` result
-            // grounding for an answer nothing has produced, which is exactly what
-            // `is_grounded` exists to prevent, and it would leave a head with two
+            // **Where this job's own output goes** — R41, requirement one, and it changes
+            // what the sentences below may SAY rather than only adding a footnote beside
+            // them.
+            //
+            // Measured on the first cut of this: the note explained that the window would be
+            // empty while the payload under it went on telling the model that `job_output`
+            // "reads what it has written so far". A note that argues with the line beneath it
+            // is worse than no note — the model believes the line it has seen before.
+            //
+            // The operator's own case: *"letibot just started a background build and then
+            // `sleep 200`"* — `cargo build --release … > /tmp/release-build.log 2>&1`, whose
+            // capture is empty by construction. **The redirect is in the text**, so this is
+            // knowable now, needs nothing to run, and is the moment to say it.
+            let redirected = crate::builtins::output_redirect_path(command);
+            // `Backgrounded`, not `Ok`, even though the model asked. The outcome names a fact
+            // about the world — *this command is running and has not answered yet* — and that
+            // fact does not depend on who wanted it. Reporting `Ok` here would make a `bash
+            // --background` result grounding for an answer nothing has produced, which is
+            // exactly what `is_grounded` exists to prevent, and it would leave a head with two
             // shapes to render for one situation.
+            let read_it = match &redirected {
+                Some(path) => format!(
+                    "Its own window will be EMPTY however long it runs — the command sends \
+                     stdout to `{path}` — so read `{path}` with `read` when the completion \
+                     tells you it ended, and do not read the window looking for progress."
+                ),
+                None => format!(
+                    "`job_output` with job=\"{id}\" reads what it has written so far; \
+                     `job_kill` stops it."
+                ),
+            };
+            // **The rule, not a verb list.** R7 closed `job_wait` and the model went on
+            // waiting with `sleep 200; tail -3 log`, so what has to be said is *why* the wait
+            // is unnecessary rather than which words are forbidden.
+            // One line per sentence, and one `concat!` rather than a wrapped literal:
+            // a `\` continuation strips, and the version of this that shipped without
+            // one put `a                          `sleep`` in front of a model that
+            // reads every character.
+            let clock = concat!(
+                "**You are woken when it finishes, so do not build your own clock** — a ",
+                "`sleep`, a `tail` in a loop or a poll are the same mistake in three ",
+                "spellings, and each spends the wait twice: it cannot be woken early when ",
+                "the work finishes in twenty seconds, and it cannot be ended when it fails.",
+            );
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 Duration::ZERO,
                 Backgrounding::Asked,
-                format!(
-                    "carry on — `{id}`'s completion is delivered to you on its own when \
-                     it ends, so there is nothing to wait for. `job_output` with \
-                     job=\"{id}\" reads what it has written so far; `job_kill` stops it."
-                ),
+                format!("carry on — `{id}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"),
                 format!(
                     "started `{id}` in the background.\n  command: {command}\n  \
                      pid: {}\n  scope: {} — {}\n\nIt is running now, and **its \
                      completion will reach you by itself when it ends — do not wait for \
-                     it, and do not poll.** Carry on with something else; when the job \
-                     finishes you are told, unprompted, with its command, how it ended \
-                     and where its output is. `job_kill` stops it. (`job_wait` with \
-                     job=\"{id}\" exists for a job you must have the result of before you \
-                     can do anything else — waiting on a job you just backgrounded is \
-                     giving back the floor you gave up.)",
+                     it, and do not poll.** {clock}\n\n{read_it} Carry on with something \
+                     else; when the job finishes you are told, unprompted, with its command, \
+                     how it ended and where its output is.",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),
                     scope.reaped_when(),
@@ -368,11 +404,18 @@ impl Tool for Bash {
         // with the operator named, not a deadline kill — the command is still
         // running, and the handle is the way back.
         if let Foreground::Promoted(p) = foreground {
-            let next = format!(
-                "carry on — `{id}`'s completion will be delivered to you on its own \
-                 when it ends, so there is nothing to wait for. `job_output` with \
-                 job=\"{id}\" reads what it has written so far."
-            );
+            // **A promotion is a backgrounding, so R41's redirect rule is this one's too.**
+            // A command the OPERATOR moved to the background (Ctrl+B) has the same capture as
+            // one the model asked for, and the same sentence must not tell its reader to open a
+            // window that will stay empty.
+            let next = match crate::builtins::output_redirect_path(command) {
+                Some(path) => format!(
+                    "carry on — `{id}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime."
+                ),
+                None => format!(
+                    "carry on — `{id}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
+                ),
+            };
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 p.ran_for,

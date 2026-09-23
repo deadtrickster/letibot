@@ -374,6 +374,27 @@ impl Tool for JobOutput {
         // a command. The state says which case it is and this is the subject line's own
         // half of that ruling.
         if slice.produced == 0 {
+            // **A job whose output was redirected has nothing captured, and that is a
+            // different answer from having written nothing** — R41, and it is the answer the
+            // operator's own build needed. `cargo build --release … > /tmp/log 2>&1` writes
+            // plenty and none of it here, so *"wrote nothing at all"* would be false and
+            // *"nothing yet"* would send the model back to poll.
+            //
+            // The daemon knows the command, so this needs nothing new on any wire.
+            if let Some(path) = crate::builtins::output_redirect_path(&view.command) {
+                return Invocation::abstained(
+                    format!("`{id}`'s output goes to `{path}`, not to its window"),
+                    format!(
+                        "`{id}` was started with its stdout redirected to `{path}`, so the \
+                         job's capture is empty by construction — this is not a job that \
+                         wrote nothing and not a window that has not filled yet. Read the \
+                         file with `read`, or `tail -n` it with `bash`.\n\n**You are woken \
+                         when `{id}` ends** — that never depended on the capture — so do not \
+                         poll for it with a `sleep` or a loop.\n\ncommand: {}\n",
+                        clip(&view.command, 200),
+                    ),
+                );
+            }
             let why = if view.state.is_running() {
                 format!(
                     "`{id}` is still running ({} elapsed) and has written nothing \

@@ -614,3 +614,126 @@ fn a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline() {
     assert!(body.contains("STILL RUNNING"), "{body}");
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
+
+// ------------------------------------------------- R41: the redirected job
+
+/// **A job whose output is redirected says so WHEN IT IS BACKGROUNDED** — R41, requirement
+/// one, and the operator's own case.
+///
+/// *"letibot just started a background build and then `sleep 200`. and then - i tried to see
+/// the job output and it was like 'waiting for the output'"* — the command was
+/// `cargo build --release … > /tmp/release-build.log 2>&1`, whose captured output is empty by
+/// construction. **The redirect is in the text**, so this costs nothing to detect and the
+/// moment to say it is the moment the job starts — not when somebody opens the pane and finds
+/// nothing there.
+///
+/// The second half is the requirement's own reasoning: a silent cost sends the model looking
+/// for a different spelling of the same effect, and the spelling it found was R7's poll loop
+/// with a hand-set clock. So the note must carry the RULE too.
+#[test]
+fn a_backgrounded_job_with_a_redirect_says_its_output_is_not_captured() {
+    let mut h = runner!("redirected_background");
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "echo building > out.log 2>&1; sleep 30",
+            "background": true
+        })
+        .to_string(),
+    );
+    let body = r.render();
+    assert!(
+        matches!(r.outcome, ToolOutcome::Backgrounded { .. }),
+        "it must still be a backgrounding: {body}"
+    );
+    assert!(
+        body.contains("out.log"),
+        "the note must name the path the output goes to, so the model can read it: {body}"
+    );
+    assert!(
+        body.contains("EMPTY"),
+        "the redirect's cost must be stated, not left to be discovered: {body}"
+    );
+    // **And the payload must not go on promising the window.** The first cut of this added a
+    // note explaining the window would be empty while the payload beneath it still said
+    // `job_output` "reads what it has written so far" — a note that argues with the line under
+    // it is worse than no note, because the model believes the line it has read before.
+    assert!(
+        !body.contains("reads what it has written so far"),
+        "the payload still sends the model to a window that will stay empty: {body}"
+    );
+    // **The rule, and not a list of verbs.** Naming `sleep` alone would close one spelling of
+    // the behaviour, which is exactly how R7 was defeated.
+    assert!(
+        body.contains("do not build your own clock"),
+        "the note must state the rule rather than one spelling of it: {body}"
+    );
+    assert!(
+        body.contains("You are woken when it finishes"),
+        "the rule must carry its REASON — that the completion wakes you — rather than only \
+         forbidding a verb: {body}"
+    );
+    let id = job_id_anywhere(&body).expect("a job id");
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}
+
+/// **And a job that is NOT redirected must not be told any of it.** The note is a fact about
+/// the command, and a tool that announced it over every background job would be telling the
+/// model its capture is broken when it is not.
+#[test]
+fn a_backgrounded_job_without_a_redirect_says_nothing_about_one() {
+    let mut h = runner!("plain_background");
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 30", "background": true}).to_string(),
+    );
+    let body = r.render();
+    assert!(
+        !body.contains("not captured"),
+        "an ordinary background job was told its output is not captured: {body}"
+    );
+    let id = job_id_anywhere(&body).expect("a job id");
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}
+
+/// **`job_output` on a redirected job is an ANSWER, not an empty window.** R41's second
+/// requirement belongs to leticl for the pane; this is the tool, which is letibot's — and
+/// *"wrote nothing at all"* would be false about a build writing a log as fast as it can.
+#[test]
+fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
+    let mut h = runner!("redirected_output");
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "echo one > out.log; sleep 30",
+            "background": true
+        })
+        .to_string(),
+    );
+    let id = job_id_anywhere(&r.render()).expect("a job id");
+    let o = h.call("job_output", &serde_json::json!({"job": id.clone()}).to_string());
+    let body = o.render();
+    // **`out.log` is not enough, and that is the whole trap in this assertion.** The
+    // fall-through's own body prints `command: …`, which contains the path too — so a test
+    // asking for the string passed with the new arm disabled, measured. What it must say is
+    // where the output GOES and that the window is empty *because of that*, and it must NOT
+    // say the job has written nothing.
+    assert!(
+        body.contains("redirected to") || body.contains("output goes to"),
+        "the answer must say the output goes to the file, not merely print the command: {body}"
+    );
+    for wrong in ["wrote nothing at all", "written nothing yet", "still running"] {
+        assert!(
+            !body.contains(wrong),
+            "a redirected job answered as `{wrong}`: {body}"
+        );
+    }
+    // **An abstention, not an `ok` carrying an empty window** — the same envelope the
+    // never-ran and produced-nothing cases use, because *you asked for something that is not
+    // there* is the same shape of fact.
+    assert!(
+        matches!(o.outcome, ToolOutcome::Abstained { .. }),
+        "a zero-byte window must abstain rather than answer ok: {body}"
+    );
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}

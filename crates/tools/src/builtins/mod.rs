@@ -168,9 +168,158 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
     }
 }
 
+/// **Where a command sends its own output instead of letting the job capture it** —
+/// R41, requirement one.
+///
+/// The operator watched letibot start a background build and then `sleep 200`, and the
+/// job they opened said *"waiting for the output"*. The command was:
+///
+/// ```text
+/// cargo build --release … > /tmp/release-build.log 2>&1
+/// ```
+///
+/// **Its captured output is empty by construction.** The job machinery captures what the
+/// process writes to the pipe it hands it, and this command told the shell to send the
+/// interesting bytes to a file instead — so `job_output` has nothing to return and
+/// `job_wait` waits on a job whose signal is somewhere nothing is watching.
+///
+/// **Knowable before anything runs**, which is the whole point: the redirect is in the
+/// command text, and this reads it there. Returns the path the output goes to, or `None`
+/// when the command writes to stdout normally.
+///
+/// # What it does and does not look at
+///
+/// * **Writes to a file** — `>`, `>>`, `>|`, `<>` — on **stdout or stderr** (a bare `>` is
+///   fd 1; `2>` is fd 2; `3>` is some other descriptor and is not what is being captured).
+/// * **Not `2>&1`**, which is the opposite of a redirect to a file: it *merges* stderr
+///   into stdout, which is exactly what makes the capture complete. The grammar already
+///   keeps those apart (`RedirectTarget::Descriptor`), so this cannot mistake one for the
+///   other.
+/// * **Not `<`** — reading a file is not sending output anywhere.
+/// * **Not a here-document or a here-string**, which are stdin.
+///
+/// The first such target is returned. A command that redirects twice — `> a 2> b` — is
+/// named once, which is enough to say *the capture is not where your output is*.
+pub(crate) fn output_redirect_path(command: &str) -> Option<String> {
+    let n = letibot_code::shell::normalise(command);
+    for stage in &n.stages {
+        for r in &stage.redirects {
+            if !r.op.writes() {
+                continue;
+            }
+            // Descriptor 1 and 2 are what a job captures. An untagged `>` is 1.
+            if !matches!(r.fd, None | Some(1) | Some(2)) {
+                continue;
+            }
+            if let letibot_code::shell::RedirectTarget::File(w) = &r.target
+                && let Some(text) = w.literal()
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod output_redirect_tests {
+    use super::output_redirect_path;
+
+    /// **The operator's own command, and the five spellings that must not be mistaken for
+    /// it** — R41 requirement one, whose whole value is that it is knowable before anything
+    /// runs.
+    ///
+    /// The command in the report was
+    /// `cargo build --release … > /tmp/release-build.log 2>&1`, and the pair of things in it
+    /// that a careless reading gets wrong are the `>` (a real redirect, the bug) and the
+    /// `2>&1` (a MERGE, which is what makes the capture complete — the opposite).
+    #[test]
+    fn a_redirected_output_is_found_and_a_merged_descriptor_is_not() {
+        let cases: &[(&str, Option<&str>)] = &[
+            // Redirected: the capture is not where the output is.
+            (
+                "cargo build --release > /tmp/release-build.log 2>&1",
+                Some("/tmp/release-build.log"),
+            ),
+            ("make 2> err.log", Some("err.log")),
+            ("make >| out.log", Some("out.log")),
+            ("make >> append.log", Some("append.log")),
+            ("make 1> out.log", Some("out.log")),
+            ("make 2> err.log 1> out.log", Some("err.log")),
+            // **Not redirected**, and each for its own reason.
+            //
+            // `2>&1` alone is a merge into the captured stdout — the job sees everything.
+            ("cargo build 2>&1", None),
+            ("cargo test", None),
+            // A read is not output going anywhere.
+            ("sort < in.txt", None),
+            // A here-document is stdin.
+            ("cat <<'EOF'\nhi\nEOF", None),
+            // Some other descriptor is not what a job captures.
+            ("make 3> fd3.log", None),
+            // A piped stage's own stdout still reaches the capture.
+            ("make | tail -3", None),
+            // A path that is built at run time: named for the reader, unprovable here.
+            ("make > \"$OUT\"", None),
+        ];
+        for (command, want) in cases {
+            assert_eq!(
+                output_redirect_path(command).as_deref(),
+                *want,
+                "`{command}`"
+            );
+        }
+    }
+
+    /// **`2>&1` after a redirect does not hide it.** The pair is the operator's own command
+    /// and the order matters: the first redirect wins the answer, and the merge beside it
+    /// must not talk this out of reporting.
+    #[test]
+    fn a_merge_after_a_redirect_does_not_cancel_it() {
+        assert_eq!(
+            output_redirect_path("cargo build > log.txt 2>&1").as_deref(),
+            Some("log.txt")
+        );
+    }
+}
+
 #[cfg(test)]
 mod prompt_line_tests {
     use crate::runtime::Tool;
+
+    /// **The prompt closes a BEHAVIOUR, not a verb** — R41 requirement three.
+    ///
+    /// R7 closed `job_wait` after backgrounding and the model went on actively waiting with
+    /// `sleep 200; tail -3 log` — *"which is worse than what R7 removed. A fixed block with no
+    /// completion at all; cannot be woken early; one tool call per poll; 200 seconds even when
+    /// the build took 20."* The operator's own reading of why: *"R7 named one spelling.
+    /// Naming a verb closes a verb; it does not close the behaviour."*
+    ///
+    /// So the description — which IS the prompt (clause 6) — must state the rule about clocks
+    /// and must not be a list of forbidden verbs. Asserted on the rule's own words, and
+    /// asserted to be about *waking* rather than about any one spelling: a future edit that
+    /// replaced the rule with `do not write sleep` would keep this test passing on the word
+    /// and fail the requirement, so the second assertion demands the reason too.
+    #[test]
+    fn the_bash_prompt_closes_the_waiting_behaviour_and_not_only_a_verb() {
+        let d = super::bash::Bash.schema().description;
+        assert!(
+            d.contains("do not build your own clock") || d.contains("Do not build your own clock"),
+            "the prompt must state the rule about clocks: {d}"
+        );
+        assert!(
+            d.contains("you are woken"),
+            "the prompt must say WHY — that the completion wakes you — rather than only \
+             forbidding a verb: {d}"
+        );
+        // **And the one spelling that defeated R7 is named as an EXAMPLE of the rule**, not
+        // as the rule itself. Both halves matter: a rule the model cannot map to the code it
+        // was about to write is a rule it walks past.
+        assert!(
+            d.contains("sleep 200") || d.contains("sleep"),
+            "the rule must be tied to the spelling that defeated R7: {d}"
+        );
+    }
 
     /// **A parameter the tool description does not name does not exist.**
     ///
