@@ -8495,12 +8495,12 @@ impl App {
         // own sentence introduces it. Two facts rather than one, because a marker that stands
         // alone still needs the separator's blank — which is the operator's *"add an empty
         // line between them"* — and a marker that joins must not have it.
-        let mut built: Vec<(usize, RowClass, Vec<String>, Option<String>, bool)> = Vec::new();
+        let mut built: Vec<(usize, RowClass, Vec<String>, Option<Marker>, bool)> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<String>, bool)]| {
+        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<Marker>, bool)]| {
             self.hist_lines.len() + built.iter().map(|(_, _, l, _, _)| l.len() + 1).sum::<usize>()
         };
         // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
@@ -8614,10 +8614,10 @@ impl App {
             let (class, rows) = match unseen {
                 Some((start, _)) if start == k => (
                     RowClass::Activity,
-                    vec![marker_painted(
-                        &cfg,
-                        &marker.clone().expect("a marker was built for this row"),
-                    )],
+                    vec![marker
+                        .as_ref()
+                        .expect("a marker was built for this row")
+                        .painted(&cfg)],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
                 None => item_lines(
@@ -8697,13 +8697,12 @@ impl App {
                 // would put them past the frame's edge, and counts that are off the screen
                 // are not a marker. Then it stands alone instead — `marker.is_none()` below
                 // leaves it without a blank, so it still hugs rather than starts a row.
-                if let Some(text) = marker
+                if let Some(m) = marker
                     && *joinable
                     && prev == Some(RowClass::Speech)
                     && let Some(at) = block.iter().rposition(|l| !l.trim().is_empty())
                 {
-                    let joined =
-                        format!("{} {}", block[at].trim_end(), marker_painted(&cfg, text));
+                    let joined = format!("{} {}", block[at].trim_end(), m.painted(&cfg));
                     if visible_width(&joined) <= cfg.width {
                         block[at] = joined;
                         continue;
@@ -9440,7 +9439,7 @@ impl App {
                     let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
-                            let text = hidden_run_marker(
+                            let marker = hidden_run_marker(
                                 items,
                                 start,
                                 end,
@@ -9458,7 +9457,7 @@ impl App {
                             // **Painted before it is measured or placed.** `visible_width`
                             // skips escapes, so the width check below sees the counts and not
                             // the register they are drawn in.
-                            let painted = marker_painted(&cfg, &text);
+                            let painted = marker.painted(&cfg);
                             let joined = if joinable && *hist_class == Some(RowClass::Speech) {
                                 hist_lines
                                     .iter()
@@ -9593,10 +9592,7 @@ impl App {
                     )
                 });
         if live_joins {
-            let painted = marker_painted(
-                &self.cfg,
-                &marker_text(live.calls, live.think_lines, true),
-            );
+            let painted = Marker::new(live.calls, live.think_lines, true).painted(&self.cfg);
             if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
                 let joined = format!("{} {painted}", self.hist_lines[at].trim_end());
                 if visible_width(&joined) <= self.cfg.width {
@@ -9700,11 +9696,8 @@ impl App {
             // Drawn where the work is: right after the prose that introduced it, which is where
             // the counts belong and where the reader is looking.
             if !superseded && rung.hides_the_working() && live.work() > 0 && !live_joins {
-                let text = marker_text(live.calls, live.think_lines, true);
-                segs.push(Seg::Owned(vec![marker_painted(
-                    &cfg,
-                    &format!("{}{}", " ".repeat(ind), text),
-                )]));
+                let painted = Marker::new(live.calls, live.think_lines, true).painted(&cfg);
+                segs.push(Seg::Owned(vec![format!("{}{painted}", " ".repeat(ind))]));
             }
             if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
                 // Narrower by the rail and by the step it is set in. Getting this
@@ -13160,8 +13153,10 @@ fn reserved_for_run(
     if !run_continues_prose(items, start) {
         return None;
     }
-    let text = hidden_run_marker(items, start, end, rung, cfg, newest, live);
-    Some(visible_width(&format!(" {text}")))
+    // Measured **plain**, which is the widest it can be: the seam is faint and an escape
+    // adds no columns, so the reservation cannot come out short.
+    let marker = hidden_run_marker(items, start, end, rung, cfg, newest, live);
+    Some(visible_width(&format!(" {}{}", marker.counts, marker.seam)))
 }
 
 /// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
@@ -13211,7 +13206,11 @@ fn reserved_for_run(
 ///
 /// The dot lives inside the seam string rather than being painted beside it, so the separator
 /// cannot come out in one register and its own key in another.
-fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
+/// **The counts, as the marker's own content** — `[1 tool call]`, and nothing else.
+///
+/// Split from the seam because the two are drawn in different registers, and the ruling is
+/// leticl's: *"counts plain, seam faint."*
+fn marker_counts(calls: usize, think_lines: usize) -> String {
     let plural = |n: usize, one: &str, many: &str| {
         format!("{n} {}", if n == 1 { one } else { many })
     };
@@ -13222,12 +13221,26 @@ fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
     if think_lines > 0 {
         counts.push(plural(think_lines, "thinking line", "thinking lines"));
     }
-    let seam = if newest {
+    format!("[{}]", counts.join(", "))
+}
+
+/// **The seam** — the note about the key that opens the run, dot included.
+///
+/// `· ` belongs to the seam rather than to the counts, because the two are painted
+/// differently and a separator in one register beside its own key in another is the one thing
+/// a split like this gets wrong.
+fn marker_seam(newest: bool) -> &'static str {
+    if newest {
         " · ctrl-t opens it"
     } else {
         " · /verbosity"
-    };
-    format!("[{}]{seam}", counts.join(", "))
+    }
+}
+
+/// The whole marker as one string, **for measuring** — the two halves painted as one run, so
+/// a caller asking *how wide is this* gets the width of what is drawn.
+fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
+    format!("{}{}", marker_counts(calls, think_lines), marker_seam(newest))
 }
 
 /// **How the live pane knows what is in flight** — calls proposed or running with no result
@@ -13259,8 +13272,51 @@ fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> L
     }
 }
 
-fn marker_painted(cfg: &RenderConfig, text: &str) -> String {
-    cfg.palette().paint(Role::Faint, text)
+/// **A marker, as the two halves that are painted differently.**
+///
+/// A struct rather than a `String` because the register is per half: passing the composed text
+/// around and splitting it at paint time would be a second definition of where the counts stop
+/// — and the counts are a string the head builds, so nothing may search them for a delimiter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Marker {
+    /// `[1 tool call]` — content, drawn plain.
+    counts: String,
+    /// ` · ctrl-t opens it` — an affordance, drawn faint. Dot included.
+    seam: &'static str,
+}
+
+impl Marker {
+    fn new(calls: usize, think_lines: usize, newest: bool) -> Marker {
+        Marker {
+            counts: marker_counts(calls, think_lines),
+            seam: marker_seam(newest),
+        }
+    }
+
+    /// **Painted** — the counts PLAIN, the seam faint. See [`marker_painted`].
+    fn painted(&self, cfg: &RenderConfig) -> String {
+        marker_painted(cfg, &self.counts, self.seam)
+    }
+}
+
+/// **The marker, painted** — the counts PLAIN, the seam faint.
+///
+/// Ruled by the operator on the two heads' difference, and leticl's reading is the one that
+/// stands: *"counts plain, seam faint."* The counts are **punctuation inside a sentence** —
+/// the marker sits on the end of the prose the colon points at, and nothing in prose is dimmed
+/// mid-sentence except an aside. They are not an aside; they are the only content the marker
+/// carries.
+///
+/// The seam is the opposite case, and this head's own register rule says so: **dim is for a
+/// sentence you could delete with the reader no worse off** (R29). `· ctrl-t opens it` is that
+/// — an affordance, not the count — and it is the same register every other elided row says
+/// `… +N lines · /t unfolds it` in.
+///
+/// Takes the two halves already composed rather than re-splitting a string: a `]` searched for
+/// at paint time is a second definition of where the counts stop, and one marker whose counts
+/// carried a `]` would find the wrong one.
+fn marker_painted(cfg: &RenderConfig, counts: &str, seam: &str) -> String {
+    format!("{counts}{}", cfg.palette().paint(Role::Faint, seam))
 }
 
 fn hidden_run_marker(
@@ -13271,7 +13327,7 @@ fn hidden_run_marker(
     cfg: &RenderConfig,
     newest: bool,
     live: LiveWork,
-) -> String {
+) -> Marker {
     let mut calls = 0usize;
     let mut think_lines = 0usize;
     // **Per row, and only the rows this rung actually hides.** The guard has to be on the row
@@ -13301,7 +13357,7 @@ fn hidden_run_marker(
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    marker_text(calls, think_lines, newest)
+    Marker::new(calls, think_lines, newest)
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -29648,19 +29704,24 @@ mod tests {
         );
     }
 
-    /// **The seam is faint, dot included** — the operator's *"`ctrl-t opens it` and
-    /// `/verbosity` must be gray, including the preceding dot."*
+    /// **The counts are plain and the seam is faint** — the operator's split, ruled across
+    /// the two heads.
     ///
-    /// Asserted on the ESCAPE and not on the words: the seam's text was correct in every
-    /// version of this marker, and the defect was the register it was drawn in — a note about
-    /// a key rendered as more of the sentence it sits in. So this asks for the faint open
-    /// sequence immediately before the counts and a reset immediately after the seam.
+    /// This head painted the whole marker faint and leticl painted only the seam; **leticl's
+    /// reading is the one that stands.** The counts are *punctuation inside a sentence* — the
+    /// marker sits on the end of the prose the colon points at — and nothing in prose is dimmed
+    /// mid-sentence except an aside, which the counts are not: they are the only content the
+    /// marker carries. The seam is the aside, and R29's register rule says so: **dim is for a
+    /// sentence you could delete with the reader no worse off.**
     ///
-    /// Both placements, because they are two code paths: **glued** to the model's sentence,
-    /// and **alone** after the operator's message. The second is where it was most obviously
-    /// wrong — a seam in the operator's own block register reads as their words.
+    /// Asserted on the escapes at both ends, because the words are identical either way and
+    /// the register is the whole of what changed: the `[` must NOT be preceded by the faint
+    /// code, and the dot must be inside the faint run with the seam.
+    ///
+    /// **The earlier ruling still stands and is the other half of this**: the seam is gray,
+    /// dot included. This test is where it is kept.
     #[test]
-    fn the_seam_is_faint_including_its_dot() {
+    fn the_counts_are_plain_and_the_seam_is_faint() {
         let mut a = app();
         a.cfg.color = true;
         a.apply(hello(
@@ -29691,14 +29752,20 @@ mod tests {
         a.verbosity = Verbosity::Conversation;
         a.invalidate_history();
         let screen = a.screen(120, 30).join("\n");
-        // Glued: the faint code opens the marker and the reset closes it, so the counts and
-        // the seam are one faint run — the dot inside it rather than beside it.
+        // **Glued to the model's sentence**: the counts in the sentence's own register, and
+        // only the seam in the faint one.
         assert!(
-            screen.contains(&format!("\x1b[2m[1 tool call] · ctrl-t opens it\x1b[0m")),
-            "the counts and their seam are not one faint run: {screen:?}"
+            screen.contains("first the helpers: [1 tool call]\x1b[2m · ctrl-t opens it\x1b[0m"),
+            "the counts are not plain, or the seam is not faint from its dot: {screen:?}"
+        );
+        // And the negation, so a future decision to dim the counts fails here rather than
+        // passing on a substring: the faint code must not open the marker.
+        assert!(
+            !screen.contains("\x1b[2m[1 tool call]"),
+            "the counts were painted faint: {screen:?}"
         );
 
-        // **And alone, after the operator's message** — the case they reported.
+        // **Alone, after the operator's message** — the other placement, same registers.
         let mut b = app();
         b.cfg.color = true;
         b.apply(hello(
@@ -29706,42 +29773,68 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        b.apply(ServerFrame::Event(env(
-            1,
-            SessionEvent::TranscriptAppended {
-                item_id: "s.0".into(),
-                kind: "user".into(),
-                ledger_head: String::new(),
-            },
-        )));
-        b.apply(ServerFrame::Event(env(
-            2,
-            SessionEvent::TranscriptContent {
-                item_id: "s.0".into(),
-                item: Box::new(TranscriptItem::User {
-                    speaker: Default::default(),
+        for (seq, id, kind, item) in [
+            (
+                1u64,
+                "s.0",
+                "user",
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![letibot_transcript::UserPart::Text {
                         text: "run the tests".into(),
                     }],
-                }),
-            },
-        )));
-        a_result_row(&mut b, 3, "s.1", "one");
+                },
+            ),
+            (
+                3,
+                "s.1",
+                "tool_result",
+                TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "output".into(),
+                    edit: None,
+                    origin: None,
+                },
+            ),
+        ] {
+            b.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.into(),
+                    kind: kind.into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            b.apply(ServerFrame::Event(env(
+                seq + 1,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(item),
+                },
+            )));
+        }
         b.verbosity = Verbosity::Conversation;
         b.invalidate_history();
-        let screen = b.screen(120, 30).join("\n");
+        let screen = b.screen(120, 30);
+        let line = screen
+            .iter()
+            .find(|l| l.contains("[1 tool call]"))
+            .expect("the counts are on the screen");
         assert!(
-            screen.contains(&format!("\x1b[2m[1 tool call] · ctrl-t opens it\x1b[0m")),
-            "the lone marker is not faint: {screen:?}"
+            line.contains("[1 tool call]\x1b[2m · ctrl-t opens it\x1b[0m"),
+            "the lone marker's registers are wrong: {line:?}"
         );
-        // And its text is still the counts, on its own line, not glued to their words.
+        // And it is genuinely its own line, not glued to the operator's words.
         let theirs = screen
-            .lines()
-            .find(|l| l.contains("run the tests"))
+            .iter()
+            .position(|l| l.contains("run the tests"))
             .expect("the message is on the screen");
         assert!(
-            !theirs.contains("tool call"),
-            "the counts are on the operator's own line: {theirs:?}"
+            !screen[theirs].contains("tool call"),
+            "the counts are on the operator's own line: {:?}",
+            screen[theirs]
         );
     }
 
