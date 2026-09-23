@@ -8497,10 +8497,25 @@ impl App {
         // pass of a cheap predicate per row — the rows themselves draw no lines and are
         // dropped from `built` — which is nothing next to a marker that is not there.
         let mut carry = false;
+        // **`need_speaker`: a marker with nothing drawn beside it yet.**
+        //
+        // The operator, on a real screen: *"sometimes you do it same line - sometimes dont."*
+        // They were right, and this is why. The marker joins the sentence it continues **when
+        // the prose row is already in the block**, and that depends on where the line budget
+        // happened to stop: a reader one line short of the window fills exactly one line — the
+        // marker's — and the narration above it is never built, so the marker stands alone.
+        // The same transcript joined or did not depending on how far somebody had scrolled.
+        //
+        // So the walk does not stop while the newest rendered row is a marker that has no row
+        // above it: it renders one more row, which is the prose, and the join in the assembly
+        // loop becomes unconditional. One extra row, only when a marker is the top of what has
+        // been drawn.
+        let mut need_speaker = false;
         loop {
             let enough = covered(&built) >= want
                 && stop_row.is_none_or(|r| k <= r)
-                && !carry;
+                && !carry
+                && !need_speaker;
             if k == 0 || enough {
                 break;
             }
@@ -8518,6 +8533,24 @@ impl App {
                 self.payload_sel.as_deref(),
                 k,
             );
+            // The same reservation the forward walk makes, from the same rule and the same
+            // data — so the two walks wrap the introducing sentence identically and the
+            // marker lands in the room either of them left.
+            let reserve = reserved_for_run(
+                &self.items,
+                self.verbosity,
+                &self.bound_prompts,
+                &cfg,
+                k,
+                newest_run == Some(k + 1),
+            );
+            let row_cfg = match reserve {
+                Some(room) => RenderConfig {
+                    width: cfg.width.saturating_sub(room).max(20),
+                    ..cfg.clone()
+                },
+                None => cfg.clone(),
+            };
             let unseen = if open_run {
                 None
             } else {
@@ -8549,7 +8582,7 @@ impl App {
                 None => item_lines(
                     &self.items[k],
                     &ItemCtx {
-                        cfg: &cfg,
+                        cfg: &row_cfg,
                         think,
                         tools: tool,
                         raw,
@@ -8596,6 +8629,9 @@ impl App {
                 ),
             };
             if !rows.iter().all(|l| l.trim().is_empty()) {
+                // A marker that is about to be the top of the block needs the row above it,
+                // or it cannot join and will be drawn as a row of its own.
+                need_speaker = marker.is_some();
                 built.push((k, class, rows, marker));
             }
         }
@@ -9276,6 +9312,25 @@ impl App {
                     //   of them having to remember anything);
                     // * any other row of a closed run — nothing at all, which is R37 as
                     //   filed, and the walk treats a row that renders to nothing as no row.
+                    // **The room the counts will need, reserved before the sentence wraps.**
+                    // See `reserved_for_run`: without this the join depends on where the
+                    // prose's last line happened to end, which is the operator's *"sometimes
+                    // you do it same line - sometimes dont."*
+                    let reserve = reserved_for_run(
+                        items,
+                        *verbosity,
+                        bound_prompts,
+                        &cfg,
+                        *hist_upto,
+                        newest_run == Some(*hist_upto + 1),
+                    );
+                    let row_cfg = match reserve {
+                        Some(room) => RenderConfig {
+                            width: cfg.width.saturating_sub(room).max(20),
+                            ..cfg.clone()
+                        },
+                        None => cfg.clone(),
+                    };
                     let open_run = run_open_at(
                         items,
                         *verbosity,
@@ -9334,7 +9389,7 @@ impl App {
                         None => item_lines(
                             &items[*hist_upto],
                             &ItemCtx {
-                                cfg: &cfg,
+                                cfg: &row_cfg,
                                 think,
                                 tools: tool,
                                 raw,
@@ -12787,6 +12842,37 @@ fn newest_unseen_run(
     (0..items.len())
         .rev()
         .find(|r| unseen_run_at(items, rung, bound, *r).is_some_and(|(start, _)| start == *r))
+}
+
+/// **Does a run begin at the very next row**, and if so what would its marker say — R37
+/// AMENDED, and the answer to *"sometimes you do it same line - sometimes dont."*
+///
+/// The marker is appended to the last line of the sentence it continues, and that line has
+/// whatever width the prose happened to leave. Measured on the operator's own screen: every
+/// joined marker sat on a sentence whose last line ended short, and every lone one sat on a
+/// sentence whose last line ran to the frame's edge, where the join is refused for want of
+/// room. So the reservation is made **before** the sentence is wrapped — the row that
+/// introduces a run is rendered a little narrower, the counts go in the room that leaves, and
+/// the same transcript now reads the same way whatever the reader has scrolled to.
+///
+/// Returns the marker's own width, seam included, so the caller can take exactly that much.
+fn reserved_for_run(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+    cfg: &RenderConfig,
+    row: usize,
+    newest: bool,
+) -> Option<usize> {
+    if !rung.hides_the_working() || row + 1 >= items.len() {
+        return None;
+    }
+    let (start, end) = unseen_run_at(items, rung, bound, row + 1)?;
+    if start != row + 1 {
+        return None;
+    }
+    let text = hidden_run_marker(items, start, end, rung, cfg, newest);
+    Some(visible_width(&format!(" {text}")))
 }
 
 /// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
@@ -28829,6 +28915,206 @@ mod tests {
         assert!(
             screen.contains("[60 tool calls"),
             "and it counts every row it stands for:\n{screen}"
+        );
+    }
+
+    /// **A sentence that fills its line still carries the counts** — the operator's own
+    /// *"sometimes you do it same line - sometimes dont"*, reproduced.
+    ///
+    /// The join was refused for want of room whenever the prose's last line ran to the frame's
+    /// edge, so the same transcript read two ways depending on the width and on where the line
+    /// broke. Measured on their screen: every joined marker sat on a short last line and every
+    /// lone one on a full one. The room is now reserved before the sentence is wrapped, so the
+    /// prose breaks a little earlier and the counts land on its last line.
+    ///
+    /// **The prose is deliberately long enough to fill the line.** A short sentence would pass
+    /// whether the reservation worked or not — which is exactly how the first three versions
+    /// of this test passed while the bug was on the operator's screen.
+    #[test]
+    fn the_counts_land_on_a_sentence_that_fills_its_line() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let long = "the last piece of it, and the one where the arithmetic has to give, which \
+                    is a sentence long enough to reach the edge of any frame it is read in and \
+                    then some, and the part that matters is here:";
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: long.into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        for i in 0..3u64 {
+            let id = format!("s.{}", i + 1);
+            a.apply(ServerFrame::Event(env(
+                3 + i * 2,
+                testing::appended(&id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                4 + i * 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id,
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("c{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("output {i}"),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        // **Three widths, because the defect was width-dependent.** A narrow frame and a wide
+        // one take different paths through the wrap, and the operator's own terminal is wider
+        // than either of the widths the earlier versions of this test used.
+        for width in [80usize, 100, 210] {
+            a.invalidate_history();
+            let screen = a.screen(width, 30).join("\n");
+            assert_eq!(
+                markers(&screen),
+                1,
+                "no marker at all at {width} columns:\n{screen}"
+            );
+            let line = screen
+                .lines()
+                .find(|l| l.contains("[3 tool calls]"))
+                .unwrap_or_else(|| {
+                    panic!("the counts are missing at {width} columns:\n{screen}")
+                });
+            assert!(
+                line.contains(": [3 tool calls]"),
+                "the counts are not on the end of the sentence that points at them, at \
+                 {width} columns:\n{screen}"
+            );
+        }
+    }
+
+    /// **The marker joins the prose even when the tail walk rendered it first** — the case
+    /// the operator met on a real screen.
+    ///
+    /// `fill_backward` renders the NEWEST rows first and stops on a line budget, and a run's
+    /// marker is drawn at the run's FIRST row — so the walk reached the marker, satisfied its
+    /// budget and broke, and **the narration line above it was never built**. The marker was
+    /// therefore emitted as a row of its own, on a screen the operator was reading, with the
+    /// colon of the sentence above it left dangling.
+    ///
+    /// Asserted through the tail path on purpose: `hist_floor` non-zero is a transcript too
+    /// big to walk, which is every long session and is where this was found.
+    #[test]
+    fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // Enough prose above that the fill stops short of it, and the narration last.
+        for i in 0..30u64 {
+            let id = format!("p.{i}");
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.clone(),
+                    kind: "assistant".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id,
+                    item: Box::new(TranscriptItem::Assistant {
+                        text: format!("paragraph {i} of the narration,"),
+                        tool_calls: Vec::new(),
+                        truncated: false,
+                    }),
+                },
+            )));
+        }
+        let seq = 100u64;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TranscriptAppended {
+                item_id: "n.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: "n.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Now I'll write the implementation. First the helpers:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        for i in 0..8u64 {
+            let id = format!("c.{i}");
+            a.apply(ServerFrame::Event(env(
+                seq + 2 + i * 2,
+                testing::appended(&id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 3 + i * 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id,
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("k{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("output {i}"),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.verbosity = Verbosity::Conversation;
+        // **The tail path, and the fill's budget already satisfied.** `walk_limit` is the
+        // head's own threshold for "too big to walk from the beginning"; `fill_backward(1)`
+        // is the fill the head makes for a reader one line short of the window, and it is
+        // what makes the budget bite: the walk stops the moment it has a line, which is the
+        // marker's own — so the narration above it is never built unless something insists.
+        a.walk_limit = 1;
+        let _ = a.screen(120, 24);
+        // **The reader-one-line-short state, set exactly.** That is what a scroll produces:
+        // the floor is up at the end of the session, the buffer is empty, and the fill is
+        // asked for one line — so the walk stops the moment it has one, which is the marker's
+        // own, and the narration above it is never built unless something insists.
+        a.hist_floor = a.items.len();
+        a.hist_upto = a.items.len();
+        a.hist_lines.clear();
+        a.spans.clear();
+        a.fill_backward(1);
+        let screen = a.screen(120, 24).join("\n");
+        let line = screen
+            .lines()
+            .find(|l| l.contains("First the helpers:"))
+            .unwrap_or_else(|| panic!("the narration is not on the screen:\n{screen}"));
+        assert!(
+            line.trim_end().ends_with("helpers: [8 tool calls] · ctrl-t opens it"),
+            "the marker did not join the sentence above it:\n{screen}"
         );
     }
 
