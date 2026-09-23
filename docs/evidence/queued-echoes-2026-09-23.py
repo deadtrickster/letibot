@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
-"""**The six stale echoes, measured on A's head against the operator's own session.**
+"""**R16, measured on the operator's own session: the state, and what each rule retires.**
 
-Reported 2026-09-23: the operator's pane carried six `queued ·` echoes, one per paragraph
-of the R27 instruction, every one of them answered. This script is the measurement behind
-A's answer to that report, in the same shape leticl used for its own 28
-(`head-parity-2026-09-21.md` R16): the state, then what each rule retires.
+leticl's figures (28 echoes, 0 unconfirmed, 8 clipped) are about leticl and were given as a
+lead. These are A's. Two things are read, and each says which:
 
-**It reads the store, read-only, and nothing else.** The head's `pending_prompts` is
-head-local and never persisted, so the queue is *reconstructed* — and the reconstruction is
-checkable rather than asserted, because the queue's six entries are the six LINES of a user
-row the store does hold (seq 172), and the seventh send is the second row (seq 583):
+  * **the store**, read-only, for the operator's messages and which of them landed as rows —
+    including the rows that are a JOIN of several prompts, which is the shape the whole rule
+    turns on;
+  * **the pane**, as `harness what=screen` reported it, for how many `queued ·` tags the head
+    actually drew and how many of the operator's messages each one covers.
 
-  * the six paragraphs arrived as SIX prompts, which is what the operator's `send-keys`
-    does with newlines — so the head held six entries;
-  * the daemon merged them into ONE user item, one part, newline-joined
-    (`crates/turn/src/steering.rs:197-210`, `Pending::absorb`);
-  * the head's next send happened while a turn was running, so `App::submit`
-    (`crates/tui/src/app.rs:5230-5237`) appended it to the LAST entry — which is why one
-    entry is a superset of one row and a prefix of another.
+**What cannot be read from outside, said here rather than implied.** `pending_prompts` is
+head-local process state and is never persisted, so the queue is reconstructed; and the
+running daemon speaks protocol 23 against this tree's 25, so nothing built here can attach
+and ask the head. Every number below is a reading of the glass or of the store.
 
-Both rules are implemented here exactly as the Rust has them, and the difference between
-them is the whole finding.
-
-    python3 queued-echoes-2026-09-23.py [sessions.db] [session-id] [row-with-six] [row-with-seven]
+    python3 queued-echoes-2026-09-23.py [sessions.db] [session-id]
 """
 
 import json
@@ -33,18 +26,20 @@ import sys
 DB = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
     "~/.local/share/letibot/sessions.db")
 SESSION = sys.argv[2] if len(sys.argv) > 2 else "s-1789462738453908838"
-SIX = int(sys.argv[3]) if len(sys.argv) > 3 else 172
-SEVEN = int(sys.argv[4]) if len(sys.argv) > 4 else 583
 
 
-def user_text(con, transcript, seq):
-    row = con.execute(
-        "select item_json from transcript_item where transcript_id=? and seq=?",
-        (transcript, seq),
-    ).fetchone()
-    if row is None:
-        raise SystemExit(f"{transcript} seq {seq}: no such row")
-    return json.loads(row[0])["parts"][0]["text"]
+def user_rows(con, tid):
+    out = []
+    for seq, kind, js in con.execute(
+        "select seq, kind, item_json from transcript_item "
+        "where transcript_id=? order by seq",
+        (tid,),
+    ):
+        if kind != "user":
+            continue
+        parts = json.loads(js)["parts"]
+        out.append((seq, [p.get("text", "") for p in parts]))
+    return out
 
 
 def retire_shipped(queue, row):
@@ -65,12 +60,9 @@ def retire_shipped(queue, row):
     return list(queue)
 
 
-def retire_fixed(queue, row):
-    """The fix: the row's LINES are spent once each, by whole lines of the queue.
-
-    `claimed` is the row's lines, spent across the whole queue in one call and only in
-    the order the queue holds them. A blank piece claims nothing.
-    """
+def retire_landed(queue, row):
+    """The rule that landed (`strip_landed`): a row's LINES, spent once each, by whole
+    lines of the queue, in order and forward-only."""
     lines = row.split("\n")
     claimed = [False] * len(lines)
     cursor = 0
@@ -90,12 +82,13 @@ def retire_fixed(queue, row):
                 claimed[k] = True
                 cursor = k + 1
                 hit = True
+        rest = "\n".join(k for k in kept if k != "")
         if not hit:
             i += 1
-        elif not "\n".join(kept):
+        elif not rest:
             out.pop(i)
         else:
-            out[i] = "\n".join(kept)
+            out[i] = rest
             i += 1
     return out
 
@@ -106,37 +99,88 @@ def main():
         "select id from transcript where session_id=? order by created_at desc limit 1",
         (SESSION,),
     ).fetchone()[0]
-    six = user_text(con, tid, SIX)
-    seven = user_text(con, tid, SEVEN)
-
-    paragraphs = six.split("\n")
-    queue = list(paragraphs)
-    queue[5] = queue[5] + "\n" + seven
+    users = user_rows(con, tid)
 
     print(f"transcript {tid}")
-    print(f"  row {SIX}:   {len(six):5d} chars, {six.count(chr(10)) + 1} line(s)  "
-          f"<- the six paragraphs, ONE user item")
-    print(f"  row {SEVEN}: {len(seven):5d} chars, {seven.count(chr(10)) + 1} line(s)  "
-          f"<- the next message, also ONE item")
     print()
-    print(f"the head's queue, reconstructed: {len(queue)} entr(ies)")
-    for i, q in enumerate(queue):
-        print(f"  [{i}] {len(q):5d} chars, {q.count(chr(10)) + 1} line(s)  "
-              f"{q.split(chr(10))[0][:56]!r}")
-    print()
+    print("== THE STORE: the operator's messages, and which landed ==")
+    for seq, parts in users:
+        t = parts[0]
+        n = len(t.split("\n"))
+        mark = "  <- a JOIN: one item, several prompts" if n > 2 else ""
+        print(f"  seq {seq:5d}  {len(t):6d} chars  {n:3d} lines  {t.splitlines()[0][:52]!r}{mark}")
+    print(f"  {len(users)} user row(s), {sum(1 for _s, p in users for _ in p)} part(s)")
 
-    for name, rule in (("shipped", retire_shipped), ("fixed", retire_fixed)):
-        q = list(queue)
-        mid = rule(q, six)
-        end = rule(mid, seven)
-        print(f"{name:8} after row {SIX}: {len(mid)} left   "
-              f"after row {SEVEN}: {len(end)} left")
-        for e in end:
-            print(f"           still owed: {e.split(chr(10))[0][:56]!r}")
+    # ---- the current case, reconstructed -------------------------------------------
+    #
+    # The pane shows ONE `queued ·` tag, whose header is row 1103's line 21
+    # ("R32, filed, and it lands directly on R31's door…"), and whose body runs to the end
+    # of the R33 message. So that entry is the join of three of the operator's messages,
+    # and the head's own `App::submit` is what joined them (a send is appended to the last
+    # entry while the head believes a turn is running).
+    r = {seq: parts for seq, parts in users}
+    idx = next((s for s in r if any("R32, filed" in p for p in r[s])), None)
+    if idx is None or 1310 not in r or 1464 not in r:
+        print("\n(the current case is not in this transcript; nothing to replay)")
+        return
+    # **The entry as `App::submit` builds it**: the head appends `'\n'` + the text onto the
+    # last entry while a turn is running, so three sends are three messages joined by one
+    # newline each. The store's rows carry a trailing newline of their own, which the join
+    # does NOT double — replaying that wrong is how the first draft of this script reported
+    # a 21-line entry where the pane shows a 60-row one.
+    def message(text):
+        return text[:-1] if text.endswith("\n") else text
+
+    head_lines = r[idx][0].split("\n")
+    start = next(i for i, l in enumerate(head_lines) if l.startswith("R32, filed"))
+    joined = [l for l in head_lines[start:] if l != ""]
+    entry = (
+        "\n".join(joined)
+        + "\n"
+        + message(r[1310][0])
+        + "\n"
+        + message(r[1464][0])
+    )
+
     print()
-    print("the shipped rule retires nothing: it asks whether the row IS the echo, or")
-    print("begins with it, and BOTH directions are wrong here — the row is the echo's")
-    print("join. The fix retires all six, and leaves nothing owed once both rows land.")
+    print("== THE QUEUE, reconstructed from the pane ==")
+    print(f"  1 visible `queued ·` tag, whose entry is {entry.count(chr(10)) + 1} lines")
+    # **Contains, not startswith**: the first of the three is not a row of its own — it is
+    # line 21 of the 30-line join at seq 1103, because the engine merged it with the two
+    # before it. That is the whole reason the rule has to read lines and not rows.
+    heads = ("R32, filed", "R32\'s first clause", "R33, both heads")
+    covered = sum(1 for h in heads if any(h in p for _s, ps in users for p in ps))
+    chars = len(entry)
+    print(f"  it covers {covered} of the operator's messages, joined")
+    print(
+        f"  {chars} characters of echo: at ~192 usable columns that is ~{chars // 192} "
+        f"screen rows, against a 63-row pane — it cannot fit, which is R33."
+    )
+
+    print()
+    print("== WHAT EACH RULE RETIRES, against the rows that landed ==")
+    rows = [r[idx][0], r[1310][0], r[1464][0]]
+    for name, rule in (("shipped", retire_shipped), ("landed (strip_landed)", retire_landed)):
+        q = [entry]
+        for row in rows:
+            q = rule(q, row)
+        print(f"  {name:26} -> {len(q)} echo(es) left")
+        for e in q:
+            print(f"      still owed: {e.splitlines()[0][:56]!r}")
+
+    print()
+    print("== THE SCREEN (from `harness what=screen`, 210x63) ==")
+    print("  2 `queued ·` entries are being drawn and ONE tag is on the glass: the other")
+    print("  entry's header is above the viewport, so the screen under-reports the number")
+    print("  of waiting things by one — leticl's finding, reached from the render side.")
+    print("  Within the visible tag, its entry is a JOIN of 3 of the operator's messages,")
+    print("  so the count of waiting MESSAGES is under-reported by 4 (5 behind 2 tags).")
+    print()
+    print("  And the two entries spend ~60 of the pane's 63 rows: the echo is drawn at")
+    print("  FULL LENGTH, which is R33, and it is why the conversation is off the screen.")
+    print("  A single-message echo retires fine under the shipped rule (equality holds);")
+    print("  it is the JOINED ones that never do, which is why exactly one is stale here")
+    print("  and five were stale on leticl.")
 
 
 if __name__ == "__main__":

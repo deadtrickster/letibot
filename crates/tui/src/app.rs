@@ -1573,6 +1573,26 @@ pub struct App {
     /// operator would otherwise take to `ps` — which is how the orphan this rule exists for
     /// was found, a day late.
     daemon_pid: Option<i32>,
+    /// **The echoes a snapshot could not resolve** (R16's third mark).
+    ///
+    /// `pending_prompts` asserts something about the DAEMON — *you owe me a row for
+    /// this* — and after a snapshot replaces the transcript the head cannot support
+    /// that claim for an echo the snapshot does not carry. Either the row is still
+    /// coming or it was replaced by a fork, and **from the head both look the same**.
+    /// So the echo stops claiming `queued` and says `unconfirmed`, which is the claim
+    /// it can actually support, and it retires the ordinary way when a row does land.
+    ///
+    /// The set is the *marked* ones and it is keyed by the echo's text, which is what
+    /// `pending_prompts` is keyed by. Retirement is an **intersection**, not a removal
+    /// of the landing row's text — see [`App::retire_pending`].
+    unconfirmed: Vec<String>,
+    /// **Whether an echo is drawn in full or as its elided headline** (R33).
+    ///
+    /// Folded by default, and flipped by `/t` — the head's *unfold the long rows*
+    /// verb. One key for one idea: a reader who wants the long things shown whole asks
+    /// once and gets them all, rather than learning a third chord for a third kind of
+    /// row.
+    echo_open: bool,
     /// **A stop this head asked for and has not finished.** R30. `Some` from the moment
     /// the frame goes out until the daemon is gone or the deadline has passed — and while
     /// it is `Some` and unresolved, [`App::should_quit`] is false, which is the whole of
@@ -1849,6 +1869,19 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
     out
 }
 
+/// **The two words an echo can carry** (R16). Constants because both the renderer and
+/// the tests name them, and a mark that is spelled twice is a mark that can be spelled
+/// differently.
+///
+/// `queued` is a claim about the DAEMON's queue — *you owe me a row for this*. It is a
+/// claim the head can make for an echo it has just sent and has not seen land.
+///
+/// `unconfirmed` is the honest one after a snapshot has replaced the transcript: the
+/// head can no longer tell *still coming* from *replaced by a fork*, so it stops
+/// asserting the first. See [`App::unconfirmed`].
+pub const QUEUED: &str = "queued";
+pub const UNCONFIRMED: &str = "unconfirmed";
+
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
 /// and what the live line shows, and offering both spellings doubles the list
@@ -2089,6 +2122,8 @@ impl App {
             filling: None,
             bye: None,
             daemon_pid: None,
+            unconfirmed: Vec::new(),
+            echo_open: false,
             stopping: None,
         }
     }
@@ -3074,6 +3109,7 @@ impl App {
             // words belonging to a conversation that is no longer on the screen is
             // the same lie a carried-over model name is.
             self.pending_prompts.clear();
+            self.unconfirmed.clear();
         }
         self.session_id = s.session_id;
         self.seq = s.seq;
@@ -3091,6 +3127,29 @@ impl App {
                 }) {
                     self.retire_pending(text);
                 }
+            }
+        }
+        // **And what the snapshot could not resolve stops claiming `queued`** — R16's
+        // third mark, and the claim the head can actually support.
+        //
+        // `pending_prompts` says *the daemon owes me a row for this*. A snapshot
+        // **replaces** the transcript, so after one, an echo the snapshot does not carry
+        // is either a row still coming or a row that a fork replaced — and from the head
+        // those two are the same picture. Leaving it at `queued` asserts the first when
+        // it might be the second; dropping it silently loses the operator's words. So it
+        // is `unconfirmed`, and it retires normally when a row does land.
+        //
+        // **Where this is marked, and why here rather than at the fork.** A snapshot is
+        // the only route by which the transcript is replaced — `reconnect`, `/resync`,
+        // `Switch`, an import — so marking at the snapshot catches every one of them
+        // instead of the two that happened to be thought of. `App::resolve_fork` handles
+        // the fork the head *asked for*, where it knows the row will never arrive.
+        //
+        // An echo queued AFTER this point is untouched: it is added to
+        // `pending_prompts` by a later `submit`, so it is not in the set being marked.
+        for q in &self.pending_prompts {
+            if !self.unconfirmed.iter().any(|u| u == q) {
+                self.unconfirmed.push(q.clone());
             }
         }
         // The snapshot's in-flight calls are **not** seeded into `call_targets`.
@@ -6134,6 +6193,11 @@ impl App {
             // did this, which made it a synonym nothing pointed at; now it is the name.
             "t" => {
                 self.tools = self.tools.flip();
+                // **One key for the long rows, and that includes an echo** (R33). A
+                // queued prompt is drawn as one elided headline and this is what opens
+                // it; a second fold chord for a second kind of row is a second thing to
+                // learn, and the operator asked for *"expandable the usual way"*.
+                self.echo_open = !self.echo_open;
                 self.refold();
                 None
             }
@@ -6367,6 +6431,14 @@ impl App {
         for text in std::mem::take(&mut self.fork_pending) {
             self.retire_pending(&text);
         }
+        // **A fork answers the question a snapshot could only raise.** The marks here were
+        // `unconfirmed` because the head could not tell *still coming* from *replaced*; a
+        // fork the head itself asked for is the second, and the echo is gone with it. Same
+        // intersection, so a mark whose echo survived a piece-of-the-row retirement (the
+        // engine split the run across a notice) stays until its own row lands.
+        let queue: std::collections::HashSet<String> =
+            self.pending_prompts.iter().cloned().collect();
+        self.unconfirmed.retain(|u| queue.contains(u));
     }
 
     /// Stand down the echo of a queued prompt whose row has landed.
@@ -6415,6 +6487,17 @@ impl App {
     /// own sentence vanish. See [`App::bound_prompts`] for the half that *is* drawn
     /// from an announcement.
     fn retire_pending(&mut self, row: &str) {
+        // **An echo that is not in the queue is not in the unconfirmed set either.**
+        // An intersection, not a removal of the row's text.
+        //
+        // Measured on this surface, 2026-09-23, in leticl's words and true here for the
+        // same structural reason: *"an unconfirmed echo's text is never a queued text"*,
+        // so `unconfirmed.retain(|u| u != row)` matches nothing — the row's text is the
+        // engine's JOIN, not the echo — and an echo marked unconfirmed by an earlier
+        // snapshot **whose row later landed inside a merged item** would be retired from
+        // the queue and stay in this set for ever. The set is not the echo's text; it is a
+        // mark ON an echo, so the only honest update is to keep the marks whose echo is
+        // still there.
         let lines: Vec<&str> = row.split('\n').collect();
         // **A line is spent once.** Two prompts that say the same thing stay queued
         // separately until each of their rows lands — the property the equality rule
@@ -6437,6 +6520,15 @@ impl App {
                 }
             }
         }
+        // **The intersection, taken AFTER the loop.** Building it before is the same
+        // defect inverted, and it is how the first version of this fix leaked: the set
+        // held the queue as it was when the row arrived, so an echo that had just stood
+        // down was still in it — a mark outliving the thing it was a mark on, which is
+        // precisely the leak the intersection exists to close. Found by the assertion
+        // below this call, on the first run.
+        let queue: std::collections::HashSet<String> =
+            self.pending_prompts.iter().cloned().collect();
+        self.unconfirmed.retain(|u| queue.contains(u));
     }
 
     /// **Bind the oldest unbound echo to a row that has just been announced.**
@@ -6619,13 +6711,19 @@ impl App {
         // text"), so the text is the match — and one row retires one entry, so two
         // prompts that say the same thing stay queued separately until each of
         // their rows lands.
-        if let TranscriptItem::User { parts } = &item
-            && let Some(text) = parts.iter().find_map(|p| match p {
-                UserPart::Text { text } => Some(text.clone()),
+        // **Every text part, like [`App::load`].** This read only the FIRST part, and
+        // the snapshot path read every one — so the two paths could retire different
+        // things from the same row, which is the drift leticl measured on its own head
+        // (*"the live arm read only the FIRST text part where the snapshot path reads
+        // every part"*). One call site each; the common case is one part holding the
+        // engine's join, and a two-part item is two things said.
+        if let TranscriptItem::User { parts } = &item {
+            for text in parts.iter().filter_map(|p| match p {
+                UserPart::Text { text } => Some(text.as_str()),
                 _ => None,
-            })
-        {
-            self.retire_pending(&text);
+            }) {
+                self.retire_pending(text);
+            }
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
             // **A body with no row to land on — counted, never silent** (R17).
@@ -7738,6 +7836,19 @@ impl App {
                         .bound_prompts
                         .get(&self.items[k].item_id)
                         .map(String::as_str),
+                    // **What this head knows about the echo and nothing about the text.**
+                    // A bound row keeps the echo's mark: whether the snapshot that put
+                    // this row here carried the words is the head's history, and the same
+                    // string is `queued` in one session and `unconfirmed` in another.
+                    echo_mark: match self
+                        .bound_prompts
+                        .get(&self.items[k].item_id)
+                        .map(String::as_str)
+                    {
+                        Some(t) if self.unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
+                        _ => QUEUED,
+                    },
+                    echo_open: self.echo_open,
                     diff_split,
                     payload_view: self
                         .payload_sel
@@ -7949,10 +8060,13 @@ impl App {
                 payload_sel,
                 payload_page,
                 bound_prompts,
+                unconfirmed,
+                echo_open,
                 dismissed,
                 ..
             } = self;
             let diff_split = *diff_split;
+            let echo_open = *echo_open;
             loop {
                 // **A note from before this window is stepped over, not drawn** (R19).
                 // It is a disclosure this head holds — `/notes` lists it and `/status`
@@ -8051,6 +8165,14 @@ impl App {
                             bound: bound_prompts
                                 .get(&items[*hist_upto].item_id)
                                 .map(String::as_str),
+                            echo_mark: match bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str)
+                            {
+                                Some(t) if unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
+                                _ => QUEUED,
+                            },
+                            echo_open,
                             diff_split,
                             // Rebuilt per row inside the walk, so it cannot be hoisted
                             // out of this borrow — it reads two fields the walk is
@@ -8254,6 +8376,8 @@ impl App {
         // `pending_prompts` for why this is the head's own queue and not the hub's.
         if !self.pending_prompts.is_empty() {
             let mut owned: Vec<String> = vec![String::new()];
+            let open = self.echo_open;
+            let unconfirmed = self.unconfirmed.clone();
             for q in &self.pending_prompts {
                 // **An echo a row on screen is already drawing is not drawn twice.**
                 // The row that announced it carries the words now — in the
@@ -8262,7 +8386,12 @@ impl App {
                 if echoes_on_screen.contains(q) {
                     continue;
                 }
-                owned.extend(queued_lines(q, &cfg));
+                let mark = if unconfirmed.iter().any(|u| u == q) {
+                    UNCONFIRMED
+                } else {
+                    QUEUED
+                };
+                owned.extend(queued_lines(q, &cfg, mark, open));
             }
             // The leading blank is the block's own air, so it goes if the block is
             // empty: a lone blank row at the tail is a row of nothing.
@@ -12153,7 +12282,7 @@ fn fold_cells(text: &str) -> Option<String> {
 /// conversation" and until the boundary it is not; the tag is what says what is
 /// true instead, in [`Role::Pending`], the colour the spinner already uses for
 /// something in flight.
-fn queued_lines(text: &str, cfg: &RenderConfig) -> Vec<String> {
+fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
     // Folded here as well as in `user_block`, and it has to be the same text going
     // in: the pending row is removed when the transcript's user item MATCHES it, so
     // a head that queued an abbreviation and received the real thing would leave the
@@ -12169,18 +12298,53 @@ fn queued_lines(text: &str, cfg: &RenderConfig) -> Vec<String> {
     let p = cfg.palette();
     let w = cfg.width.max(20);
     let bar = p.paint(Role::UserAccent, "▌");
-    let tag = "queued";
     // The first row shares its width with the tag; the rest hang under the text.
-    let head_w = w.saturating_sub(2 + visible_width(tag) + 3);
+    let head_w = w.saturating_sub(2 + visible_width(mark) + 3);
     let mut lines = wrap(text, head_w.max(8));
     if lines.is_empty() {
         lines.push(String::new());
     }
-    let indent = " ".repeat(visible_width(tag) + 3);
+
+    // **R33: it is a thing WAITING, not content to read — so it is ONE elided
+    // headline.** The operator, looking at three of their own messages queued:
+    // *"three giant messages queued"* — a 63-row pane filled with the reader's own
+    // words, the conversation pushed off the screen. They typed it; they do not need
+    // it read back.
+    //
+    // The unit of the seam is **screen rows**, not source lines, and that is the same
+    // choice `thinking_header` makes: the model writes one enormous paragraph, so
+    // "3 lines" beside a fold that opens to half a screen answers the wrong question.
+    // What a reader wants to know is how much of the terminal this is about to cost.
+    //
+    // The key is `/t`, which is this head's *unfold the long rows* verb — one key for
+    // one idea, rather than a third fold chord. See `App::echo_open`.
+    if !open && lines.len() > 1 {
+        let seam = format!("  … +{} lines · /t opens it", lines.len() - 1);
+        let room = head_w.saturating_sub(visible_width(&seam));
+        if room >= 16 {
+            return vec![format!(
+                "{bar} {}{}{}",
+                p.paint(Role::Pending, &format!("{mark} · ")),
+                p.paint(Role::Faint, &trim_to(&lines[0], room)),
+                p.paint(Role::Faint, &seam),
+            )];
+        }
+        // **A terminal too narrow for the seam still gets one row.** The headline
+        // alone, elided by the bar's own width — a seam that does not fit would push
+        // the row to two lines and undo the requirement on exactly the screens where
+        // it matters most.
+        return vec![format!(
+            "{bar} {}{}",
+            p.paint(Role::Pending, &format!("{mark} · ")),
+            p.paint(Role::Faint, &trim_to(&lines[0], head_w.max(8))),
+        )];
+    }
+
+    let indent = " ".repeat(visible_width(mark) + 3);
     let mut out = Vec::with_capacity(lines.len());
     for (i, l) in lines.iter().enumerate() {
         let label = if i == 0 {
-            p.paint(Role::Pending, &format!("{tag} · "))
+            p.paint(Role::Pending, &format!("{mark} · "))
         } else {
             indent.clone()
         };
@@ -12226,7 +12390,21 @@ fn strip_landed(
             None => kept.push(piece),
         }
     }
-    hit.then(|| kept.join("\n"))
+    // **What is left is the WORDS still owed, not the blank scaffolding around them.**
+    // The blank pieces are kept in the walk above (a blank line matches nothing, so it can
+    // never be *claimed* and must not be dropped mid-compare), but they are not content:
+    // an entry whose only remaining pieces are blank has had every word of it accounted
+    // for, and joining them back would hand the caller a string that is truthy and empty
+    // — so the echo would stay on the screen for the rest of the session showing nothing.
+    // Found by replaying the operator's own rows through this rule
+    // (`docs/evidence/queued-echoes-2026-09-23.py`), where the entry's tail was a blank.
+    let rest = kept
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    hit.then_some(rest)
 }
 
 /// `14:32:07` in the local zone, or empty when the row carries no timestamp.
@@ -12555,6 +12733,15 @@ struct ItemCtx<'a> {
     /// which is what puts the prompt above the reply it caused instead of below it
     /// and tagged `queued`.
     bound: Option<&'a str>,
+    /// **Which mark a bound echo carries** — `queued` or `unconfirmed` (R16).
+    ///
+    /// On the context rather than derived from `bound`, because whether a snapshot could
+    /// resolve this echo is a fact about the *head's* history and not about the text: the
+    /// same words are `queued` when a row is expected and `unconfirmed` when a snapshot
+    /// has already replaced the transcript without carrying it. Only `App` knows which.
+    echo_mark: &'a str,
+    /// **Whether an echo is drawn in full or as its elided headline** (R33).
+    echo_open: bool,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
     /// How far into a row's payload the reader has paged, and which row that is.
@@ -12747,6 +12934,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         payload_view,
         payload_newest,
         bound,
+        echo_mark,
+        echo_open,
     } = *ctx;
     let newest = payload_newest == Some(it.item_id.as_str());
     let ind = activity_indent(cfg.width);
@@ -12762,7 +12951,10 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         // announcement cannot say whether this row is this head's prompt at all, and
         // `queued` is exactly the word for "bound, not yet confirmed by content".
         if let Some(text) = bound {
-            return (RowClass::Speech, queued_lines(text, cfg));
+            return (
+                RowClass::Speech,
+                queued_lines(text, cfg, ctx.echo_mark, ctx.echo_open),
+            );
         }
         // **The announcement arrived and the body has not — so draw nothing.**
         //
@@ -14264,7 +14456,9 @@ mod tests {
         assert_eq!(echo, &text);
         // And it is DRAWN folded: the operator's words and one line, never a copy
         // of the screen inside the screen.
-        let drawn = queued_lines(echo, &a.cfg);
+        // **Unfolded**, because this test is about what the words ARE — the fold's own
+        // behaviour is pinned by `an_echo_is_one_elided_headline…` below.
+        let drawn = queued_lines(echo, &a.cfg, QUEUED, true);
         assert!(
             drawn.iter().any(|l| l.contains("look at this")),
             "{drawn:#?}"
@@ -14465,6 +14659,219 @@ mod tests {
             vec!["fourth thing".to_string()],
             "the second is a whole line of that row, so it landed"
         );
+    }
+
+    /// **R33: an echo is ONE elided headline, and the usual key opens it.**
+    ///
+    /// The operator, looking at letibot with three of their own messages queued:
+    /// *"three giant messages queued"* — a 63-row pane filled with the reader's own words,
+    /// the conversation pushed off the screen. *"It is a thing waiting, not content to
+    /// read — the reader wrote it and does not need it read back."*
+    ///
+    /// The unit of the count is **screen rows**, not source lines, because that is what
+    /// the reader is paying: the model writes one enormous paragraph, and `+0 lines`
+    /// beside a row that fills the pane answers the wrong question.
+    #[test]
+    fn an_echo_is_one_elided_headline_until_it_is_unfolded() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A message the length of the R31 instruction: 30 lines, ~9.6k characters — the
+        // real row that filled the operator's pane.
+        let long: String = (0..30)
+            .map(|i| format!("paragraph {i} {}", "word ".repeat(40)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        typed(&mut a, &long);
+        a.key(Key::Enter);
+
+        let rows = a.screen(120, 60);
+        let echo: Vec<&String> = rows
+            .iter()
+            .filter(|l| l.contains("queued ·") || l.contains("… +"))
+            .collect();
+        assert_eq!(
+            echo.len(),
+            1,
+            "the echo is one row, not thirty: {rows:#?}"
+        );
+        assert!(echo[0].contains("queued · paragraph 0"), "{echo:?}");
+        assert!(
+            echo[0].contains("· /t opens it"),
+            "the seam names the key that opens it: {echo:?}"
+        );
+        assert!(
+            a.pending_prompts[0].starts_with("paragraph 0"),
+            "the queue holds the words, not the rendering"
+        );
+        assert_eq!(
+            a.pending_prompts[0], long,
+            "byte for byte: the fold is a rendering and nothing else"
+        );
+
+        // **And the usual key opens it.** `/t` is this head's unfold-the-long-rows verb;
+        // a reader who wants the long things shown whole asks once.
+        a.command("t");
+        let open = a.screen(120, 200);
+        assert!(
+            open.iter().filter(|l| l.contains("paragraph 29")).count() >= 1,
+            "`/t` must show the rest of it"
+        );
+        assert!(
+            !open.iter().any(|l| l.contains("/t opens it")),
+            "and the seam goes with it"
+        );
+        assert_eq!(a.pending_prompts[0], long, "still byte for byte");
+    }
+
+    /// **A short echo is one row with no seam at all**, because there is nothing hidden —
+    /// a row carrying `… +0 lines` would be furniture.
+    #[test]
+    fn a_short_echo_has_no_seam() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        typed(&mut a, "a short one");
+        a.key(Key::Enter);
+        let rows = a.screen(120, 40);
+        assert!(rows.iter().any(|l| l.contains("queued · a short one")), "{rows:#?}");
+        assert!(
+            !rows.iter().any(|l| l.contains("opens it")),
+            "nothing is hidden, so nothing is claimed: {rows:#?}"
+        );
+    }
+
+    /// **An echo queued AFTER the snapshot keeps saying `queued`.**
+    ///
+    /// The mark is not a property of the session or of the text — it is a property of one
+    /// echo's history, and a prompt typed after the snapshot has a row coming that no
+    /// snapshot has replaced. Marking by time-of-load rather than per echo would take the
+    /// honest word away from every prompt the operator sends next.
+    #[test]
+    fn an_echo_queued_after_the_snapshot_still_says_queued() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        typed(&mut a, "before the snapshot");
+        a.key(Key::Enter);
+        // A resync whose rows do not carry it.
+        let mut snap = Hub::new("s").snapshot();
+        snap.seq = 9;
+        a.apply(hello("s", vec![brief("s", "one", false)], snap));
+        assert_eq!(a.unconfirmed, vec!["before the snapshot".to_string()]);
+
+        // Now one sent after.
+        typed(&mut a, "after the snapshot");
+        a.key(Key::Enter);
+        assert_eq!(
+            a.unconfirmed,
+            vec!["before the snapshot".to_string()],
+            "the new echo is not marked by a snapshot that predates it"
+        );
+        let screen = a.screen(140, 30).join("\n");
+        assert!(screen.contains("unconfirmed · before the snapshot"), "{screen}");
+        assert!(screen.contains("queued · after the snapshot"), "{screen}");
+    }
+
+    /// **An unconfirmed echo whose row lands INSIDE A MERGED ITEM leaves the set.**
+    ///
+    /// This is the leak leticl measured on its own head, and the structural reason is the
+    /// same here: the set is keyed by the echo's text and the landing row's text is the
+    /// engine's JOIN, so `unconfirmed` could never be cleared by comparing texts. It wants
+    /// an **intersection** — keep the marks whose echo is still in the queue — which is
+    /// what `retire_pending` now does, and the first version of this fix got the
+    /// intersection's TIMING wrong (before the loop rather than after), which is the same
+    /// leak with the opposite sign. Both are pinned here.
+    #[test]
+    fn an_unconfirmed_echo_retires_when_its_row_lands_inside_a_merged_item() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        typed(&mut a, "one of mine");
+        a.key(Key::Enter);
+        typed(&mut a, "and another");
+        a.key(Key::Enter);
+        // A snapshot that carries neither, so both are unconfirmed.
+        let mut snap = Hub::new("s").snapshot();
+        snap.seq = 4;
+        a.apply(hello("s", vec![brief("s", "one", false)], snap));
+        assert_eq!(a.unconfirmed.len(), 2, "{:?}", a.unconfirmed);
+
+        // **The row that lands is the JOIN of both**, which is what the engine appends
+        // for consecutive queued prompts.
+        a.record_item(
+            "s.0",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "one of mine\nand another".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty(), "{:?}", a.pending_prompts);
+        assert!(
+            a.unconfirmed.is_empty(),
+            "a mark outlived the echo it was on: {:?}",
+            a.unconfirmed
+        );
+    }
+
+    /// **The live path and the snapshot path retire the same things.**
+    ///
+    /// `App::record_item` read only the FIRST text part while `App::load` read every one,
+    /// so the same row could stand down one echo on one path and not the other — leticl
+    /// measured exactly this on its own head (*"the live arm read only the FIRST text part
+    /// where the snapshot path reads every part"*). Two ways into one rule is two rules;
+    /// this is the assertion that they are one.
+    #[test]
+    fn the_live_and_snapshot_paths_retire_the_same_echoes() {
+        // Two echoes, so the two paths can differ about one without the whole thing
+        // passing.
+        let setup = || {
+            let mut a = app();
+            a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+            typed(&mut a, "first of mine");
+            a.key(Key::Enter);
+            typed(&mut a, "second of mine");
+            a.key(Key::Enter);
+            a
+        };
+        let row = || TranscriptItem::User {
+            parts: vec![UserPart::Text {
+                text: "first of mine\nsecond of mine".into(),
+            }],
+        };
+
+        let mut live = setup();
+        live.record_item("s.0", row());
+        let mut snap = setup();
+        let mut s = Hub::new("s").snapshot();
+        s.seq = 3;
+        s.items.push(letibot_sessionlog::view::SnapshotItem {
+            item_id: "s.0".into(),
+            kind: "user".into(),
+            ledger_head: "beef".into(),
+            ts: 0,
+            item: Some(row()),
+        });
+        snap.apply(hello("s", vec![brief("s", "one", false)], s));
+
+        assert_eq!(
+            live.pending_prompts, snap.pending_prompts,
+            "the two paths disagreed about what a row answered"
+        );
+        assert!(live.pending_prompts.is_empty(), "{:?}", live.pending_prompts);
     }
 
     /// **A line is spent once**, which is the property the old equality rule gave
@@ -14860,8 +15267,40 @@ mod tests {
         );
         let screen = a.screen(100, 24).join("\n");
         assert!(
-            screen.contains("queued · still queued"),
+            screen.contains("still queued"),
             "the echo is suppressed by a binding nothing can see: {screen}"
+        );
+        // **And it says `unconfirmed`, not `queued`** — R16's third mark.
+        //
+        // This test WAS the case the mark is for, and it asserted the wrong word until
+        // the mark existed: a snapshot arrived, it did not carry this echo's row, and the
+        // head went on saying *queued* — a claim about the daemon's queue that it can no
+        // longer support, because it cannot tell *still coming* from *replaced by a fork*.
+        // The operator, from leticl's screen and true here: an echo the head cannot resolve
+        // must stop saying `queued`, *"which is a claim the head can actually support"*.
+        assert!(
+            screen.contains("unconfirmed · still queued"),
+            "a snapshot that does not carry the row must stop claiming the daemon owes it: \
+             {screen}"
+        );
+        assert_eq!(a.unconfirmed, vec!["still queued".to_string()]);
+
+        // **And it retires the ordinary way when its row does land**, taking its mark
+        // with it — the intersection. `unconfirmed` is a mark ON an echo, not a copy of
+        // its text, so an echo that stands down must not leave the mark behind for ever.
+        a.record_item(
+            "s.11",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "still queued".into(),
+                }],
+            },
+        );
+        assert!(a.pending_prompts.is_empty());
+        assert!(
+            a.unconfirmed.is_empty(),
+            "the mark outlived the echo it was on: {:?}",
+            a.unconfirmed
         );
     }
 
@@ -19363,6 +19802,8 @@ mod tests {
             edit,
             decision: None,
             bound: None,
+            echo_mark: QUEUED,
+            echo_open: false,
             diff_split: true,
             payload_view: None,
             payload_newest: None,

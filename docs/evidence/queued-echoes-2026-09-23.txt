@@ -1,24 +1,39 @@
 transcript s-1789462738453908838#t30
-  row 172:    2752 chars, 6 line(s)  <- the six paragraphs, ONE user item
-  row 583:  2661 chars, 7 line(s)  <- the next message, also ONE item
 
-the head's queue, reconstructed: 6 entr(ies)
-  [0]   302 chars, 1 line(s)  "THE OPERATOR'S RULING, and it came with a split: reuse t"
-  [1]   450 chars, 1 line(s)  'My reasoning for why that split is right is in the row a'
-  [2]   332 chars, 1 line(s)  'One consequence to build in rather than discover: both p'
-  [3]   526 chars, 1 line(s)  'What is still yours to rule, not to implement on my say-'
-  [4]   708 chars, 1 line(s)  'And two corrections you owe your own documentation. docs'
-  [5]  3091 chars, 8 line(s)  'Finally, one thing I did NOT establish and you must befo'
+== THE STORE: the operator's messages, and which landed ==
+  seq     1     259 chars    1 lines  'Your previous turn was stopped at the context wall a'
+  seq   171     365 chars    1 lines  'R27 is filed in ~/Projects/head-parity-2026-09-21.md'
+  seq   172    2752 chars    6 lines  "THE OPERATOR'S RULING, and it came with a split: reu"  <- a JOIN: one item, several prompts
+  seq   500    3946 chars    6 lines  'Two asks from leticl, both precise, both in its own '  <- a JOIN: one item, several prompts
+  seq   583    2661 chars    7 lines  'The operator is looking at six `queued ·` echoes on '  <- a JOIN: one item, several prompts
+  seq   708    2637 chars    8 lines  "The operator has ruled on R27's remainder and it is "  <- a JOIN: one item, several prompts
+  seq   902    3447 chars    9 lines  'R30 is filed in ~/Projects/head-parity-2026-09-21.md'  <- a JOIN: one item, several prompts
+  seq   911    4140 chars   10 lines  'Correction before the content: I said in the last me'  <- a JOIN: one item, several prompts
+  seq  1103    9611 chars   30 lines  'Operator ruling, and it is a criticism of both of us'  <- a JOIN: one item, several prompts
+  seq  1310    2264 chars    7 lines  "R32's first clause has a cause, and leticl found it "  <- a JOIN: one item, several prompts
+  seq  1447    2652 chars    8 lines  "Fix R16 on your side now — it is on the operator's s"  <- a JOIN: one item, several prompts
+  seq  1464     579 chars    5 lines  'R33, both heads, from the operator looking at letibo'  <- a JOIN: one item, several prompts
+  12 user row(s), 12 part(s)
 
-shipped  after row 172: 6 left   after row 583: 6 left
-           still owed: "THE OPERATOR'S RULING, and it came with a split: reuse t"
-           still owed: 'My reasoning for why that split is right is in the row a'
-           still owed: 'One consequence to build in rather than discover: both p'
-           still owed: 'What is still yours to rule, not to implement on my say-'
-           still owed: 'And two corrections you owe your own documentation. docs'
-           still owed: 'Finally, one thing I did NOT establish and you must befo'
-fixed    after row 172: 1 left   after row 583: 0 left
+== THE QUEUE, reconstructed from the pane ==
+  1 visible `queued ·` tag, whose entry is 18 lines
+  it covers 3 of the operator's messages, joined
+  5906 characters of echo: at ~192 usable columns that is ~30 screen rows, against a 63-row pane — it cannot fit, which is R33.
 
-the shipped rule retires nothing: it asks whether the row IS the echo, or
-begins with it, and BOTH directions are wrong here — the row is the echo's
-join. The fix retires all six, and leaves nothing owed once both rows land.
+== WHAT EACH RULE RETIRES, against the rows that landed ==
+  shipped                    -> 1 echo(es) left
+      still owed: "R32, filed, and it lands directly on R31's door so take "
+  landed (strip_landed)      -> 0 echo(es) left
+
+== THE SCREEN (from `harness what=screen`, 210x63) ==
+  2 `queued ·` entries are being drawn and ONE tag is on the glass: the other
+  entry's header is above the viewport, so the screen under-reports the number
+  of waiting things by one — leticl's finding, reached from the render side.
+  Within the visible tag, its entry is a JOIN of 3 of the operator's messages,
+  so the count of waiting MESSAGES is under-reported by 4 (5 behind 2 tags).
+
+  And the two entries spend ~60 of the pane's 63 rows: the echo is drawn at
+  FULL LENGTH, which is R33, and it is why the conversation is off the screen.
+  A single-message echo retires fine under the shipped rule (equality holds);
+  it is the JOINED ones that never do, which is why exactly one is stale here
+  and five were stale on leticl.
