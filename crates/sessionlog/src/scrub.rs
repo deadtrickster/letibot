@@ -130,6 +130,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // process that does not stop being true. Scrubbing it would put every
         // head's picture of the job back at "running" forever.
         | SessionEvent::JobSettled { .. } => false,
+        // Durable: the admission is recorded whether or not the head that asked is still
+        // watching. A replay that dropped it would show a `ToolResult` row with an `origin`
+        // and no decision standing behind it.
+        | SessionEvent::OperatorCallAllowed { .. } => false,
     }
 }
 

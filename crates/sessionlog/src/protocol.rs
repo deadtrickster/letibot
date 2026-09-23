@@ -246,7 +246,48 @@ use crate::view::Snapshot;
 /// an hour before it at this same version, for an opencode import alone; `Filling`
 /// generalizes it in place — same version, same decision — because a carry is the same
 /// kind of fact as an import and the two must not be two events kept in step.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// # 24: an operator can run a call themselves, and the row says so
+///
+/// [`ClientFrame::OperatorCall`] and [`ClientFrame::OperatorResult`] are two new client
+/// frames, so a version-23 daemon would fail to parse them — the version-4 argument, and the
+/// same ATTACH-time refusal.
+///
+/// **Why two frames and not one, since the requirement asked for one.** The admission has to
+/// be written *before* the call runs or `asked: true` is a lie; the row has to be written
+/// *after* it or the model's view of the conversation is a lie. One frame can carry one of
+/// those, so one frame buys either a decision the daemon never took or a conversation that
+/// does not contain the result. The pair is the smallest honest shape.
+///
+/// **What it is for.** The operator's own sentence: *"the head as the environment that can
+/// reach what the daemon cannot"*. An operator-run `web_fetch` runs where the OPERATOR runs,
+/// and its result enters the ledger as a row like any other — with `origin` set, so a head
+/// draws it as the person's act rather than the model's. The name is checked against
+/// [`HEAD_RUN_TOOLS`] **by the daemon**, which is the only place the check means anything:
+/// a head is going to run the thing either way, so what the list bounds is *what may be
+/// recorded as part of the conversation*, not what may be executed.
+pub const PROTOCOL_VERSION: u32 = 24;
+
+/// **The names an operator may run through the head-run door, and record.**
+///
+/// Two, and the list is deliberately not `bash`, not `write`. The door exists so the operator
+/// can fetch *what the model cannot reach* — a read that ends in text. `bash` behind the same
+/// chord is the difference between *the operator looked something up* and *there is a shell one
+/// keystroke from a composer the operator is typing in*, and a corpus that cannot tell those
+/// apart cannot answer *was that the guard's answer, the operator's act, or a shell* — three
+/// facts on one row.
+///
+/// **[`ServerFrame::Settings`] carries it as a row** (`key: "head-run.tools"`), so a head
+/// reads the list instead of holding a copy that drifts. The constant here is what the daemon
+/// *enforces*; the setting row is what the head *offers*; one list, two readers.
+///
+/// It is **not a security boundary** and must not be read as one: the head runs in the
+/// operator's own terminal and can already run anything. It is a boundary on what the corpus
+/// records, which is the requirement's actual subject.
+pub const HEAD_RUN_TOOLS: [&str; 2] = ["web_search", "web_fetch"];
+
+/// The `key` [`HEAD_RUN_TOOLS`] travels under. Named here so the daemon that publishes the
+/// row and the head that reads it cannot spell it two ways.
+pub const HEAD_RUN_TOOLS_KEY: &str = "head-run.tools";
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
 /// head says, and `None` when they are the same.
@@ -805,6 +846,46 @@ pub enum ClientFrame {
         /// one.
         len: usize,
     },
+    /// **A call the OPERATOR ran themselves, before they run it** — R24 part two, decision 4.
+    ///
+    /// The first of two frames. The daemon checks `name` against [`HEAD_RUN_TOOLS`], records
+    /// the admission as the operator's own act (`human:<who>`, `asked: true`, so the corpus
+    /// separates it from an auto-admit and from the guard's answer by the column that already
+    /// exists), and answers with [`ServerEvent::OperatorCallAllowed`] on the log. Only then
+    /// does the head run it.
+    ///
+    /// **Refused by name, in a sentence.** A name outside the list is answered with
+    /// [`ServerFrame::Rejected`] carrying why — not a dropped frame, because a head that
+    /// cannot say why is a head that retries.
+    ///
+    /// `call_id` is the head's own handle for the call, and it is what
+    /// [`ClientFrame::OperatorResult`] comes back under. The head chooses it because the head
+    /// is the side that will be running it.
+    OperatorCall {
+        client_request_id: String,
+        expected_seq: u64,
+        /// The head's handle for this call. Unique within the session, and the key the
+        /// result comes back on.
+        call_id: String,
+        /// One of [`HEAD_RUN_TOOLS`]. The daemon refuses anything else by name.
+        name: String,
+        /// The call's arguments, as JSON — the same shape a model's call carries, because
+        /// the row it becomes is the same row.
+        arguments: String,
+    },
+    /// **What the operator's call produced** — the second of the two frames.
+    ///
+    /// Appends a `TranscriptItem::ToolResult` with `origin: Some(CallOrigin::Operator { who })`,
+    /// so the model sees the result and every head draws it as the person's act.
+    ///
+    /// **No `expected_seq`**: this frame does not move the session, it hands over a fact the
+    /// session is missing. A `call_id` the daemon is not holding is refused by name rather
+    /// than appended — see [`ServerFrame::Rejected`].
+    OperatorResult {
+        call_id: String,
+        outcome: letibot_transcript::ToolOutcome,
+        payload: String,
+    },
     /// List the settings this session runs under. Answered with
     /// [`ServerFrame::Settings`]; never moves the connection.
     Settings,
@@ -1075,6 +1156,8 @@ mod tests {
                 | ClientFrame::ListTodos { .. }
                 | ClientFrame::Mode { .. }
                 | ClientFrame::NewSession { .. }
+                | ClientFrame::OperatorCall { .. }
+                | ClientFrame::OperatorResult { .. }
                 | ClientFrame::Peek { .. }
                 | ClientFrame::Promote { .. }
                 | ClientFrame::Prompt { .. }
@@ -1104,6 +1187,7 @@ mod tests {
                 | crate::SessionEvent::HeadDetached { .. }
                 | crate::SessionEvent::JobOutput { .. }
                 | crate::SessionEvent::JobSettled { .. }
+                | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::PromptProgress { .. }
                 | crate::SessionEvent::ScreenRequested { .. }
@@ -1129,8 +1213,8 @@ mod tests {
         let _ = client;
         let _ = event;
         assert_eq!(
-            PROTOCOL_VERSION, 23,
-            "the match above was last reconciled with the frame list at 23"
+            PROTOCOL_VERSION, 24,
+            "the match above was last reconciled with the frame list at 24"
         );
     }
 

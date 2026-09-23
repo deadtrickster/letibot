@@ -115,6 +115,13 @@ pub const TABLE: &[(&str, Class)] = &[
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine),
     ("promote_idle", Class::Routine),
+    // **A FAILURE, and the one code here that is a claim about the corpus rather than about
+    // the session.** An operator's own call was admitted and the head that asked went away
+    // before reporting what it did, so the record holds an `admit` whose outcome nobody
+    // knows. That is not a thing going right and it is not a no-op: the reader is *less*
+    // informed than the row suggests, which is exactly the rule at the top of this table —
+    // the session is fine, and a claim on the record is not.
+    ("operator_call_abandoned", Class::Failure),
     // Somebody asked this daemon to stop. The session is on disk and `/continue` reopens
     // it; the sentence exists so that a session ending is not a session disappearing.
     ("daemon_stopping", Class::Routine),

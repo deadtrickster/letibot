@@ -38,6 +38,7 @@ use std::thread::JoinHandle;
 use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
     ClientFrame, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
+    HEAD_RUN_TOOLS,
 };
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
@@ -626,6 +627,87 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             seat_in(&registry, next, since_seq, &kind, &identity, &caps, &writer)?;
                     }
                 }
+            }
+            // **The operator's own call, admitted before it runs** — R24 part two,
+            // decision 4.
+            //
+            // **The allowlist is enforced HERE, on the connection's thread**, and that is
+            // the whole reason it is a constant in this crate rather than a field on the
+            // head. A head is going to run the thing either way — it is in the operator's
+            // own terminal — so what the daemon owns is *what may be recorded as part of
+            // the conversation*. A daemon that trusted the name it was sent would bound
+            // nothing.
+            //
+            // **Refused in a sentence.** A `Rejected` naming the list, not a dropped
+            // frame: a head that cannot say why is a head that retries, and the operator
+            // is the one who would have to guess.
+            Ok(ClientFrame::OperatorCall {
+                client_request_id,
+                expected_seq,
+                call_id,
+                name,
+                arguments,
+            }) => {
+                if !HEAD_RUN_TOOLS.contains(&name.as_str()) {
+                    let f = ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!(
+                            "`{name}` is not a call this door runs for the operator. It records \
+                             what was run, and the names it accepts are {}. `bash` and `write` \
+                             behind a composer's chord would put a shell one keystroke from \
+                             where the operator is typing, and a corpus row could no longer \
+                             say whether that was the guard's answer, the operator's act, or \
+                             a shell. Nothing ran.",
+                            HEAD_RUN_TOOLS.join(", ")
+                        ),
+                        expected_seq,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                } else {
+                    // The identity, not the head id: the gate records `human:<who>`, and
+                    // the row's `CallOrigin` carries the same string, so the two records
+                    // name the actor the same way.
+                    let who = seat
+                        .hub
+                        .identity_of(&seat.head_id)
+                        .unwrap_or_else(|| seat.head_id.clone());
+                    let f = seat.hub.submit(
+                        &seat.head_id,
+                        client_request_id,
+                        expected_seq,
+                        CommandKind::OperatorCall {
+                            call_id,
+                            name,
+                            arguments,
+                            who,
+                        },
+                    );
+                    writer.lock().unwrap().write(&f)?;
+                }
+            }
+            // **What the operator's call produced.**
+            //
+            // No `expected_seq`: this frame does not move the session, it hands over a fact
+            // the session is missing. A `call_id` this daemon is not holding is refused by
+            // name rather than appended — see `CommandKind::OperatorResult`'s own handling,
+            // which is where the pending set lives.
+            Ok(ClientFrame::OperatorResult {
+                call_id,
+                outcome,
+                payload,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    String::new(),
+                    0,
+                    CommandKind::OperatorResult {
+                        call_id,
+                        outcome,
+                        payload,
+                    },
+                );
+                writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::Settings) => {
                 let f = ServerFrame::Settings {

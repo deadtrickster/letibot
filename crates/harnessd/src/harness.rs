@@ -781,6 +781,14 @@ pub struct Harness<'a> {
     runtime: ToolRuntime,
     hub: Arc<Hub>,
     store: Option<Store>,
+    /// **The corpus sink, kept beside the gate's own copy** — R24 part two, decision 2.
+    ///
+    /// The gate writes every row it decides; an operator's OWN call is not a decision the
+    /// gate took, so nothing in the gate would write it. It must still land in the same
+    /// corpus, through the same sink, or the calibration reads a call the person ran as an
+    /// auto-admit — which is the defect decision 2 exists for. One `Arc`, cloned before the
+    /// gate takes its own.
+    corpus: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>>,
     transcript_id: String,
     /// The stable prefix **this transcript was built with** — which on a resume is
     /// the session's own, not the one this daemon would render now. Compaction
@@ -2591,6 +2599,7 @@ impl<'a> Harness<'a> {
             runtime,
             hub,
             store,
+            corpus: corpus_sink,
             transcript_id,
             prefix,
             prefix_id,
@@ -2752,6 +2761,109 @@ impl<'a> Harness<'a> {
                 self.import_note("imported_summary", report.summary());
             }
         }
+    }
+
+    /// **Record an operator's own call as their act** — R24 part two, decisions 2 and 4.
+    ///
+    /// The row this writes is what makes the difference between three facts a corpus must
+    /// not confuse: *the guard allowed this*, *a rule allowed this*, and **the person ran it
+    /// themselves**. `by` is `human:<who>` — the vocabulary the corpus already carries 121
+    /// `human:dead` and 37 `human:leticl` rows of — `asked` is `true` because a person
+    /// answered it (they are the answer), and `consulted` is `false` because no model spoke.
+    /// That last field is what stops `agreement` reading it as the guard's success: the gate
+    /// only labels a row against the model's verdict when a model gave one.
+    pub fn admit_operator_call(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+        who: &str,
+    ) -> Result<(), String> {
+        let Some(sink) = &self.corpus else {
+            // **Not a silent success.** A daemon with no store cannot keep the record, and
+            // a head told "admitted" would run a call whose admission is nowhere — which is
+            // the one thing this arm exists to prevent.
+            return Err(
+                "this daemon keeps no corpus, so an operator's own call cannot be recorded \
+                 as theirs. Refusing rather than admitting it unrecorded."
+                    .into(),
+            );
+        };
+        let request_id = format!("op-{call_id}");
+        let row = letibot_tools::CorpusRow {
+            request_id: request_id.clone(),
+            session_id: self.hub.session_id(),
+            turn_id: String::new(),
+            action: format!("`{who}` ran `{name}` themselves, from this console"),
+            trail: letibot_tools::AuthorisationTrail {
+                utterances: Vec::new(),
+                provenance: letibot_tools::authorise::TrailProvenance::Scanned {
+                    messages_scanned: 0,
+                    operator_messages: 0,
+                },
+            },
+            shown: None,
+            reply: None,
+            shape: None,
+            shape_class: None,
+            baseline: String::new(),
+            tier: "may_approve",
+            tool: name.to_string(),
+            arguments: serde_json::from_str(arguments)
+                .unwrap_or(serde_json::Value::String(arguments.to_string())),
+            mode: "head-run".into(),
+            options: Vec::new(),
+            agent: "operator".into(),
+            model_verdict: None,
+            verdict: Some("selected".into()),
+            verdict_by: Some(format!("human:{who}")),
+            verdict_basis: Some(
+                "the operator ran this from their own console; there was nobody left to ask"
+                    .into(),
+            ),
+            p_allow: None,
+            decision_ms: 0,
+            brief_format: "head-run",
+            consulted: false,
+            oracle_reading: None,
+            effect: "admit",
+            asked: true,
+            operator: None,
+        };
+        sink.decided(&row);
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::OperatorCallAllowed {
+                call_id: call_id.to_string(),
+                name: name.to_string(),
+                who: who.to_string(),
+                arguments: arguments.to_string(),
+            });
+        Ok(())
+    }
+
+    /// **Append what the operator's call produced**, with its `origin` set.
+    ///
+    /// Through `append_imported`'s writer and no other, so the row lands in the ledger, the
+    /// store and every head the same way a turn's rows do — and carries
+    /// `origin: Some(Operator { who })`, which is the whole of decision 1: a head draws it as
+    /// the person's act rather than the model's, and no head has to infer it.
+    pub fn finish_operator_call(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        who: &str,
+        outcome: letibot_transcript::ToolOutcome,
+        payload: &str,
+    ) -> Result<(), HarnessError> {
+        let item = TranscriptItem::ToolResult {
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            outcome,
+            payload: payload.to_string(),
+            edit: None,
+            origin: Some(letibot_transcript::CallOrigin::Operator { who: who.to_string() }),
+        };
+        self.append_imported(&[item])
     }
 
     /// Append imported rows through the one writer, exactly as a turn's rows go in.

@@ -330,6 +330,47 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Ask the daemon to admit a call this head will run itself** — R24 part two,
+    /// decision 4, the first of the two frames.
+    ///
+    /// The daemon answers [`crate::ServerFrame::Rejected`] when the name is not one of
+    /// [`crate::HEAD_RUN_TOOLS`], and otherwise queues the admission and publishes
+    /// [`crate::SessionEvent::OperatorCallAllowed`] once it is recorded. **A head must not run
+    /// the call until that event arrives**: an `Accepted` reply means *queued*, and the whole
+    /// point of the pair is that the admission is on the record before anything happens.
+    pub fn operator_call(
+        &mut self,
+        expected_seq: u64,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::OperatorCall {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// **Hand back what the call produced** — the second frame.
+    pub fn operator_result(
+        &mut self,
+        call_id: &str,
+        outcome: letibot_transcript::ToolOutcome,
+        payload: &str,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::OperatorResult {
+            call_id: call_id.to_string(),
+            outcome,
+            payload: payload.to_string(),
+        })?;
+        Ok(())
+    }
+
     /// This head's rendered rows, answering a `ScreenRequested`.
     pub fn screen(
         &mut self,

@@ -122,6 +122,30 @@ pub enum CommandKind {
         /// construction site should have to say which it means.
         consented: bool,
     },
+    /// **An operator's own call, admitted before it runs** — R24 part two, decision 4.
+    ///
+    /// Carries what it must for the daemon to write the admission as a person's act:
+    /// the head's `call_id` (the key [`CommandKind::OperatorResult`] comes back under), the
+    /// name that was already checked against [`crate::protocol::HEAD_RUN_TOOLS`] on the
+    /// connection's thread, and the identity of the head that asked.
+    ///
+    /// It rides the command queue like every other verb so the admission is written by the
+    /// same single worker that writes every other adjudication — a second writer of the
+    /// corpus is a second place for it to disagree with itself.
+    OperatorCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+        /// The head that asked. Becomes the `who` in `human:<who>` and in the row's
+        /// `CallOrigin`, so the two records name the actor the same way.
+        who: String,
+    },
+    /// **What that call produced.** Appends the `ToolResult` row with its `origin` set.
+    OperatorResult {
+        call_id: String,
+        outcome: letibot_transcript::ToolOutcome,
+        payload: String,
+    },
     /// A slash command for the daemon: `flowy …`, `models …`.
     Slash {
         line: String,
@@ -251,6 +275,8 @@ impl CommandKind {
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
             CommandKind::ReadJobOutput { .. } => "read-job-output",
+            CommandKind::OperatorCall { .. } => "operator-call",
+            CommandKind::OperatorResult { .. } => "operator-result",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::Promote => "promote",
         }
@@ -273,6 +299,9 @@ struct Inner {
     log: SessionLog,
     view: SessionView,
     heads: Vec<Head>,
+    /// **Admitted operator calls their head has not reported yet** (R24), keyed by the
+    /// head's own `call_id` → `(owning head, name, who)`. See [`Hub::detach`].
+    operator_calls: std::collections::HashMap<String, (String, String, String)>,
     next_head: u64,
     commands: VecDeque<QueuedCommand>,
     closed: bool,
@@ -358,6 +387,7 @@ impl Hub {
                 log: SessionLog::new(id.clone(), log),
                 view: SessionView::new(id, view),
                 heads: Vec::new(),
+                operator_calls: std::collections::HashMap::new(),
                 next_head: 0,
                 commands: VecDeque::new(),
                 closed: false,
@@ -400,6 +430,19 @@ impl Hub {
             .map(|h| h.identity.clone())?;
         self.request_promote(identity.clone());
         Some(identity)
+    }
+
+    /// **Who a head is, by id** — the identity the gate records in `human:<who>`.
+    ///
+    /// `None` for a head this hub is not holding, which is a real state: a
+    /// `ClientFrame::OperatorCall` can arrive on a connection whose seat has already been
+    /// detached by a switch.
+    pub fn identity_of(&self, head_id: &str) -> Option<String> {
+        self.lock()
+            .heads
+            .iter()
+            .find(|h| h.id == head_id)
+            .map(|h| h.identity.clone())
     }
 
     /// The shared channel, for the daemon to hand to the exec backend.
@@ -761,6 +804,62 @@ impl Hub {
             }
         };
         self.publish(ev);
+        // **And what that head left half-done** — R24 part two, decision 4's failure case.
+        //
+        // An operator's call is admitted on the first frame and reported on the second, and
+        // the whole reason there are two is that the admission must precede the run. So the
+        // window between them is real: a head that dies in it leaves an admission recorded
+        // for a call whose result never arrived, and a corpus row saying `admit` about a
+        // thing that may never have happened is exactly the kind of claim this tree refuses.
+        //
+        // The hub is where a head is lost, which is why the pending set is here and not in
+        // the harness: this is the one place that knows the head is gone.
+        let orphans: Vec<(String, String, String)> = {
+            let mut g = self.lock();
+            let mine: Vec<String> = g
+                .operator_calls
+                .iter()
+                .filter(|(_, (owner, _, _))| owner == head_id)
+                .map(|(call_id, _)| call_id.clone())
+                .collect();
+            mine.into_iter()
+                .filter_map(|c| g.operator_calls.remove(&c).map(|(_, n, w)| (c, n, w)))
+                .collect()
+        };
+        for (call_id, name, who) in orphans {
+            self.publish(SessionEvent::Warning {
+                code: "operator_call_abandoned".into(),
+                detail: format!(
+                    "`{who}` was admitted to run `{name}` themselves (call {call_id}) and the \
+                     head that asked went away before reporting what it did. **The admission \
+                     is on the record and the result is not** — so the corpus holds an \
+                     `admit` for a call whose outcome nobody knows, and this sentence is the \
+                     only thing that says so. Nothing by that name is pending any more."
+                ),
+            });
+        }
+    }
+
+    /// **Remember an admitted operator call until the head reports what it did** (R24).
+    ///
+    /// `(owner head, name, who)` keyed by the head's own `call_id`. See [`Self::detach`] for
+    /// why the window this covers is real rather than defensive.
+    pub fn note_operator_call(&self, call_id: &str, head_id: &str, name: &str, who: &str) {
+        self.lock().operator_calls.insert(
+            call_id.to_string(),
+            (head_id.to_string(), name.to_string(), who.to_string()),
+        );
+    }
+
+    /// **The operator's call came back.** `None` when the daemon is not holding that
+    /// `call_id` — a head reporting a result for a call it never had admitted, which is
+    /// refused by name rather than appended, because appending it would put a row in the
+    /// conversation that no admission stands behind.
+    pub fn take_operator_call(&self, call_id: &str) -> Option<(String, String)> {
+        self.lock()
+            .operator_calls
+            .remove(call_id)
+            .map(|(_, name, who)| (name, who))
     }
 
     pub fn attached_heads(&self) -> usize {
@@ -954,6 +1053,18 @@ impl Hub {
                 // still meant it, and nothing this command alters depends on the seq.
                 (CommandKind::ReadJobOutput { job, .. }, _) => {
                     format!("reading output of job {job}")
+                }
+                // Stale-tolerant like a prompt: a head that asked while the screen
+                // moved still meant it, and refusing here would make the door fail on
+                // a busy session — the one state it exists for.
+                (CommandKind::OperatorCall { name, .. }, true) => {
+                    format!("{REJECT_STALE_SEQ}: admitted anyway — the operator's own {name} call")
+                }
+                (CommandKind::OperatorCall { name, .. }, false) => {
+                    format!("admitted the operator's own {name} call")
+                }
+                (CommandKind::OperatorResult { call_id, .. }, _) => {
+                    format!("result for the operator's call {call_id}")
                 }
             };
 

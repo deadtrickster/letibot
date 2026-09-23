@@ -1512,6 +1512,74 @@ impl<'a> Sessions<'a> {
             // the hub's promote channel. Reaching here means nothing was running, so
             // the request is stale — clear it and say so, rather than leaving it for
             // the next command to promote itself unprompted.
+            // **The operator's own call, admitted before it runs** — R24 part two.
+            //
+            // The admission is written here, by the worker, through the same corpus sink the
+            // gate writes every other decision through. The allowlist was already enforced on
+            // the connection's thread (a name outside it never reaches this queue), so what is
+            // left is the record and the permission to go.
+            CommandKind::OperatorCall {
+                call_id,
+                name,
+                arguments,
+                who,
+            } => {
+                let call_id = call_id.clone();
+                let name = name.clone();
+                let arguments = arguments.clone();
+                let who = who.clone();
+                let admitted = match self.open.get_mut(session_id) {
+                    Some(h) => h.admit_operator_call(&call_id, &name, &arguments, &who),
+                    None => Err(format!("session {session_id} is not open")),
+                };
+                match admitted {
+                    Ok(()) => {
+                        // Pending until the result arrives, keyed by the HEAD that asked —
+                        // so a head that dies between the two frames leaves a sentence
+                        // rather than a silent admission. See `Hub::detach`.
+                        if let Some(hub) = &hub {
+                            hub.note_operator_call(&call_id, &cmd.head_id, &name, &who);
+                        }
+                        Outcome::Ignored
+                    }
+                    Err(e) => Outcome::Failed(e),
+                }
+            }
+            // **What it produced.** The row goes in with its `origin` set, so every head
+            // draws it as the person's act and the model sees the result.
+            CommandKind::OperatorResult {
+                call_id,
+                outcome,
+                payload,
+            } => {
+                let call_id = call_id.clone();
+                let outcome = outcome.clone();
+                let payload = payload.clone();
+                // The pending entry is the admission's other half: a `call_id` this daemon
+                // never admitted is refused by name rather than appended, because a row with
+                // no admission behind it is a row nothing can be checked against.
+                let pending = match &hub {
+                    Some(h) => h.take_operator_call(&call_id),
+                    None => None,
+                };
+                let Some((name, who)) = pending else {
+                    return Outcome::Failed(format!(
+                        "no admitted operator call `{call_id}` is pending in this session, so \
+                         its result was not appended. A row whose admission is missing is a \
+                         row nothing stands behind."
+                    ));
+                };
+                let appended = match self.open.get_mut(session_id) {
+                    Some(h) => h
+                        .finish_operator_call(&call_id, &name, &who, outcome, &payload)
+                        .map_err(|e| e.to_string()),
+                    None => Err(format!("session {session_id} is not open")),
+                };
+                match appended {
+                    Ok(()) => Outcome::Ignored,
+                    Err(e) => Outcome::Failed(e),
+                }
+            }
             CommandKind::Promote => {
                 if let Some(hub) = &hub {
                     hub.take_promote_request();

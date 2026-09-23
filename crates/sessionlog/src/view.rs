@@ -717,6 +717,13 @@ impl SessionView {    // (the free function `body_of` at the foot of this file i
             // finish, which the call view already folds, and its end is carried by
             // the durable `JobSettled` event. The jobs pane folds both itself.
             SessionEvent::JobSettled { .. } => {}
+            // **Not carried**, and the reason is a real gap rather than a shrug: a head
+            // that attaches after the admission does not learn that a call is pending, so
+            // it cannot draw the operator's card until the result row lands. The head that
+            // asked is the one running it and it has the event; a second head sees the row.
+            // Carrying it would mean a snapshot field for a window that closes, and the
+            // window is one call long.
+            SessionEvent::OperatorCallAllowed { .. } => {}
             // Nothing to fold: a job-output window is drawn by the pane that asked
             // for it, and the view carries no window state. It is ephemeral besides
             // (`scrub::is_interactive`), so a late head never replays one.

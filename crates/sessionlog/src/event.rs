@@ -990,6 +990,30 @@ pub enum SessionEvent {
     /// command's own exit code. `produced` is the bytes the job wrote, the same
     /// number a `job_output` denominator counts; `elapsed_ms` is wall time from
     /// spawn to settlement.
+    /// **The daemon has admitted an operator's own call, and the head may run it now.**
+    /// — R24 part two, decision 4.
+    ///
+    /// The answer to [`crate::protocol::ClientFrame::OperatorCall`], and it is on the log
+    /// rather than a reply to the frame because the admission is written by the worker: the
+    /// server thread's `Accepted` says *queued*, and what the head needs to know before it
+    /// runs anything is *recorded*. Putting it here also means both heads see it, which is
+    /// what the operator's act deserves — it happened in the session, not on one socket.
+    ///
+    /// `who` is the identity the admission is recorded under (`human:<who>` in `verdict_by`,
+    /// and the `who` in the row's `CallOrigin`), so a head draws the card and a corpus query
+    /// names the actor from one string.
+    OperatorCallAllowed {
+        /// The head's own handle for the call — the key its
+        /// [`crate::protocol::ClientFrame::OperatorResult`] comes back under.
+        call_id: String,
+        /// One of [`crate::protocol::HEAD_RUN_TOOLS`]. Carried so every head can draw the
+        /// call without asking the one that made it.
+        name: String,
+        /// Who is running it.
+        who: String,
+        /// The arguments, verbatim, so a second head draws the same call.
+        arguments: String,
+    },
     JobSettled {
         /// The job's handle, as the backgrounded result already printed it.
         job: String,
@@ -1136,6 +1160,7 @@ impl SessionEvent {
             SessionEvent::DenialRaised { .. } => "DenialRaised",
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
+            SessionEvent::OperatorCallAllowed { .. } => "OperatorCallAllowed",
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",
         }

@@ -3046,6 +3046,17 @@ impl App {
             // this head's window still gets its row, with the command unknown,
             // because a job that ran is a fact even when its beginning scrolled
             // off.
+            // **The daemon has admitted a call the operator is running themselves** (R24 part
+            // two, decision 4). Nothing is filed as a note: the admission is the daemon's
+            // record, and the call's visible half is the result row, which arrives with its
+            // `origin` set. A head that narrated the admission would be reading a keystroke the
+            // operator just made back to them.
+            //
+            // **Counted, not ignored.** A head that runs operator calls wants to know one was
+            // admitted; a head that does not — this one, until the chord lands — must not
+            // swallow it silently, or *"the event never came"* and *"this head drops it"* look
+            // the same, and the second is the one a reader would never find.
+            SessionEvent::OperatorCallAllowed { .. } => Disposition::Control,
             SessionEvent::JobSettled {
                 job,
                 state,

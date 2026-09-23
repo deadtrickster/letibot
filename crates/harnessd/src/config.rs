@@ -1046,6 +1046,19 @@ impl Config {
             ),
             &["on", "off"],
         ));
+        // **The names an operator may run themselves** — R24 part two, decision 3.
+        //
+        // Carried on the wire rather than compiled into a head, and that is the whole
+        // requirement: a list a head holds is a list that drifts, and the daemon is the side
+        // that ENFORCES this one — see `ClientFrame::OperatorCall`'s handler, which refuses
+        // anything else by name. `choices` is empty because this is not a closed set of values
+        // for the *setting*; it is the list, and a head reads `value`.
+        out.push(row(
+            letibot_sessionlog::HEAD_RUN_TOOLS_KEY,
+            letibot_sessionlog::HEAD_RUN_TOOLS.join(","),
+            "default",
+            "",
+        ));
         // What the session is.
         out.push(row("session", self.session_id.clone(), "", ""));
         out.push(row("seat", self.seat.as_str().to_string(), "--role", ""));
