@@ -13120,6 +13120,50 @@ mod tests {
     /// the card said so — while the card nobody had asked said exactly the same
     /// nothing.
     #[test]
+    /// **§11.7: the card says WHY it is asking, and only where the reason is true.**
+    ///
+    /// R18's last wording item. The headline says what the tool **declares** (`wants exec
+    /// access`) and the line above it is layer A's reading of the **action** (`auto (a read
+    /// inside the boundary)`), and nothing joined them — so *"the classifier decided this
+    /// needed no asking"* read as being argued with by the card going up anyway. The operator,
+    /// asleep at the time: an operator who cannot tell that apart from a question they should
+    /// have been asked is the shape that cost three 300-second refusals in one night.
+    ///
+    /// **Two assertions, and the second is the one that keeps the sentence honest.** An
+    /// `exec`-declaring call that asks carries the clause. A `read`-declaring one **must not**:
+    /// a read is asked about because of a rule, a path or a mode, so a sentence blaming its
+    /// declaration would be false on the very card carrying it — which is exactly what
+    /// `because: workspace: /` was, a fact named after one thing and read from another.
+    #[test]
+    fn the_card_says_the_declared_access_is_what_asks_and_only_when_it_is() {
+        use letibot_sessionlog::event::OptionKind;
+        let a = app();
+
+        let mut exec = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        exec.access = "exec".into();
+        let drawn = a.decision_lines(&exec, 100).join("\n");
+        assert!(
+            drawn.contains("the access is what asks"),
+            "§11.7: an exec call that asks must say why it is asking:\n{drawn}"
+        );
+
+        // The falsification direction. A read that is asked about is asked about for some
+        // other reason, and the clause would be a lie on it.
+        let mut read = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        read.access = "read".into();
+        let drawn = a.decision_lines(&read, 100).join("\n");
+        assert!(
+            !drawn.contains("the access is what asks"),
+            "the clause is only true of a declaration that ASKS, and a read's does not:\n{drawn}"
+        );
+
+        // A daemon older than the field sends an empty access. No clause: the head does not
+        // know, and will not guess.
+        let older = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        let drawn = a.decision_lines(&older, 100).join("\n");
+        assert!(!drawn.contains("the access is what asks"), "{drawn}");
+    }
+
     fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() {
         use letibot_sessionlog::event::OptionKind;
         let a = app();
