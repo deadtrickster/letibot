@@ -102,13 +102,27 @@ pub enum Verbosity {
 }
 
 impl Verbosity {
+    /// **Every rung, in the order the ladder climbs** — R38's one list.
+    ///
+    /// The card's seeding, the typed name, the cycle and the `next()` all ask *which of
+    /// the values is this*, and a second list is a second answer. This is the same lesson
+    /// the completion table and the `mode` settings row each cost this tree once.
+    pub const ALL: [Verbosity; 4] = [
+        Verbosity::Conversation,
+        Verbosity::Terse,
+        Verbosity::Normal,
+        Verbosity::Loud,
+    ];
+
     pub fn next(self) -> Verbosity {
-        match self {
-            Verbosity::Conversation => Verbosity::Terse,
-            Verbosity::Terse => Verbosity::Normal,
-            Verbosity::Normal => Verbosity::Loud,
-            Verbosity::Loud => Verbosity::Conversation,
-        }
+        let at = Self::ALL.iter().position(|r| *r == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    /// The rung a typed word names, if it names one.
+    pub fn parse(typed: &str) -> Option<Verbosity> {
+        let t = typed.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|r| r.as_str() == t)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -6164,19 +6178,7 @@ impl App {
     /// transcript when it changes.
     fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
         let t = typed.trim().to_ascii_lowercase();
-        let by_name = [
-            Verbosity::Conversation,
-            Verbosity::Terse,
-            Verbosity::Normal,
-            Verbosity::Loud,
-        ]
-        .into_iter()
-        .find(|r| r.as_str() == t);
-        // `v` alone keeps meaning *the next rung* for the fingers that learnt it: one key's
-        // worth of cycling is a promise this head made, and nothing R38 says revokes it —
-        // what R38 rules out is a reader having to CYCLE to find out what the values are, and
-        // the card is where they are read.
-        let rung = match (by_name, t.as_str()) {
+        let rung = match (Verbosity::parse(typed), t.as_str()) {
             (Some(r), _) => r,
             (None, "v" | "next") => self.verbosity.next(),
             _ => {
@@ -6223,11 +6225,15 @@ impl App {
     /// A local setting like the rung above, and one place for the same reason: the card's
     /// `Enter` and the typed word must not be able to disagree.
     fn set_diff(&mut self, typed: &str) -> Option<Action> {
-        let t = typed.trim().to_ascii_lowercase();
-        let split = match t.as_str() {
-            "split" | "side-by-side" | "side_by_side" => true,
-            "unified" | "one" => false,
-            _ => {
+        // **`DiffPref::parse` and not a second list.** The preference file is SHARED with
+        // the other head, which accepts `split` / `side-by-side` / `auto` and `unified` /
+        // `single` on input and writes back exactly two words — so the spellings a value can
+        // arrive in are already a fact of this tree, and a verb with its own list would be a
+        // verb that refused a value the file accepts. One parser.
+        let split = match crate::prefs::DiffPref::parse(typed) {
+            Some(crate::prefs::DiffPref::Split) => true,
+            Some(crate::prefs::DiffPref::Unified) => false,
+            None => {
                 self.say(&format!(
                     "`{typed}` is not a diff style — the two are {}; `/diff` with nothing after \
                      it shows what each one means",
@@ -28067,6 +28073,31 @@ mod tests {
             "the refusal does not name what it would have taken: {notice}"
         );
         assert!(!a.diff_split, "a refusal changed the setting");
+        // **And the spellings the SHARED preference file accepts are taken.** The file is
+        // read by both heads, and leticl's parser takes `split` / `side-by-side` / `auto`
+        // and `unified` / `single`. A verb with a list of its own would refuse a value the
+        // file the two of them share had already accepted — so this is `DiffPref::parse`,
+        // and the same word reaching either door lands the same way. Asserted through the
+        // preference parser's own answer rather than by repeating the list here.
+        for (typed, want) in [
+            ("auto", crate::prefs::DiffPref::Split),
+            ("side-by-side", crate::prefs::DiffPref::Split),
+            ("single", crate::prefs::DiffPref::Unified),
+            ("unified", crate::prefs::DiffPref::Unified),
+        ] {
+            assert_eq!(
+                crate::prefs::DiffPref::parse(typed),
+                Some(want),
+                "`{typed}` is a spelling the shared file takes"
+            );
+            a.diff_split = matches!(want, crate::prefs::DiffPref::Unified);
+            assert_eq!(a.command(&format!("diff {typed}")), None);
+            assert_eq!(
+                a.diff_split,
+                matches!(want, crate::prefs::DiffPref::Split),
+                "`/diff {typed}` did not set what the file's parser says it means"
+            );
+        }
     }
 
     /// **A verb only its author knows is not offered** (R29), and `/diff` is new today: the
