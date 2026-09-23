@@ -1589,6 +1589,28 @@ pub struct App {
     /// operator would otherwise take to `ps` — which is how the orphan this rule exists for
     /// was found, a day late.
     daemon_pid: Option<i32>,
+    /// **What the reader's viewport is holding** (R36).
+    ///
+    /// `None` is the *following* state — the head of a transcript being read from its tail
+    /// — and it is the default. `Some` is a reader who scrolled back: they have said they
+    /// are reading something, and nothing arriving below may move it.
+    ///
+    /// **A row and an offset into it, never a line count.** A count from the bottom is
+    /// invalidated by every arrival; a count from the top by anything above being
+    /// rewritten; and both happen here, because a snapshot replaces the transcript whole
+    /// and an elision changes a row's height. See [`App::hold`].
+    anchor: Option<Held>,
+    /// **Where each rendered row's lines are**, ascending by `at`. Rebuilt as the history
+    /// is walked and prepended to, cleared whenever that buffer is thrown away.
+    spans: Vec<Span>,
+    /// **The body line at the top of the last frame's window**, and how many lines it had.
+    ///
+    /// The key handler runs between frames and has to answer *where is the reader looking*
+    /// with what the last frame actually drew — the same rule `dec_content_room` follows
+    /// for the decision card. A scroll that computed its own position from the model
+    /// rather than from the glass would be a second opinion about the reader's screen.
+    view_top: usize,
+    view_room: usize,
     /// **Names this head's door calls so the daemon can tell them apart.**
     ///
     /// The `call_id` is `{head}-{n}` and the count is per head, which is what makes it
@@ -2144,6 +2166,10 @@ impl App {
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),
+            anchor: None,
+            spans: Vec::new(),
+            view_top: 0,
+            view_room: 0,
             head_run_seq: 0,
             echo_open: false,
             stopping: None,
@@ -3138,6 +3164,10 @@ impl App {
             // the same lie a carried-over model name is.
             self.pending_prompts.clear();
             self.unconfirmed.clear();
+            // **And the viewport's place, which is a place in the rows that just went**
+            // (R36). Carrying it across a switch would hold the reader on a row of another
+            // conversation's transcript — the same lie a carried-over model name is.
+            self.anchor = None;
         }
         self.session_id = s.session_id;
         self.seq = s.seq;
@@ -4728,7 +4758,12 @@ impl App {
                     // never express "further up than I have drawn".
                     self.scroll_up(by);
                 } else {
-                    self.scroll = self.scroll.saturating_sub(by);
+                    // **The mirror, and it is `hold` for the same reason** (R36): moving
+                    // down is moving over the same rows in the other direction, and it is
+                    // the same conversion from lines to a row. It also lands the reader back
+                    // in *following* when it reaches the bottom, which is the one act that
+                    // does — arriving content never will.
+                    self.hold(by as isize);
                 }
                 return None;
             }
@@ -4893,8 +4928,11 @@ impl App {
         // start arming an interrupt — **and not while a payload window is open**: that
         // window's own seam prints `esc closes`, and the surface carrying the promise is
         // the one Esc has to keep it to. See the arm below.
-        if matches!(k, Key::Esc) && self.scroll > 0 && self.payload_sel.is_none() {
+        if matches!(k, Key::Esc) && !self.following() && self.payload_sel.is_none() {
+            // **Back to following**, which is what the banner says this key does — and it
+            // clears the anchor as well as the count, because the two are one state (R36).
             self.scroll = 0;
+            self.anchor = None;
             return None;
         }
         // **An open payload view owns the arrows and Esc**, and it sits here — ahead of
@@ -5419,8 +5457,7 @@ impl App {
                         self.redraw = true;
                     }
                     Key::Down => {
-                        self.scroll = self.scroll.saturating_sub(1);
-                        self.redraw = true;
+                        self.hold(1);
                     }
                     _ => {}
                 }
@@ -6982,6 +7019,9 @@ impl App {
         if k == 0 {
             self.hist_lines.clear();
             self.hist_marks.clear();
+            // **The anchor's map goes with the lines it describes.** A stale span would
+            // place the viewport inside a frame that no longer exists.
+            self.spans.clear();
             self.hist_upto = 0;
             self.hist_floor = 0;
             self.hist_first_class = None;
@@ -7010,6 +7050,9 @@ impl App {
         };
         self.hist_lines.truncate(mark.lines);
         self.hist_marks.truncate(k);
+        // By ROW, not by position: a row that rendered to nothing has no span, so the two
+        // lists are not parallel and `truncate` here would drop the wrong ones.
+        self.spans.retain(|s| s.row < k);
         self.hist_upto = k;
         self.note_upto = mark.note_upto;
         self.hist_class = mark.class;
@@ -7633,9 +7676,17 @@ impl App {
             if self.alarmed() {
                 right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
             }
+            // **The viewport's state, where the reader's eye already crosses** (R36). It is
+            // drawn **only when it is holding**, because following is the ordinary state and
+            // owes the reader nothing — a marker that is always on is furniture. What it
+            // buys is the reader who would otherwise scroll to find out whether they are
+            // pinned, which is the affordance failing rather than working.
             let status = self.turn_status(w);
             if !status.is_empty() {
                 right.push(status);
+            }
+            if let Some(state) = self.scroll_state() {
+                right.push(self.cfg.palette().paint(Role::Pending, state));
             }
             chrome.push(self.box_edge(w, '╰', '╯', "", &right.join(" · ")));
         } else if self.alarmed() {
@@ -7952,6 +8003,16 @@ impl App {
     ///
     /// Returns how many rows it rendered, for a test to count.
     fn fill_backward(&mut self, want: usize) -> usize {
+        self.fill_backward_until(want, None)
+    }
+
+    /// The same walk, with a **row** it must reach — R36.
+    ///
+    /// Two stopping conditions rather than one, because the two callers ask different
+    /// questions: a reader moving by lines wants *a screen's worth*, and a viewport holding
+    /// a row wants *that row*, however few lines it takes. `stop_row` of 0 is the lines-only
+    /// walk.
+    fn fill_backward_until(&mut self, want: usize, stop_row: Option<usize>) -> usize {
         if self.hist_floor == 0 {
             return 0;
         }
@@ -7963,16 +8024,23 @@ impl App {
             .as_ref()
             .map(|t| t.appended.iter().cloned().collect())
             .unwrap_or_default();
-        // (class, lines) for each row, newest first as they are built.
-        let mut built: Vec<(RowClass, Vec<String>)> = Vec::new();
+        // (row, class, lines) for each row, newest first as they are built. The row index
+        // rides along for R36: the block these are assembled into is PREPENDED to the
+        // history, so every span already in `spans` shifts by its length and the new ones
+        // have to be recorded here rather than recovered later.
+        let mut built: Vec<(usize, RowClass, Vec<String>)> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(RowClass, Vec<String>)]| {
-            self.hist_lines.len() + built.iter().map(|(_, l)| l.len() + 1).sum::<usize>()
+        let mut covered = |built: &[(usize, RowClass, Vec<String>)]| {
+            self.hist_lines.len() + built.iter().map(|(_, _, l)| l.len() + 1).sum::<usize>()
         };
-        while k > 0 && covered(&built) < want {
+        // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
+        // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
+        // the whole session — 400 rows where a screen was asked for, found by the debug
+        // print and not by reading it. `None` is the lines-only walk.
+        while k > 0 && (covered(&built) < want || stop_row.is_some_and(|r| k > r)) {
             k -= 1;
             let targets = targets_before(&self.items, k);
             let answered = round_results(&self.items, k);
@@ -8015,7 +8083,7 @@ impl App {
                 },
             );
             if !rows.iter().all(|l| l.trim().is_empty()) {
-                built.push((class, rows));
+                built.push((k, class, rows));
             }
         }
         let rendered = self.hist_floor - k;
@@ -8023,26 +8091,44 @@ impl App {
             // Assemble in forward order, with the separator the forward walk puts
             // *before* a row whose kind changed.
             let mut block: Vec<String> = Vec::new();
+            let mut fresh: Vec<Span> = Vec::new();
             let mut prev: Option<RowClass> = None;
-            for (class, rows) in built.iter().rev() {
+            for (row, class, rows) in built.iter().rev() {
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
                 if !block.is_empty() && !pack {
                     block.push(String::new());
                 }
+                // **The span, before the lines go in.** `block` is in forward row order
+                // here, so `built.iter().rev()` is the order the reader reads them in.
+                fresh.push(Span {
+                    row: *row,
+                    at: block.len(),
+                    lines: rows.len(),
+                });
                 block.extend(rows.iter().cloned());
                 prev = Some(*class);
             }
             // And one at the seam: the row this block now precedes is the old head.
             if !self.hist_lines.is_empty() {
                 let pack = self.hist_first_class == Some(RowClass::Activity)
-                    && built.first().map(|(c, _)| *c) == Some(RowClass::Activity);
+                    && built.first().map(|(_, c, _)| *c) == Some(RowClass::Activity);
                 if !pack {
                     block.push(String::new());
                 }
             }
-            let first = built.last().map(|(c, _)| *c);
+            let first = built.last().map(|(_, c, _)| *c);
+            // **Every line offset already recorded moves down by what was prepended** — and
+            // that is the whole reason the anchor is a row rather than a line number. A head
+            // holding a line index would creep by this amount on every fill; a head holding
+            // a row asks this list where the row went.
+            let shifted = block.len();
             block.append(&mut self.hist_lines);
             self.hist_lines = block;
+            for sp in &mut self.spans {
+                sp.at += shifted;
+            }
+            fresh.extend(self.spans.drain(..));
+            self.spans = fresh;
             if let Some(f) = first {
                 self.hist_first_class = Some(f);
             }
@@ -8101,11 +8187,228 @@ impl App {
     fn scroll_up(&mut self, by: usize) {
         if self.hist_floor > 0 {
             // A screen past where the reader is *going*, so the next press has rows to move
-            // into and does not have to wait for a frame to catch up. `screen_rows` is the
-            // last frame's height, which is the best estimate the key handler has.
-            self.fill_backward(self.scroll + by + self.screen_rows + TAIL_SLACK);
+            // into and does not have to wait for a frame to catch up. `view_top` is the last
+            // frame's own top line, which is the best estimate the key handler has — R36
+            // made this a real measurement of the glass rather than a count of lines from a
+            // bottom that moves.
+            self.fill_backward(self.view_top.saturating_sub(by) + self.screen_rows + TAIL_SLACK);
         }
-        self.scroll = self.scroll.saturating_add(by);
+        self.hold(-(by as isize));
+    }
+
+    /// **What the reader is looking at, right now, as the last frame drew it** — R36.
+    ///
+    /// Either the anchored row's line, or the top of the last frame's window when nothing is
+    /// anchored yet (the frame that *begins* a scroll). One function, so the two answers
+    /// cannot disagree about where the reader is.
+    fn held_line(&self) -> usize {
+        self.anchor
+            .as_ref()
+            .and_then(|h| self.span_for(&h.item_id).map(|s| s.at + h.into))
+            .unwrap_or(self.view_top)
+    }
+
+    /// **Move the held viewport by `delta` lines**, staying on a ROW.
+    ///
+    /// The sign is the reader's: negative is up, positive is down. The conversion
+    /// line-to-row happens here and nowhere else, and it is the whole of R36: a line number
+    /// means something different every time a row above grows, and a row means the same
+    /// thing until it is gone.
+    ///
+    /// **Reaching the bottom returns the reader to following**, because that is what
+    /// following means and it is an act they took — the same act as `esc`. Arriving content
+    /// never does it, which is the difference this requirement is about.
+    fn hold(&mut self, delta: isize) {
+        // **The count is kept in step with the hold**, and it is a *derived* value: the
+        // frame recomputes it from the anchor every time it draws, because only the frame
+        // knows how many lines the body has. What this buys is that the two never disagree
+        // between frames — a reader of `scroll` between a key press and a paint (a test, a
+        // `/status`, any of the four places that clear it) sees the position the hold
+        // implies rather than a stale zero.
+        let now = self.held_line();
+        let want = if delta < 0 {
+            now.saturating_sub(delta.unsigned_abs())
+        } else {
+            now.saturating_add(delta as usize)
+        };
+        let bottom = self.body_len.saturating_sub(self.view_room.max(1));
+        if want >= bottom && delta > 0 {
+            self.anchor = None;
+            self.scroll = 0;
+            self.redraw = true;
+            return;
+        }
+        // **The top of the transcript is as far as this goes**, and holding there is not
+        // following: a reader at the very top of a long session is reading the beginning,
+        // and content arriving below must not drag them down to it.
+        let want = want.min(bottom.max(1));
+        match self.span_at_line(want) {
+            Some(span) => {
+                // **`into` may be `lines`` — one past the row's last line — and it must be.**
+                // The blank line a separator puts between two rows belongs to no row, and
+                // clamping `into` to the row's own height sent a notch that landed on one
+                // back up a line: two three-line notches moved the window eight lines
+                // rather than six, found by asserting the distance rather than the count.
+                // Allowing `lines` makes the mapping exact in both directions — the
+                // separator is addressable as *the line just below this row*.
+                let into = want.saturating_sub(span.at).min(span.lines);
+                self.anchor = Some(Held {
+                    item_id: self.items[span.row].item_id.clone(),
+                    ordinal: span.row,
+                    into,
+                });
+            }
+            // **Above the first rendered row.** Either the reader has gone past what this
+            // head drew, or nothing has been drawn yet. Holding the topmost row at offset 0
+            // is the closest true thing, and it is what a second press then scrolls from —
+            // `fill_backward` has already been asked for more, and the next frame has them.
+            None => {
+                if let Some(first) = self.spans.first().copied() {
+                    let item_id = self.items[first.row].item_id.clone();
+                    self.anchor = Some(Held {
+                        item_id,
+                        ordinal: first.row,
+                        into: 0,
+                    });
+                }
+            }
+        }
+        // **`scroll` is left alone, and it is deliberately not kept in step.**
+        //
+        // It is derived — the frame recomputes it from the anchor on every paint, because
+        // only the frame knows how many lines the body has — and a second derivation here
+        // would be two implementations of one formula, which is the shape this file has
+        // been bitten by more than once. Anything that wants to know whether the reader is
+        // at the bottom asks [`App::following`], which is a question about the anchor
+        // rather than about a number.
+        self.redraw = true;
+    }
+
+    /// **Draw rows until one of them is rendered** — R36.
+    ///
+    /// [`App::fill_backward`] walks back until it has covered *enough lines*, which is the
+    /// right question when the reader is moving and the wrong one when the head has to find
+    /// a specific row: after an invalidation the rows are gone, the line count is stale, and
+    /// a fill measured in lines can stop short of the very row the viewport is holding —
+    /// leaving the anchor unresolvable and the view adrift. Found by the debug rather than
+    /// by reasoning: the frame log showed `total` and `view_top` wandering on every payload
+    /// page, which is a fill chasing its own tail.
+    fn fill_to_row(&mut self, row: usize) {
+        if self.hist_floor > row {
+            self.fill_backward_until(
+                self.view_top.saturating_sub(1) + self.screen_rows + TAIL_SLACK,
+                Some(row),
+            );
+        }
+    }
+
+    /// The span holding body line `line`, or the nearest one at or above it.
+    fn span_at_line(&self, line: usize) -> Option<Span> {
+        self.spans
+            .iter()
+            .rev()
+            .find(|s| s.at <= line)
+            .copied()
+            .filter(|s| s.lines > 0)
+    }
+
+    /// Where one row's lines are, by id.
+    fn span_for(&self, item_id: &str) -> Option<Span> {
+        self.spans
+            .iter()
+            .find(|s| self.items.get(s.row).map(|i| i.item_id.as_str()) == Some(item_id))
+            .copied()
+    }
+
+    /// **The row a held viewport was on is gone — say so, and land on its neighbour.**
+    ///
+    /// A `resync`, a snapshot on `hello` and a compaction all replace the rows wholesale, so
+    /// the thing the reader was reading may not be carried any more: it was summarised into
+    /// the base, or the transcript it lived in was replaced. That is **a fact about their
+    /// session** rather than a rendering detail, so it is said rather than silently
+    /// absorbed — R29's rule, and the disclosure carries the act that undoes it.
+    ///
+    /// **The view lands on the nearest surviving row**, not somewhere arbitrary: the ordinal
+    /// it held is the only ordering both sides of a replacement agree on, so the row that
+    /// took its place is where the reader goes. Jumping to the bottom would lose their place
+    /// twice — once to the replacement and once to the head.
+    ///
+    /// Emitted as a note with its own code rather than a notice: the reader has to be able to
+    /// find it again, `/notes` lists it, and `/status` counts it. `Failure`, by R29 part
+    /// two's own test — it is not the reader's act, and what is at risk is their orientation:
+    /// the thing they were reading is not there.
+    fn repair_anchor(&mut self) {
+        let Some(held) = self.anchor.clone() else {
+            return;
+        };
+        if self.span_for(&held.item_id).is_some() {
+            return;
+        }
+        // **A row that is simply not rendered yet is NOT a row that is gone.** In tail mode
+        // the rows above `hist_floor` were deliberately not walked, so a held row can be
+        // present in `items` and absent from `spans` — and saying *it is gone* about a row
+        // sitting in the transcript would be a false alarm on every scroll in a long
+        // session. The distinction is `items`, which knows every row, versus `spans`, which
+        // knows the drawn ones.
+        if self.items.iter().any(|it| it.item_id == held.item_id) {
+            return;
+        }
+        let ordinal = held.ordinal.min(self.items.len().saturating_sub(1));
+        self.anchor = self.items.get(ordinal).map(|it| Held {
+            item_id: it.item_id.clone(),
+            ordinal,
+            into: 0,
+        });
+        let said = format!(
+            "the row you were reading is no longer carried: this transcript was replaced (a \
+             compaction, a resync or a snapshot), and the row was `{}`. The view is holding \
+             the nearest row that survived — `esc` follows the stream again.",
+            held.item_id
+        );
+        let already = self.notes.iter().any(|(_, n)| match n {
+            Note::Warned(w) => w.code == "anchor_lost" && w.detail == said,
+            _ => false,
+        });
+        if !already {
+            self.note(Note::Warned(Warned {
+                code: "anchor_lost".into(),
+                detail: said,
+                ts: 0,
+            }));
+            // **And said where the reader is certainly looking.**
+            //
+            // A note is planted at a *seam* in the conversation, and the seam for this one
+            // is the end of the replacement — which is precisely where a reader who is
+            // holding a row near the top **is not looking**. The durable sentence is the
+            // note (`/notes` lists it, `/status` counts it, and it stays); this is the
+            // transient line above the composer, which is on screen whatever the viewport is
+            // showing. A disclosure the reader cannot see is not a disclosure, and this is
+            // one about the viewport itself.
+            self.say(&format!(
+                "the row you were reading is gone — the transcript was replaced. Holding the                  nearest surviving row; `esc` follows again (row `{}`)",
+                held.item_id
+            ));
+            self.redraw = true;
+        }
+    }
+
+    /// **How the viewport's state reads on screen** — R36, and R29's rule applied to it.
+    ///
+    /// `None` when the head is following, which is the ordinary case and owes the reader
+    /// nothing: a marker that is always on is furniture. `Some` when it is **holding**, and
+    /// it names the act that returns them, because a reader who cannot tell pinned from
+    /// following will scroll to find out — which is the affordance failing.
+    pub fn scroll_state(&self) -> Option<&'static str> {
+        (!self.following()).then_some("holding")
+    }
+
+    /// **Whether the viewport is following the stream** — R36's state, and the thing the
+    /// screen has to say out loud.
+    ///
+    /// A reader who cannot tell whether they are pinned or following will scroll to find
+    /// out, and that is the affordance failing. See [`App::scroll_state`].
+    pub fn following(&self) -> bool {
+        self.anchor.is_none()
     }
 
     /// The visible `room` lines of the body, and nothing else built.
@@ -8175,6 +8478,19 @@ impl App {
             self.hist_floor = self.items.len();
             self.fill_backward(room + TAIL_SLACK);
         }
+        // **And the held row, if this head has not drawn it** (R36).
+        //
+        // A tail walk renders the last screenful and skips everything above it, so a
+        // viewport holding a row from further up has no span and nothing to place itself
+        // against. Rendering down to that row is the one thing that fixes it, and it is
+        // asked for by ROW rather than by lines — a fill measured in lines can stop short
+        // of the very row being held, which is a viewport chasing its own tail.
+        if let Some(h) = self.anchor.clone() {
+            let drawn = self.span_for(&h.item_id).is_some();
+            if !drawn && self.items.iter().any(|it| it.item_id == h.item_id) {
+                self.fill_to_row(h.ordinal);
+            }
+        }
         // **The one row `ctrl-t` can act on**, read once here rather than per row inside
         // the walk below — and before the walk's own borrow of `self`, which is why it is
         // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].
@@ -8219,6 +8535,7 @@ impl App {
                 bound_prompts,
                 unconfirmed,
                 echo_open,
+                spans,
                 dismissed,
                 ..
             } = self;
@@ -8360,6 +8677,14 @@ impl App {
                         if hist_first_class.is_none() {
                             *hist_first_class = Some(class);
                         }
+                        // **And where this row's lines begin** (R36). Recorded here rather
+                        // than derived later, because a separator's blank line belongs to no
+                        // row and only this walk knows it pushed one.
+                        spans.push(Span {
+                            row: *hist_upto,
+                            at: hist_lines.len(),
+                            lines: rows.len(),
+                        });
                         hist_lines.extend(rows);
                         *hist_class = Some(class);
                     }
@@ -8395,13 +8720,30 @@ impl App {
         }
         let now_ms = self.now_ms;
 
+        // **The anchor, before the frame borrows anything** (R36).
+        //
+        // Two things, and both need `&mut self`: a held row that the replacement took away
+        // has to be **said**, and the reader has to be moved to the nearest row that
+        // survived. Here rather than beside the placement below, because a note is written
+        // on the head and the head is lent to the frame from the next line on.
+        self.repair_anchor();
+
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
         let echoes_on_screen = self.echoes_on_screen();
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
-            hist_lines, turn, ..
+            hist_lines,
+            turn,
+            // **The anchor's own inputs** (R36). Taken apart here rather than read through
+            // `self` further down, because `hist_lines` is lent to the frame below and a
+            // `&self` method would need the whole of it back.
+            items,
+            spans,
+            scroll,
+            anchor,
+            ..
         } = self;
         let mut segs: Vec<Seg<'_>> = vec![Seg::Borrowed(hist_lines)];
         // The history no longer ends with a blank — separators go *before* a row
@@ -8730,19 +9072,70 @@ impl App {
         // the window, the whole screen went blank with `── scrolled back · 56 lines
         // below` at the top of it. Found by pressing PageUp six times under tmux,
         // which is a thing a person does and no test did.
-        self.scroll = self.scroll.min(total.saturating_sub(room.max(1)));
-        let end = total.saturating_sub(self.scroll);
+        // **R36: the viewport is placed from the ROW it is holding, not from a count.**
+        //
+        // This is the one place the anchor becomes lines, and it happens after everything
+        // that can move a line: the history walk, the fill above it, the live pane and the
+        // tail block are all in `total` by now. A count from the bottom would have been
+        // invalidated by every one of them — content arriving below moves `total`, and the
+        // window moves with it, which is the defect exactly.
+        if let Some(held) = anchor.as_ref() {
+            let span = spans.iter().find(|sp| {
+                items.get(sp.row).map(|i| i.item_id.as_str()) == Some(held.item_id.as_str())
+            });
+            match span {
+                Some(span) => {
+                    let top = (span.at + held.into).min(total.saturating_sub(1));
+                    let end = (top + room.max(1)).min(total);
+                    *scroll = total.saturating_sub(end);
+                    // **And the state is NOT changed here, even when `scroll` lands at 0.**
+                    //
+                    // That was tempting and it is wrong: a replacement that shortens the
+                    // transcript can put a held row near the end, the arithmetic lands the
+                    // window at the bottom, and clearing the hold there would mean **the
+                    // head returned the reader to following by itself** — which is exactly
+                    // what the requirement forbids. Only an act does that: a scroll down
+                    // past the bottom ([`App::hold`]) or `esc`.
+                }
+                // **The row is gone.** Its handling is above, before the frame borrowed
+                // the history — see `App::repair_anchor` — because saying so is a note and
+                // a note is `&mut self`. Reaching here means it went away between that
+                // check and this line, which cannot happen: nothing between them replaces
+                // the rows. Falling back to the count is the honest answer if it ever does.
+                None => {}
+            }
+        }
+        *scroll = (*scroll).min(total.saturating_sub(room.max(1)));
+        // The borrow ends HERE and not later: everything below reads `self` again, and the
+        // window arithmetic is the last thing that wants the field itself.
+        let scrolled = *scroll;
+        let end = total.saturating_sub(scrolled);
         let start = end.saturating_sub(room);
+        // **What the last frame drew**, for the key handler between frames — the same rule
+        // `dec_content_room` follows for the decision card. R36's key handler has to answer
+        // *where is the reader looking* and the only honest source is the glass.
+        self.view_top = start;
+        self.view_room = room;
+        // The borrow is over — nothing below reads `segs` — so what follows is the head's
+        // own state rather than the frame's.
         let mut out = take_window(&segs, start, end);
-        if self.scroll > 0 {
+        // **The disclosure is about the HOLD, not about a number** (R36). It used to be
+        // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
+        // anchored row happens to sit near the END of a shortened transcript has
+        // `scroll == 0`, and the reader was then left holding a viewport with nothing on
+        // screen saying so. The state is the anchor, so the sentence follows the anchor.
+        if !self.following() {
             let behind = total - end;
             let last = out.len().saturating_sub(1);
             out[last] = colour(
                 &self.cfg,
                 sgr::YELLOW,
+                // **The state, and the act that undoes it** — R29's rule for a
+                // disclosure, and R36's for the reader who cannot tell pinned from
+                // following: they scroll to find out, which is the affordance failing.
                 &format!(
-                    "── scrolled back · {behind} lines below · ↓ or esc to follow · \
-                     wheel scrolls · shift+drag selects"
+                    "── holding your place · {behind} line(s) below arrive underneath and do not \
+                     move this · ↑↓ pgup/pgdn move · ↓ to the bottom or esc follows again"
                 ),
             );
         }
@@ -12824,6 +13217,25 @@ fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
         .collect()
 }
 
+/// **What the reader is holding their viewport on** — R36.
+///
+/// The row's **id and not its index**, because the index is exactly what a snapshot
+/// replacement moves: a `resync`, a `hello` and a compaction all replace `items` wholesale,
+/// and the row the reader was on can survive that with a different index or not survive it
+/// at all. The id is the only name for it that both sides of a replacement agree on.
+///
+/// `ordinal` is the index at the moment of capture, and it is the fallback: when the id is
+/// gone, the nearest surviving row in row order is the one that took its place, and the
+/// head anchors there and **says so** rather than jumping somewhere arbitrary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    item_id: String,
+    ordinal: usize,
+    /// Lines into the row's own rendering. Bounded to the row's height when it is used, so
+    /// a row that shrank under the anchor does not push the view past its own end.
+    into: usize,
+}
+
 /// What kind of row this is, for the one question the layout asks about its
 /// neighbours: does a blank line belong between them.
 ///
@@ -12832,6 +13244,9 @@ fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
 /// separate things that are already separated by a glyph in the first column. Air
 /// goes where the *kind* changes — around the question, around the answer, around
 /// a warning — because that is where the reader's attention has to move.
+///
+
+
 /// Where the history walk stood before one row. See [`App::hist_marks`].
 ///
 /// Three fields because the walk carries three cursors, and the fourth —
@@ -12848,6 +13263,24 @@ struct HistMark {
     /// `hist_class` before the row was drawn — the separator's whole input.
     class: Option<RowClass>,
 }
+
+/// **Where one rendered row's lines are** — R36's anchor map.
+///
+/// `at` is a line index into `hist_lines`, and `row` is the row's index in `items`, so a
+/// span is addressable from either end: *which row is at line 400* and *where did row 91
+/// go* are the two questions the anchor asks, and one list answers both.
+///
+/// A row that rendered to **nothing** has no span. It has no lines to be looking at, so
+/// there is nothing to hold, and inventing a zero-height span would make *the row at this
+/// line* ambiguous between it and its neighbour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    row: usize,
+    at: usize,
+    lines: usize,
+}
+
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowClass {
@@ -15473,6 +15906,320 @@ mod tests {
             "the mark outlived the echo it was on: {:?}",
             a.unconfirmed
         );
+    }
+
+    /// **R36: a scrolled viewport holds while the transcript grows under it.**
+    ///
+    /// The operator: *"scroll must be preserved - if i scrolled i want my view to hold,
+    /// regardless of the new stuff below."* And the case that matters, which the row does not
+    /// say and the operator added: **they scroll to read something WHILE a turn is running.**
+    /// A scroll that holds on a still transcript and creeps on a live one is the bug they
+    /// will actually meet, so there is a running turn throughout — rows arriving above and
+    /// below, a tool row growing as its output lands, and an elision changing a row's height
+    /// under the viewport.
+    ///
+    /// **What is asserted is the frame**, not a line count: R36's whole point is that a count
+    /// is derived and anything above changing height invalidates it, so a test that pinned
+    /// the count would be pinning the defect. The one line excluded is the banner that says
+    /// how much is below the reader — that number is *supposed* to change, and it is the
+    /// disclosure rather than the view.
+    #[test]
+    fn a_scrolled_viewport_holds_while_the_transcript_grows() {
+        fn visible(a: &mut App) -> Vec<String> {
+            a.screen(100, 30)
+                .into_iter()
+                .filter(|l| !l.contains("holding your place"))
+                .collect()
+        }
+
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A conversation to scroll in, with a turn running so the live pane draws at the
+        // same time as history arrives.
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "assistant"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("row {i} says a thing")),
+            )));
+        }
+        a.apply(ServerFrame::Event(env(200, testing::turn_started("t1"))));
+        a.screen(100, 30);
+
+        // **Six notches, not a page.** A page is the whole window here — the fixture is 84
+        // body lines and the window is 25 — so a page up reaches the top and leaves no row
+        // above the anchor to grow. The requirement's case is a reader who scrolled to read
+        // *something*, not one who scrolled to the beginning.
+        for _ in 0..6 {
+            a.key(Key::WheelUp);
+            a.screen(100, 30);
+        }
+        assert!(!a.following(), "six notches up did not leave the stream");
+        let held = a.anchor.clone().expect("a held row");
+        assert!(
+            held.ordinal > 0,
+            "the fixture scrolled to the very top, so there is no row above the anchor to \
+             grow: {held:?}"
+        );
+        let under = visible(&mut a);
+        let top_before = a.view_top;
+
+        // 1. **Rows arrive BELOW the anchor** — the ordinary case: a turn commits what it
+        //    has done and the transcript grows under a reader who is reading.
+        for i in 100..108u64 {
+            a.apply(ServerFrame::Event(env(
+                i,
+                testing::appended(&format!("s.new{i}"), "assistant"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i + 1000,
+                testing::content(&format!("s.new{i}"), "new content below the reader"),
+            )));
+        }
+        assert_eq!(
+            visible(&mut a),
+            under,
+            "content arriving below moved the held view"
+        );
+        assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
+
+        // 2. **A row ABOVE the anchor grows** — R29's remedy line, a note, a tail that
+        //    expanded. This is the case a line count cannot survive: every line below it
+        //    shifts, and a count moves with them.
+        {
+            let first = a.items.first_mut().expect("a first row");
+            first.kind = "assistant".into();
+            first.item = Some(letibot_transcript::TranscriptItem::Assistant {
+                text: "row 0 says a thing\nand three more lines\nthat were not there \
+                       before\nat all"
+                    .into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            });
+        }
+        a.invalidate_history();
+        assert_eq!(
+            visible(&mut a),
+            under,
+            "a row above the anchor gaining lines moved the held view"
+        );
+        assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
+
+        // 3. **A tool row GROWS as its output lands**, under the running turn — the third
+        //    way a line count creeps, and the one the live case is for.
+        a.apply(ServerFrame::Event(env(
+            3000,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: "exec".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3003,
+            testing::tool_progress("c1", "30 lines so far"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3001,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.grow".into(),
+                kind: "tool_result".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3002,
+            SessionEvent::TranscriptContent {
+                item_id: "s.grow".into(),
+                item: Box::new(letibot_transcript::TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: (0..30)
+                        .map(|i| format!("output line {i}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    edit: None,
+                    origin: None,
+                }),
+            },
+        )));
+        let grown = a.screen(100, 30);
+        assert_eq!(
+            a.anchor,
+            Some(held.clone()),
+            "a growing tool row moved the held row"
+        );
+        assert!(
+            grown.iter().any(|l| l.contains("holding your place")),
+            "the screen must still say the viewport is held: {grown:#?}"
+        );
+        // The window's own lines are the ones it drew before, minus that banner.
+        let window: Vec<String> = grown
+            .into_iter()
+            .filter(|l| !l.contains("holding your place"))
+            .collect();
+        assert_eq!(window, under, "a growing tool row moved the held view");
+
+        // 4. **The hold is a PLACE, not a count**: the window's top line is where it was,
+        //    which a count could not have kept with 38 lines added below it.
+        assert_eq!(
+            a.view_top, top_before,
+            "the window's top line moved; a hold is a place, not a count"
+        );
+        assert!(a.body_len > 84, "nothing was added to the body at all");
+
+        // 5. **Nothing that arrived returned the reader to the stream.** Only an explicit
+        //    act does, and it is the one the banner names.
+        assert!(!a.following());
+        a.key(Key::Esc);
+        assert!(a.following(), "esc did not resume following");
+        assert_eq!(
+            a.scroll, 0,
+            "resuming following left a scroll behind: {}",
+            a.scroll
+        );
+    }
+
+    /// **R36 across the replacements**: a resync, a snapshot on `hello`, a compaction.
+    ///
+    /// This is where the row said it *would* break — *"a `resync`, a snapshot on `hello`, and
+    /// a compaction all replace the rows wholesale. If the anchored row survives, the view
+    /// holds. If it was summarised away, SAY SO rather than jumping."*
+    ///
+    /// Both halves, because they are different obligations: a replacement that **carries**
+    /// the row has to hold the view, and one that **takes it away** has to say so — silently
+    /// jumping to the bottom would lose the reader's place twice, once to the replacement and
+    /// once to the head.
+    #[test]
+    fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
+        /// A snapshot holding `ids`, as the daemon sends one on `hello` or a resync.
+        fn snapshot_with(ids: &[&str]) -> letibot_sessionlog::view::Snapshot {
+            let mut snap = Hub::new("s").snapshot();
+            snap.seq = 9;
+            snap.items = ids
+                .iter()
+                .map(|id| letibot_sessionlog::view::SnapshotItem {
+                    item_id: (*id).to_string(),
+                    kind: "assistant".into(),
+                    ledger_head: "beef".into(),
+                    ts: 0,
+                    item: Some(letibot_transcript::TranscriptItem::Assistant {
+                        text: format!("row {id} says a thing"),
+                        tool_calls: Vec::new(),
+                        truncated: false,
+                    }),
+                })
+                .collect();
+            snap
+        }
+
+        fn scrolled() -> App {
+            let mut a = app();
+            a.apply(hello(
+                "s",
+                vec![brief("s", "one", false)],
+                Hub::new("s").snapshot(),
+            ));
+            for i in 0..40u64 {
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 1,
+                    testing::appended(&format!("s.{i}"), "assistant"),
+                )));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 2,
+                    testing::content(&format!("s.{i}"), &format!("row {i} says a thing")),
+                )));
+            }
+            a.screen(100, 30);
+            for _ in 0..6 {
+                a.key(Key::WheelUp);
+                a.screen(100, 30);
+            }
+            assert!(!a.following(), "the fixture never scrolled");
+            a
+        }
+
+        // ---- the row SURVIVES the replacement ----
+        let mut a = scrolled();
+        let held = a.anchor.clone().expect("a held row");
+        // A snapshot that carries every row, which is what a plain resync of an unchanged
+        // session is.
+        let ids: Vec<String> = a.items.iter().map(|i| i.item_id.clone()).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        a.apply(hello("s", vec![brief("s", "one", false)], snapshot_with(&ids)));
+        a.screen(100, 30);
+        assert_eq!(
+            a.anchor,
+            Some(held.clone()),
+            "a replacement that carries the row moved the view"
+        );
+        assert!(
+            !a.notes.iter().any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
+            "and it said nothing, because nothing was lost"
+        );
+
+        // ---- the row is GONE, and it is said ----
+        let mut b = scrolled();
+        let lost = b.anchor.clone().expect("a held row");
+        // A replacement that carries only the FIRST few rows — which is what a compaction
+        // looks like from here: the old transcript is gone, and a much shorter one stands in.
+        // A replacement that carries the LAST twenty rows: the reader's row is gone and the
+        // transcript is still long enough to be holding a place in, which is the shape a
+        // compaction leaves behind — a summary in place of the old head, the recent tail
+        // carried as itself.
+        let tail: Vec<String> = (20..40).map(|i| format!("s.{i}")).collect();
+        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+        b.apply(hello("s", vec![brief("s", "one", false)], snapshot_with(&tail)));
+        let frame = b.screen(100, 30);
+        let said = b
+            .notes
+            .iter()
+            .find_map(|(_, n)| match n {
+                Note::Warned(w) if w.code == "anchor_lost" => Some(w.detail.clone()),
+                _ => None,
+            })
+            .expect("a row that is gone must be said, not jumped over");
+        assert!(
+            said.contains(&lost.item_id),
+            "the sentence names the row that went: {said}"
+        );
+        assert!(
+            said.contains("follows the stream again"),
+            "and carries the act that undoes the hold: {said}"
+        );
+        // **And it reaches the reader where they are looking.** The note lives at the seam
+        // at the end of the replacement, which is *below* a reader who is holding a row near
+        // the top — so the transient line above the composer carries it too, and that is the
+        // one this asserts. A disclosure the reader cannot see is not a disclosure.
+        assert!(
+            b.notice.as_deref().is_some_and(|n| n.contains(&lost.item_id)),
+            "the reader must be told on screen, not only at a seam below them: {:?}",
+            b.notice
+        );
+        let _ = frame;
+        // **It lands on the nearest surviving row**, not at the bottom: the ordinal it held
+        // is the only ordering both sides of a replacement agree on.
+        let now = b.anchor.clone().expect("still holding, on its neighbour");
+        assert!(
+            now.ordinal < b.items.len(),
+            "the hold was dropped instead of moved: {now:?}"
+        );
+        assert!(
+            now.ordinal <= lost.ordinal,
+            "the view jumped past where the reader was: {:?} from {:?}",
+            now,
+            lost
+        );
+        assert!(!b.following(), "the reader was thrown back into following");
     }
 
     /// **R17: a head knows whether it has every row the daemon says it has.**
@@ -21084,13 +21831,18 @@ mod tests {
             "ctrl-t did not open a payload view"
         );
 
-        let at_refold = a.scroll;
+        let at_refold = a.anchor.clone();
         for _ in 0..5 {
             a.key(Key::Down);
             a.screen(80, 24);
         }
+        // **The reader's PLACE, not a line count** (R36). The old assertion was
+        // `a.scroll == at_refold`, and it passes only while a count is the whole truth:
+        // paging the payload changes that row's height, so `total` moves and the count
+        // with it — while the row under the reader's eye has not moved at all. That is the
+        // defect the requirement is about, and asserting the count was asserting it.
         assert_eq!(
-            a.scroll, at_refold,
+            a.anchor, at_refold,
             "the transcript moved while a payload view held the arrows"
         );
         assert!(
@@ -23447,11 +24199,15 @@ mod tests {
         // A screen on top with no scroll of its own swallows the wheel.
         a.todos_pane = true;
         a.key(Key::WheelUp);
-        assert_eq!(a.scroll, 0);
+        assert!(a.following(), "a pane on top swallowed the wheel");
         a.todos_pane = false;
         a.key(Key::WheelUp);
-        assert_eq!(
-            a.scroll, 3,
+        // **R36 made this the assertion**: the wheel takes the viewport OFF the stream, and
+        // `following` is where that state lives. It used to be `scroll == 3` — a count, and
+        // the count is exactly what the requirement stops trusting: it is derived by the
+        // frame, so between a key and a paint it is the previous frame's number.
+        assert!(
+            !a.following(),
             "with nothing on top the wheel moves the conversation"
         );
     }
@@ -24226,8 +24982,11 @@ mod tests {
         a.invalidate_history();
         a.screen(80, 24);
         a.key(Key::PageUp);
+        // **R36: the assertion is the HOLD, not a count.** `scroll` is derived and is only
+        // recomputed by a paint, so a reader of it between a key and a frame sees the
+        // previous frame's number — which is why `following` is a question about the anchor.
         assert!(
-            a.scroll > 0,
+            !a.following(),
             "the card stole the transcript's page key with nothing of its own to page"
         );
     }
@@ -26223,11 +26982,20 @@ mod tests {
         // A notch is three body lines, because one line of body can be two screen
         // rows after wrapping and a notch that moves one wrapped row reads as
         // nothing happened.
-        assert_eq!(a.scroll, 6);
-        assert_eq!(a.key(Key::WheelDown), None);
-        assert_eq!(a.key(Key::WheelDown), None);
+        a.screen(80, 24);
+        assert!(!a.following(), "two notches up left the reader on the stream");
+        // **Six lines above the bottom**, which is the measurement the count was standing
+        // in for: two notches of three, where a notch is three lines because one body line
+        // can be two screen rows after wrapping.
         assert_eq!(
-            a.scroll, 0,
+            a.view_top,
+            a.body_len - a.view_room - 6,
+            "two notches of three lines did not move the window six lines"
+        );
+        assert_eq!(a.key(Key::WheelDown), None);
+        assert_eq!(a.key(Key::WheelDown), None);
+        assert!(
+            a.following(),
             "wheeling back to the bottom follows the stream"
         );
     }

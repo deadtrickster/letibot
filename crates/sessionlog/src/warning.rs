@@ -308,6 +308,12 @@ pub const TABLE: &[(&str, Class)] = &[
     ("import_no_session", Class::Refused),
     ("import_failed", Class::Failure),
     ("fabric_refresh_failed", Class::Failure),
+    // **This head's own failure, and it is about the reader rather than the session.** The
+    // row a scrolled viewport was holding is not in the transcript any more, because a
+    // compaction, a resync or a snapshot replaced it — so the thing they were reading is
+    // gone and they have to be told (R36). `Failure` by R29 part two's own test: it is not
+    // the reader's act, and what is at risk is their orientation rather than any durability.
+    ("anchor_lost", Class::Failure),
     // **This head's own failures.** Events that never reached it, a frame it could not
     // read, a daemon that disagrees about the protocol, a row's content with no row to
     // land on, and a password prompt that settled — including the case where nobody
@@ -420,7 +426,7 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 69 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 70 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
@@ -429,10 +435,14 @@ mod the_register_census {
     #[test]
     fn the_table_is_23_routine_7_refused_and_39_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        assert_eq!(TABLE.len(), 69, "the table's size");
+        // **70, not the 69 the census was taken at**, because R36 added `anchor_lost` — a
+        // fact about the READER rather than about the session: the row a scrolled viewport
+        // was holding is not in the transcript any more. Counted here rather than left
+        // implicit, because a census that quietly moves is not a census.
+        assert_eq!(TABLE.len(), 70, "the table's size");
         assert_eq!(count(Class::Routine), 23);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 39);
+        assert_eq!(count(Class::Failure), 40);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 39 of 69 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — 85% of the failures were already the right
