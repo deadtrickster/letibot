@@ -370,8 +370,13 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     // the assertion that separates §4.2 from the R2 defect it can look like: the resume
     // path replays *every* event past the read mark, so a body the daemon wrote is
     // delivered. If a resume ever lost one, this is the string it would say.
+    // **The substring is the CURRENT wording, not the one this test was written against.**
+    // It said `announced and never filled in`, and the sentence was reworded on 2026-09-23 to
+    // name the rows and stop asserting a cause — so this assertion would have passed against
+    // ANY string, including one that said every row was missing. A test that looks for text the
+    // code no longer has is a green test about nothing.
     assert!(
-        !recovered.contains("announced and never filled in"),
+        !recovered.contains("announced to this head and never filled"),
         "a resume left a row with no body: {recovered}"
     );
     assert!(

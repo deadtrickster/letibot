@@ -7881,13 +7881,45 @@ impl App {
         if self.filling.is_none()
             && let Some(b) = &self.bulk
         {
+            // **The count is the ANNOUNCEMENT's, and it used to be every body-less row.**
+            //
+            // `outstanding` is `items.len() - arrived`: every body-less row this head holds,
+            // live ones included. The trigger is `bulk`, which is the ids a *snapshot*
+            // announced. Those are different sets, and the mismatch was measured on the
+            // operator's own screen 2026-09-23 — it read `2 row(s) announced and never filled
+            // in` where the snapshot had announced **one** and a live row with no body made up
+            // the difference. The sentence then attributed the live row to the daemon.
+            //
+            // Reproduced in `a_named_fill_draws_the_bar…`'s own test: a good snapshot plus one
+            // live body-less row, and the mixed case prints the snapshot's count.
+            let announced = b.ids.len();
             let said = if now_ms.saturating_sub(b.at_ms) >= BODY_PATIENCE {
+                // **What this head OBSERVED, and no cause it cannot see.** The head was told
+                // these rows exist — a snapshot carried them — and the bodies never arrived.
+                // Whether the daemon withheld them or sent them and they were lost is not
+                // knowable from here: a head sees what arrives. So the sentence says the fact
+                // and then names the ROWS, because a count is the least useful form of it and
+                // the ids are what make it checkable.
+                // **The ids first, because the line is trimmed to the frame.** The sentence
+                // used to spend its whole width on a cause and leave the count — the one fact
+                // it had — as the last thing on a line that gets cut. So the naming comes
+                // immediately after the count, and the cause and the remedy follow for a
+                // frame wide enough to hold them.
+                let mut ids: Vec<&str> = b.ids.iter().map(String::as_str).collect();
+                ids.sort_unstable();
+                let named = if announced <= 4 {
+                    format!(": {}", ids.join(", "))
+                } else {
+                    format!(": {}, … ({} more)", ids[..3].join(", "), announced - 3)
+                };
                 format!(
-                    "  {outstanding} row(s) announced and never filled in — the daemon said \
-                     they exist and did not send them"
+                    "  {announced} row(s) announced to this head and never filled{named} \
+                     — `/resync` clears this"
                 )
             } else {
-                format!("  {outstanding} row(s) announced, waiting for the daemon to send them")
+                format!(
+                    "  {announced} row(s) announced, waiting for the daemon to send them"
+                )
             };
             segs.push(Seg::Owned(vec![
                 String::new(),
@@ -10056,6 +10088,40 @@ impl App {
             "Bodies that arrived for rows this head is not holding. The words cannot be \
              drawn — a snapshot replaced the rows and this one was not in it — so the \
              count is the only trace they leave.",
+        );
+
+        // **And the NAMES, which is the pair `orphan` was missing.**
+        //
+        // The operator, 2026-09-22, looking at `2 row(s) announced and never filled in` for a
+        // day: *"tell me if i need to restart anything"*, and *"WHICH two rows, named — an
+        // ordinal or an id, not a count, because a count is the least useful form of this
+        // fact."* `orphan` counts bodies with no row; this is the other direction — rows with
+        // no body — and it printed only a count for the same reason the line does.
+        //
+        // On `/status` rather than on the line because the line is trimmed to the frame and a
+        // name is long: 80 columns hold a count and about three ids, and this pane holds all of
+        // them, which is the form a reader can act on.
+        let unfilled: Vec<&str> = {
+            let mut ids: Vec<&str> = self
+                .bulk
+                .as_ref()
+                .map(|b| b.ids.iter().map(String::as_str).collect())
+                .unwrap_or_default();
+            ids.sort_unstable();
+            ids
+        };
+        row(
+            "unfilled",
+            unfilled.len().to_string(),
+            &format!(
+                "Rows a SNAPSHOT announced whose content never arrived. Named, because a \
+                 count is not checkable: {}",
+                if unfilled.is_empty() {
+                    "none".to_string()
+                } else {
+                    unfilled.join(", ")
+                }
+            ),
         );
         // **Present and zero, like every other counter here.** §13.2b: an absent
         // field and a zero field must not look the same. A head that has never met a
@@ -15494,7 +15560,7 @@ mod tests {
         // added a row to it (the notes the reader has retired) — so a test that asserts
         // a row is *on the screen* has to give the pane room for all of them rather than
         // depend on where the list happens to end.
-        let zero = a.screen(120, 60).join("\n");
+        let zero = a.screen(120, 120).join("\n");
         let row = zero
             .lines()
             .find(|l| l.contains("unreadable"))
@@ -15544,7 +15610,11 @@ mod tests {
         assert!(border.contains("unreadable 2"), "{border}");
         assert!(border.contains("/status"), "{border}");
         a.command("status");
-        let stats = a.screen(120, 60).join("\n");
+        // **Taller than a screen, for the reason stated above.** `/status` is a scrolling pane
+        // and it has gained a row since this test was written (R10's retired notes, then the
+        // unfilled-rows row); a test asserting a row is on the screen has to give the pane room
+        // for all of them rather than depend on where the list happens to end.
+        let stats = a.screen(120, 140).join("\n");
         let unreadable_rows: Vec<&str> =
             stats.lines().filter(|l| l.contains("unreadable")).collect();
         assert!(
@@ -20341,8 +20411,40 @@ mod tests {
         b.clock(1_000 + BODY_PATIENCE + 1);
         let stalled = b.screen(80, 20).join("\n");
         assert!(
-            stalled.contains("4 row(s) announced and never filled in"),
+            stalled.contains("4 row(s) announced to this head and never filled"),
             "after the patience it says they are not coming: {stalled}"
+        );
+        // **And it NAMES them.** A count is the least useful form of this fact and the ids are
+        // what make it checkable; the head held them all along and printed only the number.
+        assert!(
+            stalled.contains("snap.0, snap.1, snap.2"),
+            "the ids must be on the line, sorted, so the claim can be checked: {stalled}"
+        );
+        // **And ALL of them on `/status`, because the line is trimmed to the frame.** An
+        // 80-column line holds a count and about three names; a pane holds the rest, and the
+        // operator asked for the names rather than the count.
+        typed(&mut b, "/status");
+        b.key(Key::Enter);
+        // Tall on purpose: the pane is longer than a screen and scrolls, and the row this
+        // asserts is near its end. A short screen would assert the frame's height rather than
+        // the pane's content.
+        let pane = b.screen(120, 200).join("\n");
+        assert!(
+            pane.contains("unfilled"),
+            "`/status` must carry the pair `orphan` was missing: {pane}"
+        );
+        for i in 0..4 {
+            assert!(
+                pane.contains(&format!("snap.{i}")),
+                "every announced row must be named in the pane, not just counted: {pane}"
+            );
+        }
+        b.key(Key::Esc);
+        // And it must not claim a cause it cannot see.
+        assert!(
+            !stalled.contains("did not send them"),
+            "a head sees what arrived and cannot know whether the daemon withheld or the \
+             content was lost: {stalled}"
         );
         // And a body landing takes its id off the count, so the line goes.
         for i in 0..4 {
@@ -20355,6 +20457,68 @@ mod tests {
         assert!(
             !filed.contains("announced"),
             "the bulk announcement is complete, so the line goes: {filed}"
+        );
+
+        // --- **THE DEFECT: the sentence counts rows the snapshot never announced.**
+        //
+        // The trigger is the SNAPSHOT's body-less ids ([`Bulk`]); the number drawn is
+        // `items.len() - arrived`, which is every body-less row the head holds. Those are
+        // different sets, so a live row with no body inflates a count that the sentence
+        // then attributes to the daemon — and on the operator's own screen it read
+        // `2 row(s) announced and never filled in`, where a fresh snapshot of the same
+        // session has **0** rows with no body. Measured on the live daemon 2026-09-23.
+        //
+        // This asserts the inflation directly: a good snapshot (every id filled) PLUS one
+        // live row whose body never arrives. `bulk` is `None` — the snapshot announced
+        // nothing — and nothing here should ever be called an announcement.
+        let mut d = app();
+        d.clock(1_000);
+        d.apply(snapshot_hello("good", 3));
+        for i in 0..3 {
+            d.apply(ServerFrame::Event(env(
+                100 + i as u64,
+                testing::content(&format!("good.{i}"), "a row"),
+            )));
+        }
+        // The snapshot is complete, so the trigger is gone.
+        let clean = d.screen(80, 20).join("\n");
+        assert!(!clean.contains("announced"), "premise: {clean}");
+
+        // Now one live row, body-less, and no body ever comes.
+        d.apply(ServerFrame::Event(env(
+            200,
+            testing::appended("live.0", "assistant"),
+        )));
+        d.clock(1_000 + BODY_PATIENCE + 1);
+        let after = d.screen(80, 20).join("\n");
+        assert!(
+            !after.contains("announced and never filled in"),
+            "a live body-less row is the R2 window, and the daemon never announced it in a \
+             snapshot — the sentence must not blame the daemon for it:\n{after}"
+        );
+
+        // --- and the mixed case, which is the one that reached the operator's screen: one
+        // snapshot row that never landed AND one live row with no body. The sentence's count
+        // must be the snapshot's, not the total, or it attributes the live row to the daemon.
+        let mut e = app();
+        e.clock(2_000);
+        e.apply(snapshot_hello("mixed", 2));
+        // One of the two lands.
+        e.apply(ServerFrame::Event(env(
+            300,
+            testing::content("mixed.0", "a row"),
+        )));
+        // And a live row with no body joins it.
+        e.apply(ServerFrame::Event(env(
+            301,
+            testing::appended("live.1", "assistant"),
+        )));
+        e.clock(2_000 + BODY_PATIENCE + 1);
+        let mixed = e.screen(80, 20).join("\n");
+        assert!(
+            mixed.contains("1 row(s) announced to this head and never filled"),
+            "the count must be the SNAPSHOT's unlanded rows (1), not every body-less row the \
+             head holds (2) — the extra one was never announced:\n{mixed}"
         );
 
         // --- and a live append is not a bulk announcement at all, however long it sits.
