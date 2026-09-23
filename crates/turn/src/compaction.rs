@@ -116,21 +116,90 @@ use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
 use crate::events::{EventSink, NullSink};
 use crate::length::EmptyReason;
 
-/// What is appended as the compaction turn's instruction.
+/// What is appended as the compaction turn's instruction — **on both the local and
+/// the remote path**, because it is the record's contract and not the model's.
 ///
-/// Worded for what `docs/compaction.md` §4 argues a summary loses: the events.
-/// A prose retelling flattens `read src/foo.rs:1-200`, `cargo test → 3
-/// failures`, `decided A because B` into English; the ask below keeps them as
-/// facts. It also says *do not call tools*, because a summary turn that starts
-/// working is not a summary — and if the model does anyway, the outcome
-/// surfaces the calls instead of swallowing them.
+/// # The template, and why it is fixed sections rather than an ask for a record
+///
+/// Ruled by the operator, 2026-09-23 (`head-parity-2026-09-21.md` R27): *"I think
+/// we can reuse the summary template, and indeed send some recent turns
+/// verbatim."* The template is opencode's `SUMMARY_TEMPLATE`
+/// (`packages/core/src/session/compaction.ts:17`), which is the only part of
+/// their compaction this crate takes wholesale.
+///
+/// A free-prose ask produced records of wildly different shapes, which is the
+/// defect the sections exist for: **a section is a question, and an absent
+/// section is a question nobody was asked.** "Nothing is blocked" and "nobody
+/// said" are different facts, and only a kept-and-marked section can carry the
+/// second. That is why *keep every section, even when empty* is a rule and not a
+/// preference.
+///
+/// **This replaces the prose ask of 2026-09-22**, which said *"every decision
+/// taken and the reason for it; every file created or changed …"* and left the
+/// shape to the model. The content it asked for survives inside the sections —
+/// decisions and why are *Important Details*, commands run and their outcomes are
+/// *Work State*, and the files are *Relevant Files*.
+///
+/// # The one thing here that is not the template, and the wording it is in
+///
+/// *"anything you do not carry into it is lost"* — the loss stated to the model
+/// rather than left implicit. A summariser that is not told the prior record is
+/// discarded will reasonably assume it survives, and on a second compaction the
+/// prior record sits in the conversation like any other item.
+///
+/// Worded as a **contract about the record**, not as a claim about the tail: on
+/// the remote path the newest exchanges are also carried verbatim and on the
+/// local path they are not, so an instruction that named the tail would either
+/// invite the model to skip the recent past (losing it outright locally) or be
+/// false locally. The reader is told the shape by the fork's own note, which is
+/// written per path; the model is told its contract, which is the same on both.
+///
+/// *Do not call tools* stays, and is load-bearing: the harness refuses a fork
+/// whose summary turn proposed a call, and the refusal is a real one rather than
+/// a trap — a summary turn that starts working is not a summary.
 pub const SUMMARY_INSTRUCTION: &str = "\
-The conversation above is long, and this message asks for its summary, which will \
-stand in for everything said before it. Write a compact factual record, not prose: \
-every decision taken and the reason for it; every file created or changed and what \
-the change was; every command run and its outcome; every number, name and path that \
-is still needed; every question left open. Drop tool output bodies and reasoning. \
-Do not call tools. Answer with the record and nothing else.";
+The conversation above is what this record stands in for: it is what a reader will \
+have instead of it, and anything you do not carry into it is lost. Write the record \
+in exactly these sections, in this order, and keep every one of them even when it is \
+empty:\n\
+## Objective\n\
+- one or two brief sentences: what the operator is trying to accomplish\n\
+## Important Details\n\
+- constraints, preferences, decisions and why they were taken, commands run and what \
+they did, facts and assumptions, numbers still needed — or \"(none)\"\n\
+## Work State\n\
+### Completed\n\
+- finished work, verified facts, changes made; otherwise \"(none)\"\n\
+### Active\n\
+- current work, partial changes, what is being investigated; otherwise \"(none)\"\n\
+### Blocked\n\
+- blockers, failing commands, unknowns; otherwise \"(none)\"\n\
+## Next Move\n\
+1. the immediate concrete action, or \"(none)\"\n\
+2. the next action if known, or \"(none)\"\n\
+## Relevant Files\n\
+- file or directory path: why it matters, or \"(none)\"\n\
+Rules: terse bullets, not prose paragraphs. Drop tool output bodies and reasoning. \
+Preserve exact file paths, symbols, commands, error strings, URLs and identifiers \
+where you know them. Do not call tools. Do not write about this record or about the \
+conversation being shortened. Answer with the record and nothing else.";
+
+/// The sections [`SUMMARY_INSTRUCTION`] promises, in order.
+///
+/// **A contract with the next reader**, so it is a list a test can hold the
+/// instruction to rather than prose in a doc comment: a template that loses a
+/// section stops asking the question that section stands for, and nothing else
+/// in the system would notice.
+pub const SUMMARY_SECTIONS: [&str; 8] = [
+    "## Objective",
+    "## Important Details",
+    "## Work State",
+    "### Completed",
+    "### Active",
+    "### Blocked",
+    "## Next Move",
+    "## Relevant Files",
+];
 
 /// What is appended when the summary turn stops inside its own reasoning block
 /// and says nothing (R7).
@@ -562,6 +631,13 @@ pub enum OverrunPlan {
 /// summary turn is handed a closed reasoning block so nothing is spent thinking.
 /// 8192 covers the largest seen with room to spare; below it, the 1754-token
 /// case that produced a truncated record is what overrun is for.
+///
+/// **The measurement behind that range was taken under the free-prose instruction
+/// of 2026-09-22, and the fixed sections are not the same ask.** Whether eight
+/// sections (Objective / Important Details / Work State / Next Move / Relevant
+/// Files) produce a longer record is not known — nothing has measured one. The
+/// constant is kept on the old range rather than adjusted by a guess, and this is
+/// the sentence to change if a template-shaped record turns out to be longer.
 pub const MIN_SUMMARY_ROOM: u64 = 8_192;
 
 /// Room a scratchpad summary turn is given to write in, when planning the halves.
@@ -572,6 +648,224 @@ pub const WRITE_ROOM: u64 = 16_384;
 
 /// Slack on top, so a cut that only just works is not chosen. "with some margin".
 const CUT_MARGIN: u64 = 8_192;
+
+/// The least of a new base that may be a verbatim tail, and the most.
+///
+/// The clamp is opencode's own shape — `clamp(2_000, 15_000, usable / 4)`,
+/// `packages/opencode/src/session/compaction.ts:116` — and both ends are real
+/// configuration rather than politeness. A window small enough that a quarter of
+/// it is a few hundred tokens must not spend that quarter on a tail; a 262144-token
+/// window must not put 65k of verbatim history back into a base whose whole
+/// purpose was to be small. The same file's `MIN_PRESERVE_RECENT_TOKENS` and
+/// `MAX_PRESERVE_RECENT_TOKENS` are these two numbers.
+pub const MIN_TAIL_TOKENS: u64 = 2_000;
+pub const MAX_TAIL_TOKENS: u64 = 15_000;
+
+/// The budget for a compaction's verbatim tail: **a quarter of the window,
+/// clamped.**
+///
+/// `window` is in the same units as the item sizes it will be compared against —
+/// for a provider session that is [`crate::compaction`]'s caller's business,
+/// because the ledger over-counts what a provider is sent and the conversion is a
+/// measurement this crate does not hold. Every caller passes the window it plans
+/// against, which is what makes the number mean something.
+pub fn tail_budget(window: u64) -> u64 {
+    (window / 4).clamp(MIN_TAIL_TOKENS, MAX_TAIL_TOKENS)
+}
+
+/// Where a compaction's verbatim tail starts, and whether it starts at an
+/// exchange boundary.
+///
+/// **The whole design of this side is that a boundary is preferred and a mid-turn
+/// start is disclosed.** A tail that begins mid-turn is a conversation whose first
+/// message answers a question that is no longer present, which is §3 of
+/// `docs/compaction.md` — *something must stand where the evicted span was* —
+/// applied *inside* the boundary rather than before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailPlan {
+    /// Nothing is carried verbatim: the local path, an empty history, or a single
+    /// item larger than the whole budget.
+    None,
+    /// Whole exchanges, from `from` to the end of the history.
+    Whole {
+        from: usize,
+        tokens: u64,
+        exchanges: usize,
+    },
+    /// The tail begins **inside** the newest exchange, because that exchange alone
+    /// is larger than the budget. `dropped` items of it were left out.
+    Split {
+        from: usize,
+        tokens: u64,
+        dropped: usize,
+    },
+}
+
+impl TailPlan {
+    /// Where the tail starts, or `None`. Both arms carry the same field so a
+    /// caller does not have to match twice to slice the history.
+    pub fn from(&self) -> Option<usize> {
+        match *self {
+            TailPlan::None => None,
+            TailPlan::Whole { from, .. } | TailPlan::Split { from, .. } => Some(from),
+        }
+    }
+
+    pub fn tokens(&self) -> u64 {
+        match *self {
+            TailPlan::None => 0,
+            TailPlan::Whole { tokens, .. } | TailPlan::Split { tokens, .. } => tokens,
+        }
+    }
+
+    /// What the fork must say about the tail, or `None` when there is nothing to
+    /// disclose.
+    pub fn split(&self) -> Option<TailSplit> {
+        match *self {
+            TailPlan::Split { dropped, .. } => Some(TailSplit { dropped }),
+            _ => None,
+        }
+    }
+}
+
+/// **The tail did not start where the conversation did.**
+///
+/// One number, because there is only one thing to tell the reader: the verbatim
+/// part begins in the middle of an exchange, so its first message answers
+/// something that is no longer here. Carried on the fork rather than printed by
+/// the code that chose the tail, because the model reading the new base is the one
+/// who needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TailSplit {
+    /// Items of the newest exchange that were left out of the tail.
+    pub dropped: usize,
+}
+
+/// **The verbatim tail a compaction carries, and only for a model on the far side
+/// of a bill.**
+///
+/// Ruled by the operator, 2026-09-23 (`head-parity-2026-09-21.md` R27), split by
+/// where the model runs, and the reason is the reason rather than the policy: a
+/// local model is bounded by the **KV cache in VRAM**, and a tail is resident
+/// tokens competing with the very pressure the compaction was called to relieve. A
+/// remote model is bounded by a **context limit and a bill**, where 15k of verbatim
+/// recent turns is affordable and buys back exactly what a summary is worst at —
+/// the literal text of the last few exchanges. Same mechanism, different budget,
+/// so it is one requirement with a conditional and not two.
+///
+/// `remote` is `true` for a session whose turns go to a `MessagesBackend` and
+/// `false` for one served by this box's own endpoint. It is a parameter rather
+/// than a backend handle because that is the whole of the decision.
+///
+/// **Whole exchanges, or a disclosed split.** The newest exchange is tried first,
+/// then the one before it, and so on: taking a whole exchange keeps the tail
+/// readable on its own. Only when the newest exchange by itself is larger than the
+/// whole budget — one big file read, exactly the case that fills a window — does
+/// the tail start inside it, and then [`TailPlan::split`] says so.
+///
+/// `items` and `item_tokens` are parallel, as the ledger's rows are: one row per
+/// item. A caller whose history is empty, or whose token counts are not known yet,
+/// gets [`TailPlan::None`] rather than a guess.
+pub fn plan_compaction_tail(
+    items: &[TranscriptItem],
+    item_tokens: &[u64],
+    window: u64,
+    remote: bool,
+) -> TailPlan {
+    if !remote {
+        return TailPlan::None;
+    }
+    plan_tail(items, item_tokens, tail_budget(window))
+}
+
+/// The tail under an explicit budget, so the arithmetic is testable without a
+/// window and a backend.
+pub fn plan_tail(items: &[TranscriptItem], item_tokens: &[u64], budget: u64) -> TailPlan {
+    let n = items.len().min(item_tokens.len());
+    if n == 0 || budget == 0 {
+        return TailPlan::None;
+    }
+    // Where an exchange can begin: the first item, and every user item after it.
+    // The first item is a boundary by construction — there is nothing before it to
+    // dangle off — which is also why a history that has no user item at all still
+    // has something to plan against.
+    let mut starts: Vec<usize> = vec![0];
+    for (i, item) in items.iter().enumerate().take(n).skip(1) {
+        if matches!(item, TranscriptItem::User { .. }) {
+            starts.push(i);
+        }
+    }
+
+    // The MOST RECENT whole exchanges that fit, newest first.
+    let mut from = n;
+    let mut acc = 0u64;
+    let mut exchanges = 0usize;
+    for &start in starts.iter().rev() {
+        let size: u64 = item_tokens[start..from].iter().sum();
+        if acc + size > budget {
+            break;
+        }
+        acc += size;
+        from = start;
+        exchanges += 1;
+    }
+    if exchanges > 0 {
+        return TailPlan::Whole {
+            from,
+            tokens: acc,
+            exchanges,
+        };
+    }
+
+    // Not even the newest exchange fits whole. Take its tail and say that is what
+    // happened: carrying nothing here would drop the exchange the session is
+    // actually in, which is the one thing a verbatim tail exists for.
+    let last = *starts.last().expect("`starts` always holds 0");
+    let mut from = n;
+    let mut acc = 0u64;
+    while from > last {
+        let next = acc + item_tokens[from - 1];
+        if next > budget {
+            break;
+        }
+        acc = next;
+        from -= 1;
+    }
+    if from == n {
+        // One item larger than the whole budget: nothing can be carried without
+        // cutting an item in half, which this engine never does.
+        return TailPlan::None;
+    }
+    TailPlan::Split {
+        from,
+        tokens: acc,
+        dropped: from - last,
+    }
+}
+
+/// What must be disclosed about a tail the caller placed itself, rather than one
+/// [`plan_tail`] chose.
+///
+/// The overrun fold splits halfway **by tokens**, not at an exchange boundary —
+/// one tool result can outweigh fifty exchanges — so the tail it keeps can begin
+/// mid-exchange with nobody having decided that. This is the check that says so,
+/// and it is separate from `plan_tail` because the two paths reach their `from` by
+/// different arguments: one by budget, the other by arithmetic on the window.
+pub fn tail_split_of(items: &[TranscriptItem], from: usize) -> Option<TailSplit> {
+    if from == 0 || from >= items.len() {
+        return None;
+    }
+    if matches!(items[from], TranscriptItem::User { .. }) {
+        return None;
+    }
+    let mut start = from;
+    while start > 0 && !matches!(items[start], TranscriptItem::User { .. }) {
+        start -= 1;
+    }
+    Some(TailSplit {
+        dropped: from - start,
+    })
+}
 
 pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> OverrunPlan {
     let resident = prefix_tokens + item_tokens.iter().sum::<u64>();
@@ -631,6 +925,180 @@ pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Ove
         tail_from,
         old_tokens: item_tokens[..cut].iter().sum(),
         tail_tokens: item_tokens[tail_from..].iter().sum(),
+    }
+}
+
+#[cfg(test)]
+mod the_tail_and_the_template {
+    use super::*;
+    use letibot_transcript::UserPart;
+
+    fn user(text: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            parts: vec![UserPart::Text { text: text.into() }],
+        }
+    }
+
+    fn answered(text: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: text.into(),
+            tool_calls: vec![],
+            truncated: false,
+        }
+    }
+
+    /// Three exchanges of two items each: `u a u a u a`.
+    fn three_exchanges() -> Vec<TranscriptItem> {
+        vec![
+            user("one"),
+            answered("one"),
+            user("two"),
+            answered("two"),
+            user("three"),
+            answered("three"),
+        ]
+    }
+
+    /// **The ruled split, and it is the whole requirement.** A local model is
+    /// bounded by VRAM and a tail competes with the pressure that called the
+    /// compaction; a remote model is bounded by a bill, where the newest
+    /// exchanges verbatim are affordable and are what a summary is worst at.
+    #[test]
+    fn only_a_remote_compaction_carries_a_tail() {
+        let items = three_exchanges();
+        let tokens = vec![10u64; 6];
+        assert_eq!(
+            plan_compaction_tail(&items, &tokens, 262_144, false),
+            TailPlan::None,
+            "a local compaction carries the template and nothing verbatim"
+        );
+        assert!(matches!(
+            plan_compaction_tail(&items, &tokens, 262_144, true),
+            TailPlan::Whole { .. }
+        ));
+    }
+
+    /// The tail is whole exchanges when whole exchanges fit, newest first, and the
+    /// count is reported so the fork can say how many were carried.
+    #[test]
+    fn a_remote_tail_is_whole_exchanges_starting_at_an_exchange() {
+        let items = three_exchanges();
+        let tokens = vec![10u64; 6];
+        // 2000 is the floor of the clamp, so every one of the three fits.
+        let TailPlan::Whole {
+            from,
+            tokens: carried,
+            exchanges,
+        } = plan_tail(&items, &tokens, 2_000)
+        else {
+            panic!("three small exchanges fit the whole budget")
+        };
+        assert_eq!(from, 0);
+        assert_eq!(carried, 60);
+        assert_eq!(exchanges, 3);
+
+        // A budget of 45 takes the newest exchange and the one before it, and
+        // stops: 60 would be all three.
+        let TailPlan::Whole {
+            from, exchanges, ..
+        } = plan_tail(&items, &tokens, 45)
+        else {
+            panic!("two exchanges of 20 fit 45")
+        };
+        assert_eq!(from, 2, "exchange three and exchange two, not one");
+        assert_eq!(exchanges, 2);
+    }
+
+    /// A tail that starts mid-exchange says so. This is the one big read that
+    /// filled the window: the exchange the session is actually in is larger than
+    /// the whole budget, and dropping it would drop the only part worth keeping.
+    #[test]
+    fn a_newest_exchange_too_big_to_keep_whole_starts_mid_exchange() {
+        let items = three_exchanges();
+        let tokens = vec![10, 10, 10, 10, 700, 500];
+        let plan = plan_tail(&items, &tokens, 1_000);
+        let TailPlan::Split {
+            from,
+            tokens: carried,
+            dropped,
+        } = plan
+        else {
+            panic!("the newest exchange is 1200 of a 1000 budget: only a part fits")
+        };
+        assert_eq!(from, 5, "the last item of the last exchange");
+        assert_eq!(carried, 500);
+        assert_eq!(dropped, 1, "one item of that exchange was left out");
+        assert_eq!(plan.split(), Some(TailSplit { dropped: 1 }));
+        assert_eq!(plan.from(), Some(5));
+        assert_eq!(plan.tokens(), 500);
+    }
+
+    /// Nothing fits when a single item is larger than the whole budget: the engine
+    /// never cuts an item in half, so there is no tail rather than a broken one.
+    #[test]
+    fn an_item_larger_than_the_budget_leaves_no_tail() {
+        assert_eq!(plan_tail(&three_exchanges(), &[10, 10, 10, 10, 10, 9_000], 1_000), TailPlan::None);
+    }
+
+    /// A history with no exchange boundary at all still has the start of the
+    /// history as a boundary, and a history with nothing in it has none.
+    #[test]
+    fn an_empty_history_and_one_without_a_user_item() {
+        assert_eq!(plan_tail(&[], &[], 15_000), TailPlan::None);
+        let no_boundary = vec![answered("a"), answered("b")];
+        assert_eq!(
+            plan_tail(&no_boundary, &[10, 10], 15_000),
+            TailPlan::Whole {
+                from: 0,
+                tokens: 20,
+                exchanges: 1
+            },
+            "item zero is a boundary: there is nothing before it to dangle off"
+        );
+    }
+
+    /// The budget is opencode's clamp, in our units, and both ends bind.
+    #[test]
+    fn the_budget_is_a_quarter_of_the_window_clamped() {
+        assert_eq!(tail_budget(262_144), MAX_TAIL_TOKENS, "65536 clamps to 15000");
+        assert_eq!(tail_budget(32_768), 8_192, "no clamp applies in the middle");
+        assert_eq!(tail_budget(4_096), MIN_TAIL_TOKENS, "1024 floors at 2000");
+    }
+
+    /// **The template's sections are a contract with the next reader.** A section
+    /// dropped from the instruction stops being a question asked, and nothing else
+    /// in the system would notice — so the list is checked against the bytes.
+    #[test]
+    fn the_instruction_keeps_asking_every_section() {
+        for section in SUMMARY_SECTIONS {
+            assert!(
+                SUMMARY_INSTRUCTION.contains(section),
+                "the instruction no longer asks for `{section}`"
+            );
+        }
+        // In the order the reader expects them, and the sub-sections after their
+        // parent — a template that reordered itself would still contain every
+        // string above.
+        let mut at = 0usize;
+        for section in SUMMARY_SECTIONS {
+            let found = SUMMARY_INSTRUCTION[at..]
+                .find(section)
+                .unwrap_or_else(|| panic!("`{section}` is out of order"));
+            at += found + section.len();
+        }
+        assert!(
+            SUMMARY_INSTRUCTION.contains("keep every one of them even when it is empty"),
+            "an empty section is the fact that nothing was said, so it is kept"
+        );
+        assert!(
+            SUMMARY_INSTRUCTION.contains("anything you do not carry into it is lost"),
+            "the loss is stated to the model rather than left to be assumed"
+        );
+        assert!(
+            SUMMARY_INSTRUCTION.contains("Do not call tools"),
+            "the harness refuses a fork whose summary turn proposed a call; the \
+             instruction is what makes that refusal rare rather than a trap"
+        );
     }
 }
 

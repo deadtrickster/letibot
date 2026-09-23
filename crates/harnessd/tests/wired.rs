@@ -765,7 +765,7 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
         generated_tokens: 0,
     };
     let fork = h
-        .fork_to_summary(&outcome, None, None, &[])
+        .fork_to_summary(&outcome, None, None, &[], None)
         .expect("the fork");
 
     // The new base is the prefix PLUS the summary — not the summary alone. If

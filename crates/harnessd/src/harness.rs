@@ -62,8 +62,9 @@ use letibot_tools::{
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
     CompactionOutcome, Endpoint, EventSink, OverrunPlan, Session, SteeringMessage, SteeringSource,
-    TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_fold, plan_overrun,
-    run_compaction, summarise_first_half, summarise_overrun,
+    TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_compaction_tail,
+    plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun,
+    tail_split_of,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -922,7 +923,23 @@ pub struct ForkReport {
     /// How many of the newest items were carried into the new base verbatim
     /// rather than summarised. Zero is the old behaviour and is still what a
     /// re-seat does, where the point is to change the prefix and not to shorten.
+    ///
+    /// **Non-zero only for a remote model** (R27, `head-parity-2026-09-21.md`): a
+    /// local model is bounded by the KV cache in VRAM, where a tail competes with
+    /// the pressure the compaction was called to relieve, and a remote model is
+    /// bounded by a bill, where the newest exchanges verbatim are affordable and
+    /// buy back exactly what a summary is worst at.
     pub tail_items: usize,
+    /// **Items of the newest exchange left out of the verbatim tail**, when the
+    /// tail could not start at an exchange boundary — one big file read is larger
+    /// than the whole tail budget, so the tail begins inside the exchange that is
+    /// still in progress. `None` is the ordinary case: the tail starts where an
+    /// exchange does, or there is no tail.
+    ///
+    /// Disclosed rather than left to be discovered, because a tail that begins
+    /// mid-exchange opens with an answer to something that is no longer present,
+    /// and the model reading the new base is the reader who has to know that.
+    pub tail_dropped: Option<usize>,
 }
 
 /// What a compaction left behind: the fork's numbers and the summary turn's.
@@ -4057,7 +4074,7 @@ impl<'a> Harness<'a> {
         };
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
-            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &items)?;
+            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &items, None)?;
             Ok(ReseatReport {
                 fork,
                 summary_turn: outcome,
@@ -4114,7 +4131,7 @@ impl<'a> Harness<'a> {
                     outcome.tool_calls
                 )));
             }
-            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &[])?;
+            let fork = self.fork_to_summary(&outcome, Some(&next), Some(&next_id), &[], None)?;
             // Only after the fork has landed: until then this harness is still
             // speaking the old prompt, and a `self.prefix` that ran ahead of the
             // transcript would make every later turn build the wrong bytes.
@@ -4193,6 +4210,13 @@ impl<'a> Harness<'a> {
         match plan_overrun(&per_item, prefix_tokens, window) {
             // The ordinary path, and the one that runs almost always.
             OverrunPlan::NotOverrun => {
+                // **The tail is planned from the history as it stands BEFORE the
+                // summary turn**, and that is not a detail: `run_compaction`
+                // appends its instruction and its answer to this session, and a
+                // tail that could reach those would put the question and its
+                // answer into the record that replaces them. The clone is the
+                // same one the overrun arm takes and for the same reason.
+                let items: Vec<TranscriptItem> = self.session.items.clone();
                 let answerer = Self::answerer(&self.provider, &self.prefix);
                 let outcome =
                     run_compaction(&mut self.engine, &mut self.session, &mut sink, &answerer)
@@ -4206,11 +4230,27 @@ impl<'a> Harness<'a> {
                         outcome.tool_calls
                     )));
                 }
+                // **Summary plus verbatim recent turns, on the remote path only**
+                // — R27's ruled split, and `plan_compaction_tail` carries the
+                // reason. A local model gets the template and nothing else,
+                // because a tail here would be resident tokens competing with the
+                // KV pressure that called this compaction in the first place.
+                let tail_plan = plan_compaction_tail(
+                    &items,
+                    &per_item,
+                    window,
+                    self.provider.is_some(),
+                );
+                let tail: Vec<TranscriptItem> = match tail_plan.from() {
+                    Some(from) => items[from..].to_vec(),
+                    None => Vec::new(),
+                };
                 let fork = self.fork_to_summary(
                     &outcome,
                     reseat.as_ref().map(|(p, _)| p),
                     reseat.as_ref().map(|(_, id)| id.as_str()),
-                    &[],
+                    &tail,
+                    tail_plan.split(),
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
                 Ok(CompactReport {
@@ -4241,7 +4281,13 @@ impl<'a> Harness<'a> {
                 let scratch = format!("{}#overrun", self.transcript_id);
 
                 // A cloud provider is the affordable case; see the doc above.
-                let (harvest, tail) = if self.provider.is_some() {
+                //
+                // `tail_split` is carried out of the arms with the tail: the fold
+                // splits halfway BY TOKENS, so it can start mid-exchange without
+                // anybody having decided that, and a tail that opens with an answer
+                // to a question that is no longer present is the one thing the
+                // reader has to be told about (R27).
+                let (harvest, tail, tail_split) = if self.provider.is_some() {
                     match plan_fold(&per_item, prefix_tokens, window) {
                         Some(split) => {
                             self.hub.publish(SessionEvent::Warning {
@@ -4262,7 +4308,7 @@ impl<'a> Harness<'a> {
                                 &answerer,
                             )
                             .map_err(HarnessError::Turn)?;
-                            (h, items[split..].to_vec())
+                            (h, items[split..].to_vec(), tail_split_of(&items, split))
                         }
                         // No workable fold: fall through to the two-half plan,
                         // which asks less of the split.
@@ -4278,7 +4324,7 @@ impl<'a> Harness<'a> {
                                 &answerer,
                             )
                             .map_err(HarnessError::Turn)?;
-                            (h, Vec::new())
+                            (h, Vec::new(), None)
                         }
                     }
                 } else {
@@ -4309,7 +4355,7 @@ impl<'a> Harness<'a> {
                         &answerer,
                     )
                     .map_err(HarnessError::Turn)?;
-                    (h, Vec::new())
+                    (h, Vec::new(), None)
                 };
 
                 let outcome = CompactionOutcome {
@@ -4326,6 +4372,7 @@ impl<'a> Harness<'a> {
                     reseat.as_ref().map(|(p, _)| p),
                     reseat.as_ref().map(|(_, id)| id.as_str()),
                     &tail,
+                    tail_split,
                 )?;
                 let (gained, lost) = self.adopt_reseat(reseat);
                 Ok(CompactReport {
@@ -4383,6 +4430,7 @@ impl<'a> Harness<'a> {
         onto: Option<&StablePrefix>,
         onto_id: Option<&str>,
         tail: &[TranscriptItem],
+        tail_split: Option<TailSplit>,
     ) -> Result<ForkReport, HarnessError> {
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
@@ -4460,6 +4508,28 @@ impl<'a> Harness<'a> {
         // did not. Telling the model "everything before this is replaced by the
         // summary below" and then showing it no summary — with the whole history
         // underneath — is a sentence that contradicts what it can see.
+        //
+        // **And the sentence had to change when the tail arrived.** It said
+        // "everything said before this point is replaced by the summary below",
+        // which stopped being true the moment a remote compaction carried the
+        // newest exchanges verbatim: the reader can see both, and a note that
+        // claims a region was replaced while showing it is the same class of
+        // contradiction as the re-ingest case above.
+        let carried = match tail.len() {
+            0 => String::new(),
+            n => format!(
+                " The last {n} item(s) of it follow this note VERBATIM — as they were \
+                 written, not as a description of them."
+            ),
+        };
+        let mid_exchange = match tail_split {
+            None => String::new(),
+            Some(TailSplit { dropped }) => format!(
+                " The verbatim part begins in the MIDDLE of an exchange: {dropped} item(s) \
+                 of it were dropped from the front, so its first message answers something \
+                 that is no longer here. Stated rather than left to be discovered."
+            ),
+        };
         let note: TranscriptItem = TranscriptItem::System {
             text: if outcome.summary.is_empty() {
                 format!(
@@ -4470,9 +4540,9 @@ impl<'a> Harness<'a> {
                 )
             } else {
                 format!(
-                    "This conversation was compacted: everything said before this point is \
+                    "This conversation was compacted: what was said before this point is \
                      replaced by the summary below, which was written over the full history \
-                     of transcript {old_id} and proposed no tool calls.{cut}\n\n{}",
+                     of transcript {old_id} and proposed no tool calls.{carried}{mid_exchange}{cut}\n\n{}",
                     outcome.summary
                 )
             },
@@ -4523,6 +4593,7 @@ impl<'a> Harness<'a> {
             base_tokens: self.session.ledger.len(),
             truncated: outcome.truncated,
             tail_items: tail.len(),
+            tail_dropped: tail_split.map(|s| s.dropped),
         })
     }
 

@@ -1978,6 +1978,22 @@ fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>)
         shown(r.fork.base_tokens),
         r.fork.transcript_id
     );
+    // **What was carried rather than described.** Zero on a local model, and a
+    // non-zero count on a remote one, so the sentence is evidence of which path
+    // ran rather than a restatement of the policy (R27).
+    if r.fork.tail_items > 0 {
+        said.push_str(&format!(
+            " {} item(s) of the most recent exchange(s) were carried over verbatim \
+             rather than summarised.",
+            r.fork.tail_items
+        ));
+    }
+    if let Some(dropped) = r.fork.tail_dropped {
+        said.push_str(&format!(
+            " The verbatim part begins inside an exchange — {dropped} item(s) of it are \
+             gone — so its first message answers something that is no longer there."
+        ));
+    }
     if !r.summary_was_streamed {
         said.push_str(&format!(
             " Nothing of the summary turn reached this screen — it ran over a scratch \

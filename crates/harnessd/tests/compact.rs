@@ -93,7 +93,7 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let summary = "decided A because B; changed crates/x/src/lib.rs; `cargo test` green; \
                    the open question is whether Y holds";
     let report = h
-        .fork_to_summary(&outcome(summary), None, None, &[])
+        .fork_to_summary(&outcome(summary), None, None, &[], None)
         .expect("the fork must land");
 
     // (1) The store now holds two transcripts for the session, and the second is
@@ -154,10 +154,10 @@ fn a_second_compaction_forks_off_the_first_fork() {
     let mut h = opened(&cfg, &parts);
 
     let first = h
-        .fork_to_summary(&outcome("first summary"), None, None, &[])
+        .fork_to_summary(&outcome("first summary"), None, None, &[], None)
         .expect("the first fork");
     let second = h
-        .fork_to_summary(&outcome("second summary"), None, None, &[])
+        .fork_to_summary(&outcome("second summary"), None, None, &[], None)
         .expect("the second fork");
     assert_eq!(first.transcript_id, format!("{session_id}#t1"));
     assert_eq!(second.transcript_id, format!("{session_id}#t2"));
@@ -190,7 +190,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
     let e = h
-        .fork_to_summary(&outcome("anything"), None, None, &[])
+        .fork_to_summary(&outcome("anything"), None, None, &[], None)
         .expect_err("no store, no fork");
     assert!(
         e.to_string().contains("store"),
@@ -535,7 +535,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
         "an unchanged daemon re-seats nothing"
     );
     let first = h
-        .fork_to_summary(&outcome("the first summary"), None, None, &[])
+        .fork_to_summary(&outcome("the first summary"), None, None, &[], None)
         .expect("the first fork lands");
     drop(h);
 
@@ -566,6 +566,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
             Some(&next_prefix),
             Some(&next_id),
             &[],
+            None,
         )
         .expect("the re-seating fork lands");
     h2.adopt_reseat(Some(target));
@@ -633,4 +634,122 @@ fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
     );
     // Every seated tool is on its own line with its access class.
     assert!(said.contains("(read)"), "{said}");
+}
+
+/// **The note in the new base may not claim a region was replaced while showing
+/// it.** R27 ruled that a remote compaction carries the newest exchanges
+/// verbatim, and that is exactly the change that made the old note false: it said
+/// *"everything said before this point is replaced by the summary below"* and
+/// then appended the tail, so the reader is told a thing is gone while reading it.
+///
+/// The two sentences the tail adds are the disclosure a reader needs and could
+/// not otherwise get: how much was carried, and — when the tail had to start
+/// inside an exchange — that its first message answers something no longer here.
+/// That second one is `docs/compaction.md` §3's *something must stand where the
+/// evicted span was* applied inside the boundary rather than before it.
+#[test]
+fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
+    let dir = TempDir::new("harnessd-compact-tail");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-tail-test";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+
+    let tail = vec![
+        letibot_transcript::TranscriptItem::User {
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: "the turn in progress".into(),
+            }],
+        },
+        letibot_transcript::TranscriptItem::Assistant {
+            text: "working on it".into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+        letibot_transcript::TranscriptItem::Assistant {
+            text: "and its second half".into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    ];
+    let report = h
+        .fork_to_summary(
+            &outcome("## Objective\n- carry the recent past"),
+            None,
+            None,
+            &tail,
+            Some(letibot_turn::TailSplit { dropped: 2 }),
+        )
+        .expect("the fork lands");
+
+    assert_eq!(report.tail_items, 3, "three items went in verbatim");
+    assert_eq!(report.tail_dropped, Some(2), "and two of them are missing");
+
+    let store = Store::open(&path).expect("reopening");
+    let words = store
+        .load_transcript(&report.transcript_id)
+        .expect("reading the fork")
+        .items;
+    assert_eq!(words.len(), 4, "the note and the three carried items");
+    let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+        panic!("the base's first item is the note");
+    };
+    assert!(
+        text.contains("The last 3 item(s) of it follow this note VERBATIM"),
+        "the count is stated: {text}"
+    );
+    assert!(
+        text.contains("MIDDLE of an exchange: 2 item(s)"),
+        "a mid-exchange start is disclosed: {text}"
+    );
+    assert!(
+        !text.contains("everything said before this point is replaced"),
+        "the note must not claim a region was replaced while the tail shows it: {text}"
+    );
+    assert!(
+        text.contains("is replaced by the summary below"),
+        "and it still says what the summary is: {text}"
+    );
+    // The carried items really are the tail, in order, and not a description.
+    let letibot_transcript::TranscriptItem::Assistant { text, .. } = &words[3].0 else {
+        panic!("the last carried item is the assistant's");
+    };
+    assert_eq!(text, "and its second half");
+}
+
+/// A fork with no tail says nothing about one, and keeps the replacement
+/// sentence — the local path, and every re-seat and re-ingest.
+#[test]
+fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
+    let dir = TempDir::new("harnessd-compact-notail");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-no-tail-test";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+
+    let report = h
+        .fork_to_summary(&outcome("a summary"), None, None, &[], None)
+        .expect("the fork lands");
+    assert_eq!(report.tail_items, 0);
+    assert_eq!(report.tail_dropped, None);
+
+    let store = Store::open(&path).expect("reopening");
+    let words = store
+        .load_transcript(&report.transcript_id)
+        .expect("reading the fork")
+        .items;
+    assert_eq!(words.len(), 1, "the note and nothing else");
+    let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+        panic!("the base's first item is the note");
+    };
+    assert!(
+        text.contains("is replaced by the summary below"),
+        "the ordinary local compaction replaces the history: {text}"
+    );
+    assert!(
+        !text.contains("VERBATIM") && !text.contains("MIDDLE of an exchange"),
+        "and with no tail there is nothing to disclose: {text}"
+    );
 }

@@ -63,8 +63,10 @@ pub mod stream;
 pub use capture::{CaptureSession, FrameCapture};
 pub use completion::{Chunk, CompletionRequest, FinalChunk, FinishReason, PromptProgress, Timings};
 pub use compaction::{
-    CompactionOutcome, Harvest, OverrunPlan, SUMMARY_INSTRUCTION, UNFINISHED_REASONING_NOTICE,
-    WRITE_ROOM, plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun,
+    CompactionOutcome, Harvest, OverrunPlan, SUMMARY_INSTRUCTION, SUMMARY_SECTIONS, TailPlan,
+    TailSplit, UNFINISHED_REASONING_NOTICE, WRITE_ROOM, plan_compaction_tail, plan_fold,
+    plan_overrun, plan_tail, run_compaction, summarise_first_half, summarise_overrun, tail_budget,
+    tail_split_of,
 };
 pub use engine::{EngineError, Session, TurnEngine, TurnFailure, TurnOk};
 pub use events::{DeltaTarget, EventSink, NullSink, RecordingSink, TurnEvent};

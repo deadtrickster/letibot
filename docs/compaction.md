@@ -31,16 +31,45 @@ as late as possible*.
 
 ## 2. What it costs today
 
-Flatten the conversation into one user message with `system: []` and `tools: {}`, ask
-for a summary, replace the history, continue. Measured on opencode:
+**The strategy these numbers are of, because there is more than one and this section did
+not say.** `flatten`: the conversation is collapsed into one user message with `system: []`
+and `tools: {}`, a summary is asked for, the history is replaced, and the conversation
+continues. Measured on opencode at `1ee74df`, on this box:
 
 - **144,436 tokens, cache hit 0, ~13 minutes** to the first summary token.
-- The next real turn is *also* cold, because the prefix is now entirely different.
+- **The next real turn is *also* cold, because the prefix is now entirely different.**
+  This half still holds, and it is the half the design turns on.
 - Detail is destroyed irreversibly.
 - And Falsifier B found a third cost nobody counts: a short context made this model
   reason **~4× longer** — median 6,468 generated tokens against ~1,400 — with every
   truncation-by-length in the whole run occurring at zero depth. **Compaction can cost
   tokens on the far side too.**
+
+**For the SUMMARISING CALL the first bullet no longer holds upstream, and this section
+would be read as though it did.** opencode now has a second strategy, `strategy: "cached"`
+(`4efae6c`), whose own note says the conversation *"is already present as real messages
+(re-sent byte-identical to the previous turn), so only the instruction and template are
+appended — nothing is restated"*. Read on 2026-09-23 at `39ee69b`, which is the commit that
+made the strategy *"actually fire"* — before it, `lastRequest` was captured in a per-prompt
+scope and was always undefined at compaction time, so the option existed and never ran.
+On that strategy the summarising call pays for the instruction, not for the history.
+
+**Which of opencode's two `select` budgets is live** — because a number quoted from their
+compaction is only meaningful with this settled, and it was not, until now:
+`packages/opencode/src/session/compaction.ts` is the one the running build reaches, and its
+budget is `clamp(2_000, 15_000, floor(usable × 0.25))`. `packages/core`'s
+`DEFAULT_KEEP_TOKENS = 8_000` is reached only by core's own `SessionRunnerLLM`, which nothing
+in `packages/opencode/src`, `packages/cli/src` or `packages/tui/src` calls. The authoritative
+statement is upstream's, in the commit that wired the alternative in (`4efae6c`):
+
+> *"1ee74df added compaction.strategy = "cached" but only to core's compactAfterOverflow,
+> **which the running build never reaches. The CLI reaches compaction through
+> packages/opencode/src/session/compaction.ts.**"*
+
+The operator's own observation of a session going from about 1m to 20k tokens is consistent
+with that budget and not with the other (`4,096` of summary output plus `≤15,000` of
+untouched recent turns) — but it is their observation of a running session, not a figure from
+this reading, and it is recorded as such.
 
 ## 3. The conflation at the heart of it
 
@@ -53,10 +82,22 @@ Reasons 1, 4 and 5 demand only the first. Summarisation delivers both.
 
 ### The uncomfortable part, which rules out the easy fix
 
-**Plain eviction does not help either.** Dropping old turns invalidates the prefix *by
-definition*, because the prefix **is** the old turns. Summarise, prune or delete — any
-reduction costs a full re-prefill. There is no cheap version, and a design that claims
-one has not understood the prefix cache.
+**Plain eviction does not help the next turn either.** Dropping old turns invalidates the
+prefix *by definition*, because the prefix **is** the old turns. Summarise, prune or delete —
+any reduction costs a full re-prefill **of the turn that follows it**.
+
+**The scope of that claim is the turn and not the summary, and the difference is the whole
+of §2's correction.** *"There is no cheap version, and a design that claims one has not
+understood the prefix cache"* was written against a measurement of the summarising call and
+is an overclaim: on opencode's `cached` strategy the summarising call **is** cheap — it
+re-sends the previous request byte-identical and appends the instruction — and that is a
+design which understood the prefix cache better than this sentence did. What cannot be cheap
+is the moment the history is actually replaced. So the sentence becomes: **the reduction is
+what costs, and it costs the next turn.**
+
+That is still enough to rule out the easy fix, and it is now stated where the cost lands
+rather than as a blanket claim. The mechanism this document argues for (§4) is an answer to
+the next turn's re-prefill, not to the summary's.
 
 There is also a reason summarisation is used rather than deletion: a plain drop leaves
 a hole. References to removed turns dangle. **Something must stand where the evicted
@@ -168,7 +209,105 @@ it. Because they were separated, only the *optimisation* died.
 - arXiv 2608.03893's RoPE-stripping solves obstacle 1, and `get_can_shift()`'s own
   comment already says that obstacle does not bind here. **Position was never the wall.**
 
-## 6. Open, and honestly
+## 6. What was taken from opencode on 2026-09-23, and what was not
+
+Read at `39ee69b` — *"Fix code-block selection and make cached compaction actually fire"* —
+in `packages/opencode/src/session/{compaction,overflow}.ts` and
+`packages/core/src/session/compaction.ts`. **A survey of source, not a measurement**: nothing
+here was run against opencode. Three of its ideas were ruled on, and the rulings are recorded
+here because the module they are implemented in (`crates/turn/src/compaction.rs`) is the one
+that has to keep them.
+
+### Taken: the fixed-section summary template
+
+Universal, on both paths: **Objective / Important Details / Work State (Completed, Active,
+Blocked) / Next Move / Relevant Files**, every section kept even when empty, and *"preserve
+exact file paths, symbols, commands, error strings, URLs and identifiers"*. The reason is
+§4's, one level down: **a section is a question, and an absent section is a question nobody
+was asked.** "Nothing is blocked" and "nobody said" are different facts, and a prose ask
+collapses them.
+
+Also taken with it, and not part of the template: the model is told what it is about to lose
+— *"anything you do not carry into it is lost"* — because a summariser that is not told the
+prior record is discarded will reasonably assume it survives, and on a second compaction the
+prior record sits in the conversation like any other item.
+
+### Taken, conditionally: a verbatim tail of recent turns
+
+Ruled by the operator, split by **where the model runs**:
+
+| | summary template | verbatim recent turns |
+|---|---|---|
+| **remote model** | yes | **yes** |
+| **local model** | yes | **no** |
+
+The reason is the reason and not the policy. A local model is bounded by the **KV cache in
+VRAM**, where a tail is resident tokens competing with the very pressure that called the
+compaction. A remote model is bounded by a **context limit and a bill**, where 15k of verbatim
+recent turns is affordable and buys back exactly what a summary is worst at — the literal text
+of the last few exchanges. Same mechanism, different budget.
+
+**One artefact shape, not two.** The tail is carried *beside* the summary and never folded
+into it, so the local artefact is the remote one with an empty tail, and a session compacted
+locally and resumed against a remote model (or the reverse) does not meet a record its reader
+cannot read. The budget is a quarter of the window clamped to 2k–15k, which is opencode's own
+`clamp(2_000, 15_000, usable / 4)` re-derived in our units and recorded as a shape rather than
+a measurement.
+
+Two constraints follow from this document rather than from opencode:
+
+- **The tail is whole exchanges, or the split is disclosed.** A tail that begins mid-turn
+  opens with a message answering a question that is no longer present, and §3's *something
+  must stand where the evicted span was* applies inside the boundary as much as before it. One
+  big file read is larger than the whole budget, so the case is real and it is stated in the
+  fork's own note rather than left to be discovered.
+- **The template's sections are a contract with the next reader**, so an empty section is kept
+  and marked, never dropped.
+
+### Not taken: clipping what the summariser is shown
+
+opencode truncates every tool result to 2,000 characters **in the bytes handed to the
+summariser**. Refused here, and the reason is the cache: our summarising call is
+`render(stable_prefix, items[0..k]) ++ render(instruction)`, which is a true prefix of the
+live token stream — §10.3's warm compaction — and clipping a payload inside it makes the
+prompt differ from the one the server holds. **That trades a warm prefix for a cold one, which
+is the 13 minutes this document is about.** The goal (bound the summariser's input) is served
+better at the other end, where §8.3's `max_inline_bytes` bounds the payload as it is produced,
+so it bounds *every* turn rather than only the summary. On a flattening summariser the clip
+costs nothing because the prompt shares no prefix with anything; here it costs the prefix.
+
+### Ruled, not built: `prune`
+
+opencode's `prune` walks the message list backwards, skips the last two turns, protects the
+most recent 40,000 tokens of tool calls and the tools in `PRUNE_PROTECTED_TOOLS`, stops at the
+last summary, and then **erases the OUTPUT of older tool calls in place** — leaving
+`[Old tool result content cleared]`, and keeping the call and its arguments. It needs no model
+at all, so a re-prefill is its entire cost, and §2's thirteen minutes was the summarising call.
+
+**Adopt, adapted, and it is not orthogonal to §4 — it is §4's first rung.** Three adaptations:
+
+1. **A fork, not an edit.** opencode's transcript *is* its wire, so erasing in place is
+   coherent there. Here the ledger is a hash chain over rendered tokens
+   (`tokencore/src/ledger.rs`: `LedgerRow::h_k`, and a replay that disagrees is
+   `LedgerError::ChainMismatch`), so an in-place erasure is not merely expensive — it is the
+   thing the ledger refuses. The erasure therefore lands in a **new base**, exactly as a
+   summary does, and the old transcript is kept whole. That is also this repo's own rule:
+   compaction never deletes, it stops carrying.
+2. **A locator, not a tombstone.** `[Old tool result content cleared]` is honest and
+   unhelpful. Our marker can name where the body went, because §8.3's spill already exists
+   (`crates/tools/src/spill.rs`, and `read_spill(hash, range)` is a seated tool) — so the
+   erased payload is not destroyed, it is *not carried*, and the marker says how to pull it
+   back. That is §4's `recall(node_id)` in miniature.
+3. **Opt-in, and where it is worth most.** opencode gates it behind `cfg.compaction.prune`
+   (off by default) and so should we. On this stack its strongest case is not routine use but
+   the one the overrun path currently spends two summary turns on: **a session whose prompt
+   fills the window has no room to write a summary, and pruning needs no room to write.**
+   That is a mechanism that rescues the failing case rather than a housekeeping chore.
+
+Sized as its own verb (`/prune`) so it can run with no model behind it, and not scheduled —
+ruling and building are different acts, and this document records the ruling.
+
+## 7. Open, and honestly
 
 - **Node labelling quality.** A bad label makes a node unfindable — the jsonl failure
   again, with fewer words to guess from.
