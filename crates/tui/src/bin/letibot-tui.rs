@@ -654,6 +654,8 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         return Err(ClientError::Refused(reason.clone()).into());
     }
     link.seated_by(&hello);
+    // **Which process that is** (R30), read off the socket this head just connected to.
+    app.set_daemon_pid(link.daemon_pid());
 
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for
@@ -702,7 +704,14 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                         // `ATTACH` is on a live socket and the `Hello` is a moment away;
                         // asking again in the meantime would open a second socket and
                         // close the first, which is the one about to be answered.
-                        Ok(()) => app.reconnect_sent(),
+                        Ok(()) => {
+                            app.reconnect_sent();
+                            // A reconnect is a new connection, so the daemon at the far
+                            // end can be a different process — a restart, or a different
+                            // build entirely. Re-read rather than letting `/status` show
+                            // the pid of the daemon that just went away.
+                            app.set_daemon_pid(link.daemon_pid());
+                        }
                         // Said and counted, then tried again after the backoff. A
                         // `Err` here is the socket nobody is listening on yet.
                         Err(e) => app.reconnect_failed(&e.to_string()),
@@ -711,10 +720,26 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
             }
         }
     }
-    link.detach();
+    // **A detach is for a head that is leaving a daemon it is not stopping.** R30: while a
+    // stop is in flight the daemon is on its way out and this head has already asked; a
+    // `Detach` here would be a second, contradictory instruction racing the first, and the
+    // connection closing is itself one of the facts the wait is reading.
+    if app.wants_detach() {
+        link.detach();
+    }
     // **After the terminal is back**, because this is the one message that must
     // outlive the screen: the alternate screen has been torn down by now, so a
     // reason said into the transcript is gone and the head looks like it crashed.
+    //
+    // **R30's third part, and the reason it is on stderr and not on the screen.** The
+    // operator chose *stop the daemon*, and if it did not stop they have to learn that from
+    // this head rather than from `ps` a day later — which is exactly how the orphan this
+    // rule exists for was found. It cannot be a note in the transcript: the transcript goes
+    // down with the alternate screen, and the head is about to be gone. So it is said here,
+    // once, on the terminal the operator is looking at.
+    if let Some(said) = app.stop_farewell() {
+        eprintln!("letibot: {said}");
+    }
     if let Some(reason) = app.farewell() {
         eprintln!("letibot: the daemon ended this head — {reason}");
     }

@@ -567,6 +567,102 @@ impl Link {
     }
 }
 
+/// **A head that has asked the daemon to stop, and is waiting to find out.** (R30)
+///
+/// The operator chose *exit, and stop the daemon too*, and on 2026-09-23 they got the exit
+/// without the stop: the head was gone and `harnessd` was still there at `PPID 1`, idle,
+/// its socket bound. Nothing ever asked it, or nothing checked. The old code was two
+/// discarded results and a return:
+///
+/// ```rust
+/// let _ = self.client.stop(app.seq, &who);
+/// let _ = self.client.detach();
+/// ```
+///
+/// — whether the frame reached the socket was a race against the head's own shutdown, and
+/// **a request is not an outcome**. This is the state that makes the difference: while it
+/// is unresolved the head does not leave, and the three facts it observes are kept apart,
+/// because each one is a different answer for the operator:
+///
+/// * `sent` — the write returned `Ok`. The frame is in the kernel's buffer for this socket,
+///   which is the most a writer can ever know.
+/// * `acked` — the daemon answered `Accepted { note: "stopping" }`. **This is the one that
+///   says the request was read**, and the daemon sends it before it closes anything.
+/// * `closed` — the daemon's socket file is gone. Its `shutdown` unlinks that file after
+///   joining the accept loop, which is what the wrapper's *"the record is removed only
+///   after the process is gone"* is the same shape of.
+/// * `gone` — the daemon's process is no longer in `/proc`. The strongest observation
+///   available, and the only one that is *the daemon has actually gone*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stopping {
+    /// The identity that asked, as the daemon will have announced it.
+    pub who: String,
+    /// The head's own clock when the frame went out.
+    pub since_ms: u64,
+    /// When the head stops waiting and says what it saw.
+    pub deadline_ms: u64,
+    pub sent: bool,
+    pub acked: bool,
+    pub closed: bool,
+    pub gone: bool,
+    /// The daemon's pid, from `SO_PEERCRED` on this very connection — the process at the
+    /// other end of the socket, not a number read out of a file that may be stale. `None`
+    /// when the kernel would not say, which is a fact the farewell states rather than
+    /// fills in.
+    pub pid: Option<i32>,
+    /// **Whether a turn was running when the head gave up waiting.** A daemon
+    /// mid-turn legitimately finishes its round first, so this is the difference between
+    /// *a slow stop* and *a daemon that did not go* — and it is the head's to know because
+    /// it is the head that was watching the turn.
+    pub turn_running: bool,
+}
+
+impl Stopping {
+    /// **Has the question been answered?** Either the daemon's process is gone — the
+    /// operator's choice, carried out — or the deadline has passed and the head can say
+    /// what it observed.
+    pub fn resolved(&self, now_ms: u64) -> bool {
+        self.gone || now_ms >= self.deadline_ms
+    }
+
+    /// The line the head draws while it waits, so the screen is never a freeze.
+    pub fn waiting_line(&self, now_ms: u64) -> String {
+        let out = now_ms.saturating_sub(self.since_ms);
+        let left = self.deadline_ms.saturating_sub(now_ms);
+        let seen = if self.acked {
+            "the daemon answered and is shutting down"
+        } else if self.sent {
+            "the request went out and the daemon has not answered yet"
+        } else {
+            "the request could not be sent — the socket is already gone"
+        };
+        format!(
+            "stopping the daemon: {seen} — {} waiting, {} before this head gives up \
+             and tells you what it saw. A turn already generating finishes its round.",
+            dur_human(out),
+            dur_human(left),
+        )
+    }
+}
+
+/// **How long a head waits for a daemon it has asked to stop.**
+///
+/// **Five seconds, and it is not this head's number** — it is the figure
+/// `~/bin/letibot` settled on for the same question, at the site of the same incident:
+///
+/// ```bash
+/// for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d "/proc/$p" ] || break; sleep 0.5; done
+/// if [ -d "/proc/$p" ]; then
+///   echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
+/// ```
+///
+/// Its comment carries the measurement: *"'stopped' is said AFTER the process is gone, not
+/// after the signal is sent … Measured 2026-09-16: a daemon wedged on a llama-server that
+/// had gone away swallowed SIGTERM, this printed 'stopped', deleted the record, and left an
+/// orphan holding the store and the GPU that `--daemons` could no longer see."* Two halves
+/// of one program, one figure, and the head never read it.
+pub const STOP_DEADLINE_MS: u64 = 5_000;
+
 /// How long between attempts to get back, in milliseconds.
 ///
 /// **Flat, and the same number leticl uses.** A daemon that is coming back is back in
@@ -1468,6 +1564,17 @@ pub struct App {
     /// The daemon's reason for ending this head, kept past the screen. See
     /// [`App::farewell`].
     bye: Option<String>,
+    /// **The daemon's pid**, from `SO_PEERCRED` on this head's connection (R30). Set by
+    /// the caller that owns the socket, kept so `/status` can answer the question the
+    /// operator would otherwise take to `ps` — which is how the orphan this rule exists for
+    /// was found, a day late.
+    daemon_pid: Option<i32>,
+    /// **A stop this head asked for and has not finished.** R30. `Some` from the moment
+    /// the frame goes out until the daemon is gone or the deadline has passed — and while
+    /// it is `Some` and unresolved, [`App::should_quit`] is false, which is the whole of
+    /// the requirement: *the head does not exit until the daemon has actually gone, or
+    /// until it can say that it has not.*
+    stopping: Option<Stopping>,
     /// **A bulk announcement the daemon has not filled yet.**
     ///
     /// Recorded **only when a snapshot is ingested** — never by a live
@@ -1949,6 +2056,8 @@ impl App {
             bulk: None,
             filling: None,
             bye: None,
+            daemon_pid: None,
+            stopping: None,
         }
     }
 
@@ -1965,7 +2074,132 @@ impl App {
     }
 
     pub fn should_quit(&self) -> bool {
+        // **A head that asked the daemon to stop does not leave until it knows.** R30.
+        //
+        // `quit` is the operator's answer — leave — and it was the whole of the old
+        // condition, which is why the head was gone while `harnessd` was still at
+        // `PPID 1`. This is the head's obligation to go with it: the question is not
+        // answered until the daemon has gone or the deadline has passed, and until then
+        // there is nothing honest for this to return but `false`.
+        //
+        // A `Bye` still ends everything: the daemon saying goodbye is the daemon going,
+        // so nothing is left to wait for.
+        if self.bye.is_some() {
+            return true;
+        }
+        if self.stopping.as_ref().is_some_and(|s| !s.resolved(self.now_ms)) {
+            return false;
+        }
         self.quit
+    }
+
+    /// **Ask for the next frame to be rebuilt.** The driver is a separate file and
+    /// mutates the head's state directly (R30's four observations), so it needs one way to
+    /// say *this changed, draw again* — the same flag every internal writer sets, exposed
+    /// rather than kept private.
+    pub fn mark_redraw(&mut self) {
+        self.redraw = true;
+    }
+
+    /// **Which process this head is attached to.** Called by the caller that opened the
+    /// socket, once per connection — including a reconnect, where the answer can be a
+    /// different process than the one before.
+    ///
+    /// **The head is the one holder of this fact.** `/status` reads it, the stop's farewell
+    /// names it, and the driver asks the head for it rather than keeping its own copy — so
+    /// there is one answer to *which process am I sending the operator to `ps` for*.
+    pub fn set_daemon_pid(&mut self, pid: Option<i32>) {
+        self.daemon_pid = pid;
+    }
+
+    /// The daemon's pid, or `None` when the kernel would not name the peer.
+    pub fn daemon_pid(&self) -> Option<i32> {
+        self.daemon_pid
+    }
+
+    /// **The stop this head is waiting on**, or `None`.
+    ///
+    /// `Some` from the moment the frame goes out until the head exits. Read by the
+    /// renderer for its line, by the driver for the four facts it observes, and at the
+    /// end by `main` for the farewell.
+    pub fn stopping(&self) -> Option<&Stopping> {
+        self.stopping.as_ref()
+    }
+
+    /// The same, to write the observations into. The driver is the only writer: it holds
+    /// the socket, the clock and the pid, and none of those are the app's.
+    pub fn stopping_mut(&mut self) -> Option<&mut Stopping> {
+        self.stopping.as_mut()
+    }
+
+    /// **The head has asked, and is now waiting.** Called by the driver once, when the
+    /// frame has been written (or failed to be), and never before — a head that showed
+    /// this line while it had not sent anything would be lying about what it did.
+    pub fn stop_began(&mut self, who: &str, sent: bool, pid: Option<i32>, now_ms: u64) {
+        self.stopping = Some(Stopping {
+            who: who.to_string(),
+            since_ms: now_ms,
+            deadline_ms: now_ms.saturating_add(STOP_DEADLINE_MS),
+            sent,
+            acked: false,
+            closed: false,
+            gone: false,
+            pid,
+            turn_running: self.turn_running(),
+        });
+        self.redraw = true;
+    }
+
+    /// **Whether a plain detach should be sent on the way out.** Not while a stop is in
+    /// flight: the daemon's own `Detach` handling would take this head off the session it
+    /// is shutting down, and the notice it publishes (`daemon_stopping`) names every head
+    /// it reached. The connection is going anyway.
+    pub fn wants_detach(&self) -> bool {
+        self.stopping.is_none()
+    }
+
+    /// **The farewell this head owes, after the screen is gone.** R30's third part: an
+    /// operator who chose *stop* and got a running daemon learns it here, once, on stderr,
+    /// rather than from `ps` a day later — which is exactly how this one was found.
+    ///
+    /// `None` when there is nothing to say — no stop was asked for, or it worked. Four
+    /// different sentences, and they are different because the operator's next move
+    /// differs: it went; it did not go and a turn was running (legitimate, and it will
+    /// finish); it did not go and nothing was running or it could not even be asked (the
+    /// wedge, and here is the verb); or the daemon said goodbye on its own.
+    pub fn stop_farewell(&self) -> Option<String> {
+        let s = self.stopping.as_ref()?;
+        let secs = s.since_ms.max(self.now_ms).saturating_sub(s.since_ms) / 1000;
+        // Matched on what was OBSERVED, not on what was hoped. `gone` is checked first
+        // because it is the only fact that answers the operator's question.
+        if s.gone {
+            return None;
+        }
+        let pid = match s.pid {
+            Some(p) => format!("pid {p}"),
+            None => "pid unknown (the kernel would not say which process is at the other \
+                     end of the socket)"
+                .to_string(),
+        };
+        let ask = if s.acked {
+            "was acknowledged and did not stop"
+        } else if s.sent {
+            "was sent and never acknowledged"
+        } else {
+            "could NOT be sent"
+        };
+        let because = if s.turn_running {
+            "A turn was running, and the daemon finishes its round before it stops — this \
+             is a slow stop rather than a refused one."
+        } else {
+            "No turn was running, so there was nothing for it to finish."
+        };
+        Some(format!(
+            "the daemon was asked to stop and had not gone {secs}s later.\n  \
+             the request {ask}; {pid} is still there.\n  {because}\n  \
+             `letibot --stop --force` finishes it — it aborts in-flight turns over the \
+             protocol, then signals, and says `NOT stopped` if the process survives."
+        ))
     }
 
     /// **Why the daemon ended this, for after the screen is given back.**
@@ -2119,6 +2353,15 @@ impl App {
     /// either into a two-second retry loop is how leticl made a refusal unescapable.
     pub fn link_down(&mut self, why: &str) {
         if self.quit || self.bye.is_some() {
+            return;
+        }
+        // **A link that went down because this head asked is not news.** R30: the daemon
+        // closing our socket is the answer arriving, and drawing *"the daemon connection
+        // is down — reconnecting"* over a shutdown the operator ordered would be this
+        // head reporting its own request as a fault. Reconnecting is wrong for the same
+        // reason: the loop would open a second socket to a process that is on its way
+        // out, and `should_reconnect` would be true the whole time it waited.
+        if self.stopping.is_some() {
             return;
         }
         if self.link.is_down() {
@@ -2284,6 +2527,30 @@ impl App {
             format!("the daemon connection is down — reconnecting. {why}")
         };
         wrap(&format!("⚠ {said}"), w)
+            .into_iter()
+            .map(|l| colour(&self.cfg, sgr::YELLOW, &l))
+            .collect()
+    }
+
+    /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
+    ///
+    /// A resident line and not a note, for `link_line`'s reason: it is a state, true until
+    /// it is not, and the operator is by definition still looking at the screen. The
+    /// requirement says *the head says what it is waiting for rather than freezing on a
+    /// dead screen*, and this is that sentence — with the elapsed time, the time left, and
+    /// what the daemon has done so far, because "waiting" and "waiting and it has answered"
+    /// are different facts and the second one means it worked.
+    fn stopping_line(&self, w: usize) -> Vec<String> {
+        let Some(s) = self.stopping.as_ref() else {
+            return Vec::new();
+        };
+        if s.resolved(self.now_ms) {
+            // The wait is over and the head is leaving on the next pass. A line that said
+            // "waiting" under a verdict the farewell is about to give would be this head
+            // arguing with itself.
+            return Vec::new();
+        }
+        wrap(&format!("⚠ {}", s.waiting_line(self.now_ms)), w)
             .into_iter()
             .map(|l| colour(&self.cfg, sgr::YELLOW, &l))
             .collect()
@@ -2666,11 +2933,22 @@ impl App {
                 d
             }
             ServerFrame::Accepted { note, seq, .. } => {
-                // Telling the person who just pressed enter that their prompt was
-                // accepted is not information — and the old head left exactly that
-                // sitting on the input line for the rest of the session. Anything
-                // *other* than the routine acceptance still gets said.
-                if note != letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED {
+                // **The daemon answering a STOP is the one acceptance that is not
+                // routine.** R30: it is the only evidence that the request was *read* —
+                // the frame being written says the bytes went to the kernel, and this says
+                // a process on the other end understood them. Recorded rather than said:
+                // the head is already drawing `stopping the daemon: the daemon answered`
+                // from the state, and a notice on top of it would be the same fact twice.
+                if note == letibot_sessionlog::NOTE_STOPPING
+                    && let Some(s) = &mut self.stopping
+                {
+                    s.acked = true;
+                    self.redraw = true;
+                } else if note != letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED {
+                    // Telling the person who just pressed enter that their prompt was
+                    // accepted is not information — and the old head left exactly that
+                    // sitting on the input line for the rest of the session. Anything
+                    // *other* than the routine acceptance still gets said.
                     self.say(&note);
                 }
                 // **The daemon saying where it is** (R17). This is the only route by
@@ -6852,6 +7130,12 @@ impl App {
         // where the eye crosses on the way to the composer — the same place the stuck
         // line and a stuck decision card sit.
         let link = self.link_line(w);
+        // **A stop the operator ordered is the loudest thing on the screen while it
+        // lasts** (R30), and it goes above the link line because the two are the same
+        // slot and only one of them can be true — `link_down` refuses to run while a stop
+        // is in flight, so the link line is empty here and this is the sentence the
+        // operator reads while the daemon goes.
+        let stopping = self.stopping_line(w);
         let stuck = self.stuck_line(w);
         let notice = self
             .notice
@@ -6892,6 +7176,13 @@ impl App {
                 + usize::from(show_notice)
                 + usize::from(show_completions)
                 + link.len()
+                // **Counted in full and never sacrificed.** R30's sentence is the one
+                // thing on this screen the operator must not have to go looking for: it
+                // is drawn only while a stop is in flight, and a fit loop that dropped it
+                // on a short terminal would make the head wait in silence — which is the
+                // freeze the requirement names. `link.len()` is counted the same way and
+                // for the same reason.
+                + stopping.len()
                 // Unboxed costs one row **only when there is an alarm to show**:
                 // the counters move off the border and back onto a line of their
                 // own, and a counter that has moved is not what a narrow screen
@@ -6927,6 +7218,7 @@ impl App {
         // confirmation and ahead of the decision card: it is the reason every other
         // line on the screen is not moving, and a person who reads the card without
         // it reads a question nothing is waiting on.
+        chrome.extend(stopping);
         chrome.extend(link);
         // **The `allow-all` confirmation sits at the front of the chrome**, above
         // the decision card and the composer, because while it is up every key
@@ -10201,6 +10493,27 @@ impl App {
              heard of, and answers that by closing the connection — so a session with \
              an older daemon can end on the next thing you type, and a restart of the \
              daemon is the fix either way.",
+        );
+        // **Which PROCESS is on the other end of this socket** (R30). The protocol row
+        // answers *which build*; this answers *which daemon*, and it is the fact the
+        // operator reached for with `ps` a day after a stop that did not happen — which is
+        // exactly how that orphan was found. `SO_PEERCRED` on this head's own connection,
+        // so it is this daemon and not a pid out of a file that may be a predecessor's.
+        //
+        // A head does not signal it. Knowing which process is at the other end and
+        // reaching around the protocol to signal it are different acts, and R30 keeps the
+        // second out while making the first available.
+        row(
+            "daemon",
+            match self.daemon_pid {
+                Some(p) => p.to_string(),
+                None => "not told (the kernel did not name the peer)".to_string(),
+            },
+            "The process serving this connection, from SO_PEERCRED — the same number `ps` \
+             shows. `letibot --stop` asks it to stop over the protocol, and this head asks \
+             with the quit card's second row: that one WAITS until the daemon has gone and \
+             says so on stderr if it has not, so a stop that did not happen is not \
+             something you find out a day later.",
         );
         row(
             "verbosity",

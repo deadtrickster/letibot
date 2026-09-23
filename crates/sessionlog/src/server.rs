@@ -886,7 +886,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 let f = crate::protocol::ServerFrame::Accepted {
                     client_request_id,
                     seq: seat.hub.head_seq(),
-                    note: "stopping".into(),
+                    note: crate::protocol::NOTE_STOPPING.into(),
                 };
                 writer.lock().unwrap().write(&f)?;
                 registry.close();

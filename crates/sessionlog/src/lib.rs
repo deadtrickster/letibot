@@ -77,8 +77,8 @@ pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{
-    Ack, Caps, ClientFrame, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, PROTOCOL_VERSION, ServerFrame,
-    protocol_skew,
+    Ack, Caps, ClientFrame, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, NOTE_STOPPING, PROTOCOL_VERSION,
+    ServerFrame, protocol_skew,
 };
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{

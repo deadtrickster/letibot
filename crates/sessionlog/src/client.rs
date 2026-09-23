@@ -232,6 +232,18 @@ impl HeadClient {
         &self.identity
     }
 
+    /// **The socket this connection is on**, for a caller that has to ask the kernel a
+    /// question about the process at the other end of it.
+    ///
+    /// Added for R30: a head that has asked the daemon to stop reports *which* process it
+    /// was talking to, and `SO_PEERCRED` answers that for this very socket — where a pid
+    /// looked up in a file could belong to a daemon that has already gone. The libc call
+    /// lives in the caller (`letibot-tui`'s `peer_pid`) because this crate does not depend
+    /// on `libc` and, as `server.rs` says in its own comment, should not start to.
+    pub fn socket(&mut self) -> &UnixStream {
+        self.writer.get_mut()
+    }
+
     /// **Ask the daemon to stop**, not just this head.
     ///
     /// `who` is the identity this head attached under; it rides along because

@@ -1149,6 +1149,18 @@ pub const NOTE_PROMPT_QUEUED: &str = "queued as a user item";
 /// "queued as something the model will read" — the two notes are both a queue,
 /// but they are not the same queue.
 pub const NOTE_COMPACT_QUEUED: &str = "queued after the running turn";
+/// **The `note` on a `Stop` that this daemon is about to honour** (R30).
+///
+/// The only `Accepted` a head treats as more than bookkeeping. It is written **before**
+/// the registry closes and before the socket goes, on purpose: it is the head's one piece
+/// of evidence that its request was *read* rather than merely written, and a head that
+/// asked the daemon to stop waits for it (or for the process to go) before it exits.
+///
+/// Its wording is the head's own reason for that wait written on the wire: *stopping* is
+/// what the daemon intends, and the head still checks that it happened — because the
+/// incident this constant exists for was a daemon that **never read the frame at all** and
+/// a head that exited as though it had.
+pub const NOTE_STOPPING: &str = "stopping";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
 /// A `Switch` or an `Attach` named a session this daemon does not hold.

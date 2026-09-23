@@ -70,6 +70,62 @@ pub struct Link {
     session: String,
     kind: String,
     identity: String,
+    /// **The socket this connection is on** (R30). Kept so a head that has asked the
+    /// daemon to stop can see the file go: the daemon's `shutdown` unlinks it after it has
+    /// joined its accept loop, which is the same shape as the wrapper's *"the record is
+    /// removed only after the process is gone"*.
+    socket_path: std::path::PathBuf,
+    /// **The process at the other end of this socket**, from `SO_PEERCRED` — the daemon
+    /// itself, not a number read out of a file that may be stale or belong to an older
+    /// daemon with the same workspace. `None` when the kernel would not say.
+    daemon_pid: Option<i32>,
+}
+
+/// **Which process is at the other end of this socket.**
+///
+/// `SO_PEERCRED`, which the kernel fills in from the `connect` — so this is the daemon
+/// this head is actually attached to, and not a pid in a file that may have been written
+/// by a predecessor. It asks the kernel a question; it sends no signal, and R30's *"not a
+/// licence to kill by pid from a head"* is about the signal, not about knowing.
+///
+/// `None` on any failure at all, and the farewell says *pid unknown* rather than filling
+/// in a zero: a head that printed a number it did not have would send the operator to `ps`
+/// for a process that is not there.
+fn peer_pid(s: &UnixStream) -> Option<i32> {
+    use std::os::unix::io::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0 && cred.pid > 0).then_some(cred.pid)
+}
+
+/// **Is that process still there?**
+///
+/// `/proc/<pid>`, the same test the wrapper makes — *"for _ in 1 2 3 4 5 …; do [ -d
+/// "/proc/$p" ] || break"* — and for the same reason: *"stopped" is said AFTER the
+/// process is gone, not after the signal is sent.*
+///
+/// `None` when the answer cannot be had: a `/proc` that does not exist, or a pid
+/// directory this user may not stat. `Some(false)` is *it is gone* and is the only answer
+/// that lets the head leave early, so an unknown is treated as *still here* and the
+/// deadline decides — the direction to be wrong in is the one that keeps looking.
+fn process_alive(pid: i32) -> Option<bool> {
+    match std::fs::metadata(format!("/proc/{pid}")) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        // PermissionDenied means the directory IS there; anything else is a `/proc`
+        // that cannot answer, which is not the same fact.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Some(true),
+        Err(_) => None,
+    }
 }
 
 impl Link {
@@ -82,6 +138,7 @@ impl Link {
         kind: &str,
         identity: &str,
     ) -> Result<Link, ClientError> {
+        let socket_path = path.as_ref().to_path_buf();
         let (client, reader) =
             HeadClient::start_attach(path, session, since_seq, kind, identity, Caps::default())?;
         Ok(Link::spawn(
@@ -90,17 +147,23 @@ impl Link {
             session.to_string(),
             kind.to_string(),
             identity.to_string(),
+            socket_path,
         ))
     }
 
     fn spawn(
-        client: HeadClient,
+        mut client: HeadClient,
         reader: FrameReader<UnixStream>,
         session: String,
         kind: String,
         identity: String,
+        socket_path: std::path::PathBuf,
     ) -> Link {
         let (tx, rx) = std::sync::mpsc::channel();
+        // **Read once, at connect.** `SO_PEERCRED` answers for the socket, so it cannot
+        // go stale while the connection is up, and a reconnect is a new connection to
+        // whatever daemon is there now — see `Link::reconnect`.
+        let daemon_pid = peer_pid(client.socket());
         Link {
             client,
             rx,
@@ -108,7 +171,18 @@ impl Link {
             session,
             kind,
             identity,
+            socket_path,
+            daemon_pid,
         }
+    }
+
+    /// **The process at the other end of this socket**, or `None`.
+    ///
+    /// Read once by the caller that opened the connection, which hands it to the head
+    /// (`App::set_daemon_pid`) — that is where `/status` and the farewell read it from, so
+    /// this is the seed and not a second home for the fact.
+    pub fn daemon_pid(&self) -> Option<i32> {
+        self.daemon_pid
     }
 
     /// The frames, in order, as the reader hands them over.
@@ -157,7 +231,14 @@ impl Link {
             self.kind.clone(),
             self.identity.clone(),
         );
-        *self = Link::spawn(client, reader, session, kind, identity);
+        *self = Link::spawn(
+            client,
+            reader,
+            session,
+            kind,
+            identity,
+            self.socket_path.clone(),
+        );
         Ok(())
     }
 
@@ -422,20 +503,48 @@ impl Link {
                         self.client.secret(&req_id, secret)?;
                     }
                     // Leaving on purpose: a detach that fails is the socket that was
-                    // already gone, which the loop is about to notice anyway.
+                    // already gone, which the loop is about to notice anyway. Not sent
+                    // while a stop is in flight — see `App::wants_detach`.
                     Action::Quit => {
-                        let _ = self.client.detach();
+                        if app.wants_detach() {
+                            let _ = self.client.detach();
+                        }
                     }
-                    // **Ask, then leave.** The daemon announces the stop to every other
-                    // head before it goes, so the request has to reach it while this
-                    // head is still attached — a detach first would close the socket
-                    // the notice travels on.
+                    // **Ask, then STAY until you know.** R30, and the whole of it.
+                    //
+                    // The daemon announces the stop to every other head before it goes,
+                    // so the request has to reach it while this head is still attached —
+                    // a detach first would close the socket the notice travels on. That
+                    // was already right. What was wrong is the next two lines: the old
+                    // arm discarded both results and returned, so *whether the frame
+                    // reached the socket was a race against this head's own shutdown*,
+                    // and on 2026-09-23 the operator's head was gone while `harnessd` sat
+                    // at `PPID 1` still holding the socket: nothing had asked it, or
+                    // nothing had checked. **A request is not an outcome.**
+                    //
+                    // So the write's result is *kept* rather than discarded, and the head
+                    // then waits — `watch_stop` below, once a tick, with the screen live —
+                    // until the daemon's process is gone or the deadline passes. The
+                    // identity is the client's own, the name it attached under, rather
+                    // than anything the head could make up.
                     Action::StopDaemon => {
-                        // The identity is the client's own — the name it attached
-                        // under — rather than anything the head could make up.
                         let who = self.client.identity().to_string();
-                        let _ = self.client.stop(app.seq, &who);
-                        let _ = self.client.detach();
+                        // **The pid comes off the HEAD, not off this link.** One fact, one
+                        // holder: `main` seeds `App::daemon_pid` from `SO_PEERCRED` when it
+                        // opens the socket (and again on a reconnect, where the answer can
+                        // be a different process), and the head is what `/status` reads and
+                        // what the farewell names. A second copy here is how the two come
+                        // to disagree about which process the operator is being sent to
+                        // `ps` for — found by a test that injects a pid the link never saw.
+                        let pid = app.daemon_pid();
+                        let sent = self.client.stop(app.seq, &who);
+                        // A failed write is not a failed stop — the socket may already be
+                        // gone because the daemon is going — so it is recorded as *not
+                        // sent* and the wait runs anyway. What it changes is the sentence.
+                        app.stop_began(&who, sent.is_ok(), pid, now_ms());
+                        // **And this head does not detach.** The connection is what the
+                        // wait is reading: `detach()` closes the reader, and the daemon's
+                        // socket closing is one of the facts being watched for.
                     }
                 }
                 Ok(())
@@ -446,7 +555,79 @@ impl Link {
                 app.link_down(&e.to_string());
             }
         }
+        // **Last, every tick, and after the drawing.** R30. Nothing here sends anything:
+        // it reads the four things that answer the question the operator asked.
+        self.watch_stop(app);
     }
+
+    /// **Has the daemon this head asked to stop actually gone?**
+    ///
+    /// Called once a tick from [`Link::tick`], and it is a *watcher* rather than a wait:
+    /// the loop keeps drawing frames and taking keys while it runs, which is the
+    /// requirement's second part — *a deadline, because a daemon mid-turn may legitimately
+    /// take time, and the head SAYS what it is waiting for rather than freezing on a dead
+    /// screen.* A `recv_timeout` loop here would be the freeze.
+    ///
+    /// Four observations, and they are kept apart because each is a different answer:
+    ///
+    /// * **the ack** — set in `App::apply` when the daemon's `Accepted` arrives, because
+    ///   that is where frames are read. It is the only evidence the request was *read*;
+    /// * **the socket file** — the daemon unlinks it in `shutdown`, after joining its
+    ///   accept loop;
+    /// * **the process** — `/proc/<pid>`, the wrapper's own test and the only one that is
+    ///   literally *the daemon has gone*;
+    /// * **the deadline** — so a head with no other answer still stops waiting.
+    ///
+    /// The exit condition is the process, or the deadline. The socket and the ack are
+    /// evidence for the sentence, not gates: a daemon can unlink its socket and keep
+    /// running (a wedged worker), and it can be asked by a head whose write was never
+    /// flushed — which is the whole defect — so waiting on the ack alone would hang the
+    /// head for the full deadline every time the daemon ignored it.
+    pub fn watch_stop(&mut self, app: &mut App) {
+        let now = now_ms();
+        // **Read the state out before touching it.** `App::stopping` borrows the app, and
+        // every write below is also on the app — a preview in one borrow and a write in
+        // the next is what keeps this one function rather than three passes over `self`.
+        let Some((closed, gone, pid, deadline)) = app
+            .stopping()
+            .map(|s| (s.closed, s.gone, s.pid, s.deadline_ms))
+        else {
+            return;
+        };
+        if gone {
+            return;
+        }
+        let mut next_closed = closed;
+        let mut next_gone = gone;
+        // The socket file. `exists` on a unix socket is a `stat` on the directory entry,
+        // which is exactly the fact `shutdown`'s `remove_file` publishes.
+        if !closed && !self.socket_path.exists() {
+            next_closed = true;
+        }
+        // The process, and only while the pid is known. `Some(false)` is *gone* and is the
+        // only answer that ends the wait early; an unanswerable `/proc` leaves the deadline
+        // to decide, which is the direction to be wrong in — a head that left on an unknown
+        // would be the defect again with better manners.
+        if let Some(p) = pid
+            && process_alive(p) == Some(false)
+        {
+            next_gone = true;
+        }
+        if next_closed != closed || next_gone != gone {
+            if let Some(s) = app.stopping_mut() {
+                s.closed = next_closed;
+                s.gone = next_gone;
+            }
+            app.mark_redraw();
+        }
+        // **The deadline crossing is a frame too.** The waiting line stops being drawn the
+        // moment the question is answered, and without this the head would sit on the last
+        // frame it drew for up to a tick with a sentence saying it was still waiting.
+        if next_gone || now >= deadline {
+            app.mark_redraw();
+        }
+    }
+
 }
 
 impl Drop for Link {

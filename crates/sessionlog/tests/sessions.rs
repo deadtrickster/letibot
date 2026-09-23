@@ -442,6 +442,23 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
 
     client.stop(0, "dead").unwrap();
 
+    // **And the head that asked is ACKNOWLEDGED, by name, before anything closes.**
+    // R30's first part rests on this: a head that asks the daemon to stop waits for this
+    // frame (or for the process to go), so the wire has to carry it and it has to carry the
+    // *note* rather than a bare acceptance — that note is what tells the asking head its
+    // request was READ rather than merely written, and the incident the rule exists for was
+    // a daemon that never read the frame at all. It is answered before the registry closes
+    // because after that there is no socket to answer on.
+    let acked = until(&rx, |f| {
+        matches!(f, ServerFrame::Accepted { note, .. }
+            if note == letibot_sessionlog::NOTE_STOPPING)
+    });
+    assert!(
+        acked.iter().any(|f| matches!(f, ServerFrame::Accepted { note, .. }
+            if note == letibot_sessionlog::NOTE_STOPPING)),
+        "the asking head was never told `stopping`: {acked:#?}"
+    );
+
     // The registry closes, and it does not wait for the queue.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !reg.is_closed() && std::time::Instant::now() < deadline {
