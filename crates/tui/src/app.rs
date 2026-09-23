@@ -145,6 +145,146 @@ impl Verbosity {
     }
 }
 
+/// **Which setting a card is choosing** — R38.
+///
+/// Two of these are the daemon's (`Mode` from a `SettingRow`'s `choices`, `Model` from the
+/// catalogue); two are this head's own (`Verbosity`, the diff style). They share one card
+/// because they are one KIND of act — the reader is choosing between named values and can see
+/// all of them — and one card is what keeps them from becoming three vocabularies.
+///
+/// **`Verbosity::Terse` and its neighbours are the reason this exists.** `/verbosity` used to
+/// cycle, which requires the reader to hold four rungs in their head and to find the current
+/// one by changing it: three presses and three repaints for the value they wanted, and no
+/// screen anywhere saying what the four were. R38's rule: **a setting with more than two
+/// values is chosen from a card; only a true toggle may cycle.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// The mode this session runs under — the daemon's names.
+    Mode,
+    /// What answers this conversation — the daemon's models.
+    Model,
+    /// **How much of the stream reaches the transcript** — R37's ladder.
+    Verbosity,
+    /// **How a diff is laid out** — R38's new setting.
+    Diff,
+}
+
+impl Pick {
+    /// What the card is asking, as its title.
+    fn title(self) -> &'static str {
+        match self {
+            Pick::Mode => "the mode this session runs under",
+            Pick::Model => "what answers this conversation",
+            Pick::Verbosity => "how much reaches the transcript",
+            Pick::Diff => "how a diff is drawn",
+        }
+    }
+
+    /// The settings row the daemon publishes the choices on, or `None` for a setting this
+    /// head owns. **The daemon's lists are read, never kept** — the mistake the `mode` row's
+    /// own comment records.
+    fn row_key(self) -> Option<&'static str> {
+        match self {
+            Pick::Mode => Some("mode"),
+            Pick::Model => Some("model"),
+            Pick::Verbosity | Pick::Diff => None,
+        }
+    }
+
+    /// What this setting can be, with what each value MEANS.
+    ///
+    /// **Every value carries its meaning on the card and not only its name** (R38). `Terse`,
+    /// `Normal`, `Loud` and `Conversation` are not self-describing, and a reader choosing
+    /// between them is choosing between *what will be on my screen*, which the card can state
+    /// and the name cannot. The daemon's two settings have no sentences here because the head
+    /// does not know what they mean — it renders the daemon's choices verbatim and says
+    /// nothing more, which is the same rule as its hints.
+    fn values(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // The daemon's own names arrive at runtime; see `SettingPick::daemon_lists`.
+            Pick::Mode | Pick::Model => &[],
+            Pick::Verbosity => VERBOSITY_VALUES,
+            Pick::Diff => DIFF_VALUES,
+        }
+    }
+
+    /// The lines under the list: what taking a row DOES, which differs per subject and is the
+    /// difference a reader is most likely to get wrong.
+    ///
+    /// **A slice and not one line**, because the model card has two facts and the file's own
+    /// rule is one fact per line: these are trimmed rather than wrapped, and measured at 110
+    /// columns a two-fact version read *"It also become…"* with its useful half never reaching
+    /// the screen. The second line is the verb for the OTHER thing, which the operator went
+    /// looking for — one verb doing both is what sent them.
+    fn consequence(self) -> &'static [&'static str] {
+        match self {
+            Pick::Mode => &[
+                "a mode change moves THIS session from its next call, and every later session \
+                 in this project.",
+            ],
+            Pick::Model => &[
+                "this conversation only, from the next turn; the transcript and the tools are \
+                 untouched",
+                "`/default-model NAME` is what new sessions start on · this is not that",
+            ],
+            // **The one that surprises people**, and R38 asks for it in as many words: the
+            // ladder is applied to the whole transcript at once, so a rung takes effect on
+            // what is already drawn rather than on what comes next.
+            Pick::Verbosity => &[
+                "this applies to the WHOLE transcript, already drawn — switch back and the rows \
+                 you had hidden are there again.",
+            ],
+            Pick::Diff => &[
+                "every edit card, drawn and future — the excerpt is the same either way; only \
+                 the layout changes.",
+            ],
+        }
+    }
+}
+
+/// **What the verbosity rung means, as the card says it** — R37's ladder, in the reader's
+/// terms rather than the head's.
+///
+/// The names are the rungs' own (`Verbosity::as_str`) and the sentences are what a person is
+/// actually choosing between: **what will be on the screen.** Written as *what you get*, not
+/// as *what is filtered*, because a reader picking a rung is not reasoning about the event
+/// stream.
+const VERBOSITY_VALUES: &[(&str, &str)] = &[
+    (
+        "conversation",
+        "your messages and the model's answers — nothing the head did to produce them",
+    ),
+    ("terse", "the above, plus one row per tool call and how it ended"),
+    ("normal", "the above, plus the model's thinking"),
+    ("loud", "the above, plus who attached, and who issued which command"),
+];
+
+/// **What the diff style means** — named here so both heads spell one setting one way (R38,
+/// §11.6).
+///
+/// # The two axes, and the one that is NOT a value
+///
+/// The operator named two: *unified against side-by-side*, and *whether colour or the `+`/`-`
+/// marks carry the meaning*. **The first is the setting. The second is not a choice and this
+/// is the ruling:** the marks are drawn in BOTH layouts, always, because they are the diff's
+/// meaning and colour is reinforcement of it. A value that removed the marks would be a value
+/// that makes the diff unreadable on exactly the terminals the operator is worried about — a
+/// pipe, a `--replay`, a light theme, a reader who cannot tell red from green — and R20's own
+/// argument is that an appearance which collapses in half the terminals it is read in is not
+/// an appearance at all. So there is no `marks: off`, and no `colour` value either: colour is
+/// a property of the terminal, which the head already knows about (`RenderConfig::color`),
+/// not a preference to be stored.
+const DIFF_VALUES: &[(&str, &str)] = &[
+    (
+        "unified",
+        "one column: `-` lines removed, `+` lines added, in order — best on a narrow terminal",
+    ),
+    (
+        "split",
+        "two columns: the old text left, the new right, lined up — best when there is width",
+    ),
+];
+
 /// What `apply` did with a frame. The driver counts these into the ack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
@@ -1322,13 +1462,17 @@ pub struct App {
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
     picker: bool,
-    /// The mode picker, the session picker's twin for one question: the mode
-    /// this session runs under. `/mode` with no name opens it instead of
-    /// printing a list to copy a name out of; the names are the daemon's own
-    /// (`SettingRow::choices`, protocol 18), so the head keeps no list to
-    /// drift. Each opener closes the other, so the screen holds one list and
-    /// the arrows mean one thing.
-    mode_picker: bool,
+    /// **The setting being chosen, or nothing.** One field for every setting card, because
+    /// "one list on the screen at a time" was a rule four openers kept by hand — each one
+    /// clearing the other three — and R38 added two more subjects to it: hand-kept
+    /// invariants are the shape this file has been bitten by, and `Option` makes it
+    /// structural.
+    ///
+    /// The card itself is one renderer for all four (see `App::setting_picker_lines`): the
+    /// choices, the cursor, the click arithmetic and the drawing are shared, because the one
+    /// thing this file has already been burned by is a second copy of a list that then
+    /// drifts.
+    pick: Option<Pick>,
     /// **`allow-all`, held one keystroke short of sent.** The point admits the
     /// always-ask list — privilege escalation, a delete outside the project, a
     /// host never seen — and on this box those land on the operator's own
@@ -1342,17 +1486,6 @@ pub struct App {
     /// confined, and a head that guesses that wrong asks nothing at exactly the
     /// coordinate worth asking at.
     mode_confirm: Option<String>,
-    /// **The same picker, over the models this daemon can reach.** The operator:
-    /// *"for starters i want it to be usual menu, like /mode"*. `/models` printed
-    /// a wall of provider rows and the switch — the thing anybody types it for —
-    /// was the least visible part of it.
-    ///
-    /// A second flag rather than a second picker: the choices, the cursor, the
-    /// click arithmetic and the drawing are shared below, because the one thing
-    /// this file has already been burned by is a second copy of a list that then
-    /// drifts (see the `mode` settings row, which the head used to keep its own
-    /// copy of and got wrong).
-    models_picker: bool,
     /// **The quit card**, opened by the second Ctrl+C instead of leaving at
     /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
     /// operator often wants the other: leave the head and let the daemon keep
@@ -2018,7 +2151,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "default-model",
         "what a NEW session starts on; /models switches this one",
     ),
-    ("verbosity", "cycle the event-stream detail"),
+    ("verbosity", "how much reaches the transcript: the card, or a rung by name"),
+    ("diff", "how a diff is drawn: unified or side by side"),
     (
         "notes",
         "what this head has shown — and how to retire one",
@@ -2181,9 +2315,8 @@ impl App {
             notice_until: None,
             help: false,
             picker: false,
-            mode_picker: false,
+            pick: None,
             mode_confirm: None,
-            models_picker: false,
             quit_card: false,
             quit_sel: 0,
             mode_sel: 0,
@@ -4634,8 +4767,7 @@ impl App {
                 // the other, so the screen holds one list and the arrows mean
                 // one thing.
                 if self.picker {
-                    self.mode_picker = false;
-                    self.models_picker = false;
+                    self.pick = None;
                 }
                 // Opening it asks for a fresh list rather than drawing the one from
                 // the attach: sessions are a shared thing, and a picker showing what
@@ -4780,7 +4912,7 @@ impl App {
                 //
                 // The two pickers are excluded: they are short, and their click
                 // arithmetic is keyed on rows counted from the top of the card.
-                if self.picker || self.mode_picker || self.models_picker {
+                if self.picker || self.pick.is_some() {
                     return None;
                 }
                 if self.help
@@ -4961,8 +5093,7 @@ impl App {
         }
         if (self.help
             || self.picker
-            || self.mode_picker
-            || self.models_picker
+            || self.pick.is_some()
             || self.stats
             || self.todos_pane
             || self.subagents_pane
@@ -4972,8 +5103,7 @@ impl App {
         {
             self.help = false;
             self.picker = false;
-            self.mode_picker = false;
-            self.models_picker = false;
+            self.pick = None;
             self.quit_card = false;
             self.stats = false;
             self.todos_pane = false;
@@ -5197,8 +5327,8 @@ impl App {
                 _ => {}
             }
         }
-        if self.mode_picker || self.models_picker {
-            let choices = self.pick_choices();
+        if let Some(subject) = self.pick {
+            let choices = self.pick_values().into_iter().map(|(v, _)| v).collect::<Vec<_>>();
             let n = choices.len();
             match k {
                 Key::Up if n > 0 => {
@@ -5220,7 +5350,7 @@ impl App {
                         // A daemon older than protocol 18 sends no choices; the
                         // pane says so rather than cycling a list it made up —
                         // the same words the config pane's mode row says.
-                        self.say(if self.models_picker {
+                        self.say(if subject == Pick::Model {
                             "this daemon does not send the model list; use `/models PROVIDER/MODEL`"
                         } else {
                             "this daemon does not send the mode list; use `/mode NAME`"
@@ -5583,7 +5713,7 @@ impl App {
         // The mode picker takes the line the same way — a row number or a name
         // prefix — for the same reason: while the list is on the screen a bare
         // `2` means the second mode and cannot sensibly mean anything else.
-        if self.mode_picker {
+        if self.pick == Some(Pick::Mode) {
             return self.pick_mode(text.trim());
         }
         // An open decision owns Enter, typed line or not. A line that names an
@@ -5826,8 +5956,7 @@ impl App {
     /// `automode` even though `automode-edits` also starts with it.
     fn pick_mode(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
-            self.mode_picker = false;
-            self.models_picker = false;
+            self.pick = None;
             self.redraw = true;
             return None;
         }
@@ -5875,7 +6004,7 @@ impl App {
     /// daemon to be told what the screen already showed is not worth its
     /// flicker.
     fn take_mode(&mut self, name: String) -> Option<Action> {
-        self.mode_picker = false;
+        self.pick = None;
         self.redraw = true;
         if name == self.mode_current() {
             self.say("already that mode");
@@ -5932,50 +6061,203 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The settings row whichever picker is open is picking from. Only one is ever
-    /// open — Esc and every opener close the others — so this is a choice between
-    /// two, not a stack.
+    /// **The settings row the open card is choosing from**, or `None` for a setting this
+    /// head owns: `Verbosity` and the diff style are the head's own and have no daemon row.
+    ///
+    /// One function for the four, because the choice of row is the only thing that differs
+    /// between a daemon's setting and the head's — see [`Pick::row_key`].
     fn pick_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
-        let key = if self.models_picker { "model" } else { "mode" };
+        let key = self.pick?.row_key()?;
         self.settings.iter().find(|r| r.key == key)
     }
 
-    /// What the open picker offers, and what it is already on. Both come from the
-    /// daemon's own settings row: the head keeping its own copy of a list is the
-    /// mistake the `mode` row's comment records.
-    fn pick_choices(&self) -> Vec<String> {
+    /// **What the open card offers, as values with meanings** (R38).
+    ///
+    /// Two sources, and the difference is where the knowledge lives. A daemon's setting is
+    /// read from its own `SettingRow` — the head keeping its own copy of a list is the
+    /// mistake the `mode` row's comment records — and the values carry **no sentence**,
+    /// because the head does not know what `automode-edits` means and inventing a gloss would
+    /// be writing the other half's documentation. The head's own two settings carry the
+    /// sentences from [`Pick::values`].
+    fn pick_values(&self) -> Vec<(String, String)> {
+        let Some(subject) = self.pick else {
+            return Vec::new();
+        };
+        if !subject.values().is_empty() {
+            return subject
+                .values()
+                .iter()
+                .map(|(v, why)| ((*v).to_string(), (*why).to_string()))
+                .collect();
+        }
         self.pick_row()
-            .map(|r| r.choices.clone())
+            .map(|r| {
+                r.choices
+                    .iter()
+                    .map(|c| (c.clone(), String::new()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
+    /// What the open card is already on.
     fn pick_current(&self) -> String {
-        self.pick_row()
-            .and_then(|r| r.value.split_whitespace().next())
-            .unwrap_or("")
-            .to_string()
+        match self.pick {
+            Some(Pick::Verbosity) => self.verbosity.as_str().to_string(),
+            Some(Pick::Diff) => {
+                if self.diff_split {
+                    "split".into()
+                } else {
+                    "unified".into()
+                }
+            }
+            _ => self
+                .pick_row()
+                .and_then(|r| r.value.split_whitespace().next())
+                .unwrap_or("")
+                .to_string(),
+        }
     }
 
-    /// Commit the highlighted row. The two subjects differ only here: a mode is a
-    /// protocol command this head already has, a model is a daemon verb.
+    /// **Commit the highlighted row.** The four subjects differ only here.
     fn take_pick(&mut self, name: String) -> Option<Action> {
-        if !self.models_picker {
-            return self.take_mode(name);
+        match self.pick {
+            // The daemon's two: a mode is a protocol command this head already has, a model
+            // is a daemon verb.
+            Some(Pick::Mode) => return self.take_mode(name),
+            Some(Pick::Model) => {
+                self.pick = None;
+                self.redraw = true;
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
+                }
+                self.say(&format!("switching to {name}…"));
+                // The switch, then a re-read of the rows it changed — in that order, which
+                // the daemon honours, so the header names what answers now rather than what
+                // answered a moment ago.
+                self.queued.push(Action::Settings);
+                return Some(Action::Slash {
+                    line: format!("models {name}"),
+                });
+            }
+            // **The head's own two are local settings**, so taking one is a write to this
+            // head's config and not a frame — the same act `/verbosity NAME` and `/diff NAME`
+            // perform, through the same function, so a card and a typed word cannot disagree.
+            Some(Pick::Verbosity) => {
+                self.pick = None;
+                return self.set_verbosity(&name);
+            }
+            Some(Pick::Diff) => {
+                self.pick = None;
+                return self.set_diff(&name);
+            }
+            None => None,
         }
-        self.models_picker = false;
-        self.redraw = true;
-        if self.session_id.is_empty() {
-            self.say("not attached to a session yet");
+    }
+
+    /// **Set the rung by name, or refuse by name.** Returns `None` because a rung is a
+    /// local setting: nothing is sent anywhere.
+    ///
+    /// The one place a rung is set, called by the card's `Enter` and by the typed form alike,
+    /// so the two cannot disagree about what a name means or about what happens to the
+    /// transcript when it changes.
+    fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
+        let t = typed.trim().to_ascii_lowercase();
+        let by_name = [
+            Verbosity::Conversation,
+            Verbosity::Terse,
+            Verbosity::Normal,
+            Verbosity::Loud,
+        ]
+        .into_iter()
+        .find(|r| r.as_str() == t);
+        // `v` alone keeps meaning *the next rung* for the fingers that learnt it: one key's
+        // worth of cycling is a promise this head made, and nothing R38 says revokes it —
+        // what R38 rules out is a reader having to CYCLE to find out what the values are, and
+        // the card is where they are read.
+        let rung = match (by_name, t.as_str()) {
+            (Some(r), _) => r,
+            (None, "v" | "next") => self.verbosity.next(),
+            _ => {
+                self.say(&format!(
+                    "`{typed}` is not a rung — the ladder is {}; `/verbosity` with nothing \
+                     after it shows what each one means",
+                    VERBOSITY_VALUES
+                        .iter()
+                        .map(|(v, _)| *v)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                return None;
+            }
+        };
+        let was = self.verbosity;
+        self.verbosity = rung;
+        // **A rung that hides rows can hide the one the reader is holding** (R37's
+        // consequence for R36), so the view moves onto its nearest surviving neighbour at the
+        // moment of the change, where the fact is known for certain.
+        self.reanchor_off_hidden();
+        self.invalidate_history();
+        self.say(&if self.verbosity.hides_the_working() {
+            format!(
+                "verbosity conversation (was {}) — the conversation and nothing the head did \
+                 to produce it. Tool calls, reasoning and head arrivals are HIDDEN, not \
+                 dropped: `/verbosity` brings them back and the span you had it on is drawn \
+                 again. This applies to the whole transcript, already drawn.",
+                was.as_str()
+            )
+        } else {
+            format!(
+                "verbosity {} (was {}) — this applies to the whole transcript, already drawn, \
+                 not only to what comes next.",
+                self.verbosity.as_str(),
+                was.as_str()
+            )
+        });
+        None
+    }
+
+    /// **Set the diff style by name, or refuse by name** — R38's second setting.
+    ///
+    /// A local setting like the rung above, and one place for the same reason: the card's
+    /// `Enter` and the typed word must not be able to disagree.
+    fn set_diff(&mut self, typed: &str) -> Option<Action> {
+        let t = typed.trim().to_ascii_lowercase();
+        let split = match t.as_str() {
+            "split" | "side-by-side" | "side_by_side" => true,
+            "unified" | "one" => false,
+            _ => {
+                self.say(&format!(
+                    "`{typed}` is not a diff style — the two are {}; `/diff` with nothing after \
+                     it shows what each one means",
+                    DIFF_VALUES
+                        .iter()
+                        .map(|(v, _)| *v)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                return None;
+            }
+        };
+        if split == self.diff_split {
+            self.say(&format!(
+                "diff is already {} — nothing changed",
+                if split { "split" } else { "unified" }
+            ));
             return None;
         }
-        self.say(&format!("switching to {name}…"));
-        // The switch, then a re-read of the rows it changed — in that order, which
-        // the daemon honours, so the header names what answers now rather than
-        // what answered a moment ago.
-        self.queued.push(Action::Settings);
-        Some(Action::Slash {
-            line: format!("models {name}"),
-        })
+        self.diff_split = split;
+        // **The history holds RENDERED rows**, and a diff style decides what one of them
+        // renders to — so the whole buffer is stale, not just the row that changed. The same
+        // invalidation `/think` and `/t` make, for the same reason.
+        self.invalidate_history();
+        let saved = self.save_prefs(RetiredWrite::Union);
+        self.say(&format!(
+            "diff {} — every edit card, drawn and future{saved}",
+            if split { "split (side by side)" } else { "unified" }
+        ));
+        None
     }
 
     /// The mode this session runs under, as the row's first word spells it —
@@ -6379,7 +6661,7 @@ impl App {
                 // the session is already under, so Enter on an untouched list
                 // is a no-op; the answer arriving does not re-seed it, so an
                 // arrow pressed while the ask was in flight is not undone.
-                self.mode_picker = true;
+                self.pick = Some(Pick::Mode);
                 self.picker = false;
                 self.config_pane = false;
                 self.mode_sel = self
@@ -6456,32 +6738,50 @@ impl App {
                 self.refold();
                 None
             }
-            "verbosity" | "v" => {
-                self.verbosity = self.verbosity.next();
-                // **A rung that hides rows can hide the one the reader is holding** (R37's
-                // consequence for R36), so the view is moved onto its nearest surviving
-                // neighbour here — at the moment of the switch, where the fact is known for
-                // certain, rather than left to a frame to notice.
-                self.reanchor_off_hidden();
-                self.invalidate_history();
-                let said = if self.verbosity.hides_the_working() {
-                    format!(
-                        "verbosity conversation — the conversation and nothing the head did \
-                         to produce it. Tool calls, reasoning and head arrivals are HIDDEN, \
-                         not dropped: `/verbosity` brings them back and the span you had it \
-                         on is drawn again. {} events filtered so far",
-                        self.filtered
-                    )
-                } else {
-                    format!(
-                        "verbosity {} — {} events filtered so far",
-                        self.verbosity.as_str(),
-                        self.filtered
-                    )
-                };
-                self.say(&said);
-                None
+            // **Bare, it opens the card; named, it sets the rung** — R38's rule, and the
+            // shape `/mode` already had: a setting with more than two values is CHOSEN from a
+            // card showing all of them, and cycling makes the reader hold the list in their
+            // head and discover the current value by changing it. With R37's fourth rung that
+            // was up to three presses and three repaints.
+            _ if verb_arg(cmd, "verbosity").is_some() => {
+                let rest = verb_arg(cmd, "verbosity").unwrap_or("").trim().to_string();
+                if rest.is_empty() {
+                    self.pick = Some(Pick::Verbosity);
+                    self.picker = false;
+                    self.config_pane = false;
+                    self.mode_sel = VERBOSITY_VALUES
+                        .iter()
+                        .position(|(v, _)| *v == self.verbosity.as_str())
+                        .unwrap_or(0);
+                    self.redraw = true;
+                    return None;
+                }
+                return self.set_verbosity(&rest);
             }
+            // **`/diff` — R38's new setting.** It was `slash_refused` until today, and that
+            // refusal is the card R29 was filed from.
+            _ if verb_arg(cmd, "diff").is_some() => {
+                let rest = verb_arg(cmd, "diff").unwrap_or("").trim().to_string();
+                if rest.is_empty() {
+                    self.pick = Some(Pick::Diff);
+                    self.picker = false;
+                    self.config_pane = false;
+                    self.mode_sel = DIFF_VALUES
+                        .iter()
+                        .position(|(v, _)| *v == if self.diff_split { "split" } else { "unified" })
+                        .unwrap_or(0);
+                    self.redraw = true;
+                    return None;
+                }
+                return self.set_diff(&rest);
+            }
+            // **`/v` keeps meaning *the next rung*.** It is an alias in `HEAD_COMMAND_ALIASES`
+            // — deliberately not offered by tab, deliberately still taken — and one key's worth
+            // of cycling is a promise this head made. R38 does not revoke it: what R38 rules out
+            // is having to CYCLE to find out what the values are, and the card is where they are
+            // read. It goes through the same function as the card and the long spelling, so the
+            // three cannot disagree.
+            "v" => return self.set_verbosity("v"),
             "config" | "settings" => {
                 self.config_pane = !self.config_pane;
                 self.config_sel = 0;
@@ -6489,8 +6789,7 @@ impl App {
                 // One list on the screen at a time, the same rule the pickers
                 // keep between themselves.
                 if self.config_pane {
-                    self.mode_picker = false;
-                    self.models_picker = false;
+                    self.pick = None;
                 }
                 self.redraw = true;
                 // Opening asks the daemon for its settings; the head's own are
@@ -6620,16 +6919,15 @@ impl App {
                         self.say("not attached to a session yet");
                         return None;
                     }
-                    self.models_picker = true;
-                    self.mode_picker = false;
+                    self.pick = Some(Pick::Model);
                     self.picker = false;
                     self.config_pane = false;
                     // Seeded to what answers now, so Enter on an untouched list
                     // is a no-op — the same courtesy the mode picker pays.
                     self.mode_sel = self
-                        .pick_choices()
+                        .pick_values()
                         .iter()
-                        .position(|n| *n == self.pick_current())
+                        .position(|(n, _)| *n == self.pick_current())
                         .unwrap_or(0);
                     self.redraw = true;
                     // **`Settings`, not the `models` verb.** Asking the daemon to
@@ -7579,8 +7877,8 @@ impl App {
             // last question it will be asked, and a list under it is a list
             // nobody is going to use.
             (None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
-            (None, None) if self.mode_picker || self.models_picker => {
-                (self.mode_picker_lines(w), Vec::new())
+            (None, None) if self.pick.is_some() => {
+                (self.setting_picker_lines(w), Vec::new())
             }
             (None, None) => (Vec::new(), Vec::new()),
         };
@@ -7795,7 +8093,7 @@ impl App {
         }
         let card_at = h.saturating_sub(chrome.len());
         self.mode_first_row = card_at + 1;
-        self.mode_rows_drawn = if (self.mode_picker || self.models_picker)
+        self.mode_rows_drawn = if self.pick.is_some()
             && self.open.is_empty()
             && self.secret.is_none()
             && content_rows == dec_full
@@ -8044,9 +8342,7 @@ impl App {
             "esc closes this"
         } else if self.picker {
             "type a number to switch · /new [title] · esc closes"
-        } else if self.models_picker {
-            "a row number switches · ↑↓ then enter · or type a name · esc closes"
-        } else if self.mode_picker {
+        } else if self.pick.is_some() {
             "a row number switches · ↑↓ then enter · or type a name · esc closes"
         } else if self.todos_pane {
             "↑↓ moves · enter or tab unfolds · pgup/pgdn and the wheel scroll · esc closes"
@@ -10476,44 +10772,66 @@ impl App {
         out
     }
 
-    fn mode_picker_lines(&self, w: usize) -> Vec<String> {
+    /// **The setting card** — one renderer for every setting a reader chooses from (R38).
+    ///
+    /// `/mode`, `/models`, `/verbosity` and `/diff` are four questions of one kind, so they get
+    /// one card in one place. That is not tidiness: this file has been burned twice by a second
+    /// copy of a list that then drifted (the `mode` settings row it used to keep, and the
+    /// completion table R32 found), and a third card would be a third thing to keep in step.
+    ///
+    /// # What R38 requires of it, and where each one is
+    ///
+    /// * **Every value, the current one marked.** The marker is `← now` in the faint register
+    ///   and the value itself is bold, which is the split the session picker draws between its
+    ///   bold row and its inverse one: *where am I* and *what does Enter take* stay two
+    ///   readable facts even when they are different rows.
+    /// * **What each value MEANS.** For the head's own two settings the sentence is on the row
+    ///   (see [`Pick::values`]); a daemon's setting carries none, because the head does not
+    ///   know what `automode-edits` means and a gloss it invented would be the other half's
+    ///   documentation written wrongly.
+    /// * **It takes effect on what is ALREADY DRAWN**, which for the ladder is the surprising
+    ///   half and is why [`Pick::consequence`] says so under the list.
+    /// * **`esc` is a real answer** — it closes the card and leaves the setting alone; the
+    ///   silence is the answer, and the arm that handles it says so.
+    ///
+    /// The shape is the mode card's, deliberately: title, one row per value with its number on
+    /// the left, `← now` on the right of the current one, then the keys, then the consequence.
+    /// The click arithmetic in [`App::screen`] counts on this: the title is one row and the
+    /// first value is the next one.
+    fn setting_picker_lines(&self, w: usize) -> Vec<String> {
+        let Some(subject) = self.pick else {
+            return Vec::new();
+        };
         let p = self.cfg.palette();
-        let models = self.models_picker;
-        let mut out = vec![colour(
-            &self.cfg,
-            sgr::BOLD,
-            if models {
-                "what answers this conversation"
-            } else {
-                "the mode this session runs under"
-            },
-        )];
-        let choices = self.pick_choices();
-        if choices.is_empty() {
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, subject.title())];
+        let values = self.pick_values();
+        if values.is_empty() {
             out.push(dim(
                 &self.cfg,
-                if models {
-                    "  this daemon has not named its models — `/models PROVIDER/MODEL` \
-                     still works, if you know the name."
-                } else {
-                    "  this daemon has not named its modes — `/mode NAME` still works, \
-                     if you know the name."
+                match subject.row_key() {
+                    // The daemon's two, in the words the config pane already uses for a list
+                    // it was not sent.
+                    Some("model") => {
+                        "  this daemon has not named its models — `/models PROVIDER/MODEL` \
+                         still works, if you know the name."
+                    }
+                    _ => {
+                        "  this daemon has not named its modes — `/mode NAME` still works, if \
+                         you know the name."
+                    }
                 },
             ));
         }
         let current = self.pick_current();
-        for (i, name) in choices.iter().enumerate() {
+        for (i, (name, why)) in values.iter().enumerate() {
             let here = *name == current;
-            let picked = i == self.mode_sel.min(choices.len().saturating_sub(1));
+            let picked = i == self.mode_sel.min(values.len().saturating_sub(1));
             let mark = if picked { "▸" } else { " " };
             let left = format!(
                 "{mark} {:>2}  {}",
                 i + 1,
                 p.paint(if here { Role::Strong } else { Role::Plain }, name),
             );
-            // "Where am I" and "what Enter takes" stay two readable facts, the
-            // same split the session picker draws between its bold row and its
-            // inverse one.
             let right = if here {
                 p.paint(Role::Faint, "← now")
             } else {
@@ -10525,32 +10843,27 @@ impl App {
                 left
             };
             out.push(trim_to(&split_row(&left, &right, w), w));
+            // **The meaning, wrapped and indented under its value.** One fact per line is the
+            // rule the model card already records: these are not trimmed, so a sentence
+            // carrying two facts would lose the second one — measured at 110 columns, where a
+            // two-fact version read "It also become…" and its useful half never reached the
+            // screen.
+            if !why.is_empty() {
+                for l in wrap(why, w.saturating_sub(9)) {
+                    out.push(dim(&self.cfg, &format!("        {l}")));
+                }
+            }
         }
         out.push(dim(
             &self.cfg,
-            "  ↑↓ moves · enter switches · or type a name or the number on the left · esc closes",
+            "  ↑↓ moves · enter takes · or type a name or the row number · esc leaves it alone",
         ));
-        out.push(dim(
-            &self.cfg,
-            if models {
-                // **One fact per line.** These are trimmed to the width, not
-                // wrapped, so a sentence carrying two facts loses the second one —
-                // measured at 110 columns, where a two-fact version read "It also
-                // become…" and its useful half never reached the screen.
-                "  this conversation only, from the next turn; the transcript and the tools are untouched"
-            } else {
-                "  a mode change moves THIS session from its next call, and every later \
-                 session in this project."
-            },
-        ));
-        if models {
-            out.push(dim(
-                &self.cfg,
-                "  `/default-model NAME` is what new sessions start on · this is not that",
-            ));
+        for line in subject.consequence() {
+            out.push(dim(&self.cfg, &format!("  {line}")));
         }
         out
     }
+
 
     /// The password card: what is asking, for which command, and the two keys.
     fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
@@ -11461,9 +11774,11 @@ impl App {
         row(
             "verbosity",
             self.verbosity.as_str().to_string(),
-            "What reaches the transcript at the current filter. /verbosity walks \
-             terse → normal → loud. It used to sit on the composer's border, \
-             which was a row of attention paid for ever for a fact read once.",
+            "What reaches the transcript at the current filter. `/verbosity` with nothing \
+             after it shows every rung and what each one gives you — conversation, terse, \
+             normal, loud — and `/verbosity NAME` sets one. It used to sit on the \
+             composer's border, which was a row of attention paid for ever for a fact \
+             read once.",
         );
         if !self.wiring.workspace.is_empty() {
             row(
@@ -12523,13 +12838,20 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "/verbosity",
-            "terse → normal → loud; /status counts what has been filtered",
+            "how much reaches the transcript: bare, a card stating every rung — conversation, \
+             terse, normal, loud — and what each gives you; `/verbosity NAME` sets one. \
+             /status counts what has been filtered",
+        ),
+        (
+            "/diff",
+            "how an edit card is drawn: bare, a card stating both; `/diff unified` or \
+             `/diff split` sets one",
         ),
         ("/interrupt", "interrupt, when a key is awkward"),
         (
             "/config",
             "every setting and where it came from; the first row toggles the diff \
-             view between split and unified",
+             view between split and unified, which `/diff NAME` also sets",
         ),
         (
             "/compact",
@@ -21306,8 +21628,13 @@ mod tests {
                     a.subagents_pane,
                     a.jobs_pane,
                     a.config_pane,
-                    a.mode_picker,
-                    a.models_picker,
+                    a.pick == Some(Pick::Mode),
+                    a.pick == Some(Pick::Model),
+                    // **R38 added two settings to the same card**, so a verb that opens one
+                    // is a verb that did something — and this closure is where "something"
+                    // is defined for the self-documentation check.
+                    a.pick == Some(Pick::Verbosity),
+                    a.pick == Some(Pick::Diff),
                     a.slash_out.is_some(),
                 )
             };
@@ -21381,7 +21708,7 @@ mod tests {
         let mut c = app();
         c.session_id = "s1".into();
         assert!(matches!(c.submit("/models".into()), Some(Action::Settings)));
-        assert!(c.models_picker, "the menu opened");
+        assert!(c.pick == Some(Pick::Model), "the menu opened");
     }
 
     /// **§6: a key that scrolls a pane moves THAT pane, and the two overlays are
@@ -24691,7 +25018,7 @@ mod tests {
         let panes: [(&str, fn(&mut App)); 8] = [
             ("help", |a| a.help = true),
             ("picker", |a| a.picker = true),
-            ("mode_picker", |a| a.mode_picker = true),
+            ("mode_picker", |a| a.pick = Some(Pick::Mode)),
             ("stats", |a| a.stats = true),
             ("todos_pane", |a| a.todos_pane = true),
             ("subagents_pane", |a| a.subagents_pane = true),
@@ -27063,7 +27390,7 @@ mod tests {
         // with the whole provider listing, which would land on the log under the
         // card and is the wall of text this picker replaces.
         assert_eq!(a.command("models"), Some(Action::Settings));
-        assert!(a.models_picker);
+        assert!(a.pick == Some(Pick::Model));
         assert_eq!(a.mode_sel, 2, "seeded on the row that answers now");
 
         // Tall enough that the card's trailing hints survive the fit loop, which
@@ -27086,7 +27413,7 @@ mod tests {
             Some(Action::Slash { line }) => assert_eq!(line, "models grok/grok-4.3"),
             other => panic!("{other:?}"),
         }
-        assert!(!a.models_picker, "taking a model closes the list");
+        assert!(a.pick.is_none(), "taking a model closes the list");
     }
 
     /// With a name after it the line goes over as typed — `--once` and `--key`
@@ -27103,7 +27430,7 @@ mod tests {
                 Some(Action::Slash { line: sent }) => assert_eq!(sent, line),
                 other => panic!("{line}: {other:?}"),
             }
-            assert!(!a.models_picker, "{line} is not a menu");
+            assert!(a.pick.is_none(), "{line} is not a menu");
         }
     }
 
@@ -27122,14 +27449,14 @@ mod tests {
         a.apply(model_settings("local", &["local", "glm/glm-5.3-flash"]));
 
         assert_eq!(a.command("mode"), Some(Action::Settings));
-        assert!(a.mode_picker && !a.models_picker);
+        assert!(a.pick == Some(Pick::Mode));
         a.command("models");
         assert!(
-            a.models_picker && !a.mode_picker,
+            a.pick == Some(Pick::Model),
             "the second closes the first"
         );
         a.key(Key::Esc);
-        assert!(!a.models_picker && !a.mode_picker, "esc closes it");
+        assert!(a.pick.is_none(), "esc closes it");
     }
 
     const MODES: &[&str] = &[
@@ -27158,7 +27485,7 @@ mod tests {
             Some(Action::Settings),
             "opening asks the daemon for fresh rows"
         );
-        assert!(a.mode_picker);
+        assert!(a.pick == Some(Pick::Mode));
         assert!(!a.picker, "one list on the screen at a time");
         assert_eq!(
             a.mode_sel, 1,
@@ -27188,7 +27515,7 @@ mod tests {
         // already in the marked mode, and a round trip to be told what the
         // screen already showed is not worth its flicker.
         assert_eq!(a.key(Key::Enter), None);
-        assert!(!a.mode_picker);
+        assert!(a.pick.is_none());
         let notice = a.notice.clone().unwrap();
         assert!(notice.contains("already that mode"), "{notice}");
     }
@@ -27223,7 +27550,7 @@ mod tests {
         // closes the list and puts the question up instead of sending it. `y` is
         // what sends it — see `allow_all_asks_before_it_is_sent_and_nothing_else_does`.
         assert_eq!(a.key(Key::Enter), None);
-        assert!(!a.mode_picker, "taking a mode closes the list");
+        assert!(a.pick.is_none(), "taking a mode closes the list");
         assert_eq!(
             a.key(Key::Char('y')),
             Some(Action::Mode {
@@ -27272,7 +27599,7 @@ mod tests {
                 consented: false
             })
         );
-        assert!(!a.mode_picker);
+        assert!(a.pick.is_none());
     }
 
     #[test]
@@ -27299,7 +27626,7 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("the mode this session runs under"))
         );
-        assert!(a.mode_picker, "the card waits, it does not close");
+        assert!(a.pick == Some(Pick::Mode), "the card waits, it does not close");
         a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
         assert!(
             a.screen(110, 24)
@@ -27327,7 +27654,7 @@ mod tests {
                 consented: false
             })
         );
-        assert!(!a.mode_picker);
+        assert!(a.pick.is_none());
         // Reopened: an exact name wins even though a longer mode starts with it.
         assert_eq!(a.command("mode"), Some(Action::Settings));
         typed(&mut a, "automode");
@@ -27353,13 +27680,13 @@ mod tests {
         assert_eq!(a.command("mode"), Some(Action::Settings));
         typed(&mut a, "auto");
         assert_eq!(a.key(Key::Enter), None);
-        assert!(a.mode_picker, "an ambiguous prefix leaves the list up");
+        assert!(a.pick == Some(Pick::Mode), "an ambiguous prefix leaves the list up");
         let notice = a.notice.clone().unwrap();
         assert!(notice.contains("2 modes match"), "{notice}");
         // A prefix nothing matches is refused the same way.
         typed(&mut a, "nope");
         assert_eq!(a.key(Key::Enter), None);
-        assert!(a.mode_picker);
+        assert!(a.pick == Some(Pick::Mode));
         let notice = a.notice.clone().unwrap();
         assert!(notice.contains("no mode matches"), "{notice}");
     }
@@ -27381,7 +27708,7 @@ mod tests {
             }),
             "a named mode never opens the list"
         );
-        assert!(!a.mode_picker);
+        assert!(a.pick.is_none());
     }
 
     #[test]
@@ -27396,7 +27723,7 @@ mod tests {
         // list of its own to fall back on.
         a.apply(mode_settings("read-only", &[]));
         assert_eq!(a.command("mode"), Some(Action::Settings));
-        assert!(a.mode_picker);
+        assert!(a.pick == Some(Pick::Mode));
         let screen = a.screen(110, 24).join("\n");
         assert!(screen.contains("has not named its modes"), "{screen}");
         // Enter says so rather than falling through to the composer, and a
@@ -27406,7 +27733,219 @@ mod tests {
         assert!(notice.contains("does not send the mode list"), "{notice}");
         typed(&mut a, "automode");
         assert_eq!(a.key(Key::Enter), None);
-        assert!(a.mode_picker);
+        assert!(a.pick == Some(Pick::Mode));
+    }
+
+    /// **R38: a setting with more than one value is CHOSEN from a card, never cycled.**
+    ///
+    /// The operator's own shape: `/verbosity` bare used to walk the rung, so the reader learnt
+    /// the list by changing it and discovered the current value the same way. With R37's fourth
+    /// rung that was up to three presses and three repaints to learn four words that fit on one
+    /// card. The card states every value **and what it means** — `conversation`, `terse`,
+    /// `normal`, `loud` are names, and a reader choosing between them is choosing between *what
+    /// will be on my screen*, which the name does not say.
+    #[test]
+    fn the_verbosity_card_shows_every_rung_with_its_meaning_and_marks_the_current_one() {
+        let mut a = app();
+        assert_eq!(a.verbosity, Verbosity::Normal);
+        // Bare: the card, and nothing sent anywhere — a rung is a local setting.
+        assert_eq!(a.command("verbosity"), None);
+        assert!(a.pick == Some(Pick::Verbosity));
+        assert_eq!(a.mode_sel, 2, "the cursor starts on the rung in force");
+        let screen = a.screen(120, 40).join("\n");
+        for (value, why) in VERBOSITY_VALUES {
+            assert!(screen.contains(value), "`{value}` is not on the card:\n{screen}");
+            // The meaning, as a prefix of the sentence — long enough to be the sentence and
+            // short enough that the card's wrap cannot have split it.
+            let lead: String = why.chars().take(30).collect();
+            assert!(
+                screen.contains(&lead),
+                "the card does not say what `{value}` gives you:\n{screen}"
+            );
+        }
+        let row = screen
+            .lines()
+            .find(|l| l.contains("normal") && l.contains('▸'))
+            .expect("the rung in force is on the card");
+        assert!(
+            row.contains("← now"),
+            "the card says which rung is live: {row}"
+        );
+        // **The fact that surprises people**, in the card and not only in a notice: the ladder
+        // applies to the whole transcript, already drawn.
+        assert!(screen.contains("the WHOLE transcript, already drawn"), "{screen}");
+    }
+
+    /// The card's `Enter` and the typed verb are the same act — one function behind both, so a
+    /// rung taken with the arrow keys and a rung typed cannot disagree about anything, down to
+    /// the sentence the reader is left with.
+    #[test]
+    fn taking_a_rung_from_the_card_is_the_same_act_as_typing_it() {
+        let mut card = app();
+        assert_eq!(card.command("verbosity"), None);
+        card.key(Key::Up); // normal -> terse
+        assert_eq!(card.mode_sel, 1);
+        assert_eq!(card.key(Key::Enter), None);
+        assert!(card.pick.is_none(), "taking a value closes the card");
+
+        let mut typed_app = app();
+        assert_eq!(typed_app.command("verbosity terse"), None);
+
+        assert_eq!(card.verbosity, Verbosity::Terse);
+        assert_eq!(typed_app.verbosity, card.verbosity);
+        assert_eq!(card.notice, typed_app.notice);
+    }
+
+    /// **`/v` is the one spelling that still cycles**, and it keeps doing so across R38.
+    ///
+    /// It is an alias in `HEAD_COMMAND_ALIASES` — taken, deliberately not offered by tab — and
+    /// the old `"verbosity" | "v"` arm folded both spellings into one cycle. R38 split the long
+    /// spelling into card-bare / rung-named, and `strip_prefix("verbosity")` does not match `v`,
+    /// so the alias fell through to the daemon until it got its own arm. One key's worth of
+    /// cycling is a promise this head made; what R38 rules out is having to cycle to *learn* the
+    /// values, and the card is where they are read.
+    #[test]
+    fn the_v_alias_still_cycles_the_ladder() {
+        let mut a = app();
+        assert_eq!(a.verbosity, Verbosity::Normal);
+        assert_eq!(a.command("v"), None, "a rung is a local setting: nothing is sent");
+        assert_eq!(a.verbosity, Verbosity::Loud, "`v` is the next rung");
+        assert!(
+            a.pick.is_none(),
+            "`v` cycles in place; it does not open the card"
+        );
+        // The same function as the card and the long spelling, so the three cannot disagree.
+        let mut named = app();
+        assert_eq!(named.command("verbosity loud"), None);
+        assert_eq!(named.verbosity, a.verbosity);
+        assert_eq!(named.notice, a.notice);
+    }
+
+    /// `esc` is "I did not mean to change that", which a card of values has to mean: the arrow
+    /// keys move the cursor and nothing else, and leaving has to leave the setting alone.
+    #[test]
+    fn esc_leaves_the_setting_alone() {
+        let mut a = app();
+        assert_eq!(a.command("verbosity"), None);
+        a.key(Key::Down);
+        a.key(Key::Down);
+        assert_eq!(a.mode_sel, 0, "the cursor moved to the other end");
+        assert_eq!(a.key(Key::Esc), None);
+        assert!(a.pick.is_none(), "esc closes the card");
+        assert_eq!(
+            a.verbosity,
+            Verbosity::Normal,
+            "esc changed the setting it was moving a cursor over"
+        );
+    }
+
+    /// **R38's second setting, and the one that was `slash_refused` until today.** `/diff` bare
+    /// is a card; `/diff NAME` is the same function the card calls.
+    #[test]
+    fn the_diff_card_offers_both_styles_and_sets_the_one_taken() {
+        let mut a = app();
+        assert!(a.diff_split, "side by side is the default");
+        assert_eq!(a.command("diff"), None);
+        assert!(a.pick == Some(Pick::Diff));
+        assert_eq!(a.mode_sel, 1, "the cursor starts on the style in force");
+        let screen = a.screen(120, 40).join("\n");
+        for (value, why) in DIFF_VALUES {
+            assert!(screen.contains(value), "`{value}` is not on the card:\n{screen}");
+            let lead: String = why.chars().take(30).collect();
+            assert!(
+                screen.contains(&lead),
+                "the card does not say what `{value}` looks like:\n{screen}"
+            );
+        }
+        let row = screen
+            .lines()
+            .find(|l| l.contains("split") && l.contains('▸'))
+            .expect("the style in force is on the card");
+        assert!(row.contains("← now"), "{row}");
+        assert!(
+            screen.contains("every edit card, drawn and future"),
+            "the card does not say what it reaches:\n{screen}"
+        );
+        a.key(Key::Up); // split -> unified
+        assert_eq!(a.mode_sel, 0);
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(a.pick.is_none(), "taking a value closes the card");
+        assert!(!a.diff_split, "the card set the style");
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("diff unified"), "{notice}");
+    }
+
+    /// **A change reaches the rows already drawn**, which is the difference between a setting
+    /// and a preference for what comes next: the history holds rendered rows, so the whole buffer
+    /// is stale at the moment the style changes.
+    #[test]
+    fn the_diff_verb_sets_the_style_and_redraws_what_is_already_drawn() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed("t1", "c1", "edit"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "fnv1a:1".into(),
+                inline_bytes: 64,
+                full_bytes: 64,
+                spill: None,
+                repairs: 0,
+                edit: Some(edit_excerpt()),
+            },
+        )));
+        let split = a.screen(120, 30).join("\n");
+        assert!(
+            split.contains("1 - fn a() {}"),
+            "the two-panel diff is not drawn:\n{split}"
+        );
+        // The typed name, not the card: the same setting through the same function.
+        assert_eq!(a.command("diff unified"), None);
+        assert!(!a.diff_split);
+        let unified = a.screen(120, 30).join("\n");
+        assert!(
+            !unified.contains("1 - fn a() {}"),
+            "the row already drawn kept its old style:\n{unified}"
+        );
+        assert!(unified.contains("x();"), "{unified}");
+        assert!(unified.contains('+'), "{unified}");
+        // A name that is not a style is refused BY NAME, listing the two — the shape `/verbosity`
+        // already had, so a typo reads as a refusal and not as silence.
+        assert_eq!(a.command("diff sideways"), None);
+        let notice = a.notice.clone().unwrap();
+        assert!(notice.contains("not a diff style"), "{notice}");
+        assert!(
+            notice.contains("unified") && notice.contains("split"),
+            "the refusal does not name what it would have taken: {notice}"
+        );
+        assert!(!a.diff_split, "a refusal changed the setting");
+    }
+
+    /// **A verb only its author knows is not offered** (R29), and `/diff` is new today: the
+    /// screen a reader actually looks at has to name it, or the remedy is one they have to go
+    /// looking for. The help text is one hand-kept list, so this is the check that keeps it in
+    /// step with the table above.
+    #[test]
+    fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
+        let a = app();
+        let screen = help_lines(&a.cfg, 140).join("\n");
+        assert!(screen.contains("/verbosity"), "{screen}");
+        assert!(screen.contains("/diff"), "{screen}");
+        let line = screen
+            .lines()
+            .position(|l| l.contains("/diff"))
+            .expect("`/diff` is on the help screen");
+        assert!(
+            screen.lines().nth(line).unwrap_or("").contains("unified")
+                || screen.lines().nth(line + 1).unwrap_or("").contains("split"),
+            "the help screen names `/diff` without saying what it takes:\n{screen}"
+        );
     }
 
     #[test]
@@ -28491,7 +29030,7 @@ mod tests {
         let mut a = app();
         a.session_id = "s1".into();
         assert_eq!(a.command("models"), Some(Action::Settings));
-        assert!(a.models_picker, "bare /models is the menu");
+        assert!(a.pick == Some(Pick::Model), "bare /models is the menu");
         a.key(Key::Esc);
         match a.command("models deepseek") {
             Some(Action::Slash { line }) => assert_eq!(line, "models deepseek"),
@@ -28499,7 +29038,7 @@ mod tests {
         }
         // While `/mode` still opens the picker, and `/mode NAME` still types it.
         assert!(matches!(a.command("mode"), Some(Action::Settings) | None));
-        assert!(a.mode_picker || a.settings.is_empty());
+        assert!(a.pick == Some(Pick::Mode) || a.settings.is_empty());
     }
 
     #[test]
