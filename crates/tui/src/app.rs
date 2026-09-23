@@ -3918,15 +3918,24 @@ impl App {
                         Disposition::Rendered
                     }
                     DeltaTarget::Reasoning => {
+                        // **Accumulated at every rung, drawn only where the rung shows it.**
+                        //
+                        // The guard used to be on the accumulation, which is the same mistake
+                        // R37's marker made one layer up: `conversation` *hides* the working and
+                        // does not *discard* it — the rung is a view — so the text has to be
+                        // here to be counted, to be drawn when the reader opens the run, and to
+                        // be there the moment they change rung. Found by the marker's own test:
+                        // at `conversation` nothing accumulated, so the streamed thinking the
+                        // operator was watching could not be counted.
+                        if t.think_started_ms == 0 {
+                            t.think_started_ms = ts;
+                        }
+                        t.think_last_ms = ts;
+                        // The same rule as the answer above, for the same reason: reasoning is
+                        // the model's own text and it reaches the glass through the markdown
+                        // renderer.
+                        t.reasoning.push(&without_control_lines(&text));
                         if self.verbosity >= Verbosity::Normal {
-                            if t.think_started_ms == 0 {
-                                t.think_started_ms = ts;
-                            }
-                            t.think_last_ms = ts;
-                            // The same rule as the answer above, for the same reason:
-                            // reasoning is the model's own text and it reaches the glass
-                            // through the markdown renderer.
-                            t.reasoning.push(&without_control_lines(&text));
                             Disposition::Rendered
                         } else {
                             Disposition::Filtered
@@ -8498,9 +8507,20 @@ impl App {
         // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
         // the whole session — 400 rows where a screen was asked for, found by the debug
         // print and not by reading it. `None` is the lines-only walk.
+        // **What the turn is doing that no row holds yet**, computed once for this walk.
+        // The backward walk is entered when the transcript is too big to render forward, and
+        // it still has to count the work in flight against the run it belongs to.
+        let live = live_work(
+            self.turn.as_ref(),
+            &self.cfg,
+            !matches!(
+                self.turn.as_ref().and_then(|t| t.state.as_ref()),
+                Some(TurnState::Running) | None
+            ),
+        );
         // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
-        let newest_run = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts);
+        let newest_run = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live);
         // **`carry`: the walk does not stop in the middle of a run.**
         //
         // A run's marker is drawn at its FIRST row, and this walk renders the newest rows
@@ -8544,6 +8564,7 @@ impl App {
                 &self.items,
                 self.verbosity,
                 &self.bound_prompts,
+                live,
                 self.payload_sel.as_deref(),
                 k,
             );
@@ -8554,6 +8575,7 @@ impl App {
                 &self.items,
                 self.verbosity,
                 &self.bound_prompts,
+                live,
                 &cfg,
                 k,
                 newest_run == Some(k + 1),
@@ -8568,7 +8590,7 @@ impl App {
             let unseen = if open_run {
                 None
             } else {
-                unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, k)
+                unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)
             };
             carry = unseen.is_some_and(|(start, _)| start < k);
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
@@ -8586,6 +8608,7 @@ impl App {
                         self.verbosity,
                         &cfg,
                         newest_run == Some(start),
+                        live,
                     )
                 });
             let (class, rows) = match unseen {
@@ -8761,10 +8784,41 @@ impl App {
     /// One function, so the chord and the marker's seam cannot come to disagree about which
     /// of the two things the key is about to open.
     fn newest_openable(&self) -> Option<String> {
-        if let Some(start) = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts) {
-            return Some(self.items[start].item_id.clone());
+        let live = self.live_work_now();
+        if let Some(start) = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live)
+        {
+            // **A run with no row yet is addressed by a sentinel**, because there is no id to
+            // key it on: the work in flight has no item. The chord still opens something —
+            // this is the turn's own live view, which is where that work is drawn — and
+            // *"a marker that cannot be opened is the elision this document refuses
+            // everywhere else."*
+            return Some(match self.items.get(start) {
+                Some(it) => it.item_id.clone(),
+                None => LIVE_RUN.to_string(),
+            });
         }
         self.newest_payload_row()
+    }
+
+    /// The turn's in-flight work, as this head currently knows it — one function, so the
+    /// walk, the chord and the pane cannot disagree about what is running.
+    fn live_work_now(&self) -> LiveWork {
+        let superseded = !matches!(
+            self.turn.as_ref().and_then(|t| t.state.as_ref()),
+            Some(TurnState::Running) | None
+        ) && self.turn.as_ref().is_some_and(|t| {
+            !t.appended.is_empty()
+                && t.appended.iter().all(|id| {
+                    self.items
+                        .iter()
+                        .find(|r| &r.item_id == id)
+                        .is_some_and(|r| r.item.is_some())
+                })
+                && t.calls
+                    .iter()
+                    .all(|c| matches!(c.state, CallState::Finished { .. }))
+        });
+        live_work(self.turn.as_ref(), &self.cfg, superseded)
     }
 
     /// The newest transcript row that has a payload to page: a tool result with more
@@ -9212,6 +9266,11 @@ impl App {
                 .map(|t| t.appended.iter().map(String::as_str).collect())
                 .unwrap_or_default()
         };
+        // **The turn's in-flight work, read before the walk's disjoint borrow.** The
+        // destructure below deliberately leaves `turn` out (the pane later needs it whole),
+        // so this is the one place the walk can see it — and it must, because a call in
+        // flight is not a row and the counts have to carry it.
+        let live = live_work(self.turn.as_ref(), &self.cfg, superseded);
         {
             let App {
                 hist_lines,
@@ -9245,7 +9304,7 @@ impl App {
             // shape `newest_payload` has above, and for the same reason — the seam names the
             // chord only on the run the chord acts on, and asking per row would be a scan of
             // the transcript for every row drawn.
-            let newest_run = newest_unseen_run(items, *verbosity, bound_prompts);
+            let newest_run = newest_unseen_run(items, *verbosity, bound_prompts, live);
             loop {
                 // **A note from before this window is stepped over, not drawn** (R19).
                 // It is a disclosure this head holds — `/notes` lists it and `/status`
@@ -9347,6 +9406,7 @@ impl App {
                         items,
                         *verbosity,
                         bound_prompts,
+                        live,
                         &cfg,
                         *hist_upto,
                         newest_run == Some(*hist_upto + 1),
@@ -9362,13 +9422,14 @@ impl App {
                         items,
                         *verbosity,
                         bound_prompts,
+                        live,
                         payload_sel.as_deref(),
                         *hist_upto,
                     );
                     let unseen = if open_run {
                         None
                     } else {
-                        unseen_run_at(items, *verbosity, bound_prompts, *hist_upto)
+                        unseen_run_at(items, *verbosity, bound_prompts, live, *hist_upto)
                     };
                     // **No blank line in front of a marker.** It continues the sentence above
                     // it rather than standing as a row of its own, so the separator's blank —
@@ -9386,6 +9447,7 @@ impl App {
                                 *verbosity,
                                 &cfg,
                                 newest_run == Some(start),
+                                live,
                             );
                             // **Glued to the sentence it continues**, when there is one: the
                             // last drawn row is [`RowClass::Speech`] — the class this file
@@ -9508,6 +9570,41 @@ impl App {
             }
         }
 
+        // **A marker with no row joins the sentence above it, and the joining happens HERE.**
+        //
+        // The pane pushes the marker while `hist_lines` is lent to the frame, and the join is
+        // a mutation of that buffer's last line — so it is decided now, one statement before
+        // the borrow. The rule is the walk's own: the row above must be the MODEL's prose.
+        // Without this the counts stood a blank line under the sentence that introduced them,
+        // which is a row rather than a continuation — the same defect the operator reported
+        // for their own message, in the one place the walk could not reach it.
+        let live_joins = live.work() > 0
+            && !superseded
+            && self.verbosity.hides_the_working()
+            && self
+                .spans
+                .last()
+                .and_then(|sp| self.items.get(sp.row))
+                .is_some_and(|it| {
+                    matches!(
+                        it.item.as_ref(),
+                        Some(letibot_transcript::TranscriptItem::Assistant { text, .. })
+                            if !text.trim().is_empty()
+                    )
+                });
+        if live_joins {
+            let painted = marker_painted(
+                &self.cfg,
+                &marker_text(live.calls, live.think_lines, true),
+            );
+            if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
+                let joined = format!("{} {painted}", self.hist_lines[at].trim_end());
+                if visible_width(&joined) <= self.cfg.width {
+                    self.hist_lines[at] = joined;
+                }
+            }
+        }
+
         // **Scrolling up back-fills.** A belt to `scroll_up`'s braces: that key renders what
         // its own press needs, and this catches anything that moved the scroll without going
         // through a key — a click, a restore, a test that sets `scroll` directly. It asks for
@@ -9594,6 +9691,21 @@ impl App {
             // here as it is hidden in the transcript, so the rung does not depend on whether
             // a row has been committed yet — a reader who switched mid-turn would otherwise
             // watch the thinking appear when it settles.
+            // **The rung's own count of the work in flight** — R37 AMENDED, the operator's
+            // *"display looks frozen, while in fact it is just say cargo testing with yellow
+            // dot"*. Everything below this line is the working and this rung does not draw it,
+            // so without this the pane showed the narration and then nothing until a result
+            // row landed — which is a screen that says the head has stopped.
+            //
+            // Drawn where the work is: right after the prose that introduced it, which is where
+            // the counts belong and where the reader is looking.
+            if !superseded && rung.hides_the_working() && live.work() > 0 && !live_joins {
+                let text = marker_text(live.calls, live.think_lines, true);
+                segs.push(Seg::Owned(vec![marker_painted(
+                    &cfg,
+                    &format!("{}{}", " ".repeat(ind), text),
+                )]));
+            }
             if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
                 // Narrower by the rail and by the step it is set in. Getting this
                 // wrong makes the block one row taller than the space reserved for
@@ -9643,11 +9755,11 @@ impl App {
                 // moment that call's result row lands, the run exists and the line appears
                 // above it. The rung's liveness obligation is elsewhere and unbroken — the
                 // footer says a turn is running and for how long (R13/§5.6).
-                let live = calls.get(*settled_calls..).unwrap_or(&[]);
-                let live = if rung.hides_the_working() { &[][..] } else { live };
-                if !live.is_empty() {
+                let live_calls = calls.get(*settled_calls..).unwrap_or(&[]);
+                let live_calls = if rung.hides_the_working() { &[][..] } else { live_calls };
+                if !live_calls.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
-                    for c in live.iter() {
+                    for c in live_calls.iter() {
                         // **A running call is timed against the clock that was running
                         // when it started** (R13). `now_ms` here is `t.last_ms` — the
                         // log's clock — and that number **stops** when the daemon stops
@@ -12754,12 +12866,52 @@ fn reasoning_display_lines(text: &str, w: usize) -> usize {
 /// the operator typed, and that is the conversation. A row the head never got an item for
 /// cannot be judged, and the honest default for unjudgeable is *show it*.
 fn row_hidden(items: &[SnapshotItem], rung: Verbosity, row: usize) -> bool {
+    row_hidden_at(rung, items.get(row))
+}
+
+/// **The same question about a row rather than about a list index** — so it can be asked
+/// about the live tail, which is the work after every row there is.
+///
+/// `None` is a row with no body yet, and it is **not hidden**: it is drawn from this head's
+/// own echo of what the operator typed when it has one, and a row nobody can read is not the
+/// working this rung is about.
+fn row_hidden_at(rung: Verbosity, it: Option<&SnapshotItem>) -> bool {
     if !rung.hides_the_working() {
         return false;
     }
-    match items.get(row).and_then(|it| it.item.as_ref()) {
+    match it.and_then(|it| it.item.as_ref()) {
         Some(item) => !rung.keeps(item),
         None => false,
+    }
+}
+
+/// **Work this turn is doing right now that no row holds yet** — R37 AMENDED.
+///
+/// The operator, watching a long `cargo test` behind a `blabal:` line: *"display looks
+/// frozen, while in fact it is just say cargo testing with yellow dot. which means the
+/// `[6 tool calls, 7 thinking lines]` must somehow show if there is a tool call or thinking
+/// in flight. and obviously be updated earlier, even for the empty card."*
+///
+/// They are right, and the reason is structural. A round's result rows are appended **after
+/// every call in the round has run** (`harnessd::harness`: `for call in &calls`, then one
+/// `append_items`), so a call in flight is not a row, is counted by no marker, and at this
+/// rung is not drawn either — the screen showed the narration and then nothing until the
+/// result landed. The head cannot derive any of it from the transcript, because the
+/// transcript does not have it yet; but it is watching the turn, so it knows.
+///
+/// The same is true of the reasoning a turn has streamed and not yet committed: the deltas
+/// arrive, the row does not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LiveWork {
+    /// Calls proposed or running with no settled result row yet.
+    calls: usize,
+    /// Display lines of reasoning streamed this turn and not yet a row.
+    think_lines: usize,
+}
+
+impl LiveWork {
+    fn work(self) -> usize {
+        self.calls + self.think_lines
     }
 }
 
@@ -12802,13 +12954,23 @@ fn row_drawn(
     bound: &std::collections::HashMap<String, String>,
     row: usize,
 ) -> bool {
+    items
+        .get(row)
+        .is_some_and(|it| row_drawn_at(rung, bound, it))
+}
+
+/// The same question for one row, or for **the live tail**: `None` there is the work in
+/// flight, which draws nothing as a row and is therefore invisible — the whole of why the
+/// counts must carry it.
+fn row_drawn_at(
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+    it: &SnapshotItem,
+) -> bool {
     if !rung.hides_the_working() {
         return true;
     }
-    let Some(it) = items.get(row) else {
-        return false;
-    };
-    if row_hidden(items, rung, row) {
+    if row_hidden_at(rung, Some(it)) {
         return false;
     }
     match it.item.as_ref() {
@@ -12833,6 +12995,7 @@ fn unseen_run_at(
     items: &[SnapshotItem],
     rung: Verbosity,
     bound: &std::collections::HashMap<String, String>,
+    live: LiveWork,
     row: usize,
 ) -> Option<(usize, usize)> {
     if !rung.hides_the_working() || row >= items.len() || row_drawn(items, rung, bound, row) {
@@ -12846,9 +13009,13 @@ fn unseen_run_at(
     while end < items.len() && !row_drawn(items, rung, bound, end) {
         end += 1;
     }
-    (start..end)
-        .any(|r| row_hidden(items, rung, r))
-        .then_some((start, end))
+    let hidden = (start..end).any(|r| row_hidden(items, rung, r));
+    // **The live tail is contiguous with a stretch that runs to the end of the transcript.**
+    // Work in flight comes after every row there is, so it belongs to the last stretch of
+    // invisible rows and to nothing else — anything else would be two markers for one run.
+    // A stretch that nothing hides and that no work is reaching into draws no marker at all.
+    let reaches_the_turn = end == items.len() && live.work() > 0;
+    (hidden || reaches_the_turn).then_some((start, end))
 }
 
 /// **Is this row inside the run that is currently OPEN** — R37 AMENDED's "it opens".
@@ -12866,17 +13033,33 @@ fn run_open_at(
     items: &[SnapshotItem],
     rung: Verbosity,
     bound: &std::collections::HashMap<String, String>,
+    live: LiveWork,
     open: Option<&str>,
     row: usize,
 ) -> bool {
     let Some(id) = open.filter(|id| !id.is_empty()) else {
         return false;
     };
+    // **The live tail is addressed by a sentinel**, because there is no row to key it on:
+    // `App::newest_openable` returns this for it. A run with no row yet still has to open —
+    // *"a marker that cannot be opened is the elision this document refuses everywhere else"*
+    // — and what it opens is the turn's own live view, which is where that work is.
+    if id == LIVE_RUN {
+        return live.work() > 0 && !live_tail_covered(items, rung, bound);
+    }
     let Some(start) = items.iter().position(|it| it.item_id == id) else {
         return false;
     };
-    unseen_run_at(items, rung, bound, start).is_some_and(|(s, e)| row >= s && row < e)
+    unseen_run_at(items, rung, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
 }
+
+/// **The run with no row yet** — the sentinel [`App::newest_openable`] returns for the work in
+/// flight, so the marker that stands for it can name a chord and that chord can reach it.
+///
+/// Not an item id: an item id is minted by the daemon and this run has no item. A constant
+/// that cannot collide with one (`s-…`/`t…r…` ids are alphanumeric) and that reads as what it
+/// is in a debugger.
+pub const LIVE_RUN: &str = "<live>";
 
 /// **The newest run of invisible rows, by its first row** — what `ctrl-t` opens.
 ///
@@ -12884,17 +13067,43 @@ fn run_open_at(
 /// there is no cursor in this head, so exactly one run can be addressed by a chord, and the
 /// one a reader reaching for the key means is the newest. A chord may only be named where
 /// it acts, so only this run's marker names `ctrl-t`.
+/// **Which run the chord opens**, as *the row it starts at* — and the live tail has no row,
+/// so it is `items.len()`, which is the one index past the end and reads as what it is.
+///
+/// **The in-flight run is the newest run there is**: it is the work of this moment, after
+/// every row, so when it stands alone its marker is the one that names `ctrl-t`.
 fn newest_unseen_run(
     items: &[SnapshotItem],
     rung: Verbosity,
     bound: &std::collections::HashMap<String, String>,
+    live: LiveWork,
 ) -> Option<usize> {
     if !rung.hides_the_working() {
         return None;
     }
-    (0..items.len())
-        .rev()
-        .find(|r| unseen_run_at(items, rung, bound, *r).is_some_and(|(start, _)| start == *r))
+    if live.work() > 0 && !live_tail_covered(items, rung, bound) {
+        return Some(items.len());
+    }
+    (0..items.len()).rev().find(|r| {
+        unseen_run_at(items, rung, bound, live, *r).is_some_and(|(start, _)| start == *r)
+    })
+}
+
+/// **Is the work in flight already counted by a run that has rows.**
+///
+/// True when the transcript's last row is invisible, because then the stretch it sits in runs
+/// to the end and [`unseen_run_at`] has already folded the tail into its counts. False when
+/// the last row is prose or there are none — and then the in-flight work is its own run, with
+/// no row to be drawn at, and the live pane draws its marker.
+fn live_tail_covered(
+    items: &[SnapshotItem],
+    rung: Verbosity,
+    bound: &std::collections::HashMap<String, String>,
+) -> bool {
+    !rung.hides_the_working()
+        && items
+            .last()
+            .is_some_and(|it| !row_drawn_at(rung, bound, it))
 }
 
 /// **Does the MODEL's own sentence introduce this run.**
@@ -12933,6 +13142,7 @@ fn reserved_for_run(
     items: &[SnapshotItem],
     rung: Verbosity,
     bound: &std::collections::HashMap<String, String>,
+    live: LiveWork,
     cfg: &RenderConfig,
     row: usize,
     newest: bool,
@@ -12940,7 +13150,7 @@ fn reserved_for_run(
     if !rung.hides_the_working() || row + 1 >= items.len() {
         return None;
     }
-    let (start, end) = unseen_run_at(items, rung, bound, row + 1)?;
+    let (start, end) = unseen_run_at(items, rung, bound, live, row + 1)?;
     if start != row + 1 {
         return None;
     }
@@ -12950,7 +13160,7 @@ fn reserved_for_run(
     if !run_continues_prose(items, start) {
         return None;
     }
-    let text = hidden_run_marker(items, start, end, rung, cfg, newest);
+    let text = hidden_run_marker(items, start, end, rung, cfg, newest, live);
     Some(visible_width(&format!(" {text}")))
 }
 
@@ -13001,6 +13211,54 @@ fn reserved_for_run(
 ///
 /// The dot lives inside the seam string rather than being painted beside it, so the separator
 /// cannot come out in one register and its own key in another.
+fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
+    let plural = |n: usize, one: &str, many: &str| {
+        format!("{n} {}", if n == 1 { one } else { many })
+    };
+    let mut counts: Vec<String> = Vec::new();
+    if calls > 0 {
+        counts.push(plural(calls, "tool call", "tool calls"));
+    }
+    if think_lines > 0 {
+        counts.push(plural(think_lines, "thinking line", "thinking lines"));
+    }
+    let seam = if newest {
+        " · ctrl-t opens it"
+    } else {
+        " · /verbosity"
+    };
+    format!("[{}]{seam}", counts.join(", "))
+}
+
+/// **How the live pane knows what is in flight** — calls proposed or running with no result
+/// row yet, and reasoning streamed and not yet committed.
+///
+/// Recomputed every frame from the turn, which is the only place it exists: the daemon
+/// appends a round's results **after every call in it has run**, so between the narration and
+/// the first result the transcript is empty of the work and this is the whole of the evidence.
+fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> LiveWork {
+    let Some(t) = turn else {
+        return LiveWork::default();
+    };
+    if superseded {
+        return LiveWork::default();
+    }
+    let calls = t
+        .calls
+        .iter()
+        .filter(|c| !matches!(c.state, CallState::Finished { .. }))
+        .count();
+    let think_lines = if t.reasoning.is_empty() {
+        0
+    } else {
+        reasoning_display_lines(t.reasoning.raw(), cfg.width)
+    };
+    LiveWork {
+        calls,
+        think_lines,
+    }
+}
+
 fn marker_painted(cfg: &RenderConfig, text: &str) -> String {
     cfg.palette().paint(Role::Faint, text)
 }
@@ -13012,6 +13270,7 @@ fn hidden_run_marker(
     rung: Verbosity,
     cfg: &RenderConfig,
     newest: bool,
+    live: LiveWork,
 ) -> String {
     let mut calls = 0usize;
     let mut think_lines = 0usize;
@@ -13035,22 +13294,14 @@ fn hidden_run_marker(
             _ => {}
         }
     }
-    let plural = |n: usize, one: &str, many: &str| {
-        format!("{n} {}", if n == 1 { one } else { many })
-    };
-    let mut counts: Vec<String> = Vec::new();
-    if calls > 0 {
-        counts.push(plural(calls, "tool call", "tool calls"));
+    // **And the work in flight, when this run is the one it belongs to.** A stretch that
+    // reaches the end of the transcript is where the turn is, so the counts move as the round
+    // runs — which is the operator's *"obviously be updated earlier, even for the empty card."*
+    if end == items.len() {
+        calls += live.calls;
+        think_lines += live.think_lines;
     }
-    if think_lines > 0 {
-        counts.push(plural(think_lines, "thinking line", "thinking lines"));
-    }
-    let seam = if newest {
-        " · ctrl-t opens it"
-    } else {
-        " · /verbosity"
-    };
-    format!("[{}]{seam}", counts.join(", "))
+    marker_text(calls, think_lines, newest)
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -29070,6 +29321,163 @@ mod tests {
             third.notice
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A call in flight is counted before its row exists** — the operator's *"display looks
+    /// frozen, while in fact it is just say cargo testing with yellow dot."*
+    ///
+    /// The structural reason is in `harnessd::harness`: a round's result rows are appended
+    /// **after every call in it has run**, so between the narration and the first result the
+    /// transcript holds no work at all. A marker built from rows therefore counted nothing and
+    /// said nothing, while the reader watched a `cargo test` that had been running for a
+    /// minute — a screen that reads as a head which has stopped.
+    ///
+    /// The turn is what knows. This drives a turn whose call is proposed and running with no
+    /// result yet, and asks for the counts.
+    #[test]
+    fn a_call_in_flight_is_counted_before_its_row_exists() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // The narration, and then the work — with no rows to stand for it.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::Text,
+                text: "let me run the tests:".into(),
+            },
+        )));
+        // The row the prose will become, and the call proposed on the turn.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "let me run the tests:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::proposed_on("t1", "c1", "bash", "cargo test"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: "exec".into(),
+            },
+        )));
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains("[1 tool call]"),
+            "the call in flight is not counted, so the screen says the head stopped:\n{screen}"
+        );
+        assert!(
+            !screen.contains("cargo test"),
+            "the call's own card is the working and this rung does not draw it:\n{screen}"
+        );
+    }
+
+    /// **And the counts move as the round runs** — *"obviously be updated earlier."*
+    ///
+    /// A second call proposed on the same turn takes the count to two with no new row landing,
+    /// and the thinking streamed but not committed is counted the same way.
+    #[test]
+    fn the_counts_move_as_the_round_runs() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::Text,
+                text: "working:".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "working:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.verbosity = Verbosity::Conversation;
+        let count = |a: &mut App| {
+            a.invalidate_history();
+            let s = a.screen(120, 30).join("\n");
+            s.lines()
+                .find(|l| l.contains("tool call") || l.contains("thinking line"))
+                .map(str::to_string)
+        };
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::proposed_on("t1", "c1", "bash", "cargo test"),
+        )));
+        assert!(
+            count(&mut a).is_some_and(|l| l.contains("[1 tool call]")),
+            "one call proposed is one count: {:?}",
+            count(&mut a)
+        );
+        a.apply(ServerFrame::Event(env(
+            6,
+            testing::proposed_on("t1", "c2", "bash", "cargo build"),
+        )));
+        assert!(
+            count(&mut a).is_some_and(|l| l.contains("[2 tool calls]")),
+            "the second call moved it, with no row landing: {:?}",
+            count(&mut a)
+        );
+        // **And the thinking the turn has streamed**, which is also not a row yet.
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::Reasoning,
+                text: "I should check the tests first".into(),
+            },
+        )));
+        assert!(
+            count(&mut a).is_some_and(|l| l.contains("2 tool calls") && l.contains("thinking line")),
+            "the streamed reasoning is not counted: {:?}",
+            count(&mut a)
+        );
     }
 
     /// **The seam is faint, dot included** — the operator's *"`ctrl-t opens it` and
