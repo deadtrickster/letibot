@@ -11,14 +11,22 @@
 //! (`harnessd`'s `surroundings_for`): a bare name resolves through the PATH fixed at seat
 //! time. `$HOME` and `$WS` override the two paths it places against, so a reader can ask
 //! *what would this be under another workspace* without touching the box.
+//!
+//! **R39: `$CWD` is where a script file is resolved from, and `$READ_SCRIPTS=1` turns the
+//! reading on.** `python3 foo.py` is judged from `foo.py`'s bytes, and those bytes are read
+//! by the session's own reader (`letibot_tools::runtime::scripts_for`) against the session's
+//! own workspace — so a corpus sweep has to be told the directory each command ran in. With
+//! the flag off this example is exactly the old behaviour, which is what makes a
+//! before/after sweep honest without building two revisions: `&[]` is not a
+//! reimplementation of the scan, it is the same function with nothing to read.
 use std::io::Read;
 
 fn main() {
+    let workspace = std::env::var("WS").unwrap_or_else(|_| "/home/dead/Projects/letibot".into());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/dead".into());
     let env = letibot_tools::intent::Surroundings {
-        home: Some(std::env::var("HOME").unwrap_or_else(|_| "/home/dead".into())),
-        workspace: Some(
-            std::env::var("WS").unwrap_or_else(|_| "/home/dead/Projects/letibot".into()),
-        ),
+        home: Some(home.clone()),
+        workspace: Some(workspace.clone()),
         // `None`, not a guess: the scratch is the daemon's own directory and reading this
         // box's `$XDG_RUNTIME_DIR` to invent one would place paths the daemon would not.
         scratch: None,
@@ -28,23 +36,88 @@ fn main() {
         seen_hosts: Default::default(),
     };
 
+    // Where a relative script path is resolved from, and whether to read at all.
+    let cwd = std::env::var("CWD").unwrap_or_else(|_| workspace.clone());
+    let read_scripts = std::env::var("READ_SCRIPTS").is_ok_and(|v| v == "1");
+    let show_scripts = std::env::var("SHOW_SCRIPTS").is_ok();
+
     // Arguments, or NUL-separated commands on stdin for a bulk pass. The second form is
     // what a corpus sweep wants: `sqlite3 … | cargo run --example classify`.
+    //
+    // **`PAIRS=1` makes the bulk pass alternate `cwd` and `command`** — R39's sweep, where
+    // every row carries the directory it ran in and one process per row would be 30,000
+    // processes to answer a question about one flag.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut lines = args;
+    let mut pairs = Vec::new();
     if lines.is_empty() {
         let mut raw = Vec::new();
         std::io::stdin().read_to_end(&mut raw).unwrap();
-        lines = raw
+        let fields: Vec<&str> = raw
             .split(|b| *b == 0)
             .filter_map(|c| std::str::from_utf8(c).ok())
-            .filter(|c| !c.trim().is_empty())
-            .map(str::to_string)
             .collect();
+        if std::env::var("PAIRS").is_ok() {
+            for two in fields.chunks(2) {
+                if let [cwd, cmd] = two {
+                    pairs.push((cwd.to_string(), cmd.to_string()));
+                }
+            }
+        } else {
+            lines = fields
+                .into_iter()
+                .filter(|c| !c.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+        }
     }
-
-    for cmd in lines {
-        let b = letibot_tools::intent::Baseline::of_command(&cmd, &env);
+    let default_cwd = cwd.clone();
+    for pair in if pairs.is_empty() {
+        lines.into_iter().map(|c| (default_cwd.clone(), c)).collect::<Vec<_>>()
+    } else {
+        pairs
+    } {
+        let (cwd, cmd) = pair;
+        // **The scripts this command runs, read the way a session's gate reads them.** The
+        // same function the daemon calls, so a sweep measures the real reader — including
+        // its refusal to open a path in a secret store — rather than a model of it. A
+        // relative path resolves against the session's working directory and is confined to
+        // the workspace root, which is what `HostBackend::resolve` does.
+        let scripts = if read_scripts {
+            let root = std::path::PathBuf::from(&workspace);
+            let base = std::path::PathBuf::from(&cwd);
+            let read = |p: &str| -> Result<Vec<u8>, String> {
+                let expanded = match p.strip_prefix("~/") {
+                    Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
+                    None => p.to_string(),
+                };
+                let full = if expanded.starts_with('/') {
+                    std::path::PathBuf::from(expanded)
+                } else {
+                    base.join(expanded)
+                };
+                if !full.starts_with(&root) {
+                    return Err(format!("Outside({p})"));
+                }
+                match std::fs::read(&full) {
+                    Ok(b) => Ok(b),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        Err(format!("NotFound({p})"))
+                    }
+                    Err(e) => Err(format!("Io({e})")),
+                }
+            };
+            let found = letibot_tools::runtime::scripts_for(&cmd, Some(&home), read);
+            if show_scripts {
+                for one in &found {
+                    println!("  script {} => {:?}", one.path, one.body);
+                }
+            }
+            found
+        } else {
+            Vec::new()
+        };
+        let b = letibot_tools::intent::Baseline::of_command_with(&cmd, &env, &scripts);
         println!(
             "reads={:5} tier={:12} verdict={:8} intents={:?} regions={:?}",
             b.reads_only(),

@@ -2183,7 +2183,14 @@ impl AdjudicatedGate {
     /// tool that takes a path.
     pub fn baseline_for(&self, call: &GateCall<'_>) -> crate::intent::Baseline {
         if let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) {
-            return crate::intent::Baseline::of_command(cmd, &self.surroundings);
+            // **The scripts this command will run travel with it** (R39), because they
+            // are already here: the runtime read them for the brief, through the backend,
+            // before this was called. Handing layer A the SAME bytes is what makes the two
+            // halves of one gate unable to disagree about one file — the oracle reading the
+            // program while the classifier read only the filename is the defect R39 was
+            // filed from, and two independent reads would be the same defect with a
+            // smaller window.
+            return crate::intent::Baseline::of_command_with(cmd, &self.surroundings, call.scripts);
         }
         let paths: Vec<&str> = call
             .args

@@ -1,0 +1,25 @@
+bash commands in the etalon:            120593
+  pre-filtered as possibly naming one:  30526
+
+  --- the cases the requirement names, as the corpus divides ---
+  NAMING a script path:                  7591
+  READ, so the body was judged:          9
+  of those, truncated at 16 KiB:         9
+  a secret-store path, refused unopened: 0
+  could not be read (missing/other):     6659
+  not on disk yet: an earlier stage:     831
+  no body offered at all:                145
+  (pre-filter let through 30526, of which 22935 name none)
+
+  write intent   before  17595   after  17598
+  GAIN a write   3
+
+  any region     before  29018   after  29018
+
+  tiers before {'may_approve': 21243, 'always_ask': 3796, 'blocked': 5472, 'auto': 15}
+  tiers after  {'may_approve': 21243, 'always_ask': 3796, 'blocked': 5472, 'auto': 15}
+
+  GAIN a PROMPT  0   (of which a BLOCK: 0)
+  LOSE a prompt  0
+  rows whose tier moved at all: 0
+

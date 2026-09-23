@@ -184,6 +184,7 @@ use std::collections::BTreeSet;
 use letibot_code::shell::{self, Normalised, RedirectTarget, Stage, Word};
 
 use crate::adjudicate::{FlowRule, Tier};
+use crate::runtime::{ScriptBody, ScriptSource};
 
 // ---------------------------------------------------------------------------
 // Intents
@@ -872,6 +873,61 @@ pub fn script_argument(program: &str, argv: &[String]) -> Option<String> {
         return Some(a.clone());
     }
     None
+}
+/// The literal words of an argument list, for a caller that has to apply a rule written
+/// against plain strings ([`script_argument`], the wrapper table) to a parse that may hold
+/// unresolved words. A word that is not a literal is dropped rather than guessed at: the
+/// rules on the other side of this all say *stop* when they meet something they cannot
+/// read, and a placeholder would let them walk past it.
+fn literal_argv(words: &[Word]) -> Vec<String> {
+    words
+        .iter()
+        .filter_map(|w| w.literal())
+        .map(str::to_string)
+        .collect()
+}
+
+/// **Written by an earlier stage of this same command**, and therefore absent from disk
+/// when the command is classified — R39's third case.
+///
+/// `cat > foo.py <<'EOF' … EOF; python3 foo.py` names a file that cannot exist yet. The
+/// read fails, and *"could not read it"* is the wrong thing to say about it: the file is
+/// not missing, it has not been written. The distinction is the requirement's own, and it
+/// is the one that decides whether a reader is told *look at the stage that writes it* or
+/// *nobody has seen this program*.
+///
+/// Returns the sentence naming what writes it, or `None` when nothing in the command does.
+fn written_by_an_earlier_stage(n: &Normalised, path: &str) -> Option<String> {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    for stage in &n.stages {
+        for w in stage.redirect_writes() {
+            let Some(target) = w.literal() else { continue };
+            if target == path || target == base || target.ends_with(&format!("/{base}")) {
+                let program = stage.program_name().unwrap_or("a stage");
+                return Some(format!(
+                    "`{program}` earlier in this command writes `{target}`"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// A stable digest of the bytes a classification read.
+///
+/// FNV-1a, and deliberately the same function and the same `fnv1a:<hex>` shape the
+/// transcript's event digests use (`letibot_turn::events::args_digest`): a reader comparing
+/// two of these should be comparing one kind of thing. Not a security hash and not
+/// pretending to be one — what it carries here is the answer to *are these still the bytes
+/// layer A judged*, which is the only question a file a script was read from raises and a
+/// here-document cannot.
+fn digest(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a:{h:016x}")
 }
 
 /// A vehicle that fired, and what fired it.
@@ -1791,8 +1847,14 @@ fn inline_script_arg(program: &str, argv: &[Word]) -> Option<usize> {
 ///
 /// `sudo -n systemctl restart X` is a `systemctl` call, and a gate that read the
 /// program as `sudo` would classify a service restart as privilege escalation and
-/// nothing else.
-fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
+/// nothing else. `sudo -u x git status` is a `git` call for the same reason.
+///
+/// **Public for exactly one caller, and it is R39's.** The reader has to name the
+/// script file an interpreter was handed *before* any classifier runs, so it cannot
+/// borrow the unwrapping `absorb_stage` does while classifying. One implementation,
+/// two callers — a second copy of this table is how `sudo python3 foo.py` would come
+/// to have its file read by one half of the gate and not by the other.
+pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
     let takes_value: &[&str] = match program {
         "sudo" | "doas" => &["-u", "-g", "-U", "-p", "-C", "-h", "-r", "-t"],
         "env" => &["-u", "--unset", "-C", "--chdir", "-S"],
@@ -2108,6 +2170,24 @@ impl Surroundings {
         self.seen_hosts.insert(host.into());
     }
 
+    /// **Is this path in a secret store, and which one** — R39's public form of the
+    /// question that decides whether anybody may OPEN a file.
+    ///
+    /// It exists apart from [`Surroundings::region_of`] because the reader is not always
+    /// here. A file an interpreter was handed is read **before** any classifier runs —
+    /// for the adjudicator's brief — and *that* read is the one that must not happen, so
+    /// the reader needs the tables without a `Surroundings` to hand. One implementation,
+    /// two callers: [`Surroundings::region_of`] and [`crate::runtime::scripts_for`].
+    ///
+    /// `home` may be `None`, and mostly the answer does not depend on it: the store
+    /// directories are matched as whole path SEGMENTS (`/…/.ssh/…` anywhere on the box,
+    /// which is the rule that stands on its own), and a bare key file is matched by its
+    /// own name. What home adds is a store named relative to it that the path does not
+    /// spell out.
+    pub fn secret_store_of(path: &str, home: Option<&str>) -> Option<String> {
+        secret_hit(&collapse(&Self::expand_home(path, home)), home)
+    }
+
     /// **The hosts the operator's own tooling is already logged into are not
     /// unseen.** `gh auth login` wrote `~/.config/gh/hosts.yml`; the workspace's
     /// git remotes name where its code lives. A first contact with one of those
@@ -2135,9 +2215,15 @@ impl Surroundings {
     /// `~/x` → `/home/dead/x`, when the home is known. A `~` left unexpanded would
     /// place `~/.ssh/id_rsa` outside every region and read as harmless.
     fn expand(&self, path: &str) -> String {
-        match (path.strip_prefix("~/"), &self.home) {
+        Self::expand_home(path, self.home.as_deref())
+    }
+
+    /// The same expansion `expand` performs, for a caller with no `&self` — see
+    /// [`Surroundings::secret_store_of`]. One body, so the two cannot drift.
+    fn expand_home(path: &str, home: Option<&str>) -> String {
+        match (path.strip_prefix("~/"), home) {
             (Some(rest), Some(home)) => format!("{}/{rest}", home.trim_end_matches('/')),
-            _ if path == "~" => self.home.clone().unwrap_or_else(|| "~".into()),
+            _ if path == "~" => home.unwrap_or("~").to_string(),
             _ => path.to_string(),
         }
     }
@@ -2708,6 +2794,23 @@ impl Baseline {
 
     /// The deterministic reading of a shell command.
     pub fn of_command(command: &str, env: &Surroundings) -> Baseline {
+        Self::of_command_with(command, env, &[])
+    }
+
+    /// **The same reading, with the files this command will run handed in** — R39.
+    ///
+    /// `scripts` is what the session's own reader pulled off disk for the adjudicator's
+    /// brief ([`crate::runtime::scripts_for`]); an empty slice is exactly the old
+    /// behaviour, which is why [`Baseline::of_command`] is this function and not a
+    /// second one.
+    ///
+    /// **They are the same bytes the oracle is shown, and that is the point.** The
+    /// defect R39 was filed from is an asymmetry: `scripts_section` put the program in
+    /// the brief with *"judge THIS, not the filename"*, and layer A — the half that
+    /// decides the tier and what the card says — read `python3 foo.py` as *a program
+    /// runs* and never opened it. Two reads would leave the halves able to disagree
+    /// about one file; one read cannot.
+    pub fn of_command_with(command: &str, env: &Surroundings, scripts: &[ScriptSource]) -> Baseline {
         let n = shell::normalise(command);
         let mut b = Baseline {
             command: None,
@@ -2793,7 +2896,7 @@ impl Baseline {
             .iter()
             .any(|s| stage_intents(s).contains(&Intent::Network));
         for stage in &n.stages {
-            b.absorb_stage(&n, stage, env, egresses);
+            b.absorb_stage(&n, stage, env, egresses, scripts);
         }
         // `H=192.0.2.10; curl http://$H/` — the value is known where the use is
         // not. A host in an assignment is a first contact when something in
@@ -3124,7 +3227,14 @@ impl Baseline {
             });
     }
 
-    fn absorb_stage(&mut self, n: &Normalised, stage: &Stage, env: &Surroundings, egresses: bool) {
+    fn absorb_stage(
+        &mut self,
+        n: &Normalised,
+        stage: &Stage,
+        env: &Surroundings,
+        egresses: bool,
+        scripts: &[ScriptSource],
+    ) {
         let program = stage.program_name().unwrap_or("<unresolved>").to_string();
 
         // Wrappers first: `sudo -n systemctl restart X` is a `systemctl` call, and a
@@ -3260,6 +3370,139 @@ impl Baseline {
                 text.len()
             ));
             self.scan_script(text, env, &effective);
+        }
+
+        // **Plan §4b, step 2c: the script an interpreter was handed as a PATH** — R39.
+        //
+        // `python3 foo.py` is the same act as `python3 - <<'PY'`, and layer A read only the
+        // second: `scan_script` had two callers — `heredoc_program` and
+        // `inline_script_arg` — and a path was never opened. So the card said
+        // `[inspect execute_code]` and nothing about what the file does: no write targets,
+        // no capability scan. Meanwhile `scripts_section` was already handing the ORACLE
+        // the file with *"judge THIS, not the filename"*, because an adjudicator told
+        // nothing about `python3 deploy.py` cannot tell a command that runs no script from
+        // one whose script it was not shown — and those are the cases where the right
+        // answers are opposite. The deterministic half, which decides the tier and what
+        // the card says, was blind to exactly the case the brief was built for.
+        //
+        // **The body is handed in, not read here, and that is the design rather than a
+        // shortcut.** `scripts_for` reads it once, for the brief, through the backend; the
+        // same bytes reach this layer, so the two halves of one gate cannot disagree about
+        // one file. A classifier that opened files would be a classifier with a disclosure
+        // hazard in it — see the reader, where a path in the secret store is not opened —
+        // and it would also be one whose answer changed with the process's working
+        // directory.
+        //
+        // **The file can change between this read and the run, and the heredoc case
+        // cannot.** A here-document body is in the command text: it is the same bytes at
+        // classification and at execution, by construction. A file is not. Three things are
+        // done about it, and none of them is the file being pinned: (a) one read is shared
+        // with the brief, so the two halves of THIS gate cannot disagree; (b) the finding
+        // says *when* and carries the digest of the bytes that were read, so the claim is
+        // pinned to a byte string rather than to whatever is on disk later; and (c) — the
+        // part that is a check rather than a caveat — `ToolRuntime` re-reads the bodies that
+        // were read, AFTER the gate has answered and immediately before the command starts,
+        // and refuses if they are no longer the bytes that were judged
+        // (`ToolRuntime::script_changed_since_the_gate`). That window is the operator's own
+        // thinking time, which is the only window this has and is not a small one.
+        if let Some(path) = script_argument(&effective, &literal_argv(effective_argv)) {
+            // **What was handed in, if anything** — and the text to judge, or the two
+            // sentences that say why there is none. The three unreadable cases are kept
+            // apart here rather than at the finding, because which one it is decides what
+            // gets scanned: a body that *is* read is dispatched by LANGUAGE, exactly as a
+            // here-document body is, and "scanned the way a heredoc body is" means that
+            // dispatch and not only the call to `scan_script`.
+            let handed = scripts.iter().find(|s| s.path == path).map(|s| &s.body);
+            let (text, note) = match handed {
+                Some(ScriptBody::Read(text)) => (
+                    Some(text.as_str()),
+                    format!(
+                        "`{path}` read from disk as the program `{effective}` runs: {} bytes, \
+                         {} — read when this was classified, and the file can change before \
+                         it runs",
+                        text.len(),
+                        digest(text.as_bytes())
+                    ),
+                ),
+                Some(ScriptBody::Truncated { head, omitted }) => (
+                    Some(head.as_str()),
+                    format!(
+                        "`{path}` read from disk as the program `{effective}` runs: the first \
+                         {} bytes, with {omitted} NOT READ — what is past that is not covered \
+                         by anything here",
+                        head.len()
+                    ),
+                ),
+                _ => (None, String::new()),
+            };
+            match text {
+                Some(text) => {
+                    self.intents.insert(Intent::ExecuteCode);
+                    self.findings.push(note);
+                    // The language, from the file itself first: a shebang is the most
+                    // authoritative statement of what a script is, then its extension, then
+                    // the interpreter that was handed it. The heredoc arm has the same
+                    // three sources in the same order.
+                    let lang = ScriptLang::of_shebang(text)
+                        .or_else(|| ScriptLang::of_extension(&path))
+                        .or_else(|| ScriptLang::of_interpreter(&effective))
+                        .unwrap_or_else(|| ScriptLang::Other(effective.clone()));
+                    match lang {
+                        // **A shell script is read by the GRAMMAR**, the way a shell
+                        // here-document is: `fold` is what gives it intents and regions,
+                        // and the token scan below is a poorer reader of shell text than
+                        // the parser that already exists. `runs_now` is true — an
+                        // interpreter handed a path executes it in this call.
+                        ScriptLang::Shell => {
+                            let inner = Baseline::of_command(text, env);
+                            self.fold(
+                                inner,
+                                &format!("inside `{path}`, which `{effective}` runs"),
+                                true,
+                            );
+                        }
+                        ScriptLang::Other(_) => self.scan_script(text, env, &effective),
+                    }
+                }
+                // **Unreadable is not absent, and the two must not collapse.** This is the
+                // one thing R39 asks for by name: *"could not read it" and "it does
+                // nothing" are the two cases the brief's own docstring says must not
+                // collapse.* So there is always a finding, and it always says which.
+                None => {
+                    self.intents.insert(Intent::ExecuteCode);
+                    match handed {
+                        // **Written by an earlier stage of this same command** is its own
+                        // case and not a failure: `cat > foo.py <<'EOF' … EOF; python3
+                        // foo.py` names a file that cannot exist when this is classified,
+                        // and the body it will contain was read by the here-document arm
+                        // above — from the command text, which is where it actually is.
+                        Some(ScriptBody::Unreadable(why)) => {
+                            match written_by_an_earlier_stage(n, &path) {
+                                Some(how) => self.findings.push(format!(
+                                    "`{path}` is not on disk when this was classified, and that \
+                                     is not a failure: {how}. What it will contain is that \
+                                     stage's, and a here-document written that way is read from \
+                                     the command text by the step above",
+                                )),
+                                None => self.findings.push(format!(
+                                    "`{path}` could not be read ({why}), so whether it writes \
+                                     anything is not knowable here: `{effective}` runs a program \
+                                     nobody in this gate has seen, and \"writes nothing\" is not \
+                                     claimed about it"
+                                )),
+                            }
+                        }
+                        // No body was handed in for this path at all — a caller that did not
+                        // read it (a replay, a corpus sweep, `Baseline::of_command`). Said,
+                        // not assumed away: silence here reads exactly like a script that
+                        // does nothing.
+                        _ => self.findings.push(format!(
+                            "`{path}` is the program `{effective}` runs, and its body was not \
+                             read — no finding is made about what it does"
+                        )),
+                    }
+                }
+            }
         }
 
         let mut secret_positional: Vec<(String, String)> = Vec::new();
@@ -6754,6 +6997,308 @@ open('a.txt','a').write(more)
                 WriteTarget::Literal("a.txt".into()),
                 WriteTarget::Literal("b.txt".into())
             ]
+        );
+    }
+}
+
+/// **R39: a script named as a path is read the way a here-document body is.**
+///
+/// The operator's own card was `python3 r38-1.py`: layer A reported `[inspect
+/// execute_code]` and nothing about what the file does, while the oracle's brief was
+/// already carrying the file with *"judge THIS, not the filename"*. The deterministic
+/// half — the one that decides the tier and what the card says — was blind to exactly
+/// the case the brief was built for.
+///
+/// These tests are about the three things the requirement names, in the order it names
+/// them: the file may be unreadable, missing, or written by an earlier stage of the same
+/// command, and those must not collapse; a path in the secret store is not opened to find
+/// out what it contains; and the file can change between the scan and the run, which the
+/// here-document case cannot.
+#[cfg(test)]
+mod a_script_named_as_a_path {
+    use super::*;
+    use crate::runtime::{ScriptBody, ScriptSource};
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: None,
+            shell: ShellTrust::Pinned {
+                how: "test fixture".into(),
+            },
+            seen_hosts: BTreeSet::new(),
+        }
+    }
+
+    fn body(path: &str, text: &str) -> Vec<ScriptSource> {
+        vec![ScriptSource {
+            path: path.into(),
+            body: ScriptBody::Read(text.into()),
+        }]
+    }
+
+    fn findings(b: &Baseline) -> String {
+        b.findings.join("\n")
+    }
+
+    /// **The card the operator was looking at.** `python3 r38-1.py`, whose file opens
+    /// another file for writing: the write has to reach the intents and the scoped list,
+    /// which is what R35 built `write_targets` for and what a path-named script never
+    /// reached.
+    #[test]
+    fn the_script_a_path_names_is_scanned_and_its_write_reaches_the_card() {
+        let text = "\
+from pathlib import Path
+p = Path('src/syntax.rs')
+s = p.read_text()
+open(p,'w').write(s.replace('x','y'))
+";
+        let b = Baseline::of_command_with("python3 r38-1.py", &env(), &body("r38-1.py", text));
+        assert!(
+            b.intents.contains(&Intent::WriteFile),
+            "the write in a path-named script is invisible: {:?}",
+            b.intents
+        );
+        assert!(
+            b.scoped.iter().any(|s| s.target == "src/syntax.rs"),
+            "the file it writes is not a scoped target: {:?}",
+            b.scoped
+        );
+        assert!(
+            findings(&b).contains("r38-1.py")
+                && findings(&b).contains("read from disk as the program `python3` runs"),
+            "the card does not say the file was read: {}",
+            findings(&b)
+        );
+    }
+
+    /// **The same command with nothing read is NOT the same as a command that does
+    /// nothing**, and this is the assertion the requirement's own words turn on. A caller
+    /// that handed in no body — a replay, a corpus sweep — gets a finding that says so,
+    /// because silence here is indistinguishable from a script with no effect.
+    #[test]
+    fn an_unread_body_is_said_rather_than_taken_for_no_effect() {
+        let b = Baseline::of_command("python3 r38-1.py", &env());
+        assert!(b.intents.contains(&Intent::ExecuteCode), "{:?}", b.intents);
+        assert!(
+            findings(&b).contains("was not read"),
+            "nothing says the program was never seen: {}",
+            findings(&b)
+        );
+        assert!(
+            !b.intents.contains(&Intent::WriteFile),
+            "a body nobody read produced a write finding: {:?}",
+            b.intents
+        );
+    }
+
+    /// **Unreadable, and WHY, and it does not read as *runs nothing*.** This is the
+    /// requirement's first named case, and the sentence a reader gets has to tell them
+    /// which of the two they are looking at.
+    #[test]
+    fn an_unreadable_script_says_so_and_which_way_it_failed() {
+        let b = Baseline::of_command_with(
+            "python3 deploy.py",
+            &env(),
+            &[ScriptSource {
+                path: "deploy.py".into(),
+                body: ScriptBody::Unreadable("NotFound(deploy.py)".into()),
+            }],
+        );
+        let got = findings(&b);
+        assert!(got.contains("deploy.py"), "{got}");
+        assert!(got.contains("could not be read"), "{got}");
+        assert!(got.contains("NotFound"), "{got}");
+        assert!(
+            got.contains("not claimed about it"),
+            "the finding does not refuse the *it does nothing* reading: {got}"
+        );
+        // **And it is not silence**: an interpreter handed an unseen program is exec.
+        assert!(b.intents.contains(&Intent::ExecuteCode), "{:?}", b.intents);
+    }
+
+    /// **Written by an earlier stage of the same command is its own case** — not a
+    /// failure. `cat > foo.py <<'EOF' … EOF; python3 foo.py` names a file that cannot
+    /// exist yet, and a reader told *could not read it* would go looking for a bug.
+    #[test]
+    fn a_file_an_earlier_stage_writes_is_named_as_that_and_not_as_missing() {
+        let cmd = "cat > /tmp/letibot-scratch-1234/gen.py <<'EOF'\nprint(1)\nEOF\npython3 /tmp/letibot-scratch-1234/gen.py";
+        let b = Baseline::of_command_with(
+            cmd,
+            &env(),
+            &[ScriptSource {
+                path: "/tmp/letibot-scratch-1234/gen.py".into(),
+                body: ScriptBody::Unreadable("NotFound(gen.py)".into()),
+            }],
+        );
+        let got = findings(&b);
+        assert!(
+            got.contains("not on disk when this was classified, and that is not a failure"),
+            "{got}"
+        );
+        assert!(
+            got.contains("`cat` earlier in this command writes"),
+            "the stage that writes it is not named: {got}"
+        );
+        assert!(
+            !got.contains("could not be read"),
+            "the not-yet-written case was reported as a read failure: {got}"
+        );
+        // **And the body it will contain was read anyway** — from the command text, by
+        // the here-document arm, which is where it actually is. That is why this case is
+        // not a hole: the same bytes are reachable without the file existing.
+        assert!(
+            got.contains("here-document"),
+            "the command text's own body was not read as the program: {got}"
+        );
+    }
+
+    /// **A truncated read is scanned and says what it did not cover.** A write in the
+    /// first 16 KiB is a write; claiming the whole program was judged is not.
+    #[test]
+    fn a_truncated_read_is_scanned_and_admits_what_it_missed() {
+        let b = Baseline::of_command_with(
+            "python3 big.py",
+            &env(),
+            &[ScriptSource {
+                path: "big.py".into(),
+                body: ScriptBody::Truncated {
+                    head: "open('a.txt','w').write('x')\n".into(),
+                    omitted: 90_000,
+                },
+            }],
+        );
+        assert!(b.intents.contains(&Intent::WriteFile), "{:?}", b.intents);
+        let got = findings(&b);
+        assert!(got.contains("90000 NOT READ"), "{got}");
+    }
+
+    /// **The scan is about the bytes that were read, and the finding carries their
+    /// digest.** The file can change between the classification and the run — the
+    /// here-document case cannot — so the claim is pinned to a byte string rather than to
+    /// whatever is on disk when somebody comes asking.
+    #[test]
+    fn the_finding_carries_the_digest_of_the_bytes_that_were_judged() {
+        let one = Baseline::of_command_with("python3 x.py", &env(), &body("x.py", "print('one')\n"));
+        let two = Baseline::of_command_with("python3 x.py", &env(), &body("x.py", "print('two')\n"));
+        let d = |b: &Baseline| {
+            findings(b)
+                .split("fnv1a:")
+                .nth(1)
+                .map(|s| s.chars().take(16).collect::<String>())
+                .unwrap_or_default()
+        };
+        assert_eq!(d(&one).len(), 16, "no digest: {}", findings(&one));
+        assert_ne!(
+            d(&one),
+            d(&two),
+            "two different bodies produced the same digest: {}",
+            findings(&one)
+        );
+        let got = findings(&one);
+        assert!(
+            got.contains("read when this was classified")
+                && got.contains("can change before it runs"),
+            "the finding does not say when the read happened: {got}"
+        );
+    }
+
+    /// **The secret store is not opened to find out what it contains** — the middle of
+    /// the three things, and the one that is a disclosure rather than a classification.
+    /// The classifier never claims to have read one, and the reader refuses before the
+    /// open (see `runtime::scripts_for`, and its own test for the refusal itself).
+    #[test]
+    fn a_secret_store_script_is_named_and_never_read() {
+        let b = Baseline::of_command_with(
+            "python3 ~/.ssh/id_rsa",
+            &env(),
+            &[ScriptSource {
+                path: "~/.ssh/id_rsa".into(),
+                body: ScriptBody::Unreadable(
+                    "it is in the .ssh store, and this is not opened".into(),
+                ),
+            }],
+        );
+        let got = findings(&b);
+        assert!(
+            !got.contains("read from disk as the program"),
+            "the classifier claims to have read a secret-store file: {got}"
+        );
+        assert!(got.contains(".ssh"), "{got}");
+        // **And the path itself is still a fact about the command** — layer A places the
+        // argv path through `region_of`, so `python3 ~/.ssh/id_rsa` is a secret region
+        // whatever was or was not read from it.
+        assert!(
+            b.regions.iter().any(|r| matches!(r, Region::Secret(_))),
+            "the secret path in the argv left no region: {:?}",
+            b.regions
+        );
+    }
+
+    /// The reader is one implementation and it reads what the CLASSIFIER reads: a
+    /// wrapped interpreter is unwrapped by both, so `sudo python3 foo.py` does not fall
+    /// between them.
+    #[test]
+    fn a_wrapped_interpreter_is_unwrapped_by_the_reader_too() {
+        let n = shell::normalise("sudo -u dead python3 foo.py");
+        let stage = &n.stages[0];
+        let letibot_code::shell::Word::Literal(program) = &stage.program else {
+            panic!("literal program");
+        };
+        let (inner, at) = unwrap_wrapper(program, &stage.argv).expect("sudo unwraps");
+        assert_eq!(inner, "python3");
+        let argv = literal_argv(&stage.argv[(at + 1).min(stage.argv.len())..]);
+        assert_eq!(script_argument(&inner, &argv).as_deref(), Some("foo.py"));
+    }
+
+    /// **A shell script at a path is read by the GRAMMAR, not by the token scan** — the
+    /// same dispatch the here-document arm makes, for the same reason. `scan_script` is a
+    /// tokeniser built for python/ruby/js; the shell already has a parser here, and
+    /// `fold` is what turns a shell body into intents and regions. So `bash deploy.sh`
+    /// reaches the tier a `bash <<'EOF'` body reaches, which is what "scanned the way a
+    /// here-document body is" has to mean if it is to mean anything.
+    #[test]
+    fn a_shell_script_at_a_path_is_read_by_the_grammar() {
+        let text = "#!/bin/bash\nrm -rf /opt/things\n";
+        let b = Baseline::of_command_with("bash deploy.sh", &env(), &body("deploy.sh", text));
+        let got = findings(&b);
+        assert!(
+            got.contains("read from disk as the program `bash` runs"),
+            "the file was not read: {got}"
+        );
+        // **`fold` is what carries the effect, and the effect is the assertion.** The `rm`
+        // outside the workspace arrives as a scoped destroy and as the always-ask rule
+        // that scoped destroy fires — neither of which the token scan produces, so this is
+        // what distinguishes *read by the grammar* from *scan_script was called*.
+        assert!(
+            b.scoped
+                .iter()
+                .any(|s| s.intent == Intent::Destroy && s.target.contains("/opt/things")),
+            "the shell body's own effects are not in the reading: {:?}",
+            b.scoped
+        );
+        assert!(
+            got.contains("destruction_outside_the_project"),
+            "the folded body's ask did not reach the tier: {got}"
+        );
+    }
+
+    /// `python3 -c '…'` names no file, and the path arm must not put the PROGRAM in front
+    /// of a reader as though it were one. The inline arm already covers it; this is the
+    /// assertion that the new arm does not also fire.
+    #[test]
+    fn an_inline_program_is_not_also_read_as_a_path() {
+        let b = Baseline::of_command_with(
+            "python3 -c \"open('a.txt','w').write('x')\"",
+            &env(),
+            &body("a.txt", "this is not a program"),
+        );
+        assert!(b.intents.contains(&Intent::WriteFile), "{:?}", b.intents);
+        assert!(
+            !findings(&b).contains("read from disk as the program"),
+            "the inline case was also treated as a path: {}",
+            findings(&b)
         );
     }
 }

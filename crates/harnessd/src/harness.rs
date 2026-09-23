@@ -7278,7 +7278,7 @@ pub(crate) fn model_adjudicator(
                     .get("command")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                letibot_tools::intent::Baseline::of_command(cmd, &surroundings)
+                letibot_tools::intent::Baseline::of_command_with(cmd, &surroundings, &req.scripts)
             },
         )
         // **The wait, announced before it starts.** Consulting the guard costs

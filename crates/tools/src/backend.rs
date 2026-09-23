@@ -214,6 +214,19 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// **The operator's home, as this backend expands a leading `~`.** `None` by default,
+    /// and the default is right for the same reason [`Self::root_path`]'s is: a substrate
+    /// that reads no host path has no home to name.
+    ///
+    /// Wanted by one caller (R39): the reader that pulls the script an interpreter was
+    /// handed so the adjudicator can be shown it. It must not open a path in a secret
+    /// store, and the store tables are keyed partly on the home directory — so the reader
+    /// asks the backend the same question [`HostBackend::resolve`] answers when it expands
+    /// `~`, rather than reading `$HOME` a second time.
+    fn home_path(&self) -> Option<String> {
+        None
+    }
+
     /// One directory, not recursive. Recursion belongs to the tools, which then
     /// works identically over a tar channel that has no `walkdir`.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError>;
@@ -832,6 +845,11 @@ impl ExecBackend for HostBackend {
 
     fn scratch_dir(&self) -> Option<String> {
         self.scratch.as_ref().map(|p| p.to_string_lossy().to_string())
+    }
+
+    fn home_path(&self) -> Option<String> {
+        let h = self.home.to_string_lossy().to_string();
+        (!h.is_empty()).then_some(h)
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {

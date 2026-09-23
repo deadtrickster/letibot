@@ -1,0 +1,16 @@
+real script files under the two trees: 705
+  whose body was judged:            690
+  GAIN a write intent:              305
+  GAIN a network intent:            218
+
+  GAIN a PROMPT:                    2   (BLOCKED: 0)
+  lose a prompt:                    0
+
+  the ones that gained a prompt, and what moved:
+    [may_approve -> always_ask] ~/Projects/letibot/letibot/docs/evidence/basharena-bisect-test.sh
+        `/home/dead/Projects/letibot/letibot/docs/evidence/basharena-bisect-test.sh` read from disk as the program `bash` runs: 3031 bytes, fnv1a:0f221e9bad34fc37 — rea
+        always-ask: destruction_outside_the_project — the target(s) are outside the workspace: destroy checkout (host_other), destroy cleanup (host_other), destroy EXIT
+    [may_approve -> always_ask] ~/Projects/letibot/letibot/scratch/man-scrape/scrape.sh
+        `/home/dead/Projects/letibot/letibot/scratch/man-scrape/scrape.sh` read from disk as the program `bash` runs: 3596 bytes, fnv1a:fd1325bf6573dbaa — read when thi
+        always-ask: destruction_outside_the_project — the target(s) are outside the workspace: destroy p (host_other), destroy /usr/share/man/man1 (system_binaries), de
+        always-ask: network_egress_to_an_unseen_host — this session has not reached  before

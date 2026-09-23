@@ -392,6 +392,115 @@ pub struct ScriptSource {
     pub body: ScriptBody,
 }
 
+/// **The scripts a shell command will run, read through `read`** — R39 moved this out
+/// of [`ToolRuntime`] so that it is one implementation with three callers rather than
+/// three readers that can drift: the session's own gate, the classifier's example, and
+/// any corpus sweep that wants the number a session would get.
+///
+/// **One read serves both halves of the gate.** The body is pulled here, before the
+/// classifer runs, because the adjudicator's brief has to carry the program — *"judge
+/// THIS, not the filename"* — and [`crate::intent::Baseline::of_command_with`] is then
+/// handed the same bytes, so the half that decides the tier and the half that decides
+/// permission cannot disagree about one file.
+///
+/// **A path in the secret store is not opened at all.** That is R39's disclosure clause,
+/// and it is a real hole rather than a hypothetical: `python3 ~/.ssh/id_rsa` would
+/// otherwise put the key in the brief, the transcript and the model's context, and the
+/// entry here has been added to the brief *because* a reader asked what it contains. The
+/// file is still named — `Unreadable` is a fact, not silence — and the command still runs
+/// an interpreter on it, which layer A judges from the argv. What does not happen is the
+/// read.
+///
+/// **The file can change between this read and the run, and the rest of this paragraph is
+/// the answer to it rather than a disclaimer.** A here-document body cannot: it is in the
+/// command text, so it is the same bytes at classification and at execution. A file on disk
+/// is not, and a gated call can wait minutes for an answer. So: one read serves both halves
+/// of the gate (they cannot disagree about one file); the finding says when the read
+/// happened and carries its digest; and — the part that is a check and not a caveat —
+/// [`ToolRuntime`] re-reads it after the gate answers and before the command starts, and
+/// refuses if it is no longer those bytes
+/// ([`ToolRuntime::script_changed_since_the_gate`]). What is still not true is that the
+/// bytes are pinned: a file can change between that second read and the `exec` a
+/// microsecond later, and nothing here can close that. The window that mattered — the one
+/// an operator's thinking time opens — is closed.
+pub fn scripts_for(
+    command: &str,
+    home: Option<&str>,
+    read: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Vec<ScriptSource> {
+    let n = letibot_code::shell::normalise(command);
+    let mut out: Vec<ScriptSource> = Vec::new();
+    for stage in &n.stages {
+        let letibot_code::shell::Word::Literal(program) = &stage.program else {
+            continue;
+        };
+        // **The same unwrapping the classifier does**, so `sudo python3 foo.py` has its
+        // file read by the reader and scanned by layer A, rather than read by neither
+        // and reported as one half's hole.
+        let (program, skip) = match crate::intent::unwrap_wrapper(program, &stage.argv) {
+            Some((inner, at)) => (inner, at + 1),
+            None => (program.clone(), 0),
+        };
+        let argv = literal_argv(&stage.argv[skip.min(stage.argv.len())..]);
+        let Some(path) = crate::intent::script_argument(&program, &argv) else {
+            continue;
+        };
+        if out.iter().any(|s| s.path == path) {
+            continue;
+        }
+        // **Before the open, not after.** A store path is named and not read; the
+        // sentence says which store so that a reader of the brief is told what is there
+        // and why they are not being shown it.
+        let body = match crate::intent::Surroundings::secret_store_of(&path, home) {
+            Some(store) => ScriptBody::Unreadable(format!(
+                "it is in the {store} store, and this is not opened to find out what it \
+                 contains. The command still runs an interpreter on that path"
+            )),
+            None => match read(&path) {
+                Err(why) => ScriptBody::Unreadable(why),
+                Ok(bytes) => bounded(bytes),
+            },
+        };
+        out.push(ScriptSource { path, body });
+    }
+    out
+}
+
+/// A script body as the brief can carry it: UTF-8, capped, and honest about both.
+///
+/// The cap is its own number and larger than the 2 KiB an argument gets: an argument
+/// preview exists so nobody is made to read a 40 KB file body to approve a one-line
+/// edit, and this is the opposite case — the file body IS the thing being judged. Past
+/// the cap the head is kept and the omission is stated, so an adjudicator knows it is
+/// reading part of a program rather than all of one.
+fn bounded(bytes: Vec<u8>) -> ScriptBody {
+    const MAX: usize = 16_384;
+    match String::from_utf8(bytes) {
+        Err(_) => ScriptBody::Unreadable(
+            "not UTF-8 — a binary, or text in an encoding this cannot show".into(),
+        ),
+        Ok(text) if text.len() <= MAX => ScriptBody::Read(text),
+        Ok(text) => {
+            let mut head = MAX;
+            while head > 0 && !text.is_char_boundary(head) {
+                head -= 1;
+            }
+            ScriptBody::Truncated {
+                omitted: text.len() - head,
+                head: text[..head].to_string(),
+            }
+        }
+    }
+}
+
+fn literal_argv(words: &[letibot_code::shell::Word]) -> Vec<String> {
+    words
+        .iter()
+        .filter_map(|w| w.literal())
+        .map(str::to_string)
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptBody {
     Read(String),
@@ -1241,63 +1350,61 @@ impl ToolRuntime {
         let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
             return Vec::new();
         };
-        let n = letibot_code::shell::normalise(command);
-        let mut out: Vec<ScriptSource> = Vec::new();
-        for stage in &n.stages {
-            let letibot_code::shell::Word::Literal(program) = &stage.program else {
-                continue;
-            };
-            let argv: Vec<String> = stage
-                .argv
-                .iter()
-                .filter_map(|w| match w {
-                    letibot_code::shell::Word::Literal(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-            let Some(path) = crate::intent::script_argument(program, &argv) else {
-                continue;
-            };
-            if out.iter().any(|s| s.path == path) {
-                continue;
-            }
-            out.push(ScriptSource {
-                body: self.read_script(&path),
-                path,
-            });
-        }
-        out
+        scripts_for(command, self.backend.home_path().as_deref(), |path| {
+            self.backend.read(path).map_err(|e| e.to_string())
+        })
     }
 
-    /// One script's bytes, bounded.
+    /// **Did a file the gate judged change before the command ran?** — R39's third case,
+    /// checked rather than assumed away.
     ///
-    /// The cap is its own number and larger than the 2 KiB an argument gets: an
-    /// argument preview exists so nobody is made to read a 40 KB file body to
-    /// approve a one-line edit, and this is the opposite case — the file body IS
-    /// the thing being judged. Past the cap the head is kept and the omission is
-    /// stated, so an adjudicator knows it is reading part of a program rather
-    /// than all of one.
-    fn read_script(&self, path: &str) -> ScriptBody {
-        const MAX: usize = 16_384;
-        match self.backend.read(path) {
-            Err(e) => ScriptBody::Unreadable(e.to_string()),
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Err(_) => ScriptBody::Unreadable(
-                    "not UTF-8 — a binary, or text in an encoding this cannot show".into(),
+    /// `None` when every body that was READ is still exactly those bytes. Only read bodies
+    /// are re-read: an unreadable one contributed nothing to the judgement, and its finding
+    /// already says so — re-reading it would be inventing a new question rather than
+    /// answering this one.
+    ///
+    /// The comparison is `ScriptBody` equality, which is the right instrument because it is
+    /// the same bounding the brief used: a file that grew past the 16 KiB cap differs in its
+    /// `omitted` count, and a file that shrank differs in its head, so a change beyond the
+    /// part that was shown is still a change.
+    ///
+    /// Refuses rather than re-judging. A second pass through the gate would be a second
+    /// decision the operator never saw, and an adjudicator asked twice about the same
+    /// command is an adjudicator whose first answer means nothing.
+    fn script_changed_since_the_gate(
+        &self,
+        scripts: &[ScriptSource],
+    ) -> Option<(ToolOutcome, String)> {
+        for s in scripts {
+            if !matches!(s.body, ScriptBody::Read(_) | ScriptBody::Truncated { .. }) {
+                continue;
+            }
+            let now = match self.backend.read(&s.path) {
+                Ok(bytes) => bounded(bytes),
+                Err(e) => ScriptBody::Unreadable(e.to_string()),
+            };
+            if now == s.body {
+                continue;
+            }
+            return Some((
+                ToolOutcome::Failed {
+                    reason: format!(
+                        "`{}` changed between being classified and being run",
+                        s.path
+                    ),
+                },
+                format!(
+                    "`{}` changed between being classified and being run, so the command \
+                     that was approved is not the command this would start. Nothing ran.\n\n\
+                     The gate judged the file's bytes at classification time — layer A and \
+                     the adjudicator were both shown them — and it is a file, so nothing stops \
+                     it changing while an answer is being waited for. Ask again and the gate \
+                     will read what is there now.",
+                    s.path
                 ),
-                Ok(text) if text.len() <= MAX => ScriptBody::Read(text),
-                Ok(text) => {
-                    let mut head = MAX;
-                    while head > 0 && !text.is_char_boundary(head) {
-                        head -= 1;
-                    }
-                    ScriptBody::Truncated {
-                        omitted: text.len() - head,
-                        head: text[..head].to_string(),
-                    }
-                }
-            },
+            ));
         }
+        None
     }
 
     pub fn with_limits(mut self, limits: Limits) -> Self {
@@ -1438,6 +1545,25 @@ impl ToolRuntime {
             if let GateDecision::Refuse { outcome, tell } = self.gate.admit(&gate_call) {
                 let r =
                     ToolResult::new(call.id.clone(), call.name.clone(), outcome).with_payload(tell);
+                sink.emit(finished_event(turn_id, &r));
+                return r;
+            }
+            // **The file can change while the gate is answering, and this is the one place
+            // the difference is actionable** (R39). A here-document body cannot: it is in
+            // the command text, so it is the same bytes when it is judged and when it runs.
+            // A file on disk is not — and `gate.admit` above may have waited minutes for an
+            // operator to answer, which is exactly the window in which the bytes layer A
+            // and the oracle both judged can stop being the bytes that would run.
+            //
+            // So it is CHECKED rather than merely noted, at the last moment before the
+            // command starts. Only the bodies that were actually read are re-read: nothing
+            // was judged from an unreadable one, and the finding already says so. A
+            // mismatch refuses rather than re-judging, because a second gate pass would be
+            // a second decision the operator never saw — and it refuses with the file named
+            // and the remedy in the note, because *the thing you approved is not the thing
+            // that is here* is not something to leave a reader to deduce.
+            if let Some(r) = self.script_changed_since_the_gate(&scripts) {
+                let r = ToolResult::new(call.id.clone(), call.name.clone(), r.0).with_payload(r.1);
                 sink.emit(finished_event(turn_id, &r));
                 return r;
             }
@@ -1660,6 +1786,109 @@ mod tests {
         }
     }
 
+    /// **A tool that runs a command line**, for R39's changed-file check — the real
+    /// `scripts_of` reads any call whose arguments carry a `command`, so the check is
+    /// exercised through the same path a `bash` call takes without needing a process host.
+    struct CommandProbe {
+        ran: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Tool for CommandProbe {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "run",
+                "Run a command line.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                }),
+                Access::Exec,
+            )
+        }
+        fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Invocation::ok(format!("ran {}", args["command"]))
+        }
+    }
+
+    /// **A gate that answers by changing the file it was asked about.** That is exactly the
+    /// window R39 names — the file is read, an answer is waited for, and the answer takes
+    /// time — reproduced in one process rather than described in a comment.
+    struct RewritingGate {
+        path: std::path::PathBuf,
+        to: String,
+    }
+
+    impl Gate for RewritingGate {
+        fn admit(&mut self, _call: &GateCall<'_>) -> GateDecision {
+            std::fs::write(&self.path, &self.to).unwrap();
+            GateDecision::Admit
+        }
+    }
+
+    /// **A file the gate judged that changed before the command ran is refused, not run.**
+    ///
+    /// The here-document case cannot have this window: its body is in the command text. A
+    /// path can, and the window is the operator's own thinking time — so it is checked at
+    /// the last moment before the command starts rather than noted and left.
+    #[test]
+    fn a_script_that_changed_while_the_gate_was_answering_is_refused() {
+        let d = crate::backend::tempdir::TempDir::new();
+        let script = d.path().join("deploy.py");
+        std::fs::write(&script, "print('judged')\n").unwrap();
+
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.register(Box::new(CommandProbe { ran: ran.clone() })).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(RewritingGate {
+            path: script.clone(),
+            to: "print('swapped')\n".into(),
+        }));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("run", r#"{"command":"python3 deploy.py"}"#), &mut sink);
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the command ran with a body nobody judged: {r:?}"
+        );
+        let payload = format!("{r:?}");
+        assert!(
+            payload.contains("changed between being classified and being run")
+                && payload.contains("deploy.py")
+                && payload.contains("Ask again"),
+            "the refusal does not say what happened or what to do: {payload}"
+        );
+    }
+
+    /// **And the ordinary case is untouched**: a file that did not change runs. Without
+    /// this, the test above would pass on a runtime that refused everything.
+    #[test]
+    fn a_script_that_did_not_change_is_not_refused() {
+        let d = crate::backend::tempdir::TempDir::new();
+        std::fs::write(d.path().join("deploy.py"), "print('judged')\n").unwrap();
+
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.register(Box::new(CommandProbe { ran: ran.clone() })).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(AdmitGate));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("run", r#"{"command":"python3 deploy.py"}"#), &mut sink);
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "an unchanged script was refused: {r:?}"
+        );
+    }
+
+    struct AdmitGate;
+
+    impl Gate for AdmitGate {
+        fn admit(&mut self, _call: &GateCall<'_>) -> GateDecision {
+            GateDecision::Admit
+        }
+    }
+
     struct ExplodingGate;
 
     impl Gate for ExplodingGate {
@@ -1842,5 +2071,77 @@ mod tests {
         };
         let expected = r.edit.as_ref().unwrap().excerpt(3, 400);
         assert_eq!(row.as_ref(), Some(&expected), "same bound, same excerpt");
+    }
+
+    /// **R39: a path in the secret store is not opened to find out what it contains.**
+    ///
+    /// The file a script argument names is read for the adjudicator's brief — *"judge
+    /// THIS, not the filename"* — and *because* that entry exists, the reader is a place
+    /// where `python3 ~/.ssh/id_rsa` would put a private key into the brief, the
+    /// transcript and the model's context. The refusal is at the reader, before the open,
+    /// which is where a disclosure hazard has to be stopped: a filter after the read has
+    /// already read it.
+    ///
+    /// The `read` closure here **counts its own calls**, which is the only way to assert
+    /// *not opened* rather than *not shown* — the body comes back as `Unreadable` either
+    /// way.
+    #[test]
+    fn a_secret_store_script_is_never_opened() {
+        use std::cell::Cell;
+        let opened = Cell::new(0);
+        let found = crate::runtime::scripts_for("python3 ~/.ssh/id_rsa", Some("/home/dead"), |p| {
+            opened.set(opened.get() + 1);
+            Ok(format!("the contents of {p}").into_bytes())
+        });
+        assert_eq!(opened.get(), 0, "the reader opened a secret-store file");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].path, "~/.ssh/id_rsa");
+        let ScriptBody::Unreadable(why) = &found[0].body else {
+            panic!("a secret-store path came back readable: {:?}", found[0].body);
+        };
+        assert!(why.contains(".ssh"), "{why}");
+        assert!(
+            why.contains("not opened to find out what it contains"),
+            "the refusal does not say what is being refused: {why}"
+        );
+
+        // **An ordinary path is read**, so the guard is not a blanket refusal — the
+        // assertion above would pass on a reader that never opened anything.
+        let opened = Cell::new(0);
+        let found = crate::runtime::scripts_for("python3 deploy.py", Some("/home/dead"), |p| {
+            opened.set(opened.get() + 1);
+            Ok(format!("print('{p}')").into_bytes())
+        });
+        assert_eq!(opened.get(), 1, "an ordinary script was not read: {found:?}");
+        assert!(
+            matches!(&found[0].body, ScriptBody::Read(t) if t.contains("deploy.py")),
+            "{:?}",
+            found[0].body
+        );
+    }
+
+    /// **The reader and the classifier agree about which file is the program.** A wrapped
+    /// interpreter is unwrapped on both sides — `scripts_for` through `unwrap_wrapper`,
+    /// layer A through `absorb_stage` — so `sudo python3 foo.py` does not have its file
+    /// read by neither half and reported as a hole in one.
+    #[test]
+    fn a_wrapped_interpreter_has_its_file_read() {
+        let found = crate::runtime::scripts_for(
+            "sudo -u dead python3 deploy.py",
+            Some("/home/dead"),
+            |_| Ok(b"print(1)".to_vec()),
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].path, "deploy.py");
+    }
+
+    /// An inline program names no file, so nothing is read and nothing is claimed — and a
+    /// command that names no script at all stays empty.
+    #[test]
+    fn a_command_with_no_script_file_reads_nothing() {
+        let read = |_: &str| -> Result<Vec<u8>, String> { panic!("opened a file") };
+        assert!(crate::runtime::scripts_for("python3 -c 'print(1)'", None, read).is_empty());
+        let read = |_: &str| -> Result<Vec<u8>, String> { panic!("opened a file") };
+        assert!(crate::runtime::scripts_for("ls -la", None, read).is_empty());
     }
 }
