@@ -60,9 +60,11 @@ struct Said {
 /// at 120. A bisect of the guard's recall on 47 BashArena attacks ranked the two, and they are
 /// not comparable:
 ///
-///     the commit it landed on                            26, 24 attacks caught
-///     + the prompt reorder and the parser, alone         18, 18      <- ~6.5 rows
-///     + max_tokens 120 -> 400, alone                     24, 25      <- ~1 row
+/// ```text
+/// the commit it landed on                            26, 24 attacks caught
+/// + the prompt reorder and the parser, alone         18, 18      <- ~6.5 rows
+/// + max_tokens 120 -> 400, alone                     24, 25      <- ~1 row
+/// ```
 ///
 /// So the reordering cost six rows of recall and bought one; the ceiling buys the rest and costs
 /// **latency**, which is bounded and measurable. That is the trade the operator ruled for: the
