@@ -45,8 +45,43 @@ use crate::render::{
 };
 
 /// How much of the stream reaches the transcript.
+///
+/// **Five rungs, and the bottom one is a different kind of thing from the other four.** The
+/// four are *registers* — how much of the event stream is shown — and they are ordered by
+/// how loud they are. `Conversation` is a *scope*: the conversation, and nothing the head did
+/// to produce it. It sits at the bottom because that is the order they are cycled in and
+/// because it shows the least, but the row it is about is not a decibel.
+///
+/// The name is letibot's to choose and **both heads use it** (R37, §11.6): `Verbosity` is this
+/// ladder and these levels are its vocabulary, so a reader moving between the two heads must
+/// not have to learn two words for one view. The key or verb that reaches it is each head's
+/// own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
+    /// **The conversation alone** — the operator's messages and the model's answers, and
+    /// nothing the head did to produce them.
+    ///
+    /// Hidden: tool calls, tool outcomes, tool payloads, reasoning, head arrivals, command
+    /// attribution. **Not hidden, and this is the ruling rather than a preference:**
+    ///
+    /// * **Warnings.** [`Verbosity::Loud`]'s docstring settled it and the reasoning transfers
+    ///   whole — a warning is a fact the daemon chose to *interrupt* with, and this whole
+    ///   ladder is applied to the transcript at once, so a rung that hid one would
+    ///   retroactively erase a warning already read. That is not a filter but a revision.
+    /// * **Decision cards.** A gate card is not a tool row. Hiding it makes the session
+    ///   unanswerable while the call times out against a quiet screen.
+    /// * **Liveness.** This rung's own risk, and it is specific to it: with the tool rows
+    ///   hidden, **a ten-minute tool-heavy turn draws nothing at all**. The composer's border
+    ///   keeps the spinner and the elapsed time, so working and wedged stay distinguishable —
+    ///   see `App::turn_status`, which is not gated by any of this.
+    ///
+    /// **It is a view.** Nothing is dropped from the transcript, the ledger, the corpus or
+    /// what is sent to the model, and the filter is applied to the whole transcript at once,
+    /// so switching back restores every row including the span it was on. That is what makes
+    /// hiding safe here where an elision would need a placeholder per row — R29's remedy rule
+    /// is satisfied by the MODE being named on screen (`App::scroll_state`'s neighbour,
+    /// `App::rung_state`), which is the thing the operator asked to be rid of.
+    Conversation,
     /// Assistant text and tool outcomes only.
     Terse,
     /// Plus reasoning.
@@ -69,18 +104,44 @@ pub enum Verbosity {
 impl Verbosity {
     pub fn next(self) -> Verbosity {
         match self {
+            Verbosity::Conversation => Verbosity::Terse,
             Verbosity::Terse => Verbosity::Normal,
             Verbosity::Normal => Verbosity::Loud,
-            Verbosity::Loud => Verbosity::Terse,
+            Verbosity::Loud => Verbosity::Conversation,
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Verbosity::Conversation => "conversation",
             Verbosity::Terse => "terse",
             Verbosity::Normal => "normal",
             Verbosity::Loud => "loud",
         }
+    }
+
+    /// **Whether the rows the head made are drawn at all** — R37's one question.
+    ///
+    /// A predicate rather than a comparison at every call site: `== Verbosity::Conversation`
+    /// spelled out in five places is five places to update when a second scope-shaped rung
+    /// arrives, and the question being asked is *is this rung a scope*, not *is it
+    /// that value*.
+    pub fn hides_the_working(self) -> bool {
+        matches!(self, Verbosity::Conversation)
+    }
+
+    /// What a row of the head's own making needs, to be drawn under this rung.
+    ///
+    /// The conversation is `User` and `Assistant`; everything else in a transcript is
+    /// evidence *about* the conversation — a tool call, its outcome and payload, the model's
+    /// reasoning, a system update — and this rung is the one that shows the conversation and
+    /// not the working.
+    pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
+        use letibot_transcript::TranscriptItem as T;
+        if !self.hides_the_working() {
+            return true;
+        }
+        matches!(item, T::User { .. } | T::Assistant { .. })
     }
 }
 
@@ -6397,11 +6458,28 @@ impl App {
             }
             "verbosity" | "v" => {
                 self.verbosity = self.verbosity.next();
-                self.say(&format!(
-                    "verbosity {} — {} events filtered so far",
-                    self.verbosity.as_str(),
-                    self.filtered
-                ));
+                // **A rung that hides rows can hide the one the reader is holding** (R37's
+                // consequence for R36), so the view is moved onto its nearest surviving
+                // neighbour here — at the moment of the switch, where the fact is known for
+                // certain, rather than left to a frame to notice.
+                self.reanchor_off_hidden();
+                self.invalidate_history();
+                let said = if self.verbosity.hides_the_working() {
+                    format!(
+                        "verbosity conversation — the conversation and nothing the head did \
+                         to produce it. Tool calls, reasoning and head arrivals are HIDDEN, \
+                         not dropped: `/verbosity` brings them back and the span you had it \
+                         on is drawn again. {} events filtered so far",
+                        self.filtered
+                    )
+                } else {
+                    format!(
+                        "verbosity {} — {} events filtered so far",
+                        self.verbosity.as_str(),
+                        self.filtered
+                    )
+                };
+                self.say(&said);
                 None
             }
             "config" | "settings" => {
@@ -7688,6 +7766,13 @@ impl App {
             if let Some(state) = self.scroll_state() {
                 right.push(self.cfg.palette().paint(Role::Pending, state));
             }
+            // **And the rung, when it is the one that hides things** (R37). Same rule as
+            // `holding`: drawn only when it is news, because a marker that is always on is
+            // furniture. What it buys is the reader who switched and then forgot — the rows
+            // that are missing are named by the mode rather than by a placeholder on each.
+            if let Some(rung) = self.rung_state() {
+                right.push(self.cfg.palette().paint(Role::Attention, rung));
+            }
             chrome.push(self.box_edge(w, '╰', '╯', "", &right.join(" · ")));
         } else if self.alarmed() {
             chrome.push(self.status_line(w));
@@ -8074,6 +8159,7 @@ impl App {
                         _ => QUEUED,
                     },
                     echo_open: self.echo_open,
+                    rung: self.verbosity,
                     diff_split,
                     payload_view: self
                         .payload_sel
@@ -8402,6 +8488,78 @@ impl App {
         (!self.following()).then_some("holding")
     }
 
+    /// **The rung's name, when the rung is the one that hides things** — R37.
+    ///
+    /// R29's rule for a disclosure is that it carries the act that undoes it, and R37 says
+    /// which form that takes here: **the MODE is named on the screen rather than a
+    /// placeholder per hidden row** — a placeholder per row is the thing the operator asked
+    /// to be rid of. Drawn only under `Conversation`, because naming the ordinary rung on
+    /// every frame is the furniture this head keeps deleting.
+    pub fn rung_state(&self) -> Option<&'static str> {
+        self.verbosity
+            .hides_the_working()
+            .then_some(Verbosity::Conversation.as_str())
+    }
+
+    /// **Does this rung draw this row at all** — R37, and the one place the question is
+    /// asked about a row rather than about an item.
+    ///
+    /// A row with no body yet is not hidden by the rung: it is drawn from this head's own
+    /// echo of what the operator typed, and that is the conversation. A row whose *item* the
+    /// rung does not keep is hidden, which is the same test `item_lines` makes.
+    pub fn hidden_by_rung(&self, row: usize) -> bool {
+        if !self.verbosity.hides_the_working() {
+            return false;
+        }
+        match self.items.get(row).and_then(|it| it.item.as_ref()) {
+            Some(item) => !self.verbosity.keeps(item),
+            None => false,
+        }
+    }
+
+    /// **Move a held viewport off a row this rung hides** — R37's consequence for R36.
+    ///
+    /// *"Hiding changes row heights and removes rows. If the anchored row is one that this
+    /// rung hides, the view anchors to the nearest surviving row and says so rather than
+    /// jumping."* Nearest in row order, outward from where the reader was, and the sentence
+    /// is the same shape `repair_anchor` writes for a row a replacement took away.
+    fn reanchor_off_hidden(&mut self) {
+        let Some(held) = self.anchor.clone() else {
+            return;
+        };
+        if !self.hidden_by_rung(held.ordinal) {
+            return;
+        }
+        let n = self.items.len();
+        let found = (1..n.max(1))
+            .flat_map(|d| {
+                let up = held.ordinal.checked_sub(d);
+                let down = held.ordinal + d;
+                [up, (down < n).then_some(down)].into_iter().flatten()
+            })
+            .find(|r| !self.hidden_by_rung(*r));
+        match found {
+            Some(row) => {
+                self.anchor = Some(Held {
+                    item_id: self.items[row].item_id.clone(),
+                    ordinal: row,
+                    into: 0,
+                });
+                self.say(&format!(
+                    "the row you were reading is one this rung hides — the view is holding the                      nearest row that still shows. `/verbosity` brings the working back, and                      `esc` follows the stream again"
+                ));
+            }
+            None => {
+                // Nothing survives to hold on to: a transcript with no conversation in it at
+                // all. Following is the only true answer, and the rung is on screen saying
+                // why the screen is empty.
+                self.anchor = None;
+                self.say("this rung hides every row here, so there is nothing to hold a place in");
+            }
+        }
+        self.redraw = true;
+    }
+
     /// **Whether the viewport is following the stream** — R36's state, and the thing the
     /// screen has to say out loud.
     ///
@@ -8536,6 +8694,7 @@ impl App {
                 unconfirmed,
                 echo_open,
                 spans,
+                verbosity,
                 dismissed,
                 ..
             } = self;
@@ -8647,6 +8806,7 @@ impl App {
                                 _ => QUEUED,
                             },
                             echo_open,
+                            rung: *verbosity,
                             diff_split,
                             // Rebuilt per row inside the walk, so it cannot be hoisted
                             // out of this borrow — it reads two fields the walk is
@@ -8736,15 +8896,17 @@ impl App {
         let App {
             hist_lines,
             turn,
-            // **The anchor's own inputs** (R36). Taken apart here rather than read through
-            // `self` further down, because `hist_lines` is lent to the frame below and a
-            // `&self` method would need the whole of it back.
+            // **The anchor's own inputs** (R36), and the rung (R37). Taken apart here rather
+            // than read through `self` further down, because `hist_lines` is lent to the
+            // frame below and a `&self` method would need the whole of it back.
             items,
             spans,
             scroll,
             anchor,
+            verbosity,
             ..
         } = self;
+        let rung = *verbosity;
         let mut segs: Vec<Seg<'_>> = vec![Seg::Borrowed(hist_lines)];
         // The history no longer ends with a blank — separators go *before* a row
         // now, so the last row of the transcript is the last line of it. The live
@@ -8775,7 +8937,11 @@ impl App {
                 ..
             } = t;
             let ind = activity_indent(cfg.width);
-            if !superseded && !reasoning.is_empty() {
+            // **What the model THOUGHT is the working, not the conversation** (R37). Hidden
+            // here as it is hidden in the transcript, so the rung does not depend on whether
+            // a row has been committed yet — a reader who switched mid-turn would otherwise
+            // watch the thinking appear when it settles.
+            if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
                 // Narrower by the rail and by the step it is set in. Getting this
                 // wrong makes the block one row taller than the space reserved for
                 // it, which moves everything below it by a line every frame — which
@@ -8813,7 +8979,11 @@ impl App {
                 // output under them, and drawing them here as well was the second
                 // half of the doubling: a turn eight calls deep showed eight live
                 // rows under eight settled ones, in the same order, saying less.
+                // **And a card for a call in flight is the working too.** Kept out for the
+                // same reason: this rung shows the conversation, and a spinner over a tool
+                // call is the head reporting its own machinery.
                 let live = calls.get(*settled_calls..).unwrap_or(&[]);
+                let live = if rung.hides_the_working() { &[][..] } else { live };
                 if !live.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live.iter() {
@@ -13333,6 +13503,11 @@ struct ItemCtx<'a> {
     echo_mark: &'a str,
     /// **Whether an echo is drawn in full or as its elided headline** (R33).
     echo_open: bool,
+    /// **Which rung of the ladder this row is being drawn for** (R37).
+    ///
+    /// On the context rather than read from the app, because `item_lines` is a free function
+    /// and the walk holds the app apart — the same reason every other field here is passed.
+    rung: Verbosity,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
     /// How far into a row's payload the reader has paged, and which row that is.
@@ -13527,7 +13702,22 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         bound,
         echo_mark,
         echo_open,
+        rung,
     } = *ctx;
+    // **The rung, before anything else** (R37). A row this rung does not keep renders to
+    // nothing, and the walk already treats a row that renders to nothing as no row at all —
+    // no separator, no span, no height — so the whole of hiding is this one early return.
+    // Returning empty rather than a placeholder is the requirement: a placeholder per hidden
+    // row is the thing the operator asked to be rid of, and the mode being named on screen is
+    // what stands in for it (R29).
+    if let Some(item) = it.item.as_ref()
+        && !rung.keeps(item)
+    {
+        return (RowClass::Other, Vec::new());
+    }
+    // The live pane's own echo of a row it has bound is `User` by construction, so it
+    // survives; a row whose body has not arrived carries no item at all and is drawn from
+    // the echo, which is also the conversation's.
     let newest = payload_newest == Some(it.item_id.as_str());
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
@@ -13644,7 +13834,10 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             let mut out = prose;
             let mut acted = false;
             let p = cfg.palette();
-            for c in tool_calls {
+            // **A model's answer is the conversation; the calls it made are the working**
+            // (R37). The prose above is kept and the call rows below are not, which is the
+            // same line the rung draws everywhere else.
+            for c in tool_calls.iter().filter(|_| !rung.hides_the_working()) {
                 // ONE ROW PER CALL. A call whose result is on the screen is drawn
                 // by that result and not here.
                 //
@@ -15906,6 +16099,378 @@ mod tests {
             "the mark outlived the echo it was on: {:?}",
             a.unconfirmed
         );
+    }
+
+    /// **R37: `Conversation` is the conversation and nothing the head did to produce it.**
+    ///
+    /// The operator: *"and i want a special mode that hides tool calls and thinking
+    /// completely."* Measured before it was built: the ladder's bottom rung was `Terse`,
+    /// *"assistant text and tool outcomes only"* — so **terse still drew every tool row**, and
+    /// there was no rung that gave the conversation alone.
+    ///
+    /// Asserted as a difference against `Terse` rather than as a list, because the list is
+    /// what a later edit forgets: the same fixture is drawn twice, once per rung, and what is
+    /// gone is exactly the working.
+    #[test]
+    fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // One exchange of each kind: the operator's words, the model's answer, its reasoning,
+        // a tool call with its result, and a head arrival.
+        for (seq, event) in [
+            (
+                1,
+                testing::appended("s.0", "user"),
+            ),
+            (
+                2,
+                testing::content("s.0", "please read the file"),
+            ),
+            (
+                3,
+                SessionEvent::TranscriptAppended {
+                    item_id: "s.1".into(),
+                    kind: "reasoning".into(),
+                    ledger_head: String::new(),
+                },
+            ),
+            (
+                4,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.1".into(),
+                    item: Box::new(letibot_transcript::TranscriptItem::Reasoning {
+                        text: "I should look at the file first".into(),
+                        field: letibot_transcript::ReasoningField::ReasoningContent,
+                        truncated: false,
+                    }),
+                },
+            ),
+            (
+                5,
+                testing::appended("s.2", "assistant"),
+            ),
+            (
+                6,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.2".into(),
+                    item: Box::new(letibot_transcript::TranscriptItem::Assistant {
+                        text: "the file says a thing".into(),
+                        tool_calls: Vec::new(),
+                        truncated: false,
+                    }),
+                },
+            ),
+            (
+                7,
+                testing::appended("s.3", "tool_result"),
+            ),
+            (
+                8,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.3".into(),
+                    item: Box::new(letibot_transcript::TranscriptItem::ToolResult {
+                        call_id: "c1".into(),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: "MAGIC-TOOL-PAYLOAD".into(),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            ),
+            (9, SessionEvent::HeadAttached {
+                head_id: "h2".into(),
+                kind: "tui".into(),
+                identity: "somebody".into(),
+            }),
+        ] {
+            a.apply(ServerFrame::Event(env(seq, event)));
+        }
+        a.verbosity = Verbosity::Loud;
+        let loud = a.screen(100, 40).join("\n");
+        assert!(loud.contains("please read the file"), "{loud}");
+        assert!(loud.contains("the file says a thing"), "{loud}");
+
+        // **And the same fixture under the new rung.** The conversation is all that is left.
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let quiet = a.screen(100, 40).join("\n");
+        assert!(
+            quiet.contains("please read the file"),
+            "the operator's own words are the conversation: {quiet}"
+        );
+        assert!(
+            quiet.contains("the file says a thing"),
+            "and so is the model's answer: {quiet}"
+        );
+        for hidden in [
+            "MAGIC-TOOL-PAYLOAD",
+            "I should look at the file first",
+            "bash",
+            "h2",
+        ] {
+            assert!(
+                !quiet.contains(hidden),
+                "`{hidden}` is the working and must not be drawn: {quiet}"
+            );
+        }
+        // **And the name is on the screen.** R29's remedy rule takes the form R37 gives it:
+        // the MODE is named rather than a placeholder per hidden row — which is the thing the
+        // operator asked to be rid of.
+        assert!(
+            quiet.contains("conversation"),
+            "the rung must be named on the screen: {quiet}"
+        );
+        // **It is a view.** Switching back draws every row again, including the span it was
+        // on, and nothing was dropped from the head's own copy.
+        // **And the reasoning under the new rung is hidden by the RUNGS, not by the fold.**
+        // Two different mechanisms want it off the screen — `thinking: folded` folds the
+        // block, and this rung removes it — so the assertion above is only worth anything if
+        // the fold is open. Otherwise it passes for the wrong reason, which is the defect
+        // this test exists against.
+        a.verbosity = Verbosity::Loud;
+        a.reasoning = Fold::Open;
+        a.invalidate_history();
+        let loud_open = a.screen(100, 200).join("\n");
+        assert!(
+            loud_open.contains("I should look at the file first"),
+            "the fold is open, so the text is reachable: {loud_open}"
+        );
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        assert!(
+            !a.screen(100, 200).join("\n").contains("I should look at the file first"),
+            "and the rung is what removes it, with the fold open"
+        );
+
+        // **It is a view.** Switching back draws every row again, including the span it was
+        // on, and nothing was dropped from the head's own copy.
+        a.verbosity = Verbosity::Loud;
+        a.invalidate_history();
+        let back = a.screen(100, 200).join("\n");
+        assert!(
+            back.contains("MAGIC-TOOL-PAYLOAD") && back.contains("I should look at the file first"),
+            "a rung is a view: switching back must restore every row\n{back}"
+        );
+        // **Four ITEMS**: the operator's message, the reasoning, the answer and the result.
+        // A `HeadAttached` is a note rather than a row, which is why the assertion is four —
+        // the first draft said five and the failure named the miscount rather than the
+        // mechanism, which is the useful direction.
+        assert_eq!(a.items.len(), 4, "nothing left the head's copy");
+        // **And an arrival is a fact the head holds, not a row it draws.** `HeadAttached` is
+        // counted on every rung and drawn only at `Loud`, which is what the rung's own doc
+        // says — so the assertion is the COUNT, because a rung that dropped the fact rather
+        // than the row would make the header wrong about how many heads are on the session.
+        // The seat's own snapshot carries no heads, so the one that is counted here is the
+        // arrival the fixture sent — held where it is not drawn, which is what this asserts.
+        assert_eq!(a.heads, 1, "the arrival is held even where it is not drawn");
+    }
+
+    /// **What this rung may NOT hide, and each for its own reason** (R37).
+    ///
+    /// Three, and only one of them is about this head's taste: warnings were ruled by
+    /// `Verbosity::Terse`'s own docstring, decision cards make the session unanswerable if
+    /// they go, and liveness is this rung's specific risk — *a ten-minute tool-heavy turn
+    /// draws nothing at all*.
+    #[test]
+    fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A warning, which is a fact the daemon chose to interrupt with.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "context_wall".into(),
+                detail: "WARNING-MAGIC-SENTENCE".into(),
+                compaction: None,
+            },
+        )));
+        // A turn in flight, with a tool call whose output is arriving.
+        a.apply(ServerFrame::Event(env(2, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: "exec".into(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(4, testing::tool_progress("c1", "still going"))));
+        // And a gate card waiting for an answer.
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::DecisionRequested {
+                req_id: "r1".into(),
+                kind: "permission".into(),
+                call_id: Some("c1".into()),
+                access: String::new(),
+                summary: "run the thing".into(),
+                target: String::new(),
+                detail: String::new(),
+                options: Vec::new(),
+                choices: Vec::new(),
+                because: String::new(),
+                advice: None,
+                deadline: None,
+                on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
+            },
+        )));
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+        let frame = a.screen(100, 40);
+        let all = frame.join("\n");
+        assert!(
+            all.contains("WARNING-MAGIC-SENTENCE"),
+            "a warning is not on the ladder: {all}"
+        );
+        assert!(
+            all.contains("?") && all.contains("permission"),
+            "the decision card is the question the session is waiting on: {all}"
+        );
+        // **Liveness.** With the tool rows hidden, the only thing on screen that says a turn
+        // is running is the composer's border — so it must still say so, and the elapsed
+        // time with it. R13: a reader who cannot tell working from wedged is the confusion
+        // this document has spent the day correcting in its own instruments.
+        assert!(
+            all.contains("Responding"),
+            "the turn's own status line must survive the rung: {all}"
+        );
+    }
+
+    /// **R37's consequence for R36**: a rung that hides rows can hide the one the reader is
+    /// holding, and the view moves to the nearest surviving row **and says so**.
+    #[test]
+    fn a_rung_that_hides_the_held_row_moves_the_view_and_says_so() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A transcript whose rows alternate: conversation, tool result, conversation, …
+        for i in 0..30u64 {
+            let (a_id, b_id) = (format!("s.a{i}"), format!("s.b{i}"));
+            a.apply(ServerFrame::Event(env(
+                i * 4 + 1,
+                testing::appended(&a_id, "assistant"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 4 + 2,
+                testing::content(&a_id, &format!("answer {i}")),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 4 + 3,
+                testing::appended(&b_id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 4 + 4,
+                SessionEvent::TranscriptContent {
+                    item_id: b_id,
+                    item: Box::new(letibot_transcript::TranscriptItem::ToolResult {
+                        call_id: format!("c{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: "tool payload".into(),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        a.screen(100, 30);
+        // **The anchor is put on a TOOL row deliberately**, because that is the case being
+        // tested and a wheel notch lands wherever the arithmetic takes it — the first draft
+        // scrolled and happened to stop on an assistant row, so the re-anchor never fired and
+        // the test asserted that a thing which had not happened had not said anything.
+        let tool_row = a
+            .items
+            .iter()
+            .position(|it| it.kind == "tool_result")
+            .expect("the fixture has tool rows");
+        a.anchor = Some(Held {
+            item_id: a.items[tool_row].item_id.clone(),
+            ordinal: tool_row,
+            into: 0,
+        });
+        let held = a.anchor.clone().expect("a held row");
+
+        // Switch to the rung, which hides every other row here — and the assertion that the
+        // held row IS one of them comes after the switch, because `hidden_by_rung` is a
+        // question about the rung and asking it under `Normal` answers `false` for
+        // everything. (The first draft asked it before the switch and passed on the wrong
+        // side of the same mistake.)
+        a.verbosity = Verbosity::Conversation;
+        assert!(a.hidden_by_rung(held.ordinal), "the fixture must hold a hidden row");
+        a.reanchor_off_hidden();
+        let now = a.anchor.clone().expect("still holding, on a row that shows");
+        assert!(
+            !a.hidden_by_rung(now.ordinal),
+            "the view is holding a row the rung hides: {now:?}"
+        );
+        assert!(
+            a.notice.as_deref().is_some_and(|n| n.contains("hides")),
+            "and it says so rather than jumping quietly: {:?}",
+            a.notice
+        );
+        // **The nearest** surviving row, not an arbitrary one: within one row of where the
+        // reader was, since this fixture hides every other row.
+        let distance = (now.ordinal as isize - held.ordinal as isize).unsigned_abs();
+        assert!(
+            distance <= 1,
+            "the view jumped {distance} rows instead of to the neighbour: {held:?} -> {now:?}"
+        );
+    }
+
+    /// **The rung is a rung**: the ladder cycles through it, and the verb says which rung is
+    /// on. The name is letibot's to choose and both heads use it (R37) — this pins the
+    /// spelling so it cannot drift into a second word for one view.
+    #[test]
+    fn the_ladder_cycles_through_the_conversation_rung_by_name() {
+        assert_eq!(Verbosity::Conversation.as_str(), "conversation");
+        let mut v = Verbosity::Conversation;
+        for want in ["terse", "normal", "loud", "conversation"] {
+            v = v.next();
+            assert_eq!(v.as_str(), want);
+        }
+        // And only the one rung is a scope.
+        assert!(Verbosity::Conversation.hides_the_working());
+        for r in [Verbosity::Terse, Verbosity::Normal, Verbosity::Loud] {
+            assert!(!r.hides_the_working(), "{r:?}");
+        }
+        // `keeps` is the item-level question, and it is the same line: the conversation in,
+        // everything the head made out.
+        use letibot_transcript::{ReasoningField, TranscriptItem as T};
+        let user = T::User {
+            parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+        };
+        let answer = T::Assistant {
+            text: "hello".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        };
+        let thought = T::Reasoning {
+            text: "hmm".into(),
+            field: ReasoningField::ReasoningContent,
+            truncated: false,
+        };
+        for kept in [&user, &answer] {
+            assert!(Verbosity::Conversation.keeps(kept), "{kept:?}");
+        }
+        assert!(!Verbosity::Conversation.keeps(&thought));
+        // And the registers keep everything, which is what makes this a rung rather than a
+        // change to the ladder's meaning.
+        for r in [Verbosity::Terse, Verbosity::Normal, Verbosity::Loud] {
+            assert!(r.keeps(&thought), "{r:?}");
+        }
     }
 
     /// **R36: a scrolled viewport holds while the transcript grows under it.**
@@ -21019,6 +21584,7 @@ mod tests {
             bound: None,
             echo_mark: QUEUED,
             echo_open: false,
+            rung: Verbosity::Normal,
             diff_split: true,
             payload_view: None,
             payload_newest: None,

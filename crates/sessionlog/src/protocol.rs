@@ -1243,6 +1243,34 @@ pub enum ServerFrame {
     /// on every row written before R11 kept the exchange, and an oracle that never answered has
     /// no reply either; a head must tell *"nobody kept this"* from *"here it is, and it is
     /// empty"*, which is the rule [`ServerFrame::RowFetched`]'s own doc states one field over.
+    ///
+    /// # Which of the two the store can actually produce, measured (2026-09-23, leticl's ask)
+    ///
+    /// leticl measured the corpus and found **zero empty strings**: 14,439 rows, `shown` on
+    /// 411 and `oracle_reply` on 264, none of them `''`. That raises the question the count
+    /// cannot answer on its own — *is the third state theoretical, or is the WRITER destroying
+    /// it?* — and the two have opposite fixes. Measured on this box, at 14,528 rows, the same
+    /// zero holds, and the answer is **the first**:
+    ///
+    /// * **The writer preserves it.** `Store::record_adjudication` binds `shown` and `reply`
+    ///   straight into the `INSERT`, so a `Some("")` lands as `''` and reads back as
+    ///   `Some("")`. Nothing flattens an empty string to `NULL` on the way in.
+    /// * **The readers preserve it.** `Store::diagnostic` flattens `Option<Option<String>>`, so
+    ///   *no row* and `NULL` are one sentence — and `''` stays `Some("")`. `total` agrees: it is
+    ///   a length, so `0` with `Some(body)` is an empty kept reply and `0` with `None` is
+    ///   nothing kept.
+    /// * **So the absence is a fact about the two PRODUCERS, not about the seam.** `shown` is
+    ///   `ModelBrief::render()`, which opens with a fixed paragraph and therefore cannot be
+    ///   empty. `oracle_reply` is `choices[0].message.content` from a successful HTTP answer
+    ///   (`harnessd/src/oracle.rs`), which *could* be `""` if a server returned one — and has
+    ///   not, on this corpus, once.
+    ///
+    /// **Which is why the `Option` stays.** It costs nothing (an empty `String` and a `None`
+    /// are the same size here), it documents the intent at the seam that has to keep the two
+    /// apart, and the day a guard model answers with nothing the row will say *it answered and
+    /// said nothing* rather than *nobody kept this*. Leaving it also means the wire does not
+    /// need a second look when a producer changes, which is the point of a seam: the layers
+    /// below may be wrong about a fact without the layer that carries it being wrong too.
     Diagnostic {
         request_id: String,
         kind: DiagnosticKind,
