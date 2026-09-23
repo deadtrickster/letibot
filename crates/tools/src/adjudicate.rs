@@ -915,13 +915,24 @@ impl AdjudicationRequest {
     pub fn adjudicable(&self) -> Option<Adjudicable> {
         (self.resolved && self.tier.is_adjudicable_by_model()).then_some(Adjudicable(()))
     }
-    /// The brief §11.7 says a model adjudicator sees: the class, the tool, the
-    /// arguments, the boundary facts and the options — and **never the
-    /// transcript**.
+    /// **The CARD a person reads — not the brief a model is shown.** These are two
+    /// renderings of one request, and this comment used to claim the second while
+    /// describing the first. That is how a reader concluded the shipped brief was
+    /// *narrower than its own design* (R26, 2026-09-23): `trail`, `prior` and
+    /// `examples` are fields of this struct (`:777`, `:784`, `:789`) and this renders
+    /// none of them, while [`crate::authorise::ModelBrief::render`] renders all three —
+    /// so a person deciding here is shown **less** than the model, which is the
+    /// opposite of the starvation that was reported. Whether the person *should* see
+    /// them (they have the goal in front of them and the card's job is to be read at a
+    /// glance) is not recorded anywhere as a choice.
     ///
-    /// It is rendered here rather than in the model adjudicator because a human
-    /// over flowy and a console prompt need exactly the same bytes, and having
-    /// three renderings of one request is how they stop agreeing.
+    /// It is rendered here rather than in each caller because a human over flowy and
+    /// a console prompt need exactly the same bytes, and having three renderings of
+    /// one request is how they stop agreeing.
+    ///
+    /// **One `BRIEF_FORMAT` covers both renderings**, so the corpus `shown` column
+    /// holds a card on a person's rows and a brief on an oracle's — the same defect
+    /// R11 already found once.
     pub fn brief(&self) -> String {
         let mut out = String::new();
         // **No request id.** It is high-entropy, carries nothing about the call,
