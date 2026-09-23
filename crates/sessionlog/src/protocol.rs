@@ -280,12 +280,23 @@ pub const PROTOCOL_VERSION: u32 = 25;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
-/// Two, and the list is deliberately not `bash`, not `write`. The door exists so the operator
-/// can fetch *what the model cannot reach* — a read that ends in text. `bash` behind the same
-/// chord is the difference between *the operator looked something up* and *there is a shell one
-/// keystroke from a composer the operator is typing in*, and a corpus that cannot tell those
-/// apart cannot answer *was that the guard's answer, the operator's act, or a shell* — three
-/// facts on one row.
+/// Three: `web_search`, `web_fetch`, `read`. The principle is **read-only and bounded**, and
+/// it is a *correction* of this list's first version, which said *the ones whose value is
+/// fetching something the model cannot reach*. That reason describes `web_fetch` and nothing
+/// else, and it was drawn around the example rather than around the reason — which showed
+/// when `read` failed it while being the safest and most useful thing in the set. R31.
+///
+/// **What the door is for: the operator is not giving the model a task, they are changing
+/// what it knows before it acts.** *"Go read this file"* costs a prefill, a decision, a
+/// paraphrase of the intent, the call and then prose about it; the operator wanted the file
+/// and already knows the path.
+///
+/// **`bash` and `write` stay out, and the new principle excludes them on its own terms** —
+/// which is the test of whether a principle is real: `bash` is neither read-only nor bounded
+/// (one call can do anything and return anything), and `write` changes the tree the model is
+/// working in. `web_fetch` is `Access::Network` and is admitted because its *effect* is
+/// bounded: it returns text and touches nothing. Reading that distinction off the access
+/// class alone would have got this list wrong, which is why each name below says why.
 ///
 /// **[`ServerFrame::Settings`] carries it as a row** (`key: "head-run.tools"`), so a head
 /// reads the list instead of holding a copy that drifts. The constant here is what the daemon
@@ -294,11 +305,71 @@ pub const PROTOCOL_VERSION: u32 = 25;
 /// It is **not a security boundary** and must not be read as one: the head runs in the
 /// operator's own terminal and can already run anything. It is a boundary on what the corpus
 /// records, which is the requirement's actual subject.
-pub const HEAD_RUN_TOOLS: [&str; 2] = ["web_search", "web_fetch"];
+pub const HEAD_RUN_TOOLS: [&str; 3] = ["web_search", "web_fetch", "read"];
 
 /// The `key` [`HEAD_RUN_TOOLS`] travels under. Named here so the daemon that publishes the
 /// row and the head that reads it cannot spell it two ways.
 pub const HEAD_RUN_TOOLS_KEY: &str = "head-run.tools";
+
+/// **The verbs the DAEMON answers** — R32's third constraint, published like the tool list
+/// above and for the same reason.
+///
+/// A head completes `/`-commands from a table, and a head that does not recognise a verb
+/// forwards it. So the namespace has two owners, and **neither may enumerate the other's
+/// half**: the head offers its own verbs from its own dispatcher, and these from a row the
+/// daemon publishes.
+///
+/// Measured on this box, 2026-09-23 — `docs/evidence/slash-completion-2026-09-23.py` — the
+/// head's table offered 27 verbs while **five working daemon verbs were not in it**:
+/// `/flowy`, `/gate`, `/job`, `/login`, `/supervise`. Every one of them ran. The cause was
+/// not that completion was missing but that **it completed from a different list than the
+/// one that dispatches**, which is the failure mode a second copy always has: nearly right,
+/// and nothing says so.
+///
+/// `value` is the names, comma-joined with no spaces; an absent row means a daemon older
+/// than this one, which a head reads as *my own verbs only* rather than guessing.
+pub const DAEMON_VERBS_KEY: &str = "daemon.verbs";
+
+/// **One door-tool as the daemon describes it to a head** — R31 and R32.
+///
+/// The head must be able to turn `/web_search blabla` into the JSON the wire wants *without
+/// knowing anything about `web_search`*, and must be able to complete a path for `/read`
+/// without holding a list of which verbs take paths. Both are the same fact published once:
+/// which field a bare line goes into, and what that field is.
+///
+/// Carried on the `SettingRow` for [`HEAD_RUN_TOOLS_KEY`] in [`SettingRow::tools`], derived
+/// from the tool's own declared parameters by the daemon that seats it — so a tool whose
+/// schema changes changes this, and neither head is rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadRunTool {
+    /// The name the door takes. **This spelling and no other**: a head offers `/web_search`
+    /// because the daemon said `web_search`.
+    pub name: String,
+    /// **Where a bare line goes.** `query` for `web_search`, `url` for `web_fetch`, `path`
+    /// for `read`. Empty when the tool has no single obvious field, which is the case where
+    /// the head must ask for JSON.
+    pub field: String,
+    /// **What that field is** — `path`, `url` or `text`. Drives the head's Tab: an argument
+    /// position whose kind is `path` completes filenames, because the daemon said so and not
+    /// because a head knows what `read` does. Empty when [`Self::field`] is.
+    pub kind: String,
+    /// **The fields that have defaults**, as the model would receive them. A head filling a
+    /// bare line must send the same object a model's call would, or the same tool answers
+    /// two different questions depending on who asked.
+    #[serde(default)]
+    pub defaults: std::collections::BTreeMap<String, String>,
+    /// **Why there is no bare form**, when there is none. A head says this in the same
+    /// sentence that refuses, rather than leaving the operator to guess which tools are
+    /// which. Empty when [`Self::field`] is set.
+    #[serde(default)]
+    pub why_json: String,
+}
+
+/// The three kinds [`HeadRunTool::kind`] can take, and the vocabulary is closed on purpose: a
+/// head branches on it, so a fourth value means a head rebuilt.
+pub const HEAD_RUN_KIND_PATH: &str = "path";
+pub const HEAD_RUN_KIND_URL: &str = "url";
+pub const HEAD_RUN_KIND_TEXT: &str = "text";
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
 /// head says, and `None` when they are the same.
@@ -415,6 +486,20 @@ pub struct SettingRow {
     /// the value it was given.
     #[serde(default)]
     pub choices: Vec<String>,
+    /// **The door's tools, described** — populated on the one row whose key is
+    /// [`HEAD_RUN_TOOLS_KEY`] and empty everywhere else.
+    ///
+    /// A typed field rather than a grammar inside `value`, because the alternative was
+    /// `"web_search query text"` — structure encoded as words in a string, which is the
+    /// defect R31's own subject names: *a head that has to parse a sentence is holding a
+    /// copy of the shape*. `choices` was the near miss: it is a `Vec<String>` for a list
+    /// of *values*, and a tool is four facts.
+    ///
+    /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing struct, the
+    /// precedent `ModelAdvice::consulted` set. A head that does not read it sees the same
+    /// `value` it always did.
+    #[serde(default)]
+    pub tools: Vec<HeadRunTool>,
 }
 
 /// A `Caps.features` string: this head can render a question with model-provided
@@ -901,7 +986,35 @@ pub enum ClientFrame {
         name: String,
         /// The call's arguments, as JSON — the same shape a model's call carries, because
         /// the row it becomes is the same row.
+        ///
+        /// **The bare form is built here, by the head, from [`HeadRunTool::field`]** — a head
+        /// that knows nothing about `web_search` turns `/web_search blabla` into
+        /// `{"query":"blabla"}` because the daemon published which field a bare line goes
+        /// into. R31: the knowledge stays the daemon's and the typing gets short.
         arguments: String,
+        /// **Whether the DAEMON runs it.** (R31.)
+        ///
+        /// Both shapes are legitimate and the difference is which side has the tool:
+        ///
+        /// * `false` — the head runs it and sends [`ClientFrame::OperatorResult`]. That is
+        ///   today's wire and it is what a head with its own client does; leticl's live proof
+        ///   is this shape, and it omits the field, so its behaviour is unchanged byte for
+        ///   byte.
+        /// * `true` — the daemon runs it, through the tool this session already seats, and
+        ///   appends the row itself. **The result is then the same program's output a model's
+        ///   call would have produced**, bounded by the same byte caps, spilled by the same
+        ///   policy and subject to the same network rules. A head that fetched a page with its
+        ///   own HTTP client would write a corpus row saying *the operator ran `web_fetch`*
+        ///   about a different program's answer — and the model would then be reading text
+        ///   `web_fetch` never returned.
+        ///
+        /// The admission is unchanged either way: same list, same two frames, same row as the
+        /// human's act. **Who runs it is not who authorised it.**
+        ///
+        /// `#[serde(default)]` so a head built before this field reads as `false`; no
+        /// `PROTOCOL_VERSION` bump for an added, defaulted field.
+        #[serde(default)]
+        execute: bool,
     },
     /// **What the operator's call produced** — the second of the two frames.
     ///

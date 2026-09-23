@@ -1,0 +1,20 @@
+A. what Tab offers      (27): cells compact config default-model help interrupt jobs mode models new notes peek promote quit rename reseat reseat summarise resume resync sessions status subagents switch think todos tools verbosity
+B. what the head acts on(38): ? cells compact config dismiss h help i interrupt jobs mode new notes peek promote q quit r rename reseat reseat keep reseat summarise reseat summarize reseat verbatim resume resync s sessions settings stats status subagents switch t think todos v verbosity
+C. what the daemon acts ( 8): default-model flowy gate job login models supervise tools
+
+**The head's own verbs Tab does not offer** (aliases excluded):
+  /dismiss
+  /settings
+  /stats
+
+**The daemon's verbs Tab does not offer** — these WORK; they are forwarded:
+  /flowy
+  /gate
+  /job
+  /login
+  /supervise
+
+**Offered, and not a verb either half acts on:**
+
+aliases deliberately absent: ? h i q r s t v
+reseat modifiers:            reseat reseat keep reseat summarise reseat summarize reseat verbatim

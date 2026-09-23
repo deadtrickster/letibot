@@ -569,6 +569,7 @@ fn settings_are_answered_from_what_the_harness_published() {
     registry.set_settings(
         "s-1",
         vec![letibot_sessionlog::protocol::SettingRow {
+            tools: Vec::new(),
             key: "mode".into(),
             value: "automode".into(),
             source: "project store (modes.tsv)".into(),

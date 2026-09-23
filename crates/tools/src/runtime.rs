@@ -1312,6 +1312,41 @@ impl ToolRuntime {
         call: &ToolCall,
         sink: &mut dyn ToolEventSink,
     ) -> ToolResult {
+        self.run(turn_id, call, sink, true)
+    }
+
+    /// **Run one call the OPERATOR made**, which the admission has already answered.
+    ///
+    /// R31. The gate is not consulted, and that is the whole of the difference: an
+    /// operator's call has already been through the door — admitted against the allowlist,
+    /// written to the corpus as `human:<who>`, published as `OperatorCallAllowed` — so there
+    /// is nobody left to ask. The corpus row for it says so in as many words (*"the operator
+    /// ran this from their own console; there was nobody left to ask"*), and asking again
+    /// here would either double-record the decision or, at `/mode automode`, let a model
+    /// refuse the person's own act.
+    ///
+    /// **Everything else is identical**, and that is deliberate: the same schema lookup, the
+    /// same argument salvage, the same byte limits, the same spill policy, the same network
+    /// rules. The point of running it here rather than in a head is that the payload is what
+    /// *this* program would have returned, so the corpus row and the model's next prompt are
+    /// about one tool rather than two.
+    pub fn invoke_operator(
+        &mut self,
+        turn_id: &str,
+        call: &ToolCall,
+        sink: &mut dyn ToolEventSink,
+    ) -> ToolResult {
+        self.run(turn_id, call, sink, false)
+    }
+
+    /// The body of both, with the gate the one thing that varies.
+    fn run(
+        &mut self,
+        turn_id: &str,
+        call: &ToolCall,
+        sink: &mut dyn ToolEventSink,
+        gated: bool,
+    ) -> ToolResult {
         let Some(schema) = self.registry.get(&call.name).map(|t| t.schema()) else {
             // An unknown tool name is a miss, and clause 1 applies to it: the model
             // gets the list it can choose from and the nearest thing to what it
@@ -1362,7 +1397,7 @@ impl ToolRuntime {
             .and_then(|t| t.access_for(&args))
             .filter(|a| a.is_unattended() && !declared.is_unattended())
             .unwrap_or(declared);
-        if !effective.is_unattended() {
+        if gated && !effective.is_unattended() {
             // **The workspace, not the root — and the difference is R18.**
             //
             // This asked the backend for `root_path()`. For an unconfined session that

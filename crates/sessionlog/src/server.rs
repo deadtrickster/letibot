@@ -649,6 +649,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 call_id,
                 name,
                 arguments,
+                execute,
             }) => {
                 if !HEAD_RUN_TOOLS.contains(&name.as_str()) {
                     let f = ServerFrame::Rejected {
@@ -683,6 +684,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             name,
                             arguments,
                             who,
+                            execute,
                         },
                     );
                     writer.lock().unwrap().write(&f)?;

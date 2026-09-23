@@ -79,9 +79,10 @@ fn a_head_asking_for_bash_through_the_operator_door_is_refused_by_the_daemon() {
 
     for name in ["bash", "write", "edit", "web_fetch --yolo"] {
         let _ = client
-            .operator_call(0, &format!("c-{name}"), name, r#"{"command":"id"}"#)
+            .operator_call(0, &format!("c-{name}"), name, r#"{"command":"id"}"#, false)
             .expect("write");
         let f = next_frame(&rx, 3000).expect("the daemon must answer");
+        eprintln!("DBG {name} -> {f:?}");
         match f {
             ServerFrame::Rejected { reason, .. } => {
                 assert!(
@@ -132,17 +133,37 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
     for (i, name) in HEAD_RUN_TOOLS.iter().enumerate() {
         let call_id = format!("c{i}");
         let _ = client
-            .operator_call(0, &call_id, name, r#"{"url":"http://example.invalid"}"#)
+            .operator_call(0, &call_id, name, r#"{"url":"http://example.invalid"}"#, false)
             .expect("write");
-        // The daemon answers this frame — a `Rejected` would be the refusal path, which the
-        // negative test covers — so the assertion is that nothing refused it.
-        // **Either answer proves it was not refused**: `Accepted` is the server's own ack,
-        // and `CommandIssued` is the queue's, which arrives when the command is taken.
-        let f = next_frame(&rx, 3000).expect("the daemon must answer");
-        assert!(
-            matches!(f, ServerFrame::Accepted { .. } | ServerFrame::Event(_)),
-            "`{name}` must not be refused: {f:?}"
-        );
+
+        // **Two frames come back per call and this read one of them.**
+        //
+        // `Accepted` is the server's own ack on this connection and `CommandIssued` is the
+        // hub's announcement on the session log. The first draft of this loop read *one*
+        // frame per iteration, which left it a frame behind from the second call onward —
+        // and it passed anyway, because with two names the leaked frame happened to be the
+        // one the next `try_command` was about. Adding a third name to `HEAD_RUN_TOOLS`
+        // (R31) turned the off-by-one into a failure, which is the useful direction: a test
+        // that is right by accident fails when the accident stops.
+        //
+        // So: drain what arrives for this call, assert none of it is a refusal, and then
+        // assert the command is on the queue. Order is not asserted, because the two frames
+        // travel on two channels and their order is not a property of anything.
+        let mut seen: Vec<ServerFrame> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while seen.len() < 2 && Instant::now() < deadline {
+            match next_frame(&rx, 300) {
+                Some(f) => seen.push(f),
+                None => break,
+            }
+        }
+        assert!(!seen.is_empty(), "the daemon never answered `{name}`");
+        for f in &seen {
+            assert!(
+                !matches!(f, ServerFrame::Rejected { .. }),
+                "`{name}` was refused: {f:?}"
+            );
+        }
 
         // And it arrived as the operator's own call, carrying WHO — the identity the corpus
         // records in `human:<who>` and the row carries in its `CallOrigin`.

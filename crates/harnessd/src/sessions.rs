@@ -1613,6 +1613,7 @@ impl<'a> Sessions<'a> {
                 name,
                 arguments,
                 who,
+                execute,
             } => {
                 let call_id = call_id.clone();
                 let name = name.clone();
@@ -1624,11 +1625,35 @@ impl<'a> Sessions<'a> {
                 };
                 match admitted {
                     Ok(()) => {
-                        // Pending until the result arrives, keyed by the HEAD that asked —
-                        // so a head that dies between the two frames leaves a sentence
-                        // rather than a silent admission. See `Hub::detach`.
+                        // **Pending until the result arrives**, keyed by the HEAD that asked —
+                        // so a head that dies between the two frames leaves a sentence rather
+                        // than a silent admission. See `Hub::detach`.
+                        //
+                        // A daemon-run call is noted too and then cleared by the run below,
+                        // rather than being a special case: the pending set means *an
+                        // admission this daemon is holding*, and a call the daemon runs and
+                        // finishes in the same arm has one for the length of that arm.
                         if let Some(hub) = &hub {
                             hub.note_operator_call(&call_id, &cmd.head_id, &name, &who);
+                        }
+                        // **R31: the daemon runs it, when the head asked it to.** The head
+                        // that asked has no tool runtime and no HTTP client; the daemon has
+                        // both, and — the reason that is not merely convenient — the payload
+                        // then comes from *this* program, bounded by this session's byte
+                        // caps and spill policy. A head fetching a page itself would write a
+                        // corpus row saying the operator ran `web_fetch` about another
+                        // program's answer.
+                        if *execute {
+                            let said = match self.open.get_mut(session_id) {
+                                Some(h) => h.run_operator_call(&call_id, &name, &arguments, &who),
+                                None => Err(format!("session {session_id} is not open")),
+                            };
+                            if let Some(hub) = &hub {
+                                hub.take_operator_call(&call_id);
+                            }
+                            if let Err(e) = said {
+                                return Outcome::Failed(e);
+                            }
                         }
                         Outcome::Ignored
                     }

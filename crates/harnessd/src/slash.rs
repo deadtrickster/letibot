@@ -42,6 +42,40 @@ impl SlashReply {
     }
 }
 
+/// **The verbs this daemon answers** — the first word of every arm of [`Slash::parse`].
+///
+/// # Why this is a list at all, when the parser is a `match`
+///
+/// A head completes `/`-commands from a table, and **a head that does not recognise a verb
+/// forwards it here**. So the daemon's verb table is the authority for its half of the
+/// namespace, and a head that enumerated its own guess at it would be holding a copy of the
+/// other half's knowledge — the `head-run.tools` mistake exactly.
+///
+/// Measured 2026-09-23, and this is the defect the list exists to end: the head's completion
+/// table offered 27 verbs and **five working daemon verbs were not among them** — `/flowy`,
+/// `/gate`, `/job`, `/login`, `/supervise`. Every one of them runs. The operator's words,
+/// via B's audit of its own tree: *"i want tab completion for /<commands"*, and the cause was
+/// not that completion is missing but that **it completes from a different list than the one
+/// that dispatches**. `docs/evidence/slash-completion-2026-09-23.py` is that measurement.
+///
+/// # The shape, and why not one list
+///
+/// Three registries on one key would be worse than one wrong one, so there are two and they
+/// are joined rather than duplicated: the head completes **its own** verbs from its own
+/// table (tied to its dispatcher by a test that reads the source, see
+/// `crates/tui/src/app.rs`), and completes **these** from a `SettingRow` the daemon
+/// publishes. See [`crate::protocol::DAEMON_VERBS_KEY`].
+pub const VERBS: &[&str] = &[
+    "default-model",
+    "flowy",
+    "gate",
+    "job",
+    "login",
+    "models",
+    "supervise",
+    "tools",
+];
+
 /// `flowy status`, `flowy login …`, `flowy logout`, `models …` — parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Slash {
@@ -960,6 +994,83 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                 },
                 Err(e) => SlashReply { lines: vec![e.to_string()], ok: false },
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod the_verb_table_is_the_parser {
+    use super::*;
+
+    /// **Every arm's first word is in [`VERBS`], and every name there has an arm.**
+    ///
+    /// The list is what a head offers and the `match` is what runs, so the two drifting
+    /// apart is the whole defect this pair exists against — and the failure mode is not a
+    /// crash: a verb in the table with no arm reaches `Some(other) => Slash::Help`, which
+    /// answers *"is not a daemon verb"* about something the head just completed. A test that
+    /// reads the source is the only mechanism available, because match arms are not
+    /// reflectable and a hand-maintained second list is the thing being fixed.
+    #[test]
+    fn the_table_and_the_parser_agree() {
+        let src = include_str!("slash.rs");
+        // The `match words.first()` block, by brace balance from `pub fn parse`.
+        let start = src
+            .find("    pub fn parse(line: &str) -> Slash {")
+            .expect("the parser");
+        let mut depth = 0usize;
+        let mut end = start;
+        for (i, c) in src[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // The verb-deciding arms sit two braces deep: the fn, then the `match`.
+        let mut arms: Vec<&str> = Vec::new();
+        let mut d = 0i32;
+        for line in src[start..end].split('\n') {
+            let t = line.trim();
+            if d == 2
+                && let Some(rest) = t.strip_prefix("Some(\"")
+                && let Some((name, _)) = rest.split_once('"')
+            {
+                arms.push(name);
+            }
+            d += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        }
+        assert!(!arms.is_empty(), "no arms found — the parser moved");
+
+        // Aliases collapsed to the spelling [`VERBS`] carries: the table is what a head
+        // OFFERS, and offering `/default` and `/default_model` beside `/default-model`
+        // teaches one verb three times.
+        fn canon(v: &str) -> &str {
+            match v {
+            "default" | "default_model" => "default-model",
+            "model" => "models",
+            "supervised" => "supervise",
+                other => other,
+            }
+        }
+        for a in &arms {
+            let c = canon(a);
+            assert!(
+                VERBS.contains(&c),
+                "`/{a}` has an arm and is not in VERBS, so no head will ever offer it"
+            );
+        }
+        for v in VERBS {
+            assert!(
+                arms.iter().any(|a| canon(a) == *v),
+                "`/{v}` is offered and the parser has no arm for it — it would answer \
+                 `is not a daemon verb` about a verb the head just completed"
+            );
         }
     }
 }

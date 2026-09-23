@@ -88,6 +88,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // happen. These are the four the operator was met by.
     ("auto_compact", Class::Routine),
     ("compacted", Class::Routine),
+    // **The operator's own call ran** — R31's size disclosure. Routine by the rule
+    // above: it is a sentence about something the operator asked for that worked, and
+    // deleting it loses only the number they were owed. It is the count of context they
+    // just chose to buy, said while they can still act on it — the opposite of a fault.
+    ("operator_call_ran", Class::Routine),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.

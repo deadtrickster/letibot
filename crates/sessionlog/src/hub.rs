@@ -139,6 +139,11 @@ pub enum CommandKind {
         /// The head that asked. Becomes the `who` in `human:<who>` and in the row's
         /// `CallOrigin`, so the two records name the actor the same way.
         who: String,
+        /// **Who runs it** — R31. `true` is the daemon, through the tool this session
+        /// already seats; `false` is the head, which then sends `OperatorResult`. Carried
+        /// through the queue unchanged so the admission and the execution cannot disagree
+        /// about which of them it was.
+        execute: bool,
     },
     /// **What that call produced.** Appends the `ToolResult` row with its `origin` set.
     OperatorResult {

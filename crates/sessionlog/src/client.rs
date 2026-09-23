@@ -360,20 +360,27 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Ask the daemon to admit a call this head will run itself** — R24 part two,
-    /// decision 4, the first of the two frames.
+    /// **Ask the daemon to admit an operator's own call** — R24 part two, decision 4, the
+    /// first of the two frames.
     ///
     /// The daemon answers [`crate::ServerFrame::Rejected`] when the name is not one of
     /// [`crate::HEAD_RUN_TOOLS`], and otherwise queues the admission and publishes
     /// [`crate::SessionEvent::OperatorCallAllowed`] once it is recorded. **A head must not run
     /// the call until that event arrives**: an `Accepted` reply means *queued*, and the whole
     /// point of the pair is that the admission is on the record before anything happens.
+    ///
+    /// `execute` says *who runs it* (R31). `true` is the daemon, which is what a head with no
+    /// HTTP client and no tool runtime needs; `false` is the head, which is what a head that
+    /// has one does. The admission is identical either way. See
+    /// [`ClientFrame::OperatorCall::execute`] for why both exist and why the daemon's is the
+    /// one that keeps the payload the same program's.
     pub fn operator_call(
         &mut self,
         expected_seq: u64,
         call_id: &str,
         name: &str,
         arguments: &str,
+        execute: bool,
     ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::OperatorCall {
@@ -382,6 +389,7 @@ impl HeadClient {
             call_id: call_id.to_string(),
             name: name.to_string(),
             arguments: arguments.to_string(),
+            execute,
         })?;
         Ok(client_request_id)
     }

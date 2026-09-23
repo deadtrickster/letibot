@@ -959,6 +959,7 @@ impl Config {
         &self,
         mode_source: &str,
         supervising: bool,
+        door_tools: &[letibot_sessionlog::protocol::HeadRunTool],
     ) -> Vec<letibot_sessionlog::protocol::SettingRow> {
         use letibot_sessionlog::protocol::SettingRow;
         let row = |key: &str, value: String, source: &str, editable: &str| SettingRow {
@@ -967,6 +968,7 @@ impl Config {
             source: source.into(),
             editable: editable.into(),
             choices: Vec::new(),
+            tools: Vec::new(),
         };
         let choices = |mut r: SettingRow, of: &[&str]| -> SettingRow {
             r.choices = of.iter().map(|s| (*s).to_string()).collect();
@@ -1053,9 +1055,28 @@ impl Config {
         // that ENFORCES this one — see `ClientFrame::OperatorCall`'s handler, which refuses
         // anything else by name. `choices` is empty because this is not a closed set of values
         // for the *setting*; it is the list, and a head reads `value`.
-        out.push(row(
+        // **The list, and beside it each name's bare form** — R31 and R32.
+        //
+        // `value` stays the comma-joined names because that is what it has always been and a
+        // head reading it keeps working; `tools` is the same list described, so a head can
+        // turn `/web_search blabla` into the JSON the wire wants and complete a path for
+        // `/read` while knowing nothing about either tool. See
+        // [`letibot_sessionlog::protocol::HeadRunTool`].
+        let mut tools_row = row(
             letibot_sessionlog::HEAD_RUN_TOOLS_KEY,
             letibot_sessionlog::HEAD_RUN_TOOLS.join(","),
+            "default",
+            "",
+        );
+        tools_row.tools = door_tools.to_vec();
+        out.push(tools_row);
+        // **The verbs this daemon answers** — R32, and the same argument as the tool list
+        // above: a head completes `/`-commands from a table, a head that does not recognise
+        // a verb forwards it, so this half of the namespace is the daemon's to publish. The
+        // head's own verbs come from its own dispatcher; neither enumerates the other's.
+        out.push(row(
+            letibot_sessionlog::protocol::DAEMON_VERBS_KEY,
+            crate::slash::VERBS.join(","),
             "default",
             "",
         ));
@@ -2214,7 +2235,7 @@ mod tests {
             "a fresh config is the local server, or this test says nothing"
         );
         let local = cfg
-            .settings("--model", false)
+            .settings("--model", false, &[])
             .into_iter()
             .find(|r| r.key == "model")
             .expect("model");
@@ -2232,7 +2253,7 @@ mod tests {
             ..Default::default()
         });
         let row = cfg
-            .settings("", false)
+            .settings("", false, &[])
             .into_iter()
             .find(|r| r.key == "model")
             .expect("model");
@@ -2258,7 +2279,7 @@ mod tests {
     #[test]
     fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
         let cfg = Config::for_this_box("/tmp/x");
-        let rows = cfg.settings("project store (modes.tsv)", false);
+        let rows = cfg.settings("project store (modes.tsv)", false, &[]);
         assert_eq!(rows[0].key, "mode");
         assert_eq!(rows[0].editable, "/mode NAME");
         assert_eq!(rows[0].source, "project store (modes.tsv)");
@@ -2305,7 +2326,7 @@ mod tests {
                 .any(|r| r.key == "workspace" && r.value == "/tmp/x")
         );
         // Supervision on reads as on.
-        let on = cfg.settings("x", true);
+        let on = cfg.settings("x", true, &[]);
         let sup = on.iter().find(|r| r.key == "supervise").expect("supervise");
         assert!(sup.value.starts_with("on"));
     }
@@ -2383,7 +2404,7 @@ mod tests {
     #[test]
     fn an_unbounded_backstop_reads_as_unlimited_not_as_zero() {
         let c = Config::for_this_box("/tmp");
-        let rows = c.settings("x", false);
+        let rows = c.settings("x", false, &[]);
         let r = rows
             .iter()
             .find(|r| r.key == "max-tool-rounds")
@@ -2393,7 +2414,7 @@ mod tests {
         bounded.max_tool_rounds = 12;
         assert_eq!(
             bounded
-                .settings("x", false)
+                .settings("x", false, &[])
                 .iter()
                 .find(|r| r.key == "max-tool-rounds")
                 .expect("the row")

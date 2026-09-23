@@ -2960,6 +2960,85 @@ impl<'a> Harness<'a> {
         self.append_imported(&[item])
     }
 
+    /// **Run an operator's admitted call, in this session, and put it in the transcript**
+    /// — R31's `execute`.
+    ///
+    /// # Why the daemon runs it rather than the head
+    ///
+    /// Not convenience: **the payload has to be the one this program would have produced.**
+    /// The corpus row for an operator's call says `human:<who>` ran `web_fetch`; a head that
+    /// ran its own HTTP client would make that row false, and the model's next prompt would
+    /// hold text `web_fetch` never returned. Here the tool is the seated one, so the byte
+    /// caps, the spill policy, the network rules and the scratch directory are the same ones
+    /// a model's call gets.
+    ///
+    /// **The gate is not consulted and must not be.** The operator's call has already been
+    /// admitted against the door's allowlist and written as `human:<who>` — the row's own
+    /// basis says *"there was nobody left to ask"*. Re-gating here would either double-record
+    /// the decision or, at `/mode automode`, let a model refuse the person's own act.
+    /// [`ToolRuntime::invoke_operator`] is that distinction made explicit rather than a flag
+    /// at the call site.
+    ///
+    /// # The size, said before the row lands
+    ///
+    /// R31's fourth consequence: *"a 40k-token page is 40k of context the operator chose to
+    /// buy — show the size before it lands, because the alternative is discovering it at the
+    /// next compaction."* So the measurement is published as a note **between** the run and
+    /// the append, which is the only window in which it is true: after the run the size is
+    /// known, and before the append nothing has been added to what the model reads.
+    pub fn run_operator_call(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+        who: &str,
+    ) -> Result<(), String> {
+        let call = ToolCall {
+            id: call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        // The runtime's own events go to a null sink: the transcript row is the durable
+        // record and every head draws *it*, so a second copy as an event would be §13.2b's
+        // "one fact, two places". What the tool emits here is a `ToolStarted`/`ToolProgress`
+        // pair for a call no head proposed.
+        let mut quiet = letibot_tools::events::NullToolSink;
+        // `turn_id` is empty on purpose: this call belongs to no turn, and a head that saw a
+        // turn id here would draw the row inside a turn that did not propose it.
+        let result = self.runtime.invoke_operator("", &call, &mut quiet);
+        // **What the model will read**, which is the number the operator is buying: the
+        // payload is *already* what the spill policy left, so this is the post-cap figure and
+        // not the tool's raw output. The full size, when it differs, is on the `SpillRef` the
+        // runtime recorded — reported rather than recomputed, because a second implementation
+        // of the cap is a second answer.
+        let payload = result.render();
+        let read = payload.len();
+        let spilled = match &result.spill {
+            Some(s) => format!(
+                "; {} byte(s) were produced and the rest went to the spill store \
+                 (`read_spill hash={}`)",
+                s.full_bytes, s.hash
+            ),
+            None => String::new(),
+        };
+        // **Said before it is appended.** Not a refusal and not a gate — the call has already
+        // been admitted — but the disclosure R31 asks for: the price is on the screen while
+        // the operator can still do something about it, rather than at the next compaction.
+        self.import_note(
+            "operator_call_ran",
+            format!(
+                "`{who}` ran `{name}` from their own console: {read} byte(s) of context \
+                 (about {} tokens) reach the model from its next turn{spilled}. No reply is \
+                 generated — this is context, not a request.",
+                read / 4,
+            ),
+        );
+        // The row, with the outcome the tool gave and the size the note above promised.
+        let outcome = result.outcome.clone();
+        self.finish_operator_call(call_id, name, who, outcome, &payload)
+            .map_err(|e| e.to_string())
+    }
+
     /// Append imported rows through the one writer, exactly as a turn's rows go in.
     fn append_imported(&mut self, items: &[TranscriptItem]) -> Result<(), HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
@@ -3203,9 +3282,53 @@ impl<'a> Harness<'a> {
     fn publish_settings(&self) {
         self.session_registry.set_settings(
             &self.cfg.session_id,
-            self.cfg
-                .settings(&self.mode_source, self.runtime.gate.supervising()),
+            self.cfg.settings(
+                &self.mode_source,
+                self.runtime.gate.supervising(),
+                &self.door_tools(),
+            ),
         );
+    }
+
+    /// **What a head needs to offer the door without holding a schema** — R31 and R32.
+    ///
+    /// Derived here, from the registry this session seats and the allowlist the daemon
+    /// enforces, so a tool whose schema changes moves a head's behaviour with no head
+    /// rebuilt. A name the allowlist carries and the registry does not comes back with the
+    /// sentence a head says instead of the bare form, which is a visible miss rather than a
+    /// silent absence.
+    ///
+    /// **Idempotent and cheap**: this runs on open and on every republish, and it is one
+    /// pass over three schemas.
+    fn door_tools(&self) -> Vec<letibot_sessionlog::protocol::HeadRunTool> {
+        let allow = letibot_sessionlog::HEAD_RUN_TOOLS;
+        let schemas = self.runtime.registry.schemas();
+        let mut out = Vec::with_capacity(allow.len());
+        for (name, form) in letibot_tools::head_run::bare_forms(&allow, schemas.iter()) {
+            let (field, kind, defaults, why) = match form {
+                letibot_tools::head_run::BareForm::One {
+                    field,
+                    kind,
+                    defaults,
+                } => (
+                    field,
+                    kind.as_str().to_string(),
+                    defaults.into_iter().collect(),
+                    String::new(),
+                ),
+                letibot_tools::head_run::BareForm::None(why) => {
+                    (String::new(), String::new(), Default::default(), why)
+                }
+            };
+            out.push(letibot_sessionlog::protocol::HeadRunTool {
+                name,
+                field,
+                kind,
+                defaults,
+                why_json: why,
+            });
+        }
+        out
     }
 
     pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {

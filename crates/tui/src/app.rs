@@ -878,7 +878,11 @@ pub struct App {
     /// names it matched, and which one is current. Re-derived whenever the
     /// text no longer starts with the cached prefix; any other key leaves it
     /// alone, and the render only trusts a prefix that is still being typed.
-    completion: Option<(String, Vec<&'static str>, usize)>,
+    /// The live completion cycle: the prefix it was started for, the names it is
+    /// cycling, and which one is showing. **Owned `String`s** rather than `&'static
+    /// str`, because half the list now comes from the daemon (R32) and a borrowed list
+    /// could only ever hold this head's own table.
+    completion: Option<(String, Vec<String>, usize)>,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -1912,7 +1916,35 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("interrupt", "stop the running turn"),
     ("quit", "leave the head"),
+    // **The three this table was missing, and the test below is why they cannot be
+    // missed again** (R32). `/dismiss` and `/notes` are one action under two words —
+    // the second is what somebody types at a wall of red — and `/settings`/`/stats` are
+    // the dispatcher's own aliases for `/config`/`/status`. All three worked and none
+    // was offered, which is the whole finding: the table is a registry that was read as
+    // if it were the dispatcher.
+    ("dismiss", "retire this head's notes — the same as /notes dismiss"),
+    ("settings", "every setting — the same as /config"),
+    ("stats", "this head's counters — the same as /status"),
 ];
+
+/// **Every verb the dispatcher acts on, checked against [`SLASH_COMMANDS`].**
+///
+/// # Why a test and not a derivation
+///
+/// The requirement is that the completion table and the dispatcher must not be two lists
+/// that agree by maintenance. In Rust a `match` is not reflectable, so the two possible
+/// mechanisms are *one derived from the other* (unavailable) and *a test that fails when
+/// they diverge* (this). It reads the source of [`App::command`] and names every verb it
+/// finds, so adding an arm without listing it fails the suite rather than becoming a verb
+/// nobody is offered.
+///
+/// **What it deliberately does not check.** The one-letter and short spellings (`?`, `h`,
+/// `q`, `r`, `s`, `t`, `v`, `i`) are *aliases*: the table's own comment says offering both
+/// spellings doubles the list to teach the same actions, and the dispatcher keeps taking
+/// them. And the daemon's verbs are not this head's to enumerate — they arrive on a
+/// `SettingRow` (`daemon.verbs`), because a head that guessed at them is precisely how
+/// `/gate` and `/flowy` came to be missing while working perfectly.
+const HEAD_COMMAND_ALIASES: &[&str] = &["?", "h", "q", "r", "s", "t", "v", "i"];
 
 /// **How a save treats the retired set** — because one write cannot express both verbs.
 ///
@@ -5779,6 +5811,59 @@ impl App {
     /// A prefix nothing matches says so in the notice line and leaves the
     /// line alone, because deleting what someone typed to explain why nothing
     /// happened would be the completion acting like a decision.
+    /// **Every verb this head offers, in one list** — its own and the daemon's (R32).
+    ///
+    /// The defect this replaces is measured, not argued: the completion table offered 27
+    /// verbs while **five working daemon verbs were absent** (`/flowy`, `/gate`, `/job`,
+    /// `/login`, `/supervise`) and three of the head's own (`/dismiss`, `/settings`,
+    /// `/stats`). `docs/evidence/slash-completion-2026-09-23.py`.
+    ///
+    /// The two halves have two owners and neither enumerates the other:
+    ///
+    /// * **the head's**, from [`SLASH_COMMANDS`], which a test in this file holds against
+    ///   the dispatcher's own source — so adding an arm without listing it fails the suite;
+    /// * **the daemon's**, from the `daemon.verbs` `SettingRow`, because a head that
+    ///   guessed at them is exactly how `/gate` and `/flowy` came to be missing while
+    ///   working perfectly. An absent row means a daemon older than this one, and then the
+    ///   head offers its own verbs and says nothing about the rest — which is the honest
+    ///   answer, not a guess.
+    ///
+    /// The daemon's names carry no hint here: the daemon publishes names, not descriptions,
+    /// and a head that invented a sentence about somebody else's verb would be writing the
+    /// other half's documentation. They are drawn bare, which is also what tells a reader
+    /// the two halves of the list apart without a label.
+    fn command_names(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = SLASH_COMMANDS
+            .iter()
+            .map(|(n, h)| ((*n).to_string(), (*h).to_string()))
+            .collect();
+        for v in self.daemon_verbs() {
+            // **A verb both halves reach is offered once, with the head's hint.** `/jobs`
+            // is the live case: the head opens the pane and the daemon reads a job's
+            // output, and the head's arm wins. Drawn twice it would read as two verbs.
+            if !out.iter().any(|(n, _)| *n == v) {
+                out.push((v, String::new()));
+            }
+        }
+        out
+    }
+
+    /// The verbs the daemon published, from its settings row. Empty when it sent none.
+    fn daemon_verbs(&self) -> Vec<String> {
+        self.settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::DAEMON_VERBS_KEY)
+            .map(|r| {
+                r.value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn complete_slash(&mut self) {
         let text = self.editor.text().to_string();
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
@@ -5790,19 +5875,21 @@ impl App {
                 .is_some_and(|current| text == format!("/{current}"));
             if live && !names.is_empty() {
                 *idx = (*idx + 1) % names.len();
-                let word = names[*idx];
+                let word = names[*idx].clone();
                 self.set_composer(&format!("/{word}"));
                 return;
             }
         }
         let needle = &text[1..];
-        let names: Vec<&'static str> = SLASH_COMMANDS
-            .iter()
-            .filter(|(name, _)| name.starts_with(needle))
-            .map(|(name, _)| *name)
+        let names: Vec<String> = self
+            .command_names()
+            .into_iter()
+            .map(|(n, _)| n)
+            .filter(|n| n.starts_with(needle))
             .collect();
         match names.first() {
-            Some(&first) => {
+            Some(first) => {
+                let first = first.clone();
                 self.completion = Some((text.clone(), names, 0));
                 self.set_composer(&format!("/{first}"));
             }
@@ -5835,10 +5922,17 @@ impl App {
             return None;
         }
         let needle = &text[1..];
-        let parts: Vec<String> = SLASH_COMMANDS
-            .iter()
+        let parts: Vec<String> = self
+            .command_names()
+            .into_iter()
             .filter(|(name, _)| name.starts_with(needle))
-            .map(|(name, hint)| format!("/{name} {hint}"))
+            .map(|(name, hint)| {
+                if hint.is_empty() {
+                    format!("/{name}")
+                } else {
+                    format!("/{name} {hint}")
+                }
+            })
             .collect();
         if parts.is_empty() {
             return None;
@@ -17130,6 +17224,7 @@ mod tests {
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect(),
+                    tools: Vec::new(),
                 },
                 letibot_sessionlog::protocol::SettingRow {
                     key: "oracle.budget".into(),
@@ -17137,6 +17232,7 @@ mod tests {
                     source: "--oracle-budget".into(),
                     editable: String::new(),
                     choices: Vec::new(),
+                    tools: Vec::new(),
                 },
             ],
         });
@@ -18279,6 +18375,204 @@ mod tests {
     ///
     /// One rule, three cards, and the same guard on each: the composer must be
     /// empty, so a line already being typed keeps its digits.
+    /// **The completion table and the dispatcher are not two lists that agree by
+    /// maintenance** (R32).
+    ///
+    /// In Rust a `match` is not reflectable, so of the two mechanisms the requirement
+    /// allows — one derived from the other, or a test that fails when they diverge — this is
+    /// the second. It reads the source of [`App::command`] and names every verb in it, so an
+    /// arm added without a row in [`SLASH_COMMANDS`] fails here rather than becoming a verb
+    /// nobody is ever offered.
+    ///
+    /// **The finding it pins, measured on this tree 2026-09-23**
+    /// (`docs/evidence/slash-completion-2026-09-23.py`): the table offered 27 verbs and the
+    /// dispatcher acted on 38, and the gap was not one oversight but the shape — a registry
+    /// that exists for one purpose read as the answer to a different question.
+    ///
+    /// `HEAD_COMMAND_ALIASES` are excluded on purpose: the table's own comment says offering
+    /// both spellings doubles the list to teach the same actions, and `command()` keeps
+    /// taking them.
+    #[test]
+    fn every_verb_the_dispatcher_acts_on_is_offered_by_tab() {
+        // The dispatcher's own source, so this cannot drift from the code it is about.
+        const SRC: &str = include_str!("app.rs");
+        let start = SRC
+            .find("    fn command(&mut self, cmd: &str) -> Option<Action> {")
+            .expect("the dispatcher");
+        let mut depth = 0usize;
+        let mut end = start;
+        for (i, c) in SRC[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &SRC[start..end];
+
+        // **Plain string surgery, no regex**: this crate has no regex dependency and
+        // adding one to a test would be a dependency for the test's convenience.
+        let mut acted: Vec<String> = Vec::new();
+        let quoted = |hay: &str| -> Vec<String> {
+            hay.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        // `verb_arg(cmd, "x")` — the leading-position verbs that take arguments.
+        for (i, _) in body.match_indices("verb_arg(cmd, \"") {
+            let rest = &body[i + "verb_arg(cmd, \"".len()..];
+            if let Some(q) = rest.find('"') {
+                acted.push(rest[..q].to_string());
+            }
+        }
+        // `matches!(cmd, "a" | "b")`.
+        for (i, _) in body.match_indices("matches!(cmd, ") {
+            let rest = &body[i + "matches!(cmd, ".len()..];
+            let close = rest.find(')').expect("a matches! has a close");
+            acted.extend(quoted(&rest[..close]));
+        }
+        // `cmd.strip_prefix("switch ")`.
+        for (i, _) in body.match_indices("cmd.strip_prefix(\"") {
+            let rest = &body[i + "cmd.strip_prefix(\"".len()..];
+            if let Some(q) = rest.find('"') {
+                acted.push(rest[..q].trim().to_string());
+            }
+        }
+        // The `match cmd` arms: a run of `"a" | "b"` before a `=>`, **at the match's own
+        // depth**. Two guards, and the second is the one that matters: a string literal
+        // inside an arm's BODY also begins a trimmed line with a quote, and a first draft of
+        // this test reported seven verbs including `self.say`'s prose — a check that greps
+        // for nearly the right thing reads exactly like a check that greps for the right
+        // one, which is this document's oldest note.
+        let mi = body.find("        match cmd {").expect("the match");
+        let mut d = 0i32;
+        for line in body[mi..].split('\n') {
+            let t = line.trim();
+            if d == 1 && t.starts_with('"') && t.contains("=>") {
+                let head = t.split("=>").next().unwrap_or("");
+                acted.extend(quoted(head));
+            }
+            d += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        }
+        assert!(acted.len() > 20, "the extraction found {} verbs", acted.len());
+
+        let offered: Vec<&str> = SLASH_COMMANDS.iter().map(|(n, _)| *n).collect();
+        let mut missing: Vec<&String> = acted
+            .iter()
+            .filter(|v| {
+                !offered.contains(&v.as_str())
+                    && !HEAD_COMMAND_ALIASES.contains(&v.as_str())
+                    // A `reseat` modifier is the same verb: the table carries the base and
+                    // the one modifier worth a line of its own.
+                    && !v.starts_with("reseat")
+            })
+            .collect();
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "/help and Tab cannot offer a verb the head acts on: {missing:?}\n\
+             Add a row to SLASH_COMMANDS (or to HEAD_COMMAND_ALIASES if it is a spelling of \
+             another verb). This is the gap `slash-completion-2026-09-23.py` measured."
+        );
+    }
+
+    /// **The daemon's verbs are not this head's to enumerate** (R32), and the list it draws
+    /// comes from the row.
+    ///
+    /// The measured defect, in one assertion: `/gate`, `/flowy`, `/job`, `/login` and
+    /// `/supervise` all work — they are forwarded — and none was offered, because the head
+    /// completed from a table that had never heard of them. With the row they are offered;
+    /// without it the head offers its own verbs and **says nothing about the rest**, which
+    /// is a daemon older than this one and not a guess.
+    #[test]
+    fn the_daemons_verbs_come_from_its_row_and_are_not_guessed_at() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // No row yet: only this head's own verbs, and every one of them is dispatched.
+        assert!(a.daemon_verbs().is_empty());
+        let own = a.command_names();
+        assert!(own.iter().any(|(n, _)| n == "compact"), "{own:?}");
+        assert!(
+            !own.iter().any(|(n, _)| n == "gate"),
+            "a verb the daemon has not published must not be invented: {own:?}"
+        );
+
+        // Now the daemon answers, and its verbs join the list.
+        a.apply(ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::DAEMON_VERBS_KEY.into(),
+                value: "flowy,gate,job,login,supervise,tools".into(),
+                source: "default".into(),
+                editable: String::new(),
+                choices: Vec::new(),
+                tools: Vec::new(),
+            }],
+        });
+        let all = a.command_names();
+        for v in ["flowy", "gate", "job", "login", "supervise"] {
+            assert!(
+                all.iter().any(|(n, _)| n == v),
+                "`/{v}` works and was not offered: {all:?}"
+            );
+        }
+        // **Once each.** `/tools` is in this head's table too, and a list that named it
+        // twice would teach it as two verbs.
+        let tools = all.iter().filter(|(n, _)| n == "tools").count();
+        assert_eq!(tools, 1, "{all:?}");
+        // And the head's own hint survives the join.
+        let (_, hint) = all.iter().find(|(n, _)| n == "tools").unwrap();
+        assert!(!hint.is_empty(), "the head's own row keeps its sentence");
+
+        // Tab now walks the joined list: `/ga` reaches the daemon's `gate`.
+        typed(&mut a, "/ga");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/gate");
+    }
+
+    /// **A verb the head will refuse is not offered** — R29 pointed the other way, and the
+    /// reason the joined list is built from the two OWNERS rather than from anything a
+    /// person could type (`/bash`, `/write`): neither half will act on those, and a
+    /// completion that suggests one is a remedy that does not work.
+    #[test]
+    fn completion_offers_nothing_neither_half_will_act_on() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::DAEMON_VERBS_KEY.into(),
+                value: "gate,job".into(),
+                source: "default".into(),
+                editable: String::new(),
+                choices: Vec::new(),
+                tools: Vec::new(),
+            }],
+        });
+        let all: Vec<String> = a.command_names().into_iter().map(|(n, _)| n).collect();
+        for invented in ["bash", "write", "sh", "exec"] {
+            assert!(
+                !all.iter().any(|n| n == invented),
+                "`/{invented}` is offered and neither half acts on it"
+            );
+        }
+    }
+
     #[test]
     fn a_row_number_answers_the_ask_the_mode_card_and_the_quit_card() {
         // The permission ask.
@@ -24373,6 +24667,7 @@ mod tests {
                 source: "project store (modes.tsv)".into(),
                 editable: "/mode NAME".into(),
                 choices: choices.iter().map(|s| (*s).to_string()).collect(),
+                tools: Vec::new(),
             }],
         }
     }
@@ -24478,6 +24773,7 @@ mod tests {
                 source: String::new(),
                 editable: "/models PROVIDER/MODEL".into(),
                 choices: choices.iter().map(|s| (*s).to_string()).collect(),
+                tools: Vec::new(),
             }],
         }
     }
@@ -24871,12 +25167,21 @@ mod tests {
         // pinning a list that no longer exists.
         a.key(Key::Tab);
         assert_eq!(a.input(), "/subagents");
+        // **And R32's two**, which this test caught the moment they were listed — the
+        // mechanism working rather than a nuisance. `/settings` and `/stats` are the
+        // dispatcher's own aliases for `/config` and `/status`; both worked and neither was
+        // offered until the table gained them, which is the measured finding
+        // (`docs/evidence/slash-completion-2026-09-23.py`).
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/settings");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/stats");
         a.key(Key::Tab);
         assert_eq!(a.input(), "/sessions", "the cycle wraps");
         // A character typed on after a completion kills the cycle: the next
         // Tab matches fresh, and must not clobber what was typed.
         a.set_composer("/switch");
-        a.completion = Some(("/sw".into(), vec!["switch"], 0));
+        a.completion = Some(("/sw".into(), vec!["switch".to_string()], 0));
         a.editor.insert("i");
         assert_eq!(a.input(), "/switchi");
         a.key(Key::Tab);
