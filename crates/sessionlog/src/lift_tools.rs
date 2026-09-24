@@ -109,6 +109,7 @@ mod tests {
             turn_id: "t1".into(),
             model: "m".into(),
             ledger_head: "ab".into(),
+            began_ms: None,
         });
         let mut sink = ToolLogSink::new(hub.clone());
         let mut h =

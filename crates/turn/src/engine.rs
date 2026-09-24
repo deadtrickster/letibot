@@ -249,6 +249,13 @@ pub struct TurnEngine<'a> {
     /// Where a refused frame and its neighbours are written (T23). On by default;
     /// see [`FrameCapture`] for why the default is on rather than off.
     pub frame_capture: FrameCapture,
+    /// **The whole turn's start in Unix ms, if the caller knows it.**
+    ///
+    /// See [`TurnEvent::TurnStarted::began_ms`]. The engine runs ONE round — `run_turn_steered`
+    /// is called inside the daemon's round loop — so the engine cannot know when the turn
+    /// began. Whoever runs the rounds stamps this, and `None` means nobody measured it, which
+    /// a head draws as *started before this head attached* rather than a duration nobody took.
+    pub turn_began_ms: Option<u64>,
     /// **Hand the next turn a lead with reasoning already closed.**
     ///
     /// False for every turn but the summary. Not a config field and not a
@@ -287,7 +294,6 @@ fn debug_warnings() -> bool {
         )
     })
 }
-
 
 impl<'a> TurnEngine<'a> {
     /// Resolve the dialect against the vocabulary and fail **now** if it does not
@@ -341,6 +347,7 @@ impl<'a> TurnEngine<'a> {
             frame_capture: FrameCapture::default(),
             // Every turn reasons unless one asks not to; see `without_reasoning`.
             suppress_reasoning: false,
+            turn_began_ms: None,
         })
     }
 
@@ -521,6 +528,10 @@ impl TurnEngine<'_> {
             turn_id: turn_id.clone(),
             model: self.model.clone(),
             ledger_head: session.ledger_head(),
+            // The engine sees ONE round, so it cannot know when the turn began; the emitter
+            // stamps it. See `began_ms`. (`None` here is the honest answer from a caller that
+            // has nothing to stamp with — a test, or a round with no prompt above it.)
+            began_ms: self.turn_began_ms,
         });
 
         // Shared with the stream loop: a non-urgent message that arrives mid-turn
@@ -759,8 +770,8 @@ impl TurnEngine<'_> {
         // not this failure: §5.8's kept partial and the steering interrupt have
         // their own reporting, and folding an interrupted mid-reasoning stream
         // into `UnfinishedReasoning` would misname a turn we deliberately kept.
-        let has_content = !produced.visible_text.trim().is_empty()
-            || !produced.tool_calls().is_empty();
+        let has_content =
+            !produced.visible_text.trim().is_empty() || !produced.tool_calls().is_empty();
         if outcome.aborted.is_none() && produced.ended_in_reasoning && !has_content {
             let metrics = self.metrics_for(
                 &turn_id,
@@ -910,7 +921,10 @@ impl TurnEngine<'_> {
             let elided;
             let ids: &[TokenId] = if matches!(
                 &produced_item.item,
-                TranscriptItem::Reasoning { truncated: true, .. }
+                TranscriptItem::Reasoning {
+                    truncated: true,
+                    ..
+                }
             ) {
                 // Rendered against the history as it stands before this item,
                 // which is `render_incremental`'s contract and the same one
@@ -1072,6 +1086,7 @@ impl TurnEngine<'_> {
             turn_id: turn_id.clone(),
             model: model.clone(),
             ledger_head: session.ledger_head(),
+            began_ms: self.turn_began_ms,
         });
 
         let mut pending = Pending::new();

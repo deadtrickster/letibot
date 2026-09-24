@@ -886,6 +886,16 @@ impl<'a> Sessions<'a> {
         // `run_prompt` is the one place a prompt from ANY door arrives (a head's enter, a script,
         // `--continue`), and a rule applied at one door is a rule the other doors do not have.
         self.note_operator_prompt(session_id);
+        // **A turn is one prompt however many ROUNDS it takes, so the clock starts HERE.**
+        // `run_turn_steered` is called inside the round loop, so `TurnStarted` fires per round
+        // and a head timing from it restarts at every one — the composer read `2.1s` a minute
+        // into a turn. The operator's report: *"it should be still responding even while you do
+        // tools calls and such, and not reset, currently it resets."* Stamped where the prompt
+        // arrives, carried through every round of it, and cleared when the turn ends.
+        let began = letibot_sessionlog::event::now_ms();
+        if let Some(h) = self.open.get_mut(session_id) {
+            h.begin_turn_clock(began);
+        }
         let hub = self.registry.get(session_id);
         // Opened here rather than held across the tidying below: a live borrow of
         // `self.open` would stop a compaction from re-entering it.
@@ -1020,6 +1030,12 @@ impl<'a> Sessions<'a> {
                 };
                 break;
             }
+        }
+        // **and the turn's own clock stops with it.** A start that outlived its turn would be
+        // inherited by the next prompt's first round, so a fresh prompt would open with the
+        // PREVIOUS turn's duration on the composer.
+        if let Some(h) = self.open.get_mut(session_id) {
+            h.end_turn_clock();
         }
         // **Every turn ends here, so this is where the idle clock starts.** `after_turn` is the
         // one convergence point for a prompt, a scripted submit and a monitor's wake — the same

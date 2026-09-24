@@ -35,10 +35,12 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             turn_id,
             model,
             ledger_head,
+            began_ms,
         } => SessionEvent::TurnStarted {
             turn_id,
             model,
             ledger_head,
+            began_ms,
         },
         TurnEvent::PromptProgress { turn_id, progress } => SessionEvent::PromptProgress {
             turn_id,
@@ -196,6 +198,7 @@ mod tests {
             turn_id: "t1".into(),
             model: "m".into(),
             ledger_head: "ab".into(),
+            began_ms: None,
         });
         sink.emit(TurnEvent::Delta {
             turn_id: "t1".into(),
@@ -215,6 +218,7 @@ mod tests {
             turn_id: "t1".into(),
             model: "m".into(),
             ledger_head: "ab".into(),
+            began_ms: None,
         });
         rec.emit(TurnEvent::Delta {
             turn_id: "t1".into(),

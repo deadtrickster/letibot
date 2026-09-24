@@ -353,7 +353,10 @@ mod tests {
         let UserPart::Text { text } = &parts[0] else {
             panic!()
         };
-        assert_eq!(text, "also fix the parser\nand add a test for it\nrun the suite after");
+        assert_eq!(
+            text,
+            "also fix the parser\nand add a test for it\nrun the suite after"
+        );
     }
 
     /// A notice stands alone and splits the run: what the operator typed after

@@ -1153,7 +1153,10 @@ mod the_tail_and_the_template {
     /// never cuts an item in half, so there is no tail rather than a broken one.
     #[test]
     fn an_item_larger_than_the_budget_leaves_no_tail() {
-        assert_eq!(plan_tail(&three_exchanges(), &[10, 10, 10, 10, 10, 9_000], 1_000), TailPlan::None);
+        assert_eq!(
+            plan_tail(&three_exchanges(), &[10, 10, 10, 10, 10, 9_000], 1_000),
+            TailPlan::None
+        );
     }
 
     /// A history with no exchange boundary at all still has the start of the
@@ -1176,7 +1179,11 @@ mod the_tail_and_the_template {
     /// The budget is opencode's clamp, in our units, and both ends bind.
     #[test]
     fn the_budget_is_a_quarter_of_the_window_clamped() {
-        assert_eq!(tail_budget(262_144), MAX_TAIL_TOKENS, "65536 clamps to 15000");
+        assert_eq!(
+            tail_budget(262_144),
+            MAX_TAIL_TOKENS,
+            "65536 clamps to 15000"
+        );
         assert_eq!(tail_budget(32_768), 8_192, "no clamp applies in the middle");
         assert_eq!(tail_budget(4_096), MIN_TAIL_TOKENS, "1024 floors at 2000");
     }
@@ -1271,7 +1278,8 @@ mod the_tail_and_the_template {
         let got = parse_summary_sections("## Objective\n\n- a\n\n## Also\n\n- b");
         assert_eq!(got, vec![("Objective".to_string(), "- a".to_string())]);
         // A heading at any level ends the body, including one deeper than its parent.
-        let deep = parse_summary_sections("## Next Move\n\n1. ship\n\n#### Relevant Files\n\n- a.rs");
+        let deep =
+            parse_summary_sections("## Next Move\n\n1. ship\n\n#### Relevant Files\n\n- a.rs");
         assert_eq!(
             deep,
             vec![

@@ -694,6 +694,18 @@ pub enum SessionEvent {
         turn_id: String,
         model: String,
         ledger_head: String,
+        /// **The WHOLE turn's start, Unix ms, or `None` when nobody measured it.**
+        ///
+        /// A `TurnStarted` is emitted once per ROUND — the engine's `run_turn_steered` is called
+        /// inside the daemon's round loop — so a head that times from the event it receives
+        /// restarts its clock at every round. The operator, watching the composer: *"it should be
+        /// still responding even while you do tools calls and such, and not reset, currently it
+        /// resets."*
+        ///
+        /// A turn is one prompt however many rounds it takes, so the start belongs to the prompt
+        /// and the emitter stamps it here. `None` is a real answer (a snapshot turn, a test) and
+        /// the head draws it as *started before this head attached* rather than inventing one.
+        began_ms: Option<u64>,
     },
     /// Nothing surveyed reads this one, and §8.5 requires it to count as liveness.
     /// It is also the archetype of an *interactive* frame: see [`crate::scrub`].

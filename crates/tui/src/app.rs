@@ -3846,6 +3846,12 @@ impl App {
                 turn_id,
                 model,
                 ledger_head: _,
+                // **The WHOLE turn's start, when the emitter knows it.** This event fires once
+                // per ROUND, so `started_ms: ts` below restarted the header's clock at every
+                // round — `2.1s` a minute into a turn. `began_ms` is the prompt's own stamp and
+                // is used when present; `ts` stays as the fallback for a turn nobody measured
+                // (a snapshot, or a test that emits the event by hand).
+                began_ms,
             } => {
                 // Asked *before* the pane is replaced. The rows that stop being
                 // drawn live are the previous turn's, and once its pane is gone
@@ -3855,12 +3861,13 @@ impl App {
                 // Stamped, so the header can prefer this over a settings row it read
                 // earlier at attach. See `model_from_turn_at`.
                 self.model_from_turn_at = self.seq;
+                let started = began_ms.unwrap_or(ts);
                 self.turn = Some(TurnPane {
                     turn_id,
                     model,
                     state: Some(TurnState::Running),
-                    started_ms: ts,
-                    last_ms: ts,
+                    started_ms: started,
+                    last_ms: started,
                     ..TurnPane::default()
                 });
                 // A new turn takes the pane away from the previous one, so the

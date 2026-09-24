@@ -50,6 +50,23 @@ pub enum TurnEvent {
         turn_id: String,
         model: String,
         ledger_head: String,
+        /// **The WHOLE turn's start, in Unix milliseconds — not this round's.**
+        ///
+        /// A `TurnStarted` fires once per ROUND (`run_turn_steered` is called inside the round
+        /// loop), and a head that times from the event it receives therefore restarts its clock
+        /// at every round: the operator watched the composer read `2.1s` a minute into a turn,
+        /// and reported exactly that — *"it should be still responding even while you do tools
+        /// calls and such, and not reset, currently it resets."*
+        ///
+        /// A turn is one prompt however many rounds it takes, so the start belongs to the
+        /// prompt. The ENGINE cannot know it — it sees one round — so the emitter supplies it,
+        /// and `None` means *nobody measured this one* (a snapshot turn), which the head draws
+        /// as *started before this head attached* rather than as a duration nobody took.
+        ///
+        /// Unix ms rather than an `Instant` because it crosses a process boundary in the
+        /// protocol; the head converts it to its own clock exactly once, the same way it does
+        /// a decision's deadline (see `wire-deadline->monotonic`).
+        began_ms: Option<u64>,
     },
     /// Nothing surveyed reads this one. It is what makes a long prefill visible,
     /// and §8.5 requires it to count as liveness.
@@ -68,10 +85,7 @@ pub enum TurnEvent {
     /// The value is the server's `tokens_predicted`, not a count of what we
     /// accumulated: the accumulator's length equals it only while every frame has
     /// been accountable, and the moment that stops, the turn is being refused.
-    TokensGenerated {
-        turn_id: String,
-        tokens: u64,
-    },
+    TokensGenerated { turn_id: String, tokens: u64 },
     Delta {
         turn_id: String,
         target: DeltaTarget,

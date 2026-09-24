@@ -394,6 +394,9 @@ impl SessionView {
                 turn_id,
                 model,
                 ledger_head,
+                // the view does not keep it: a head's clock is the head's, and this is the
+                // emitter's stamp for the wire
+                began_ms: _,
             } => {
                 self.turn = Some(TurnView {
                     turn_id: turn_id.clone(),

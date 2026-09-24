@@ -769,8 +769,21 @@ impl SteeringSource for HubSteering {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness<'a> {
     cfg: Config,
-    /// The daemon's session registry, kept so the settings this session runs
-    /// under can be republished on every runtime change (`/mode`, `/supervise`).
+    /// **When the prompt this turn is serving arrived, carried across its rounds.**
+    ///
+    /// The operator, watching the composer: *"it should be still responding even while you do
+    /// tools calls and such, and not reset, currently it resets."* That is the arithmetic, and
+    /// the cause is structural: `run_turn_steered` is called INSIDE the round loop, so the
+    /// `TurnStarted` the head times from fires once PER ROUND — the clock restarted at every
+    /// round and the row read `2.1s` a minute into a turn.
+    ///
+    /// A turn is one prompt, however many rounds it takes, so **the turn's start belongs to the
+    /// prompt and not to a round.** Stamped where the prompt arrives and published on every
+    /// round's `TurnStarted`, which is the only place that can see both.
+    ///
+    /// The monotonic ms the head should count from, or `None` to keep counting from its own
+    /// (a snapshot turn, where neither end measured anything).
+    turn_began_ms: Option<u64>,
     /// The server thread answers the head's `Settings` from the registry, so
     /// what is running is what the pane shows.
     session_registry: Arc<letibot_sessionlog::registry::Registry>,
@@ -2694,6 +2707,8 @@ impl<'a> Harness<'a> {
             .map(|d| (d.subject, d.state, d.detail))
             .collect();
         let mut h = Harness {
+            // no prompt yet: the first `TurnStarted` after a prompt stamps it
+            turn_began_ms: None,
             session_registry: session_registry.clone(),
             mode_source,
             wiring,
@@ -3944,6 +3959,24 @@ impl<'a> Harness<'a> {
     /// banner defect this file has already paid for four times.
     pub fn declare_monitor_wake(&mut self) {
         self.wiring.monitor_wake = true;
+    }
+
+    /// **A prompt has arrived: this is where the whole turn's clock starts.**
+    ///
+    /// Called once per prompt, never per round — the engine's `turn_began_ms` is then carried on
+    /// every `TurnStarted` that prompt produces, which is what stops a head restarting its clock
+    /// at each round. The engine field is private to this module and this is the only writer, so
+    /// the two cannot drift out of step.
+    pub fn begin_turn_clock(&mut self, began_ms: u64) {
+        self.turn_began_ms = Some(began_ms);
+        self.engine.turn_began_ms = Some(began_ms);
+    }
+
+    /// The turn is over: stop publishing a start, so a later round that belongs to a NEW prompt
+    /// cannot inherit this one's clock.
+    pub fn end_turn_clock(&mut self) {
+        self.turn_began_ms = None;
+        self.engine.turn_began_ms = None;
     }
 
     /// **The plan, as a nudge — or nothing when there is no plan to nudge about.**

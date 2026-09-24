@@ -302,7 +302,9 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     // and `TurnFinished` still fires — the terminal value is a `stop`, rendered
     // as what it was, with the failure carried by the outcome, not the reason.
     assert!(
-        sink.warnings().iter().any(|(c, _)| *c == "ended_in_reasoning"),
+        sink.warnings()
+            .iter()
+            .any(|(c, _)| *c == "ended_in_reasoning"),
         "{:?}",
         sink.warnings()
     );
@@ -356,11 +358,7 @@ fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     engine
         .run_turn(&mut session, &mut sink)
         .expect("a closed reasoning block with content is an ordinary turn");
-    assert_ne!(
-        session.ledger.tokens(),
-        &before[..],
-        "the turn committed"
-    );
+    assert_ne!(session.ledger.tokens(), &before[..], "the turn committed");
 }
 
 /// One truncated argument fails the whole batch, and the model is told why in a
@@ -659,7 +657,10 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
     // and ahead of the model's own items. That ordering is what `steering_before`
     // exists to let the caller reconcile.
     let TranscriptItem::User { parts, .. } = &session.items[before_len] else {
-        panic!("expected the steering row at {before_len}: {:?}", session.items)
+        panic!(
+            "expected the steering row at {before_len}: {:?}",
+            session.items
+        )
     };
     let UserPart::Text { text } = &parts[0] else {
         panic!()
@@ -1214,7 +1215,10 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
         "exactly the ids the counter accounted for, and not one more"
     );
     // …and the seam is visible rather than silent.
-    assert!(ok.truncated, "a turn missing its tail is not a complete one");
+    assert!(
+        ok.truncated,
+        "a turn missing its tail is not a complete one"
+    );
     let (reason, kept) = sink
         .events
         .iter()
@@ -1322,7 +1326,6 @@ fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     );
 }
 
-
 /// Urgent, but not until `after` polls — so the interrupt lands mid-thought
 /// rather than before the model has said anything.
 struct After {
@@ -1399,7 +1402,10 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
         session.items
     );
     for item in &reasoning {
-        let TranscriptItem::Reasoning { truncated, text, .. } = item else {
+        let TranscriptItem::Reasoning {
+            truncated, text, ..
+        } = item
+        else {
             unreachable!()
         };
         assert!(*truncated, "and marked: {text:?}");

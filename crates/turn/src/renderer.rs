@@ -85,7 +85,9 @@ pub trait PromptRenderer: Send + Sync {
 #[cfg(feature = "glm")]
 pub mod glm {
     use super::*;
-    use letibot_dialect_glm::{GlmRenderer, generation_prompt, generation_prompt_closing_reasoning, glm_spec};
+    use letibot_dialect_glm::{
+        GlmRenderer, generation_prompt, generation_prompt_closing_reasoning, glm_spec,
+    };
 
     pub struct GlmPromptRenderer {
         renderer: GlmRenderer,

@@ -703,7 +703,10 @@ mod tests {
         assert!(withheld.contains("withheld"), "{withheld}");
         assert!(withheld.contains("d10f94713"), "{withheld}");
         assert!(withheld.contains("glm-all"), "{withheld}");
-        assert!(withheld.contains("capture"), "it must say where the evidence is: {withheld}");
+        assert!(
+            withheld.contains("capture"),
+            "it must say where the evidence is: {withheld}"
+        );
 
         // **The over-sent sentence says the opposite thing**, and says it without naming a
         // cause it cannot know: it rules the gate OUT rather than naming another fault.

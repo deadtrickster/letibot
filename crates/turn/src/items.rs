@@ -302,10 +302,12 @@ pub fn produce(
     // their removal cannot flip the answer.
     let ended_in_reasoning = tokens[lead.len()..]
         .iter()
-        .fold(opens_in_reasoning, |open, id| match decoder.control_role(*id) {
-            Some(ControlRole::ThinkOpen) => true,
-            Some(ControlRole::ThinkClose) => false,
-            _ => open,
+        .fold(opens_in_reasoning, |open, id| {
+            match decoder.control_role(*id) {
+                Some(ControlRole::ThinkOpen) => true,
+                Some(ControlRole::ThinkClose) => false,
+                _ => open,
+            }
         });
 
     Produced {
@@ -575,7 +577,10 @@ mod stopping_a_turn_stops_the_thought {
     use super::*;
     use letibot_transcript::ReasoningField;
 
-    fn produced_ending_in_reasoning(items: Vec<TranscriptItem>, ended_in_reasoning: bool) -> Produced {
+    fn produced_ending_in_reasoning(
+        items: Vec<TranscriptItem>,
+        ended_in_reasoning: bool,
+    ) -> Produced {
         Produced {
             items: items
                 .into_iter()
@@ -597,16 +602,16 @@ mod stopping_a_turn_stops_the_thought {
     fn a_thought_that_finished_before_the_turn_was_cut_is_not_marked() {
         let mut p = produced_ending_in_reasoning(
             vec![
-            TranscriptItem::Reasoning {
-                text: "a complete thought, closed properly".into(),
-                field: ReasoningField::Inline,
-                truncated: false,
-            },
-            TranscriptItem::Assistant {
-                text: "an answer that ran out of room".into(),
-                tool_calls: vec![],
-                truncated: false,
-            },
+                TranscriptItem::Reasoning {
+                    text: "a complete thought, closed properly".into(),
+                    field: ReasoningField::Inline,
+                    truncated: false,
+                },
+                TranscriptItem::Assistant {
+                    text: "an answer that ran out of room".into(),
+                    tool_calls: vec![],
+                    truncated: false,
+                },
             ],
             // The block was closed, so the stream did not end inside it.
             false,
@@ -616,7 +621,10 @@ mod stopping_a_turn_stops_the_thought {
         let TranscriptItem::Reasoning { truncated, .. } = &p.items[0].item else {
             unreachable!()
         };
-        assert!(!truncated, "a closed thought is finished, whatever happened after it");
+        assert!(
+            !truncated,
+            "a closed thought is finished, whatever happened after it"
+        );
         let TranscriptItem::Assistant { truncated, .. } = &p.items[1].item else {
             unreachable!()
         };
@@ -629,21 +637,21 @@ mod stopping_a_turn_stops_the_thought {
     fn only_the_last_thought_can_be_the_open_one() {
         let mut p = produced_ending_in_reasoning(
             vec![
-            TranscriptItem::Reasoning {
-                text: "first, closed by the speaking that follows".into(),
-                field: ReasoningField::Inline,
-                truncated: false,
-            },
-            TranscriptItem::Assistant {
-                text: "let me check".into(),
-                tool_calls: vec![],
-                truncated: false,
-            },
-            TranscriptItem::Reasoning {
-                text: "second, stopped mid-flow + 0 + 0 + 0".into(),
-                field: ReasoningField::Inline,
-                truncated: false,
-            },
+                TranscriptItem::Reasoning {
+                    text: "first, closed by the speaking that follows".into(),
+                    field: ReasoningField::Inline,
+                    truncated: false,
+                },
+                TranscriptItem::Assistant {
+                    text: "let me check".into(),
+                    tool_calls: vec![],
+                    truncated: false,
+                },
+                TranscriptItem::Reasoning {
+                    text: "second, stopped mid-flow + 0 + 0 + 0".into(),
+                    field: ReasoningField::Inline,
+                    truncated: false,
+                },
             ],
             true,
         );
@@ -664,16 +672,16 @@ mod stopping_a_turn_stops_the_thought {
     fn an_interrupted_turn_marks_its_reasoning_and_not_only_its_answer() {
         let mut p = produced_ending_in_reasoning(
             vec![
-            TranscriptItem::Reasoning {
-                text: "let me count them by hand + 0 + 0 + 0".into(),
-                field: ReasoningField::Inline,
-                truncated: false,
-            },
-            TranscriptItem::Assistant {
-                text: String::new(),
-                tool_calls: vec![],
-                truncated: false,
-            },
+                TranscriptItem::Reasoning {
+                    text: "let me count them by hand + 0 + 0 + 0".into(),
+                    field: ReasoningField::Inline,
+                    truncated: false,
+                },
+                TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![],
+                    truncated: false,
+                },
             ],
             // Stopped mid-thought: the block never closed.
             true,

@@ -135,11 +135,26 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
             loaded.transcript_id,
             stored.item_id
         );
-        assert_eq!(got.item_id, stored.item_id, "{} row {i}", loaded.transcript_id);
-        assert_eq!(got.tok_offset, stored.tok_offset, "{} row {i}", loaded.transcript_id);
-        assert_eq!(got.tok_len, stored.tok_len, "{} row {i}", loaded.transcript_id);
         assert_eq!(
-            session.ledger.item_tokens(i).expect("a restored row has tokens"),
+            got.item_id, stored.item_id,
+            "{} row {i}",
+            loaded.transcript_id
+        );
+        assert_eq!(
+            got.tok_offset, stored.tok_offset,
+            "{} row {i}",
+            loaded.transcript_id
+        );
+        assert_eq!(
+            got.tok_len, stored.tok_len,
+            "{} row {i}",
+            loaded.transcript_id
+        );
+        assert_eq!(
+            session
+                .ledger
+                .item_tokens(i)
+                .expect("a restored row has tokens"),
             tokens.as_slice(),
             "{} row {i}: the rebuilt region does not hold the stored tokens",
             loaded.transcript_id
@@ -153,10 +168,12 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
     );
 
     // (2) Recomputed from the rebuilt region, not from the rows.
-    session
-        .ledger
-        .verify_chain()
-        .unwrap_or_else(|e| panic!("{}: the rebuilt region does not hash to its rows: {e}", loaded.transcript_id));
+    session.ledger.verify_chain().unwrap_or_else(|e| {
+        panic!(
+            "{}: the rebuilt region does not hash to its rows: {e}",
+            loaded.transcript_id
+        )
+    });
 
     if let Some(last) = loaded.items.last() {
         assert_eq!(
@@ -270,9 +287,6 @@ fn rows_and_items_that_do_not_pair_are_refused_rather_than_zipped() {
     )
     .err()
     .expect("a row with no item must be refused");
-    assert!(
-        matches!(err, RestoreError::Unpaired { .. }),
-        "{err}"
-    );
+    assert!(matches!(err, RestoreError::Unpaired { .. }), "{err}");
     assert!(err.to_string().contains("row"), "{err}");
 }

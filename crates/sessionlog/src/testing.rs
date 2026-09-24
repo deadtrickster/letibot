@@ -27,6 +27,7 @@ pub fn turn_started(turn_id: &str) -> SessionEvent {
         turn_id: turn_id.into(),
         model: "qwen3-next-80b".into(),
         ledger_head: "0000".into(),
+        began_ms: None,
     }
 }
 
