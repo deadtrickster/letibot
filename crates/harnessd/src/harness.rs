@@ -53,7 +53,7 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
-use letibot_tools::builtins::todo::{unfinished_plan, TodoBoard};
+use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan};
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,
@@ -1743,7 +1743,7 @@ impl<'a> Harness<'a> {
                                 hub.publish(SessionEvent::Warning {
                                     code: "transcript_store".into(),
                                     detail: e,
-                                
+
                                     compaction: None,
                                 });
                                 Arc::new(letibot_tools::builtins::transcript::NoTranscript)
@@ -1771,7 +1771,7 @@ impl<'a> Harness<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "decision_corpus".into(),
                                 detail: e,
-                            
+
                                 compaction: None,
                             });
                             Arc::new(letibot_tools::builtins::decisions::NoDecisions)
@@ -2231,9 +2231,7 @@ impl<'a> Harness<'a> {
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
-            .with_operator_waiting(std::sync::Arc::new(move || {
-                waiting_hub.has_queued_prompt()
-            }))
+            .with_operator_waiting(std::sync::Arc::new(move || waiting_hub.has_queued_prompt()))
             .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))
             }));
@@ -2930,8 +2928,7 @@ impl<'a> Harness<'a> {
             verdict: Some("selected".into()),
             verdict_by: Some(format!("human:{who}")),
             verdict_basis: Some(
-                "the operator ran this from their own console; there was nobody left to ask"
-                    .into(),
+                "the operator ran this from their own console; there was nobody left to ask".into(),
             ),
             p_allow: None,
             decision_ms: 0,
@@ -2973,7 +2970,9 @@ impl<'a> Harness<'a> {
             outcome,
             payload: payload.to_string(),
             edit: None,
-            origin: Some(letibot_transcript::CallOrigin::Operator { who: who.to_string() }),
+            origin: Some(letibot_transcript::CallOrigin::Operator {
+                who: who.to_string(),
+            }),
         };
         self.append_imported(&[item])
     }
@@ -3070,7 +3069,7 @@ impl<'a> Harness<'a> {
         self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
             code: code.to_string(),
             detail,
-        
+
             compaction: None,
         });
     }
@@ -3947,6 +3946,49 @@ impl<'a> Harness<'a> {
         self.wiring.monitor_wake = true;
     }
 
+    /// **The plan, as a nudge — or nothing when there is no plan to nudge about.**
+    ///
+    /// The finding half of [`Harness::close_the_turn`] on its own: `close_the_turn` joins
+    /// this with the intent ledger's own finding, because a turn boundary is where both are
+    /// checked and one nudge budget has to carry both. This is the same text with nothing
+    /// joined to it, for the caller that has no turn boundary to hang it on.
+    pub fn nag_notice(&self) -> Option<String> {
+        unfinished_plan(&self.todos.snapshot())
+    }
+
+    /// **The plan's nudge as a turn of its own, when nothing else is happening.**
+    ///
+    /// The scheduling question the operator raised: *"we have to think about scheduling.
+    /// maybe wait for a timeout actually. so send it when model is idling"* — and, on the
+    /// failure the old arrangement had, *"but certainly not after my message."*
+    ///
+    /// What this gives the caller is a way to deliver the check **without a turn boundary**.
+    /// The old path could only run it inside the loop, at the end of a turn (`nudges_left`,
+    /// one per user turn), so a session that went idle with an unfinished plan was nudged
+    /// once and then never again — while a session in constant conversation was nudged after
+    /// every exchange, which is the overkill the operator reported. Neither is a schedule;
+    /// both are consequences of there being nowhere else to put the check.
+    ///
+    /// The text goes in as `Speaker::Agent`, exactly as [`Harness::wake`] and
+    /// [`Harness::continue_after_wall`] do: the harness talking to itself, never readable as
+    /// the operator's words and never an authorisation.
+    ///
+    /// `Ok(None)` when there is nothing to say — an empty or finished plan — which is a real
+    /// outcome and not a failure: a caller that asked has its answer, and no turn is spent
+    /// on a nudge with no finding behind it.
+    pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
+        let Some(text) = self.nag_notice() else {
+            return Ok(None);
+        };
+        self.trail.begin_turn();
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+        self.submit_item(TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text { text }],
+        })
+        .map(Some)
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///
@@ -4301,7 +4343,7 @@ impl<'a> Harness<'a> {
                      which over-counts what a provider is sent. If the next turn does not \
                      fit, `/compact` is the way back."
                 ),
-            
+
                 compaction: None,
             });
         }
@@ -4559,7 +4601,7 @@ impl<'a> Harness<'a> {
                                     "over budget: summarising the first {split} item(s) and \
                                      continuing on the summary plus the rest, verbatim"
                                 ),
-                            
+
                                 compaction: None,
                             });
                             let answerer = Self::answerer(&self.provider, &self.prefix);
@@ -4608,7 +4650,7 @@ impl<'a> Harness<'a> {
                              move until it lands.",
                             items.len() - tail_from
                         ),
-                    
+
                         compaction: None,
                     });
                     let answerer = Self::answerer(&self.provider, &self.prefix);
@@ -4816,10 +4858,7 @@ impl<'a> Harness<'a> {
             // table: after a restart the transcript item is all a reader has, and it is where
             // the question has to be answerable. `tail.because` is empty for a re-seat, which
             // is not a compaction and gets no clause.
-            0 if !tail.because.is_empty() => format!(
-                " {}",
-                tail_why_text.unwrap_or_default()
-            ),
+            0 if !tail.because.is_empty() => format!(" {}", tail_why_text.unwrap_or_default()),
             0 => String::new(),
             n => format!(
                 " The last {n} item(s) of it follow this note VERBATIM — as they were \
@@ -4976,7 +5015,7 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "title_not_stored".into(),
                     detail: format!("this session could not be named in the store: {e}"),
-                
+
                     compaction: None,
                 });
                 return;
@@ -5136,7 +5175,7 @@ impl<'a> Harness<'a> {
                              before the next turn — this is the wall, not a failure of \
                              the work."
                         ),
-                    
+
                         compaction: None,
                     });
                     eprintln!(
@@ -5193,7 +5232,7 @@ impl<'a> Harness<'a> {
                         wait.as_secs_f64(),
                         self.cfg.http_retries,
                     ),
-                
+
                     compaction: None,
                 });
                 if !self.sleep_unless_closed(wait) {
@@ -5409,7 +5448,10 @@ impl<'a> Harness<'a> {
                     progress.observe(call, outcome, payload);
                     // Backgrounding is the operator reaching for the floor; see the
                     // yield at the end of this round.
-                    if matches!(outcome, letibot_transcript::ToolOutcome::Backgrounded { .. }) {
+                    if matches!(
+                        outcome,
+                        letibot_transcript::ToolOutcome::Backgrounded { .. }
+                    ) {
                         backgrounded = true;
                     }
                 }
@@ -5573,7 +5615,8 @@ impl<'a> Harness<'a> {
             // is the only record of the call, so the note is normally a no-op — but keeping
             // the pair means a head that detaches during the run still gets the sentence, and
             // a future reader sees one pattern rather than two.
-            self.hub.note_operator_call(&call_id, &cmd.head_id, &name, &who);
+            self.hub
+                .note_operator_call(&call_id, &cmd.head_id, &name, &who);
             let said = self.run_operator_call(&call_id, &name, &arguments, &who);
             self.hub.take_operator_call(&call_id);
             if let Err(e) = said {
@@ -5605,7 +5648,7 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_unknown".into(),
                     detail: e,
-                
+
                     compaction: None,
                 });
                 return;
@@ -5621,7 +5664,7 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_set".into(),
                     detail: format!("{said}. {}", applied.summary),
-                
+
                     compaction: None,
                 });
             }
@@ -5629,7 +5672,7 @@ impl<'a> Harness<'a> {
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "mode_set_refused".into(),
                     detail: format!("this session stays at `{}`: {why}", self.cfg.mode.name),
-                
+
                     compaction: None,
                 });
             }
@@ -5676,21 +5719,35 @@ impl<'a> Harness<'a> {
     /// used `todo` or `goal`, and those are seated only by a role that names them.
     /// A default `letibot` session is behaviourally identical.
     fn close_the_turn(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        self.close_the_turn_with(turn_id, items, &unfinished_plan(&self.todos.snapshot()))
+        // **THE PLAN IS NOT CHECKED HERE ANY MORE, and that is the scheduling change.**
+        //
+        // The turn-boundary check is for a claim about the turn that just ended — T21.3's *"when
+        // model says ill start that and by end of the turn forgets and does not start anything"* —
+        // and the intent ledger is exactly that (`steer_for_turn`).
+        //
+        // The PLAN is not a claim about one turn; it is a standing fact about the session, and
+        // checking it at every turn boundary gave the operator both failure modes at once: a
+        // session in constant conversation was checked after every exchange (*"looks like our todo
+        // nag is overkill"*), while a session that went quiet was checked once and then never
+        // again. It is now delivered by the IDLE clock instead — `Sessions::rearm_todo_nag` and
+        // `Harness::nag_turn`, on the operator's own instruction: *"maybe wait for a timeout
+        // actually. so send it when model is idling"* and *"but certainly not after my message."*
+        //
+        // One check, one schedule. `None` here is what makes that true rather than a comment
+        // saying so, and `close_the_turn_with` keeps the plan parameter so the join it performs is
+        // still reachable from a test.
+        self.close_the_turn_with(turn_id, items)
     }
 
-    /// The same, with the plan's finding supplied — so the join is reachable from a test
-    /// without a board or a model server.
-    fn close_the_turn_with(
-        &self,
-        turn_id: &str,
-        items: &[TranscriptItem],
-        plan: &Option<String>,
-    ) -> Option<String> {
-        join_steering(
-            steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items),
-            plan.clone(),
-        )
+    /// The intent finding for a turn that has just ended.
+    ///
+    /// A named function rather than the call inlined above, because it is the seam the tests
+    /// reach — and it is now the WHOLE of the turn-boundary check. The plan's finding used to be
+    /// joined in here (see `close_the_turn` for why it is not), so a reader looking for where the
+    /// todo check happens will not find it at this layer at all: it is `Harness::nag_turn`, on the
+    /// idle clock.
+    fn close_the_turn_with(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
+        steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items)
     }
 
     /// The authorisation trail this session would show an adjudicator right now.
@@ -5745,7 +5802,7 @@ impl<'a> Harness<'a> {
                     ids.len(),
                     items.len()
                 ),
-            
+
                 compaction: None,
             });
         }
@@ -6507,37 +6564,6 @@ fn steer_for_turn(
     }
 }
 
-/// **The two findings of one turn boundary, joined.** `None` when neither has anything to
-/// say, which is the common case and is meant to be.
-///
-/// * **The declared intention first, the plan second.** The ledger's finding names a
-///   specific thing the turn promised and did not do; `todo::unfinished_plan` is the state
-///   of the whole list. Specific before general is the order a reader can act on, and it is
-///   the order they appear in the transcript when both fire.
-/// * **Both are said, not one chosen.** They are different facts about the same turn — *you
-///   promised X and did not* and *your plan is still open* — and a turn can be both. Picking
-///   one would leave the model to rediscover the other on the next turn, which is the turn
-///   the check exists to save.
-/// * **Either alone is the whole message**, so a session with no intent ledger and a session
-///   with no plan are both served by the one path.
-/// * **Joining is what keeps this inside the one-nudge budget.** The caller has `nudges_left
-///   = 1` per user turn, on the rule its own comment states — *"one is the error signal; two
-///   is the harness insisting… if the model explains itself and stops, that is a legitimate
-///   answer to the check."* Choosing between the two findings would spend that single nudge
-///   on one of them and leave the other to be rediscovered next turn; saying both costs one
-///   nudge and is the reason this is a join rather than a priority.
-///
-/// A free function for the reason `steer_for_turn` is one: the choice it makes is the choice
-/// worth testing, and testing it through a `Harness` would need a model server.
-fn join_steering(intent: Option<String>, plan: Option<String>) -> Option<String> {
-    match (intent, plan) {
-        (None, None) => None,
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
-    }
-}
-
 /// A provider backend from its config: the preset, the key (a missing one is a
 /// refusal naming the variable and the file), the model, the switches.
 pub fn build_provider(
@@ -6834,15 +6860,13 @@ mod tests {
     /// comes back empty and reads as the job's end.
     #[test]
     fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
-        let slice = |from, to, produced, dropped, retained| {
-            letibot_tools::exec::OutputSlice {
-                bytes: Vec::new(),
-                from,
-                to,
-                produced,
-                dropped,
-                retained,
-            }
+        let slice = |from, to, produced, dropped, retained| letibot_tools::exec::OutputSlice {
+            bytes: Vec::new(),
+            from,
+            to,
+            produced,
+            dropped,
+            retained,
         };
         // A window in the middle of a long job: there is more, and `next` is where
         // this one ended.
@@ -7164,40 +7188,33 @@ mod tests {
         assert!(!e.contains("without answering"), "{e}");
     }
 
-    /// **One turn boundary, two findings, and the join between them.** The operator's own
-    /// ask is what this is for: *"if model stops the turn while there are todos pending it
-    /// gets respective notification."* The intent half already existed; the plan half is new,
-    /// and what is asserted here is how the two are put together — which is the part neither
-    /// of the two `unfinished_plan` tests can reach.
+    /// **The turn boundary carries the intent finding and NOTHING about the plan.**
+    ///
+    /// This test used to assert the opposite — that the plan's finding was joined in at the turn
+    /// boundary because *"joining is what keeps this inside the one-nudge budget"*. That budget was
+    /// the thing the operator rejected: one nudge per user turn means a session in constant
+    /// conversation is checked after every exchange (*"looks like our todo nag is overkill"*) while
+    /// a quiet one is checked once and never again. The plan is now delivered by the IDLE clock
+    /// (`Sessions::rearm_todo_nag`, `Harness::nag_turn`), so what is left here is the finding that
+    /// really is about the turn that just ended.
+    ///
+    /// The plan half has its own tests where it now lives: `unfinished_plan` in `letibot-tools` for
+    /// the text, and `nag_should_arm` below for the schedule.
     #[test]
-    fn the_two_findings_of_a_turn_boundary_are_both_said_and_said_in_order() {
-        let plan =
-            Some("[todo check] this turn is finished and 1 of 2 item(s) are not".to_string());
-        let intent = Some("[intent check] this turn declared 1 item(s)".to_string());
-
-        // Neither, which is the common case and is meant to be silent.
-        assert!(join_steering(None, None).is_none());
-        // Either alone is the whole message: a session with no plan and a session with no
-        // ledger are both served by this one path.
-        assert_eq!(
-            join_steering(None, plan.clone()).unwrap(),
-            plan.clone().unwrap()
-        );
-        assert_eq!(
-            join_steering(intent.clone(), None).unwrap(),
-            intent.clone().unwrap()
-        );
-        // **And both, which is the case that has to be got right**: a turn can promise
-        // something it did not do AND leave its own plan open, and the model should hear both
-        // rather than one of them.
-        let both = join_steering(intent.clone(), plan.clone()).unwrap();
-        assert!(both.contains("[intent check]"), "{both}");
-        assert!(both.contains("[todo check]"), "{both}");
+    fn the_turn_boundary_says_what_the_turn_promised_and_not_what_the_plan_is() {
+        // A session with nothing declared has nothing to say at the boundary — the common case,
+        // and the one that must stay silent.
         assert!(
-            both.find("[intent check]").unwrap() < both.find("[todo check]").unwrap(),
-            "**the specific finding is read first** — what the turn promised, then the state \
-             of the whole list: {both}"
+            steer_for_turn(&encoded(), false, "t1", &[]).is_none(),
+            "an encoded ledger with nothing declared has no boundary finding"
         );
+        // And the finding that IS the boundary's own: a turn that declared something and did
+        // nothing to show for it. It carries no plan text at all, which is the whole claim of
+        // this test — the two checks are no longer one message.
+        let bare = IntentLedger::new();
+        let steer = steer_for_turn(&bare, false, "t1", &[])
+            .expect("no encoder is itself a finding, on every turn");
+        assert!(!steer.contains("[todo check]"), "{steer}");
     }
 
     /// **An unattached encoder is loud, not silent.** The state this is asserting
@@ -7547,7 +7564,14 @@ mod endpoint_retry {
             )
             .is_some()
         );
-        assert!(http_retry_after(&HttpError::Malformed("truncated".into()), 0, MAX_HTTP_RETRIES).is_some());
+        assert!(
+            http_retry_after(
+                &HttpError::Malformed("truncated".into()),
+                0,
+                MAX_HTTP_RETRIES
+            )
+            .is_some()
+        );
     }
 
     /// **The budget is the caller's, and `1` means do not retry.**
@@ -7582,7 +7606,10 @@ mod endpoint_retry {
         // not a boolean wearing one. The off-by-one here is the whole reason the
         // field is named for RETRIES: `1` used to be called one attempt and still
         // retried once.
-        assert!(http_retry_after(&refused(), 0, 1).is_some(), "one retry is one");
+        assert!(
+            http_retry_after(&refused(), 0, 1).is_some(),
+            "one retry is one"
+        );
         assert!(http_retry_after(&refused(), 1, 1).is_none(), "and only one");
         assert!(http_retry_after(&refused(), 2, 3).is_some());
         assert!(http_retry_after(&refused(), 3, 3).is_none());
@@ -7629,7 +7656,10 @@ mod endpoint_retry {
             "the bytes are the problem, so sending them again cannot help"
         );
         for code in [404, 413, 422] {
-            assert!(http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_none(), "{code}");
+            assert!(
+                http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_none(),
+                "{code}"
+            );
         }
         // The two 4xx that are about timing rather than content: 408 is the server
         // saying it waited too long, 429 is it saying not yet.

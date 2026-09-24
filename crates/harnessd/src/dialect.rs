@@ -238,7 +238,8 @@ mod tests {
             let ours = d.wiring(None).tools_json(&reg.schemas());
             assert_eq!(ours.len(), raw.len());
             assert_ne!(
-                ours[0], raw[0],
+                ours[0],
+                raw[0],
                 "{}: the registry's separators already match the template's",
                 d.name()
             );

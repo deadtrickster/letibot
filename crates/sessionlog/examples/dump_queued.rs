@@ -47,7 +47,10 @@ fn main() {
         println!("session {session_id}: no snapshot");
         return;
     };
-    println!("session {session_id}: {} row(s) in the snapshot", s.items.len());
+    println!(
+        "session {session_id}: {} row(s) in the snapshot",
+        s.items.len()
+    );
 
     let mut users = 0usize;
     let mut bodyless_users = 0usize;
@@ -80,7 +83,13 @@ fn main() {
             texts.len(),
             joined.chars().count(),
             lines,
-            joined.lines().next().unwrap_or("").chars().take(70).collect::<String>()
+            joined
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(70)
+                .collect::<String>()
         );
     }
     println!(

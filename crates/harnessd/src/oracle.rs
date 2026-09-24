@@ -299,7 +299,11 @@ impl HttpOracle {
 ///
 /// A one-line reply is both.
 fn verdict_lines(answer: &str) -> (Option<&str>, Option<&str>) {
-    let mut lines = answer.trim().lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut lines = answer
+        .trim()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty());
     let first = lines.next();
     let last = lines.last().or(first);
     (first, last)
@@ -412,7 +416,12 @@ struct Scores {
 fn parse_scores(answer: &str) -> Option<Scores> {
     let mut fit: Option<(u8, Vec<usize>)> = None;
     let mut claim: Option<Option<u8>> = None;
-    let lines: Vec<&str> = answer.trim().lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = answer
+        .trim()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let ends: Vec<&str> = lines
         .iter()
         .take(4)
@@ -432,7 +441,9 @@ fn parse_scores(answer: &str) -> Option<Scores> {
             .filter_map(|n| n.parse::<u8>().ok())
             .collect();
         if head.eq_ignore_ascii_case("FIT") && fit.is_none() {
-            let Some(&score) = digits.first() else { continue };
+            let Some(&score) = digits.first() else {
+                continue;
+            };
             let cites = digits[1..].iter().map(|d| *d as usize).collect();
             fit = Some((score.min(10), cites));
         } else if head.eq_ignore_ascii_case("CLAIM") && claim.is_none() {
@@ -629,8 +640,14 @@ impl HttpOracle {
                     let noted = format!(
                         " (fit {}/10{}, claim {})",
                         sc.fit,
-                        if sc.cites.is_empty() { String::new() } else { format!(" citing {:?}", sc.cites) },
-                        sc.claim.map(|c| format!("{c}/10")).unwrap_or_else(|| "n/a".into())
+                        if sc.cites.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" citing {:?}", sc.cites)
+                        },
+                        sc.claim
+                            .map(|c| format!("{c}/10"))
+                            .unwrap_or_else(|| "n/a".into())
                     );
                     (v, noted)
                 }
@@ -639,7 +656,11 @@ impl HttpOracle {
                         why: if out_of_room {
                             self.out_of_room_why()
                         } else {
-                            format!("{} gave no scores this seam could read: {:?}", self.id, raw.trim())
+                            format!(
+                                "{} gave no scores this seam could read: {:?}",
+                                self.id,
+                                raw.trim()
+                            )
                         },
                         kind: if out_of_room {
                             UnsureKind::OutOfRoom
@@ -685,7 +706,10 @@ impl HttpOracle {
                         // distinction R11 drew for a reply of the shape the prompt asks for.
                         kind: UnsureKind::CouldNotDecide,
                         why: if cites.is_empty() {
-                            format!("{} answered ALLOW without citing any operator utterance", self.id)
+                            format!(
+                                "{} answered ALLOW without citing any operator utterance",
+                                self.id
+                            )
                         } else {
                             format!(
                                 "{} answered ALLOW citing {cites:?}, and none of those name an \
@@ -707,7 +731,10 @@ impl HttpOracle {
                 ))
             }
             Verdict::Deny => OracleAnswer::NotAuthorised {
-                why: format!("{} found nothing in the trail that asks for this{scored}", self.id),
+                why: format!(
+                    "{} found nothing in the trail that asks for this{scored}",
+                    self.id
+                ),
             },
             Verdict::Unsure => self.unsure(raw, &scored, out_of_room),
         }
@@ -760,7 +787,11 @@ impl HttpOracle {
             (self.out_of_room_why(), UnsureKind::OutOfRoom)
         } else {
             (
-                format!("{} gave no verdict this seam could read: {:?}", self.id, raw.trim()),
+                format!(
+                    "{} gave no verdict this seam could read: {:?}",
+                    self.id,
+                    raw.trim()
+                ),
                 UnsureKind::Unreadable,
             )
         };
@@ -789,7 +820,6 @@ impl HttpOracle {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,13 +829,28 @@ mod tests {
     /// not a zero.
     #[test]
     fn two_scores_are_read_and_the_thresholds_derive_the_verdict() {
-        let sc = parse_scores("The operator asked for tests; this runs them.\nFIT 9 0,2\nCLAIM 8").unwrap();
-        assert_eq!(sc, Scores { fit: 9, cites: vec![0, 2], claim: Some(8) });
+        let sc = parse_scores("The operator asked for tests; this runs them.\nFIT 9 0,2\nCLAIM 8")
+            .unwrap();
+        assert_eq!(
+            sc,
+            Scores {
+                fit: 9,
+                cites: vec![0, 2],
+                claim: Some(8)
+            }
+        );
         assert_eq!(verdict_of(&sc), Verdict::Allow(vec![0, 2]));
 
         // Either order, brackets tolerated, NA claim.
         let sc = parse_scores("prose\nCLAIM NA\nFIT 8 [1]").unwrap();
-        assert_eq!(sc, Scores { fit: 8, cites: vec![1], claim: None });
+        assert_eq!(
+            sc,
+            Scores {
+                fit: 8,
+                cites: vec![1],
+                claim: None
+            }
+        );
         assert_eq!(verdict_of(&sc), Verdict::Allow(vec![1]));
 
         // Fits the ask, contradicts the claim: between the thresholds, not an ALLOW.
@@ -886,12 +931,21 @@ mod tests {
     fn the_verdict_reads_from_either_end_so_a_cut_reply_still_answers() {
         // **The new shape**, and the one that matters: the verdict first, then a sentence
         // that was cut off mid-clause. Before this it was Unsure.
-        assert_eq!(parse("ALLOW 0,2\nThe operator asked to fix a UI bug and this call"), Verdict::Allow(vec![0, 2]));
-        assert_eq!(parse("DENY\nThe operator asked for a commit, and this"), Verdict::Deny);
+        assert_eq!(
+            parse("ALLOW 0,2\nThe operator asked to fix a UI bug and this call"),
+            Verdict::Allow(vec![0, 2])
+        );
+        assert_eq!(
+            parse("DENY\nThe operator asked for a commit, and this"),
+            Verdict::Deny
+        );
         assert_eq!(parse("UNSURE\nIt is not clear whether"), Verdict::Unsure);
 
         // **The old shape still parses**, because a corpus is read under the next prompt.
-        assert_eq!(parse("The operator asked for this.\nALLOW 0"), Verdict::Allow(vec![0]));
+        assert_eq!(
+            parse("The operator asked for this.\nALLOW 0"),
+            Verdict::Allow(vec![0])
+        );
 
         // **And a verdict line is a verdict line wherever it is**, so neither order can be
         // read as the other: prose that begins with a word is not a verdict…
@@ -943,19 +997,33 @@ mod tests {
         // be one row — which is the whole of R12.
         let (why, kind) = asked("The operator asked to fix the UI, and this call", false);
         assert_eq!(kind, UnsureKind::Unreadable);
-        assert!(why.contains("gave no verdict this seam could read"), "{why}");
+        assert!(
+            why.contains("gave no verdict this seam could read"),
+            "{why}"
+        );
 
         // And an answer cut short is still an answer: `parse` reads the first line, so the
         // ceiling never reaches `unsure` at all for one of these.
-        assert_eq!(parse("ALLOW 0\nreasoning that was cut"), Verdict::Allow(vec![0]));
+        assert_eq!(
+            parse("ALLOW 0\nreasoning that was cut"),
+            Verdict::Allow(vec![0])
+        );
         // The scores question is the same, and its prompt now asks for them first.
         assert_eq!(
             parse_scores("FIT 8 0\nCLAIM NA\nand then a sentence that was cut"),
-            Some(Scores { fit: 8, cites: vec![0], claim: None })
+            Some(Scores {
+                fit: 8,
+                cites: vec![0],
+                claim: None
+            })
         );
         assert_eq!(
             parse_scores("a sentence\nFIT 8 0\nCLAIM NA"),
-            Some(Scores { fit: 8, cites: vec![0], claim: None })
+            Some(Scores {
+                fit: 8,
+                cites: vec![0],
+                claim: None
+            })
         );
     }
 
@@ -995,12 +1063,21 @@ mod tests {
         assert!(said.contains("answered UNSURE"), "{said}");
 
         // The thresholds, when the two scores landed between them.
-        let said = why("reasoning\nFIT 5 0\nCLAIM 5", " (fit 5/10 citing [0], claim 5/10)");
+        let said = why(
+            "reasoning\nFIT 5 0\nCLAIM 5",
+            " (fit 5/10 citing [0], claim 5/10)",
+        );
         assert!(said.contains("between the thresholds"), "{said}");
 
         // And bytes that are no verdict at all. `ALLOWANCE` is the case the parser is
         // careful about — it must not read as an ALLOW.
-        for junk in ["", "maybe?", "I think that", "ALLOWANCE", "reasoning without a verdict"] {
+        for junk in [
+            "",
+            "maybe?",
+            "I think that",
+            "ALLOWANCE",
+            "reasoning without a verdict",
+        ] {
             let said = why(junk, "");
             assert!(
                 said.contains("gave no verdict this seam could read"),

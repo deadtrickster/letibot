@@ -396,10 +396,8 @@ fn run() -> Result<i32, String> {
             // this is the knob.
             "--oracle-max-tokens" => {
                 let v = next()?;
-                cfg.oracle_max_tokens = Some(
-                    v.parse()
-                        .map_err(|e| format!("--oracle-max-tokens: {e}"))?,
-                );
+                cfg.oracle_max_tokens =
+                    Some(v.parse().map_err(|e| format!("--oracle-max-tokens: {e}"))?);
             }
             "--oracle-question" => {
                 let v = next()?;

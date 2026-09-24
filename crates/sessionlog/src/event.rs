@@ -448,9 +448,7 @@ pub fn display_target(arguments: &str) -> String {
     if parts.is_empty() {
         parts = elided.into_iter().map(str::to_string).collect();
     }
-    if !subject_seen
-        && let Some(val) = SUBJECT_KEYS.iter().find_map(|k| map.get(*k))
-    {
+    if !subject_seen && let Some(val) = SUBJECT_KEYS.iter().find_map(|k| map.get(*k)) {
         parts.insert(
             0,
             match scalar(val) {
@@ -611,10 +609,9 @@ impl CompactionTail {
                  the history it was chosen from.",
                 carried = self.carried
             )),
-            "no_turns" => Some(
-                "No verbatim tail: there was nothing to carry — the history was empty."
-                    .into(),
-            ),
+            "no_turns" => {
+                Some("No verbatim tail: there was nothing to carry — the history was empty.".into())
+            }
             // A reason this build does not know, shown rather than swallowed.
             other if !other.is_empty() => Some(format!(
                 "No verbatim tail, and the daemon gave a reason this build does not know: \
@@ -712,10 +709,7 @@ pub enum SessionEvent {
     /// moves, which is exactly the case a long tool-call write is, where no
     /// visible text moves at all. Its durable residue is `TurnFinished`'s
     /// `usage.predicted_tokens`, so it is interactive — see [`crate::scrub`].
-    TokensGenerated {
-        turn_id: String,
-        tokens: u64,
-    },
+    TokensGenerated { turn_id: String, tokens: u64 },
     Delta {
         turn_id: String,
         target: DeltaTarget,
@@ -1479,7 +1473,10 @@ mod tests {
             "outcome":{"outcome":"ok"},"payload_digest":"fnv1a:1",
             "inline_bytes":12,"full_bytes":12,"repairs":0}"#;
         let back: SessionEvent = serde_json::from_str(old).unwrap();
-        assert!(matches!(back, SessionEvent::ToolFinished { edit: None, .. }));
+        assert!(matches!(
+            back,
+            SessionEvent::ToolFinished { edit: None, .. }
+        ));
     }
 
     /// The flatten that puts an event inside an [`Envelope`] is where a field-name
@@ -1617,12 +1614,22 @@ mod tests {
             "cd /opt/secure_auth && gcc -o test_auth {} -Wl,-rpath,/opt/secure_auth/lib && ./test_auth --selftest",
             "-Iinclude ".repeat(10)
         );
-        assert!(cmd.len() > 120, "the premise is a command the OLD cap would have cut");
+        assert!(
+            cmd.len() > 120,
+            "the premise is a command the OLD cap would have cut"
+        );
         assert!(cmd.len() < TARGET_MAX_BYTES, "and one the new cap may not");
-        let t = display_target(&format!(r#"{{"command":{}}}"#, serde_json::to_string(&cmd).unwrap()));
+        let t = display_target(&format!(
+            r#"{{"command":{}}}"#,
+            serde_json::to_string(&cmd).unwrap()
+        ));
         // A string with whitespace is quoted, so `grep "two words" src` cannot be misread as
         // three arguments — that is `scalar`'s rule and the quoted form is the right one.
-        assert_eq!(t, format!("{cmd:?}"), "the wire cut a command it had no reason to touch");
+        assert_eq!(
+            t,
+            format!("{cmd:?}"),
+            "the wire cut a command it had no reason to touch"
+        );
         assert!(!t.ends_with('…'), "and it did not claim to: {t}");
         // The whole tail survives, which is the operator's complaint in one assertion: the
         // end of a long command is what a 120-byte cut used to take.
@@ -1652,7 +1659,7 @@ mod tests {
             prompt_tokens: 100,
             cached_tokens: 90,
             predicted_tokens: 5,
-                    cost_micros_usd: None,
+            cost_micros_usd: None,
         };
         assert_eq!(u.f_sim(), Some(0.9));
     }

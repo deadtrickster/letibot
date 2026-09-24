@@ -1739,10 +1739,7 @@ mod the_door_verbs_transform {
     fn every_door_tool_has_a_hyphened_verb_and_the_tool_keeps_its_own_name() {
         for tool in HEAD_RUN_TOOLS {
             let verb = head_run_verb(tool);
-            assert!(
-                !verb.contains('_'),
-                "`/{verb}` still needs the shift key"
-            );
+            assert!(!verb.contains('_'), "`/{verb}` still needs the shift key");
             // **The wire is unmoved**: the tool's own spelling answers, and the transform is
             // `_` → `-` and nothing else.
             assert_eq!(head_run_tool(&verb, &HEAD_RUN_TOOLS), Some(tool));
@@ -1757,7 +1754,13 @@ mod the_door_verbs_transform {
     /// verb is typed by a hand.
     #[test]
     fn the_underscore_spelling_is_accepted_and_resolves_to_the_same_tool() {
-        for typed in ["web_fetch", "web-fetch", "Web-Fetch", "WEB_FETCH", " web_fetch "] {
+        for typed in [
+            "web_fetch",
+            "web-fetch",
+            "Web-Fetch",
+            "WEB_FETCH",
+            " web_fetch ",
+        ] {
             assert_eq!(
                 head_run_tool(typed, &HEAD_RUN_TOOLS),
                 Some("web_fetch"),

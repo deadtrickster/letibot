@@ -47,8 +47,8 @@ use letibot_sessionlog::event::{
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
 use letibot_tools::adjudicate::{
-    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice, OnTimeout,
-    OptionKind as ToolOptionKind, RequestKind,
+    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
+    OnTimeout, OptionKind as ToolOptionKind, RequestKind,
 };
 
 /// How long a person gets to answer before the gate fails closed.
@@ -232,7 +232,10 @@ impl Answers {
         let latency_ms = started.elapsed().as_millis() as u64;
         let decision = match waited {
             Waited::Answered { reply, by } => {
-                if let Reply::Permission { pattern: Some(p), .. } = &reply {
+                if let Reply::Permission {
+                    pattern: Some(p), ..
+                } = &reply
+                {
                     *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some((req.id.clone(), p.clone()));
                 }
@@ -320,12 +323,19 @@ impl AnswerSink for Answers {
 /// `Unavailable`, which is [`letibot_tools::AskAdjudicator`]'s rule and is checked
 /// again there. A **question's** answer cannot settle a permission and the hub has
 /// already refused it at the door, so this arm is the belt to that pair of braces.
-fn settle(req: &AdjudicationRequest, reply: &Reply, by: &str, latency_ms: u64) -> AdjudicationDecision {
+fn settle(
+    req: &AdjudicationRequest,
+    reply: &Reply,
+    by: &str,
+    latency_ms: u64,
+) -> AdjudicationDecision {
     match reply {
         // The glob is not read here. `settle` builds the decision, and a pattern is
         // not part of one — it is what the answer said to do with the RULE, and only
         // `AllowAlways` writes one. `Answers::take_pattern` is where it is picked up.
-        Reply::Permission { option_id, note, .. } => AdjudicationDecision {
+        Reply::Permission {
+            option_id, note, ..
+        } => AdjudicationDecision {
             request_id: req.id.clone(),
             outcome: DecisionOutcome::Selected {
                 option_id: option_id.clone(),
@@ -402,11 +412,7 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
         // A permission has no plain-text choices. `ask_user_question` fills these,
         // and it goes through the same seam.
         choices: Vec::new(),
-        because: req
-            .boundary_facts
-            .first()
-            .cloned()
-            .unwrap_or_default(),
+        because: req.boundary_facts.first().cloned().unwrap_or_default(),
         // Verbatim from the request the model was asked about, not re-derived. A
         // head that reconstructed the verdict would render a guess about what the
         // oracle said — `ModelBrief`'s rule, one layer out.
@@ -545,7 +551,8 @@ impl Adjudicator for HeadAdjudicator {
         // did not write for a call they were not looking at when they typed it.
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let d = self.answers.ask(&self.hub, req, self.budget);
-        *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = self.answers.take_pattern(&req.id);
+        *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
+            self.answers.take_pattern(&req.id);
         d
     }
 
@@ -577,10 +584,7 @@ impl Adjudicator for HeadAdjudicator {
     }
 
     fn last_brief(&self) -> Option<String> {
-        self.shown
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.shown.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -640,7 +644,9 @@ impl Adjudicator for EscalateOnTimeout {
     fn last_pattern(&self) -> Option<String> {
         // Whichever of the two answered: a pattern typed with a person's answer
         // belongs to the person, and a model that minted one reported its own.
-        self.human.last_pattern().or_else(|| self.inner.last_pattern())
+        self.human
+            .last_pattern()
+            .or_else(|| self.inner.last_pattern())
     }
 
     fn last_brief(&self) -> Option<String> {
@@ -750,7 +756,9 @@ mod tests {
                             req_id: d.req_id.clone(),
                             reply: Reply::Permission {
                                 option_id: "allow_once".into(),
-                                pattern: None, note: None },
+                                pattern: None,
+                                note: None,
+                            },
                         },
                     );
                     return true;
@@ -822,8 +830,7 @@ mod tests {
         let answers = Arc::new(Answers::new());
         hub.set_answer_sink(answers.clone());
         hub.attach("tui", "alice", Caps::default(), 0);
-        let adj =
-            HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(30));
+        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(30));
         let d = adj.decide(&request());
         assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
         assert!(d.basis.contains("not a denial"), "{}", d.basis);
@@ -844,8 +851,7 @@ mod tests {
         let answers = Arc::new(Answers::new());
         hub.set_answer_sink(answers.clone());
         hub.attach("tui", "alice", Caps::default(), 0);
-        let adj =
-            HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(30));
+        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(30));
         let _ = adj.decide(&request());
         let note = hub
             .retained()
@@ -884,7 +890,11 @@ mod tests {
 
     impl Stub {
         fn new(kind: StubKind, name: &'static str) -> Arc<Stub> {
-            Arc::new(Stub { kind, name, asked: std::sync::Mutex::new(0) })
+            Arc::new(Stub {
+                kind,
+                name,
+                asked: std::sync::Mutex::new(0),
+            })
         }
         fn asks(&self) -> usize {
             *self.asked.lock().unwrap()
@@ -895,11 +905,17 @@ mod tests {
         fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
             *self.asked.lock().unwrap() += 1;
             let (outcome, basis) = match self.kind {
-                StubKind::TimesOut => (DecisionOutcome::Timeout, "the guard did not answer in time"),
-                StubKind::Unavailable => (DecisionOutcome::Unavailable, "the guard is not reachable"),
+                StubKind::TimesOut => {
+                    (DecisionOutcome::Timeout, "the guard did not answer in time")
+                }
+                StubKind::Unavailable => {
+                    (DecisionOutcome::Unavailable, "the guard is not reachable")
+                }
                 StubKind::Cancels => (DecisionOutcome::Cancelled, "the turn was stopped"),
                 StubKind::Allows => (
-                    DecisionOutcome::Selected { option_id: "allow_once".into() },
+                    DecisionOutcome::Selected {
+                        option_id: "allow_once".into(),
+                    },
                     "the person allowed it",
                 ),
             };
@@ -931,7 +947,9 @@ mod tests {
         assert_eq!(person.asks(), 1, "the person was asked");
         assert_eq!(
             d.outcome,
-            DecisionOutcome::Selected { option_id: "allow_once".into() },
+            DecisionOutcome::Selected {
+                option_id: "allow_once".into()
+            },
             "{d:?}"
         );
         assert!(d.by.contains("person"), "{}", d.by);
@@ -952,7 +970,10 @@ mod tests {
         let esc = EscalateOnTimeout::new(model.clone(), person.clone());
         let d = esc.decide(&request());
         assert_eq!(person.asks(), 1, "the person was asked");
-        assert!(matches!(d.outcome, DecisionOutcome::Selected { .. }), "{d:?}");
+        assert!(
+            matches!(d.outcome, DecisionOutcome::Selected { .. }),
+            "{d:?}"
+        );
     }
 
     /// A model that answers decides, and nobody else is asked.
@@ -1021,7 +1042,10 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let interrupted = interrupter.join().unwrap();
         assert!(interrupted, "nothing was ever open to interrupt: {d:?}");
-        assert!(started.elapsed() < Duration::from_secs(30), "it waited out the budget");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "it waited out the budget"
+        );
         assert_eq!(d.outcome, DecisionOutcome::Cancelled, "{d:?}");
         assert!(d.basis.contains("esc twice"), "{}", d.basis);
     }
@@ -1037,7 +1061,9 @@ mod tests {
             "alice",
             &Reply::Permission {
                 option_id: "allow_once".into(),
-                pattern: None, note: None }
+                pattern: None,
+                note: None
+            }
         ));
     }
 
@@ -1050,8 +1076,7 @@ mod tests {
         let answers = Arc::new(Answers::new());
         hub.set_answer_sink(answers.clone());
         hub.attach("tui", "alice", Caps::default(), 0);
-        let adj =
-            HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(20));
+        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(20));
         assert!(adj.last_brief().is_none(), "nothing has been shown yet");
         let req = request();
         adj.decide(&req);
@@ -1116,16 +1141,16 @@ mod tests {
     fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
         let answers = Answers::new();
         // What `ask` does before it publishes.
-        answers
-            .lock()
-            .insert("adj-race".to_string(), Slot::Waiting);
+        answers.lock().insert("adj-race".to_string(), Slot::Waiting);
         // The head, faster than the thread that is about to wait.
         assert!(answers.answer(
             "adj-race",
             "deadtrickster",
             &Reply::Permission {
                 option_id: "allow_once".into(),
-                pattern: None, note: None },
+                pattern: None,
+                note: None
+            },
         ));
         // And now the wait begins. It must find the answer, not overwrite it —
         // and must not spend the budget doing so.
@@ -1192,8 +1217,16 @@ mod tell_tests {
                 "deadtrickster",
                 10,
             );
-            assert!(untold.basis.contains("without saying why"), "{}", untold.basis);
-            assert!(untold.basis.contains("deny_and_tell <why>"), "{}", untold.basis);
+            assert!(
+                untold.basis.contains("without saying why"),
+                "{}",
+                untold.basis
+            );
+            assert!(
+                untold.basis.contains("deny_and_tell <why>"),
+                "{}",
+                untold.basis
+            );
         }
 
         // Every other option is unchanged: this is about the one that asked.

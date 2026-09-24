@@ -90,7 +90,10 @@ pub enum Slash {
     FlowyLogout,
     /// `/job` lists this session's background jobs; `/job ID` reads what one
     /// wrote. The pane counted those bytes and could not show them.
-    Job { job: Option<String>, offset: u64 },
+    Job {
+        job: Option<String>,
+        offset: u64,
+    },
     /// **What this conversation can call**, and what it only looks like it can.
     Tools,
     Models,
@@ -124,7 +127,10 @@ pub enum Slash {
     ///
     /// `at` carries an address the first time somebody names one; it is remembered,
     /// so the second `/supervise` is one word.
-    Supervise { want: Option<bool>, at: Option<String> },
+    Supervise {
+        want: Option<bool>,
+        at: Option<String>,
+    },
     Help(String),
 }
 
@@ -145,7 +151,11 @@ pub enum GateVerb {
     /// How much corpus there is. A count nobody can see is a count nobody keeps.
     Counts,
     /// A ruling on one decision.
-    Rule { request_id: String, kind: &'static str, note: String },
+    Rule {
+        request_id: String,
+        kind: &'static str,
+        note: String,
+    },
 }
 
 impl Slash {
@@ -452,8 +462,7 @@ pub fn models_listing(current: &str) -> Vec<String> {
     let cat = letibot_provider::catalogue::Catalogue::load();
     let mut lines = vec![format!("models — now answering: {current}")];
     lines.push(
-        "  local the llama.cpp server this daemon was started against   /models local"
-            .into(),
+        "  local the llama.cpp server this daemon was started against   /models local".into(),
     );
     for p in letibot_provider::presets::ALL {
         let auth = match letibot_provider::keys::resolve(p, None, None) {
@@ -571,7 +580,10 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
                 )],
                 ok: true,
             },
-            Err(e) => SlashReply { lines: vec![e], ok: false },
+            Err(e) => SlashReply {
+                lines: vec![e],
+                ok: false,
+            },
         };
     }
     let (provider, model) = match want.split_once('/') {
@@ -580,7 +592,12 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
     };
     let preset = match letibot_provider::Preset::parse(provider) {
         Ok(p) => p,
-        Err(e) => return SlashReply { lines: vec![e], ok: false },
+        Err(e) => {
+            return SlashReply {
+                lines: vec![e],
+                ok: false,
+            };
+        }
     };
     // The key is checked before the choice is written, so a default nothing can
     // authenticate is never left for the next daemon to discover at its first turn.
@@ -608,12 +625,14 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
                             .default_model(&letibot_provider::catalogue::Catalogue::load())),
                     f.display()
                 ),
-                "This conversation is unchanged — `/models` switches the one you are in."
-                    .into(),
+                "This conversation is unchanged — `/models` switches the one you are in.".into(),
             ],
             ok: true,
         },
-        Err(e) => SlashReply { lines: vec![e], ok: false },
+        Err(e) => SlashReply {
+            lines: vec![e],
+            ok: false,
+        },
     }
 }
 
@@ -633,25 +652,40 @@ mod tests {
         use super::{GateVerb, Slash};
         assert_eq!(
             Slash::parse("supervise"),
-            Slash::Supervise { want: Some(true), at: None }
+            Slash::Supervise {
+                want: Some(true),
+                at: None
+            }
         );
         assert_eq!(
             Slash::parse("supervise on"),
-            Slash::Supervise { want: Some(true), at: None }
+            Slash::Supervise {
+                want: Some(true),
+                at: None
+            }
         );
         assert_eq!(
             Slash::parse("supervise off"),
-            Slash::Supervise { want: Some(false), at: None }
+            Slash::Supervise {
+                want: Some(false),
+                at: None
+            }
         );
         assert_eq!(
             Slash::parse("supervise status"),
-            Slash::Supervise { want: None, at: None }
+            Slash::Supervise {
+                want: None,
+                at: None
+            }
         );
         // An address is the one-off override, and anything with a colon is one —
         // refusing it in favour of a daemon flag is the ceremony this verb removes.
         assert_eq!(
             Slash::parse("supervise 192.168.1.76:8090"),
-            Slash::Supervise { want: Some(true), at: Some("192.168.1.76:8090".into()) }
+            Slash::Supervise {
+                want: Some(true),
+                at: Some("192.168.1.76:8090".into())
+            }
         );
         // A typo is named, never silently treated as `on`: turning a guard on by
         // accident and turning it on deliberately must not be the same keystroke.
@@ -713,11 +747,17 @@ mod tests {
     fn job_parses_bare_with_an_id_and_with_an_offset() {
         assert!(matches!(
             Slash::parse("job"),
-            Slash::Job { job: None, offset: 0 }
+            Slash::Job {
+                job: None,
+                offset: 0
+            }
         ));
         assert!(matches!(
             Slash::parse("jobs"),
-            Slash::Job { job: None, offset: 0 }
+            Slash::Job {
+                job: None,
+                offset: 0
+            }
         ));
         match Slash::parse("job j-3 --offset 4096") {
             Slash::Job { job, offset } => {
@@ -728,7 +768,10 @@ mod tests {
         }
         assert!(matches!(
             Slash::parse("job --offset 10"),
-            Slash::Job { job: None, offset: 10 }
+            Slash::Job {
+                job: None,
+                offset: 10
+            }
         ));
     }
 
@@ -744,7 +787,11 @@ mod tests {
     #[test]
     fn models_switches_the_session_and_default_model_is_its_own_verb() {
         match Slash::parse("models deepseek/deepseek-flash") {
-            Slash::ModelsSet { provider, model, key } => {
+            Slash::ModelsSet {
+                provider,
+                model,
+                key,
+            } => {
                 assert_eq!(provider, "deepseek");
                 assert_eq!(model.as_deref(), Some("deepseek-flash"));
                 assert!(key.is_none());
@@ -779,9 +826,15 @@ mod tests {
         let (choice, notes) =
             models_choice("grok", None, Some("xai-test"), Some(&f)).expect("choosing");
         assert!(choice.is_some(), "the session switches");
-        assert!(notes.join("\n").contains("stored the grok key"), "{notes:?}");
+        assert!(
+            notes.join("\n").contains("stored the grok key"),
+            "{notes:?}"
+        );
         let on_disk = std::fs::read_to_string(&f).unwrap_or_default();
-        assert!(on_disk.contains("xai-test"), "the key is written: {on_disk}");
+        assert!(
+            on_disk.contains("xai-test"),
+            "the key is written: {on_disk}"
+        );
         assert!(
             !on_disk.contains("[default]"),
             "and the standing choice is not: {on_disk}"
@@ -789,10 +842,18 @@ mod tests {
 
         // `/default-model` is what writes it, and it reports before it is set.
         let before = default_model(None, Some(&f));
-        assert!(before.lines[0].contains("no standing choice"), "{:?}", before.lines);
+        assert!(
+            before.lines[0].contains("no standing choice"),
+            "{:?}",
+            before.lines
+        );
         let set = default_model(Some("grok"), Some(&f));
         assert!(set.ok, "{:?}", set.lines);
-        assert!(set.lines[0].contains("new sessions start on grok/"), "{:?}", set.lines);
+        assert!(
+            set.lines[0].contains("new sessions start on grok/"),
+            "{:?}",
+            set.lines
+        );
         assert!(
             set.lines[1].contains("This conversation is unchanged"),
             "{:?}",
@@ -804,10 +865,13 @@ mod tests {
         // the next daemon to discover at its first turn.
         let bad = default_model(Some("glm"), Some(&f));
         assert!(!bad.ok);
-        assert!(bad.lines.last().unwrap().contains("Nothing was written"), "{:?}", bad.lines);
+        assert!(
+            bad.lines.last().unwrap().contains("Nothing was written"),
+            "{:?}",
+            bad.lines
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
-
 
     #[test]
     fn a_model_choice_stores_the_key_or_says_what_is_missing() {
@@ -883,7 +947,10 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
     let store = match letibot_tokencore::store::Store::open(path) {
         Ok(s) => s,
         Err(e) => {
-            return SlashReply { lines: vec![format!("opening {}: {e}", path.display())], ok: false };
+            return SlashReply {
+                lines: vec![format!("opening {}: {e}", path.display())],
+                ok: false,
+            };
         }
     };
 
@@ -897,10 +964,7 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                     // operator personally answered four hundred calls read as
                     // "0 ruled on".
                     format!("  {} you answered yourself", c.decided_by_operator),
-                    format!(
-                        "  {} where an oracle was actually consulted",
-                        c.measured
-                    ),
+                    format!("  {} where an oracle was actually consulted", c.measured),
                     format!(
                         "  {} where you and the model differ — the rows a fine-tune is for",
                         c.disagreements
@@ -923,15 +987,27 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                 ],
                 ok: true,
             },
-            Err(e) => SlashReply { lines: vec![e.to_string()], ok: false },
+            Err(e) => SlashReply {
+                lines: vec![e.to_string()],
+                ok: false,
+            },
         },
 
-        GateVerb::Recent { limit, only_unlabelled } => {
+        GateVerb::Recent {
+            limit,
+            only_unlabelled,
+        } => {
             // `corpus(only_labelled)` narrows the other way, so the unlabelled queue
             // is filtered here rather than by asking for a set that excludes itself.
-            let rows = match store.corpus(false, if *only_unlabelled { limit * 8 } else { *limit }) {
+            let rows = match store.corpus(false, if *only_unlabelled { limit * 8 } else { *limit })
+            {
                 Ok(r) => r,
-                Err(e) => return SlashReply { lines: vec![e.to_string()], ok: false },
+                Err(e) => {
+                    return SlashReply {
+                        lines: vec![e.to_string()],
+                        ok: false,
+                    };
+                }
             };
             let mut lines = Vec::new();
             // **"unruled" is not "nobody answered it".** A call the operator was put
@@ -975,7 +1051,11 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             SlashReply { lines, ok: true }
         }
 
-        GateVerb::Rule { request_id, kind, note } => {
+        GateVerb::Rule {
+            request_id,
+            kind,
+            note,
+        } => {
             match store.record_operator_ruling(request_id, kind, note) {
                 Ok(true) => SlashReply {
                     lines: vec![format!("{request_id}: {kind}")],
@@ -992,7 +1072,10 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                     )],
                     ok: false,
                 },
-                Err(e) => SlashReply { lines: vec![e.to_string()], ok: false },
+                Err(e) => SlashReply {
+                    lines: vec![e.to_string()],
+                    ok: false,
+                },
             }
         }
     }
@@ -1052,9 +1135,9 @@ mod the_verb_table_is_the_parser {
         // teaches one verb three times.
         fn canon(v: &str) -> &str {
             match v {
-            "default" | "default_model" => "default-model",
-            "model" => "models",
-            "supervised" => "supervise",
+                "default" | "default_model" => "default-model",
+                "model" => "models",
+                "supervised" => "supervise",
                 other => other,
             }
         }

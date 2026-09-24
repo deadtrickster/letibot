@@ -10,14 +10,14 @@ use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 use crate::event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, FinishReason, OnTimeout, OptionKind,
-    PromptProgress, SessionEvent, TodoEntry, TodoStatus, Timings, Usage,
+    PromptProgress, SessionEvent, Timings, TodoEntry, TodoStatus, Usage,
 };
 
 pub fn warn(detail: &str) -> SessionEvent {
     SessionEvent::Warning {
         code: "test".into(),
         detail: detail.into(),
-    
+
         compaction: None,
     }
 }
@@ -167,7 +167,7 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             prompt_tokens: 1000,
             cached_tokens: 900,
             predicted_tokens: 42,
-                    cost_micros_usd: None,
+            cost_micros_usd: None,
         },
         timings: Timings {
             prompt_ms: 40.0,

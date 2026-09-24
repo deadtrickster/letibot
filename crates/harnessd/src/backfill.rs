@@ -81,8 +81,11 @@ pub fn plan(path: &std::path::Path) -> Result<Report, String> {
         }
         let command = match serde_json::from_str::<serde_json::Value>(&row.arguments_json)
             .ok()
-            .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(str::to_string))
-        {
+            .and_then(|v| {
+                v.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            }) {
             Some(c) => c,
             None => {
                 report.skipped.push(Skipped {

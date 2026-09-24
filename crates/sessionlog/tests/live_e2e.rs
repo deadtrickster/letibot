@@ -257,7 +257,10 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
         let mut last = 0;
         let deadline = Instant::now() + Duration::from_secs(300);
         while Instant::now() < deadline {
-            let Ok(f) = rx.recv_timeout(Duration::from_secs(120)).map(Inbound::frame) else {
+            let Ok(f) = rx
+                .recv_timeout(Duration::from_secs(120))
+                .map(Inbound::frame)
+            else {
                 break;
             };
             if let ServerFrame::Event(env) = &f {
@@ -394,7 +397,10 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
         "the engine emits progress frames and a replay must strip them"
     );
     let mut saw_progress = false;
-    while let Ok(f) = c_rx.recv_timeout(Duration::from_millis(500)).map(Inbound::frame) {
+    while let Ok(f) = c_rx
+        .recv_timeout(Duration::from_millis(500))
+        .map(Inbound::frame)
+    {
         if let ServerFrame::Event(env) = f
             && matches!(env.event, SessionEvent::PromptProgress { .. })
         {

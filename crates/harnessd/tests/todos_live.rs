@@ -20,9 +20,9 @@
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
+use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::Caps;
-use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{Store, TodoStatus};
 
 const GLM_GGUF: &str =

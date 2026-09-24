@@ -334,8 +334,9 @@ fn a_reattaching_head_is_never_re_asked_a_settled_question() {
     let mut saw_outcome = false;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        let Ok(ServerFrame::Event(env)) =
-            rx.recv_timeout(Duration::from_millis(300)).map(Inbound::frame)
+        let Ok(ServerFrame::Event(env)) = rx
+            .recv_timeout(Duration::from_millis(300))
+            .map(Inbound::frame)
         else {
             break;
         };
@@ -556,7 +557,10 @@ fn settings_are_answered_from_what_the_harness_published() {
         caps: Caps::default(),
     })
     .expect("attach");
-    assert!(matches!(r.read::<ServerFrame>().expect("hello"), ServerFrame::Hello { .. }));
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("hello"),
+        ServerFrame::Hello { .. }
+    ));
 
     // Nothing published yet: an empty list, not a refusal.
     w.write(&ClientFrame::Settings).expect("settings");
@@ -589,5 +593,8 @@ fn settings_are_answered_from_what_the_harness_published() {
 
     // Still seated on s-1: a live event arrives on the same stream.
     hub.publish(delta("t1", "still here"));
-    assert!(matches!(r.read::<ServerFrame>().expect("event"), ServerFrame::Event(_)));
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("event"),
+        ServerFrame::Event(_)
+    ));
 }

@@ -45,7 +45,7 @@ use letibot_sessionlog::registry::Registry;
 use letibot_sessionlog::server::{ServerHandle, serve_registry};
 
 use crate::harness::HarnessError;
-use letibot_sessionlog::registry::Work;
+use letibot_sessionlog::registry::{Work, WorkOrIdle};
 
 use crate::sessions::{Outcome, Sessions};
 
@@ -132,9 +132,7 @@ impl Daemon {
             .spawn(move || {
                 let mut buf = [0u8; 1];
                 // Blocks. No timer, no poll: the byte arrives or it does not.
-                let n = unsafe {
-                    libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1)
-                };
+                let n = unsafe { libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
                 if n > 0 {
                     registry.close();
                 }
@@ -154,68 +152,88 @@ impl Daemon {
         sessions: &mut Sessions<'_>,
         mut on_reply: impl FnMut(&str, &QueuedCommand, Outcome),
     ) {
-        while let Some(work) = self.registry().next_work() {
-            match work {
-                // A session was created — by a head's `/new`, or by a `--continue`
-                // asking for one out of the store. Opened **here**, on the worker,
-                // rather than on the connection thread that asked: the worker is the
-                // one authoritative reader (§13.2), and a harness built on a socket
-                // thread would be a second one.
-                //
-                // A failure is already announced on that session's own log by
-                // `Sessions::open`; the daemon keeps serving, because one session
-                // that cannot be rebuilt is not the others' problem.
-                Work::Open(session_id) => {
-                    match sessions.open(&session_id) {
-                        Err(e) => eprintln!("  {session_id} · not opened: {e}"),
-                        // Already open: the daemon's own first session, whose banner
-                        // was printed at startup. Saying it twice would suggest two
-                        // resumes happened.
-                        Ok(false) => {}
-                        Ok(true) => {
-                            if let Some(r) = sessions.resume_report(&session_id) {
-                                eprintln!(
-                                    "  {session_id} · resumed {} row(s), {} tokens, head {}",
-                                    r.rows,
-                                    r.tokens,
-                                    &r.head[..16.min(r.head.len())]
-                                );
-                                for note in &r.notes {
-                                    eprintln!("    note: {note}");
+        // **The worker's wait, with the clock as an input.** `next_work_until` gives up at a
+        // deadline and says so, which is what lets this loop act on a PAUSE rather than only on an
+        // event — and the one thing that wanted to is the idle plan-check the operator asked for:
+        // *"maybe wait for a timeout actually. so send it when model is idling."* The deadline is
+        // recomputed every pass because any turn re-arms it, and it is `None` (sleep until there is
+        // work) whenever no session has a check pending, which is the common case.
+        loop {
+            let deadline = sessions.next_nag_at();
+            match self.registry().next_work_until(deadline) {
+                // Nothing to do and the deadline is not here yet — the registry never returns this
+                // while there is work, and a session with no check armed passes `None`, so this arm
+                // is only reachable when a check is actually due.
+                WorkOrIdle::Idle => {
+                    let ran = sessions.deliver_due_nags();
+                    if ran > 0 {
+                        eprintln!("  todo check -> {ran} session(s)");
+                    }
+                    continue;
+                }
+                WorkOrIdle::Closed => break,
+                WorkOrIdle::Work(work) => match work {
+                    // A session was created — by a head's `/new`, or by a `--continue`
+                    // asking for one out of the store. Opened **here**, on the worker,
+                    // rather than on the connection thread that asked: the worker is the
+                    // one authoritative reader (§13.2), and a harness built on a socket
+                    // thread would be a second one.
+                    //
+                    // A failure is already announced on that session's own log by
+                    // `Sessions::open`; the daemon keeps serving, because one session
+                    // that cannot be rebuilt is not the others' problem.
+                    Work::Open(session_id) => {
+                        match sessions.open(&session_id) {
+                            Err(e) => eprintln!("  {session_id} · not opened: {e}"),
+                            // Already open: the daemon's own first session, whose banner
+                            // was printed at startup. Saying it twice would suggest two
+                            // resumes happened.
+                            Ok(false) => {}
+                            Ok(true) => {
+                                if let Some(r) = sessions.resume_report(&session_id) {
+                                    eprintln!(
+                                        "  {session_id} · resumed {} row(s), {} tokens, head {}",
+                                        r.rows,
+                                        r.tokens,
+                                        &r.head[..16.min(r.head.len())]
+                                    );
+                                    for note in &r.notes {
+                                        eprintln!("    note: {note}");
+                                    }
+                                } else {
+                                    eprintln!("  {session_id} · opened, nothing to resume");
                                 }
-                            } else {
-                                eprintln!("  {session_id} · opened, nothing to resume");
                             }
                         }
                     }
-                }
-                Work::Command(session_id, cmd) => {
-                    let outcome = sessions.dispatch(&session_id, &cmd);
-                    on_reply(&session_id, &cmd, outcome);
-                }
-                // **A monitor fired while nothing was running.** T24's *"wakes the
-                // loop when it fires"*, which until now had no caller: a firing was
-                // visible in `job_list` and nothing acted on it, which is a poll.
-                //
-                // It is served on the worker like everything else — one
-                // authoritative reader (§13.2) — and it is served **after** every
-                // queued command, because the bell drains wakes last and a head
-                // that pressed enter is waiting while a monitor is not.
-                //
-                // `Ignored` is a real outcome here and the common one under load: a
-                // firing the running turn already picked up through steering has
-                // been delivered, and the shared cursor is what stops the wake
-                // telling the model the same thing twice.
-                Work::Woken(session_id) => match sessions.wake(&session_id) {
-                    Outcome::Replied(r) => eprintln!(
-                        "  {session_id} · monitor -> {} round(s), {} tool call(s)",
-                        r.rounds, r.tool_calls
-                    ),
-                    // A wake never compacts; the arm exists because the outcome is
-                    // the worker's one vocabulary.
-                    Outcome::Compacted(_) => {}
-                    Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
-                    Outcome::Ignored => {}
+                    Work::Command(session_id, cmd) => {
+                        let outcome = sessions.dispatch(&session_id, &cmd);
+                        on_reply(&session_id, &cmd, outcome);
+                    }
+                    // **A monitor fired while nothing was running.** T24's *"wakes the
+                    // loop when it fires"*, which until now had no caller: a firing was
+                    // visible in `job_list` and nothing acted on it, which is a poll.
+                    //
+                    // It is served on the worker like everything else — one
+                    // authoritative reader (§13.2) — and it is served **after** every
+                    // queued command, because the bell drains wakes last and a head
+                    // that pressed enter is waiting while a monitor is not.
+                    //
+                    // `Ignored` is a real outcome here and the common one under load: a
+                    // firing the running turn already picked up through steering has
+                    // been delivered, and the shared cursor is what stops the wake
+                    // telling the model the same thing twice.
+                    Work::Woken(session_id) => match sessions.wake(&session_id) {
+                        Outcome::Replied(r) => eprintln!(
+                            "  {session_id} · monitor -> {} round(s), {} tool call(s)",
+                            r.rounds, r.tool_calls
+                        ),
+                        // A wake never compacts; the arm exists because the outcome is
+                        // the worker's one vocabulary.
+                        Outcome::Compacted(_) => {}
+                        Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
+                        Outcome::Ignored => {}
+                    },
                 },
             }
         }

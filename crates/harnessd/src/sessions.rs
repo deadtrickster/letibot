@@ -36,6 +36,7 @@
 //! `/new` instant rather than a two-second pause on a busy box.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
@@ -69,6 +70,43 @@ const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// not fit the window, and the fourth wall is the operator's to answer — by
 /// `/compact`, a fresh session, or a bigger `--context-window`.
 const WALL_CONTINUES: usize = 3;
+
+/// How long a session sits IDLE before the unfinished-plan check is sent.
+///
+/// **The operator's scheduling, in their words:** *"maybe wait for a timeout actually. so send it
+/// when model is idling"* — and, on the failure the turn-boundary check had, *"but certainly not
+/// after my message."*
+///
+/// The check used to run at the END OF A TURN, on a budget of one per user turn. That has the
+/// problem backwards in both directions: a session in constant conversation was checked after
+/// every single exchange (the overkill the operator reported from the `rano` window), while a
+/// session that went quiet with an unfinished plan was checked once and then never again — the
+/// model would have to be spoken to before it was reminded. A minute of silence is the signal
+/// that nobody is waiting, which is the only state in which a nudge can be anything but an
+/// interruption.
+///
+/// A minute and not less: a turn of real work is often longer than that, and a check that
+/// arrives while a person is still reading the answer they just got is the interruption this
+/// exists to avoid. The window is measured from the end of the last turn, and ANY turn re-arms
+/// it — a monitor's wake or a background job's completion is work too, and the model being busy
+/// with something else is not idle.
+const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
+
+/// Should the idle check be armed for a session whose plan reads NOTICE, given what it was
+/// last NAGGED with?
+///
+/// **The whole schedule's decision, as one predicate, and it exists so the rule can be
+/// tested without a daemon.** Both halves are load-bearing: a finished (or absent) plan has
+/// nothing to check, and an UNCHANGED one has already been said — re-sending it is the nagging
+/// the operator called overkill, at a slower rate instead of a faster one. A model that ignores
+/// the check therefore gets silence rather than a metronome, while any real work on the plan
+/// earns a fresh check at the next idle period.
+fn nag_should_arm(notice: Option<&str>, nagged: Option<&str>) -> bool {
+    match notice {
+        Some(text) => nagged != Some(text),
+        None => false,
+    }
+}
 
 /// What the worker did with one command.
 pub enum Outcome {
@@ -108,6 +146,17 @@ pub struct Sessions<'a> {
     /// The fabric block each root session last saw, so a refresh after a
     /// compaction is a system update only when something changed.
     fabric_seen: HashMap<String, String>,
+    /// When each session's idle plan-check comes due, or absent for a session with
+    /// nothing to check. See [`Sessions::rearm_todo_nag`].
+    nag_due: HashMap<String, Instant>,
+    /// The plan notice each session was last NAGGED with.
+    ///
+    /// **This is what makes it once per idle period rather than every minute.** A check that
+    /// was sent and not acted on must not be sent again — the model has been told, and telling
+    /// it the same unchanged list again is the nagging the operator called overkill. So a
+    /// re-arm compares the plan against what was last sent: unchanged means silence, and any
+    /// change at all (an item added, one closed, one started) is a new thing to say.
+    nagged: HashMap<String, String>,
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired.
@@ -158,6 +207,8 @@ impl<'a> Sessions<'a> {
             slots: HashMap::new(),
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
+            nag_due: HashMap::new(),
+            nagged: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
         let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
@@ -612,7 +663,7 @@ impl<'a> Sessions<'a> {
                          tool still speaks; `flowy status` shows what is pending.",
                         seat.name()
                     ),
-                
+
                     compaction: None,
                 });
             }
@@ -637,7 +688,7 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "flowy_not_seated".into(),
                         detail: format!("the `flowy` monitor could not be declared: {e}"),
-                    
+
                         compaction: None,
                     });
                 }
@@ -688,7 +739,7 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "resume_note".into(),
                                 detail: note.clone(),
-                            
+
                                 compaction: None,
                             });
                         }
@@ -699,7 +750,7 @@ impl<'a> Sessions<'a> {
                         hub.publish(SessionEvent::Warning {
                             code: "open_note".into(),
                             detail: note.clone(),
-                        
+
                             compaction: None,
                         });
                     }
@@ -712,7 +763,7 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "resume_failed".into(),
                         detail: e.to_string(),
-                    
+
                         compaction: None,
                     });
                 }
@@ -830,6 +881,11 @@ impl<'a> Sessions<'a> {
     /// A second copy of a sequence is a second place to forget one of its steps, so
     /// there is one.
     fn run_prompt(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
+        // **The operator has spoken, so the plan check is earned back** — see
+        // `note_operator_prompt`. Called here rather than in `dispatch`'s `Prompt` arm because
+        // `run_prompt` is the one place a prompt from ANY door arrives (a head's enter, a script,
+        // `--continue`), and a rule applied at one door is a rule the other doors do not have.
+        self.note_operator_prompt(session_id);
         let hub = self.registry.get(session_id);
         // Opened here rather than held across the tidying below: a live borrow of
         // `self.open` would stop a compaction from re-entering it.
@@ -842,7 +898,7 @@ impl<'a> Sessions<'a> {
                         detail: format!(
                             "this session could not be opened, so nothing was run: {e}"
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -909,7 +965,7 @@ impl<'a> Sessions<'a> {
                             "off"
                         }
                     ),
-                
+
                     compaction: None,
                 });
             }
@@ -965,7 +1021,94 @@ impl<'a> Sessions<'a> {
                 break;
             }
         }
+        // **Every turn ends here, so this is where the idle clock starts.** `after_turn` is the
+        // one convergence point for a prompt, a scripted submit and a monitor's wake — the same
+        // reason the compaction lives here and not at three call sites.
+        self.rearm_todo_nag(session_id);
         out
+    }
+
+    /// Start (or stand down) the idle plan-check for SESSION, as of NOW.
+    ///
+    /// **Armed only when the plan is unfinished AND different from the one last sent.** Both
+    /// halves are load-bearing: a finished plan has nothing to check, and an unchanged one has
+    /// already been said — re-sending it is the nagging the operator called overkill, just at a
+    /// slower rate. So a model that ignores the check gets silence rather than a metronome, while
+    /// any real work on the plan earns a fresh check at the next idle period.
+    fn rearm_todo_nag(&mut self, session_id: &str) {
+        let notice = self.open.get(session_id).and_then(|h| h.nag_notice());
+        if nag_should_arm(
+            notice.as_deref(),
+            self.nagged.get(session_id).map(String::as_str),
+        ) {
+            self.nag_due
+                .insert(session_id.to_string(), Instant::now() + TODO_NAG_AFTER);
+        } else {
+            // nothing to check, or the same thing we already said
+            self.nag_due.remove(session_id);
+        }
+    }
+
+    /// The operator has spoken to SESSION: a new idle period, and the check may be made again.
+    ///
+    /// **This is the half of the rule the operator stated as a negative** — *"but certainly not
+    /// after my message"*. Their prompt ends a turn, `after_turn` arms the clock, and the check
+    /// cannot arrive until a minute of silence has passed since it; when they speak again, the
+    /// plan check is *earned back* because whatever they said may have changed what the plan
+    /// should be. Without this the session would be checked once ever, and a plan re-written by
+    /// the operator's own instruction would never be checked at all.
+    pub fn note_operator_prompt(&mut self, session_id: &str) {
+        self.nagged.remove(session_id);
+    }
+
+    /// When the next check comes due, for the worker's blocking wait.
+    ///
+    /// NIL when no session has one armed — which is the common case, and the one that lets the
+    /// worker sleep until there is real work rather than waking every minute on behalf of nothing.
+    pub fn next_nag_at(&self) -> Option<Instant> {
+        self.nag_due.values().min().copied()
+    }
+
+    /// Send every check whose deadline has passed, and answer how many ran.
+    ///
+    /// A check is a TURN — the model reads the plan and can act on it — so it goes through the
+    /// same tail every other turn does (`after_turn`), which is what re-arms or stands the clock
+    /// down afterwards.
+    pub fn deliver_due_nags(&mut self) -> usize {
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .nag_due
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut ran = 0;
+        for session_id in due {
+            // Disarmed BEFORE the turn: `after_turn` re-arms from the turn's own end, so a
+            // delivery that left the old deadline in place would fire again immediately.
+            self.nag_due.remove(&session_id);
+            let hub = self.registry.get(&session_id);
+            let Some(harness) = self.open.get_mut(&session_id) else {
+                continue;
+            };
+            let notice = harness.nag_notice();
+            let out = match harness.nag_turn() {
+                Ok(Some(reply)) => Ok(reply),
+                // nothing to say after all — the plan moved between the arming and the clock
+                Ok(None) => continue,
+                Err(e) => Err(e),
+            };
+            if let Some(text) = notice {
+                self.nagged.insert(session_id.clone(), text);
+            }
+            self.publish_title(&session_id);
+            let out = self.after_turn(&session_id, &hub, out);
+            match out {
+                Ok(_) => ran += 1,
+                Err(e) => eprintln!("  {session_id} · todo check -> {e}"),
+            }
+        }
+        ran
     }
 
     /// One continuation turn after a wall, and everything that follows it.
@@ -1040,7 +1183,10 @@ impl<'a> Sessions<'a> {
         // knows. `self.base` was answering for every session at once, so a
         // session on a metered provider was judged by the daemon's unmeasured
         // numbers. See `Config::ledger_scale`.
-        let scale = self.open.get(session_id).and_then(|h| h.config().ledger_scale);
+        let scale = self
+            .open
+            .get(session_id)
+            .and_then(|h| h.config().ledger_scale);
         let (resident, window, headroom, due) = match self.open.get(session_id) {
             Some(h) => {
                 let r = h.ledger_len() as u64;
@@ -1082,7 +1228,7 @@ impl<'a> Sessions<'a> {
                      not a judgement about the conversation.",
                     headroom
                 ),
-            
+
                 compaction: None,
             });
         }
@@ -1139,7 +1285,7 @@ impl<'a> Sessions<'a> {
                                  if the server really has more.",
                                 headroom
                             ),
-                        
+
                             compaction: None,
                         });
                     }
@@ -1165,7 +1311,7 @@ impl<'a> Sessions<'a> {
                             detail: format!(
                                 "compacted: {after} tokens resident now, was {resident}.{cut}"
                             ),
-                        
+
                             compaction: None,
                         });
                     }
@@ -1186,7 +1332,7 @@ impl<'a> Sessions<'a> {
                              and the next turn may hit the context wall. `/compact` \
                              retries it.",
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1226,7 +1372,7 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "fabric_refresh_failed".into(),
                         detail: e.to_string(),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1335,7 +1481,7 @@ impl<'a> Sessions<'a> {
                              between turns reaches the model only when something calls \
                              `job_list`."
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1424,12 +1570,14 @@ impl<'a> Sessions<'a> {
                         hub.publish(SessionEvent::Warning {
                             code: "reseated".into(),
                             detail: said,
-                        
+
                             compaction: None,
                         });
                     }
                     if let Some(hub) = &hub {
-                        let scale = self.harness_of(session_id).and_then(|h| h.config().ledger_scale);
+                        let scale = self
+                            .harness_of(session_id)
+                            .and_then(|h| h.config().ledger_scale);
                         // The same three numbers the sentence was built from, read off
                         // the harness rather than recomputed: a report that judged the
                         // window differently from the decision would be two answers to
@@ -1570,7 +1718,7 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "reseat_refused".into(),
                                 detail: e.to_string(),
-                            
+
                                 compaction: None,
                             });
                         }
@@ -1585,7 +1733,7 @@ impl<'a> Sessions<'a> {
                         detail: format!(
                             "interrupt ({reason}) arrived between turns; nothing was generating"
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1703,7 +1851,7 @@ impl<'a> Sessions<'a> {
                         detail: "a background request arrived between turns; nothing \
                                  was running to move"
                             .into(),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1734,7 +1882,7 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "answer_unclaimed".into(),
                         detail,
-                    
+
                         compaction: None,
                     });
                 }
@@ -1751,7 +1899,7 @@ impl<'a> Sessions<'a> {
                             "slash_refused".into()
                         },
                         detail: format!("/{line}\n{}", reply.lines.join("\n")),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1771,9 +1919,7 @@ impl<'a> Sessions<'a> {
                 let job = job.clone();
                 let offset = *offset;
                 let window = match self.harness_of(session_id) {
-                    Some(h) => {
-                        h.job_output_window(&job, offset, crate::harness::JOB_OUTPUT_WINDOW)
-                    }
+                    Some(h) => h.job_output_window(&job, offset, crate::harness::JOB_OUTPUT_WINDOW),
                     None => Err(format!("session {session_id} is not open")),
                 };
                 if let Some(hub) = &hub {
@@ -1795,7 +1941,7 @@ impl<'a> Sessions<'a> {
                         Err(e) => hub.publish(SessionEvent::Warning {
                             code: "job_output_refused".into(),
                             detail: e,
-                        
+
                             compaction: None,
                         }),
                     };
@@ -1810,7 +1956,7 @@ impl<'a> Sessions<'a> {
                             hub.publish(SessionEvent::Warning {
                                 code: "mode_unknown".into(),
                                 detail: e,
-                            
+
                                 compaction: None,
                             });
                         }
@@ -1852,7 +1998,7 @@ impl<'a> Sessions<'a> {
                              here starts where it did before, and asks again.",
                             workspace.display()
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -1869,7 +2015,7 @@ impl<'a> Sessions<'a> {
                                 mode.name,
                                 workspace.display()
                             ),
-                        
+
                             compaction: None,
                         });
                     }
@@ -1943,7 +2089,7 @@ impl<'a> Sessions<'a> {
                                     applied.summary
                                 )
                             },
-                        
+
                             compaction: None,
                         }),
                         Err(why) => hub.publish(SessionEvent::Warning {
@@ -1955,7 +2101,7 @@ impl<'a> Sessions<'a> {
                                 workspace.display(),
                                 mode.name
                             ),
-                        
+
                             compaction: None,
                         }),
                     };
@@ -1990,7 +2136,7 @@ fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::Warning {
         code: "turn_failed".into(),
         detail: e.to_string(),
-    
+
         compaction: None,
     });
 }
@@ -2259,6 +2405,51 @@ impl SessionSource for StoreSessions {
 }
 
 #[cfg(test)]
+mod idle_nag {
+    //! **When the plan check is armed** — the rule the operator's scheduling question turned
+    //! into, tested where it lives rather than through a daemon.
+    //!
+    //! The operator: *"looks like our todo nag is overkill"*, then *"maybe wait for a timeout
+    //! actually. so send it when model is idling"*, then *"but certainly not after my message."*
+    //! The first was the turn-boundary check firing after every exchange; the second is the
+    //! timeout; the third is the boundary condition the timeout must not violate, and it is
+    //! `Sessions::note_operator_prompt`'s job.
+    use super::nag_should_arm;
+
+    /// A plan with nothing open is not a plan to nag about.
+    #[test]
+    fn a_finished_plan_is_never_armed() {
+        assert!(!nag_should_arm(None, None));
+        // even if something WAS nagged before and has since been finished
+        assert!(!nag_should_arm(None, Some("[todo check] 2 of 3")));
+    }
+
+    /// The first idle period after real work: armed.
+    #[test]
+    fn an_unfinished_plan_is_armed_once() {
+        assert!(nag_should_arm(Some("2 of 3 not"), None));
+    }
+
+    /// **And silence after that, while the plan says the same thing.** This is the difference
+    /// between a schedule and a metronome: a model that has been told and has not acted must not
+    /// be told again every minute.
+    #[test]
+    fn an_unchanged_plan_is_not_armed_again() {
+        assert!(!nag_should_arm(Some("2 of 3 not"), Some("2 of 3 not")));
+    }
+
+    /// Any change at all is a new thing to say — an item closed, one started, one added.
+    #[test]
+    fn a_plan_that_moved_is_armed_again() {
+        assert!(nag_should_arm(Some("1 of 3 not"), Some("2 of 3 not")));
+        assert!(nag_should_arm(
+            Some("2 of 3 not (in progress)"),
+            Some("2 of 3 not")
+        ));
+    }
+}
+
+#[cfg(test)]
 mod the_wire_report {
     //! **R27's `warning.compaction`, built and read back.**
     //!
@@ -2290,7 +2481,10 @@ mod the_wire_report {
         let empty = compaction_said(&none("no_turns"), None);
         assert!(local.contains("LOCAL model"), "{local}");
         assert!(local.contains("R27"), "the ruling must be named: {local}");
-        assert!(nothing.contains("larger than the whole tail budget"), "{nothing}");
+        assert!(
+            nothing.contains("larger than the whole tail budget"),
+            "{nothing}"
+        );
         assert!(empty.contains("nothing to carry"), "{empty}");
         // **And they are three different sentences**, which is the whole requirement: an
         // absence with one appearance was the defect.
@@ -2300,10 +2494,15 @@ mod the_wire_report {
         // **`budget` stays silent**: the tail exists and the count beside it says how much, so
         // a sentence explaining that what fitted was what fitted is furniture.
         let with_tail = compaction_said(
-            &report("a summary", vec![CompactionTurn {
-                role: "operator".into(),
-                text: "hi".into(),
-            }], 1, "budget"),
+            &report(
+                "a summary",
+                vec![CompactionTurn {
+                    role: "operator".into(),
+                    text: "hi".into(),
+                }],
+                1,
+                "budget",
+            ),
             None,
         );
         assert!(!with_tail.contains("No verbatim tail"), "{with_tail}");
@@ -2314,7 +2513,12 @@ mod the_wire_report {
         assert!(unknown.contains("something_new"), "{unknown}");
     }
 
-    fn report(summary: &str, tail: Vec<CompactionTurn>, carried: usize, because: &str) -> CompactReport {
+    fn report(
+        summary: &str,
+        tail: Vec<CompactionTurn>,
+        carried: usize,
+        because: &str,
+    ) -> CompactReport {
         CompactReport {
             fork: ForkReport {
                 transcript_id: "s-1#t2".into(),
@@ -2330,11 +2534,13 @@ mod the_wire_report {
                 tail_dropped: (carried > 0).then_some(2),
                 // The same reason in the wire's shape, built here the way the daemon builds
                 // it so a test of the sentence is a test of what a reader meets.
-                tail_why: (!because.is_empty()).then(|| letibot_sessionlog::event::CompactionTail {
-                    turns: tail.clone(),
-                    carried: carried as u64,
-                    because: because.into(),
-                    dropped: u64::from(carried > 0) * 2,
+                tail_why: (!because.is_empty()).then(|| {
+                    letibot_sessionlog::event::CompactionTail {
+                        turns: tail.clone(),
+                        carried: carried as u64,
+                        because: because.into(),
+                        dropped: u64::from(carried > 0) * 2,
+                    }
                 }),
                 tail_turns: tail,
                 tail_because: because.into(),
@@ -2368,7 +2574,10 @@ mod the_wire_report {
         assert_eq!(wire.tail.carried, 0);
         assert_eq!(wire.tail.because, "local_model");
         assert_eq!(wire.tail.dropped, 0);
-        assert_eq!(wire.template, letibot_sessionlog::event::COMPACTION_TEMPLATE);
+        assert_eq!(
+            wire.template,
+            letibot_sessionlog::event::COMPACTION_TEMPLATE
+        );
         assert!(wire.cut_off, "the report's cut-off is the wire's");
         assert_eq!(wire.transcript, "s-1#t2");
         assert_eq!(wire.resident, 240_000);
@@ -2427,7 +2636,12 @@ mod the_wire_report {
         );
         // And a record that ignored the template yields an empty list rather than
         // invented sections — the raw text is still in `detail`.
-        let prose = report("I could not follow the format.", Vec::new(), 0, "local_model");
+        let prose = report(
+            "I could not follow the format.",
+            Vec::new(),
+            0,
+            "local_model",
+        );
         assert!(
             compaction_wire(&prose, "compacted", None, 1, 2, 3)
                 .sections
@@ -2446,7 +2660,10 @@ mod the_wire_report {
         let wire = compaction_wire(&r, "compacted", scale, 300, 300_000, 18_000);
         assert_eq!(wire.tokens_before, 160_000);
         assert_eq!(wire.tokens_after, 6_000);
-        assert_eq!(wire.resident, 300, "the caller's own conversion, passed through");
+        assert_eq!(
+            wire.resident, 300,
+            "the caller's own conversion, passed through"
+        );
         // And the sentence beside it agrees, which is the property that matters.
         let said = compaction_said(&r, scale);
         assert!(said.contains("160000 → 6000"), "{said}");

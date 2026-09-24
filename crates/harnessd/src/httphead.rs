@@ -387,7 +387,10 @@ mod tests {
         assert!(!waiter.is_finished(), "the bound did not hold");
 
         drop(a);
-        assert!(waiter.join().expect("the waiter"), "a returned permit woke it");
+        assert!(
+            waiter.join().expect("the waiter"),
+            "a returned permit woke it"
+        );
         drop(b);
         assert_eq!(*p.free.lock().unwrap(), 2, "every permit came back");
     }

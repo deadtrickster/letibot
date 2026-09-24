@@ -140,10 +140,7 @@ impl QuestionAnswer {
             return Ok(());
         }
         match self.option {
-            Some(i) if i >= offered => Err(AnswerDefect::OptionNotOffered {
-                chose: i,
-                offered,
-            }),
+            Some(i) if i >= offered => Err(AnswerDefect::OptionNotOffered { chose: i, offered }),
             _ => Ok(()),
         }
     }
@@ -162,7 +159,11 @@ mod tests {
                 .validate(2)
                 .is_ok()
         );
-        assert!(QuestionAnswer::free("neither — split it").validate(2).is_ok());
+        assert!(
+            QuestionAnswer::free("neither — split it")
+                .validate(2)
+                .is_ok()
+        );
     }
 
     #[test]

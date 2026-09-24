@@ -72,8 +72,9 @@ fn the_head_answers_with_the_exact_rows_it_drew() {
     let answering = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Ok(ServerFrame::Event(env)) =
-                rx.recv_timeout(Duration::from_millis(200)).map(Inbound::frame)
+            if let Ok(ServerFrame::Event(env)) = rx
+                .recv_timeout(Duration::from_millis(200))
+                .map(Inbound::frame)
                 && let SessionEvent::ScreenRequested { req_id } = &env.event
             {
                 client.screen(req_id, 96, 3, drawn()).unwrap();

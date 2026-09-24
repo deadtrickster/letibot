@@ -60,7 +60,10 @@ fn main() {
              is a claim about what THAT head is missing — not about what the log holds."
         );
     } else {
-        println!("\n{:<28} {:<12} {:>15}  {}", "item id", "kind", "ts", "ledger head");
+        println!(
+            "\n{:<28} {:<12} {:>15}  {}",
+            "item id", "kind", "ts", "ledger head"
+        );
         for i in unfilled {
             println!(
                 "{:<28} {:<12} {:>15}  {}",

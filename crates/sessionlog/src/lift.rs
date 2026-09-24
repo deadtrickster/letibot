@@ -49,10 +49,9 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 time_ms: progress.time_ms,
             },
         },
-        TurnEvent::TokensGenerated { turn_id, tokens } => SessionEvent::TokensGenerated {
-            turn_id,
-            tokens,
-        },
+        TurnEvent::TokensGenerated { turn_id, tokens } => {
+            SessionEvent::TokensGenerated { turn_id, tokens }
+        }
         TurnEvent::Delta {
             turn_id,
             target,
@@ -128,7 +127,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
         TurnEvent::Warning { code, detail } => SessionEvent::Warning {
             code: code.to_string(),
             detail,
-        
+
             compaction: None,
         },
     }

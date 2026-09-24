@@ -65,15 +65,8 @@ fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<Server
 #[test]
 fn a_head_asking_for_bash_through_the_operator_door_is_refused_by_the_daemon() {
     let (_r, handle) = start("refuse-bash");
-    let (mut client, _hello, reader) = HeadClient::attach(
-        handle.path(),
-        "a",
-        0,
-        "tui",
-        "dead",
-        Caps::default(),
-    )
-    .expect("attach");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(handle.path(), "a", 0, "tui", "dead", Caps::default()).expect("attach");
     let (tx, rx) = std::sync::mpsc::channel();
     let _t = std::thread::spawn(move || pump(reader, tx));
 
@@ -118,22 +111,21 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
     let (r, handle) = start("allow");
     let hub = r.get("a").expect("session");
     let head = hub.attach("tui", "dead", Caps::default(), 0);
-    let (mut client, _hello, reader) = HeadClient::attach(
-        handle.path(),
-        "a",
-        0,
-        "tui",
-        "dead",
-        Caps::default(),
-    )
-    .expect("attach");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(handle.path(), "a", 0, "tui", "dead", Caps::default()).expect("attach");
     let (tx, rx) = std::sync::mpsc::channel();
     let _t = std::thread::spawn(move || pump(reader, tx));
 
     for (i, name) in HEAD_RUN_TOOLS.iter().enumerate() {
         let call_id = format!("c{i}");
         let _ = client
-            .operator_call(0, &call_id, name, r#"{"url":"http://example.invalid"}"#, false)
+            .operator_call(
+                0,
+                &call_id,
+                name,
+                r#"{"url":"http://example.invalid"}"#,
+                false,
+            )
             .expect("write");
 
         // **Two frames come back per call and this read one of them.**
@@ -209,7 +201,9 @@ fn a_head_that_goes_away_between_the_frames_leaves_a_sentence_not_a_silent_admis
 
     hub.detach(&head.head_id);
     let said = hub.retained().into_iter().find_map(|e| match e.event {
-        SessionEvent::Warning { code, detail, .. } if code == "operator_call_abandoned" => Some(detail),
+        SessionEvent::Warning { code, detail, .. } if code == "operator_call_abandoned" => {
+            Some(detail)
+        }
         _ => None,
     });
     let detail = said.expect("the admission must be accounted for when the head is gone");

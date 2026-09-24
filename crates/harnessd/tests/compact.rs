@@ -24,9 +24,9 @@
 //! methods. `LETIBOT_VOCAB_GGUF` overrides the path.
 
 use letibot_harnessd::config::Config;
+use letibot_harnessd::harness::ForkTail;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
-use letibot_harnessd::harness::ForkTail;
 use letibot_tokencore::store::Store;
 use letibot_turn::CompactionOutcome;
 
@@ -103,7 +103,10 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let list = store.list_sessions().expect("listing");
     assert_eq!(list.len(), 1, "one session");
     let s = &list[0];
-    assert_eq!(s.transcript_id.as_deref(), Some(report.transcript_id.as_str()));
+    assert_eq!(
+        s.transcript_id.as_deref(),
+        Some(report.transcript_id.as_str())
+    );
     let fork = store
         .load_transcript(&report.transcript_id)
         .expect("reading the fork");
@@ -118,13 +121,16 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
     let items = fork.items;
     assert_eq!(items.len(), 1, "the forked base is one item");
     let letibot_transcript::TranscriptItem::System { text, .. } = &items[0].0 else {
-        panic!("the forked base's item is a system update, got {:?}", items[0].0);
+        panic!(
+            "the forked base's item is a system update, got {:?}",
+            items[0].0
+        );
     };
-    assert!(
-        text.contains(summary),
-        "the summary rides verbatim: {text}"
+    assert!(text.contains(summary), "the summary rides verbatim: {text}");
+    assert_eq!(
+        report.was_tokens, was,
+        "the old base was measured before the drop"
     );
-    assert_eq!(report.was_tokens, was, "the old base was measured before the drop");
     assert!(
         report.base_tokens > report.was_tokens,
         "prefix + summary item is bigger than the empty body it replaced"
@@ -162,7 +168,10 @@ fn a_second_compaction_forks_off_the_first_fork() {
         .expect("the second fork");
     assert_eq!(first.transcript_id, format!("{session_id}#t1"));
     assert_eq!(second.transcript_id, format!("{session_id}#t2"));
-    assert_eq!(second.parent_id, first.transcript_id, "the chain, not a retry");
+    assert_eq!(
+        second.parent_id, first.transcript_id,
+        "the chain, not a retry"
+    );
 
     let store = Store::open(&path).expect("reopening");
     let items = store
@@ -229,7 +238,10 @@ fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
     // and asks for the work back.
     let items = h.items();
     let last = items.last().expect("the continuation was appended");
-    let letibot_transcript::TranscriptItem::User { parts: user_parts, .. } = last else {
+    let letibot_transcript::TranscriptItem::User {
+        parts: user_parts, ..
+    } = last
+    else {
         panic!("the continuation is a user item, got {last:?}");
     };
     let letibot_transcript::UserPart::Text { text } = &user_parts[0] else {
@@ -825,9 +837,7 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     // evidence supplied, and a model may weigh the two differently.
     assert_eq!(
         origin,
-        &Some(letibot_transcript::CallOrigin::Operator {
-            who: "dead".into()
-        }),
+        &Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
         "the row must say the person ran it, and name them"
     );
     assert!(!payload.is_empty(), "the file's text is the payload");
@@ -934,7 +944,12 @@ fn the_compaction_note_says_why_it_has_no_tail() {
     let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
         panic!("the base's first item is the note");
     };
-    for excuse in ["LOCAL model", "tail budget", "nothing to carry", "No verbatim tail"] {
+    for excuse in [
+        "LOCAL model",
+        "tail budget",
+        "nothing to carry",
+        "No verbatim tail",
+    ] {
         assert!(
             !text.contains(excuse),
             "a re-seat got a tail's excuse (`{excuse}`): {text}"

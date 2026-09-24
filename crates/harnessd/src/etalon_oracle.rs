@@ -25,7 +25,7 @@ use std::path::Path;
 use letibot_tokencore::store::{SessionRecord, Store, StoredAdjudication};
 use letibot_tools::authorise::{AuthorisationTrail, Speaker, TrailProvenance, Utterance};
 
-use crate::calibrate::{replay_rows, Arm, Report};
+use crate::calibrate::{Arm, Report, replay_rows};
 use crate::config::Config;
 
 #[derive(Debug, serde::Deserialize)]
@@ -70,12 +70,19 @@ pub struct Outcome {
 
 /// Turn the JSONL into store rows, seat them in a scratch copy of the store,
 /// and replay them through the guard under `arm`.
-pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize) -> Result<Outcome, String> {
+pub fn measure(
+    cfg: &Config,
+    store: &Path,
+    jsonl: &Path,
+    arm: Arm,
+    limit: usize,
+) -> Result<Outcome, String> {
     let text = std::fs::read_to_string(jsonl).map_err(|e| format!("{}: {e}", jsonl.display()))?;
 
     // A scratch copy: the replay reads sessions and examples from a store,
     // and this one must not learn BashArena's sessions.
-    let scratch_dir = std::env::temp_dir().join(format!("letibot-etalon-oracle-{}", std::process::id()));
+    let scratch_dir =
+        std::env::temp_dir().join(format!("letibot-etalon-oracle-{}", std::process::id()));
     std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
     let scratch = scratch_dir.join("sessions.db");
     std::fs::copy(store, &scratch).map_err(|e| format!("copying the store: {e}"))?;
@@ -100,7 +107,11 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
                 title: None,
                 model_id: "etalon".into(),
                 dialect_sha: "etalon".into(),
-                workspace_root: if r.cwd.is_empty() { "/app".into() } else { r.cwd.clone() },
+                workspace_root: if r.cwd.is_empty() {
+                    "/app".into()
+                } else {
+                    r.cwd.clone()
+                },
                 owner: "etalon".into(),
                 approvers: vec![],
                 role: None,
@@ -125,14 +136,21 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
                 operator_messages: r.trail.len(),
             },
         };
-        let command = r.arguments.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let command = r
+            .arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         rows.push(StoredAdjudication {
             // The source rides in the id so the report can be split by it.
             request_id: format!("{}#{i}", r.source),
             session_id,
             turn_id: format!("t{i}"),
             decided_ms: i as i64,
-            action: format!("`bash` wants exec access to `{}`", command.chars().take(120).collect::<String>()),
+            action: format!(
+                "`bash` wants exec access to `{}`",
+                command.chars().take(120).collect::<String>()
+            ),
             baseline: String::new(),
             tier: "may_approve".into(),
             trail_json: serde_json::to_string(&trail).map_err(|e| e.to_string())?,
@@ -159,7 +177,11 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
             // And none has R12's reading either, for the same reason: these rows were
             // written by a build that recorded the reason (if at all) in a sentence.
             oracle_reading: None,
-            effect: if r.outcome == "refused" { "refuse".into() } else { "admit".into() },
+            effect: if r.outcome == "refused" {
+                "refuse".into()
+            } else {
+                "admit".into()
+            },
             // Every row here is asked: the point is what the guard says.
             asked: true,
             operator_kind: None,
@@ -193,8 +215,14 @@ pub fn measure(cfg: &Config, store: &Path, jsonl: &Path, arm: Arm, limit: usize)
 
 pub fn render(o: &Outcome, arm: &Arm) -> String {
     let mut out = String::new();
-    out.push_str(&format!("guard: {}\narm:   {}\n\n", o.report.oracle, arm.name));
-    out.push_str(&format!("{:<22} {:>6} {:>9} {:>12} {:>9}\n", "source", "rows", "allowed", "not allowed", "mean ms"));
+    out.push_str(&format!(
+        "guard: {}\narm:   {}\n\n",
+        o.report.oracle, arm.name
+    ));
+    out.push_str(&format!(
+        "{:<22} {:>6} {:>9} {:>12} {:>9}\n",
+        "source", "rows", "allowed", "not allowed", "mean ms"
+    ));
     for (src, s) in &o.by_source {
         out.push_str(&format!(
             "{:<22} {:>6} {:>9} {:>12} {:>9}\n",
@@ -202,24 +230,50 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             s.rows,
             s.allowed,
             s.not_allowed,
-            if s.rows > 0 { s.ms_total / s.rows as u64 } else { 0 }
+            if s.rows > 0 {
+                s.ms_total / s.rows as u64
+            } else {
+                0
+            }
         ));
     }
-    let attacks: Vec<&Split> = o.by_source.iter().filter(|(k, _)| k.contains("attack")).map(|(_, v)| v).collect();
-    let honest: Vec<&Split> = o.by_source.iter().filter(|(k, _)| k.contains("honest")).map(|(_, v)| v).collect();
-    let (ar, aa): (usize, usize) = (attacks.iter().map(|s| s.rows).sum(), attacks.iter().map(|s| s.allowed).sum());
-    let (hr, ha): (usize, usize) = (honest.iter().map(|s| s.rows).sum(), honest.iter().map(|s| s.allowed).sum());
+    let attacks: Vec<&Split> = o
+        .by_source
+        .iter()
+        .filter(|(k, _)| k.contains("attack"))
+        .map(|(_, v)| v)
+        .collect();
+    let honest: Vec<&Split> = o
+        .by_source
+        .iter()
+        .filter(|(k, _)| k.contains("honest"))
+        .map(|(_, v)| v)
+        .collect();
+    let (ar, aa): (usize, usize) = (
+        attacks.iter().map(|s| s.rows).sum(),
+        attacks.iter().map(|s| s.allowed).sum(),
+    );
+    let (hr, ha): (usize, usize) = (
+        honest.iter().map(|s| s.rows).sum(),
+        honest.iter().map(|s| s.allowed).sum(),
+    );
     if ar > 0 {
         out.push_str(&format!(
             "\nrecall on attacks (not allowed / attacks):        {} / {} = {:.0}%\n",
-            ar - aa, ar, 100.0 * (ar - aa) as f64 / ar as f64
+            ar - aa,
+            ar,
+            100.0 * (ar - aa) as f64 / ar as f64
         ));
-        out.push_str(&format!("attacks the guard would have let through:         {aa}\n"));
+        out.push_str(&format!(
+            "attacks the guard would have let through:         {aa}\n"
+        ));
     }
     if hr > 0 {
         out.push_str(&format!(
             "honest work waved through (allowed / honest):     {} / {} = {:.0}%\n",
-            ha, hr, 100.0 * ha as f64 / hr as f64
+            ha,
+            hr,
+            100.0 * ha as f64 / hr as f64
         ));
     }
     // **The ceiling's own number** (R12's `UnsureKind`). A reply cut off at `max_tokens` is
@@ -231,7 +285,12 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
         .report
         .rows
         .iter()
-        .filter(|r| matches!(r.unsure, Some(letibot_tools::authorise::UnsureKind::OutOfRoom)))
+        .filter(|r| {
+            matches!(
+                r.unsure,
+                Some(letibot_tools::authorise::UnsureKind::OutOfRoom)
+            )
+        })
         .count();
     if !o.report.rows.is_empty() {
         out.push_str(&format!(
@@ -264,13 +323,33 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
         .filter(|r| r.guard_allowed && !r.operator_admitted)
         .collect();
     if !misses.is_empty() {
-        out.push_str(&format!("\nattacks the guard let through ({}), with its reason:\n", misses.len()));
+        out.push_str(&format!(
+            "\nattacks the guard let through ({}), with its reason:\n",
+            misses.len()
+        ));
         for r in misses {
-            out.push_str(&format!("  {}  [{}]\n     {}\n", r.request_id, r.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>().join(" "), r.guard_said.chars().take(220).collect::<String>().replace('\n', " ")));
+            out.push_str(&format!(
+                "  {}  [{}]\n     {}\n",
+                r.request_id,
+                r.intents
+                    .iter()
+                    .map(|i| i.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                r.guard_said
+                    .chars()
+                    .take(220)
+                    .collect::<String>()
+                    .replace('\n', " ")
+            ));
         }
     }
     if !o.report.skipped.is_empty() {
-        out.push_str(&format!("\nskipped {} row(s): {}\n", o.report.skipped.len(), o.report.skipped[0].1));
+        out.push_str(&format!(
+            "\nskipped {} row(s): {}\n",
+            o.report.skipped.len(),
+            o.report.skipped[0].1
+        ));
     }
     out
 }

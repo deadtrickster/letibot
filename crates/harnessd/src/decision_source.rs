@@ -32,7 +32,7 @@
 //! here would be a second definition of "measured" that drifts from the first.
 
 use letibot_tokencore::rusqlite;
-use letibot_tokencore::store::{Store, ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL};
+use letibot_tokencore::store::{ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL, Store};
 use letibot_tools::builtins::decisions::{
     DecisionCounts, DecisionHits, DecisionQuery, DecisionRow, DecisionSource,
 };
@@ -47,7 +47,10 @@ pub struct StoreDecisions {
 impl StoreDecisions {
     pub fn open(path: &std::path::Path, session_id: String) -> Result<Self, String> {
         let store = Store::open(path).map_err(|e| {
-            format!("the decision corpus at {} could not be opened: {e}", path.display())
+            format!(
+                "the decision corpus at {} could not be opened: {e}",
+                path.display()
+            )
         })?;
         Ok(StoreDecisions {
             store: std::sync::Mutex::new(store),
@@ -241,10 +244,7 @@ impl DecisionSource for StoreDecisions {
         // `last` caps the match set before the page is taken, so `last=64` with a
         // filter means the newest 64 MATCHING decisions — the same reading
         // `transcript` gives it.
-        let cap = q
-            .last
-            .map(|n| (n as usize).min(matched))
-            .unwrap_or(matched);
+        let cap = q.last.map(|n| (n as usize).min(matched)).unwrap_or(matched);
         let take = q.limit.min(cap.saturating_sub(q.offset));
         let mut rows = Vec::new();
         if take > 0 {
@@ -257,8 +257,10 @@ impl DecisionSource for StoreDecisions {
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| format!("preparing the decision query: {e}"))?;
-            let mut params: Vec<&dyn rusqlite::ToSql> =
-                binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+            let mut params: Vec<&dyn rusqlite::ToSql> = binds
+                .iter()
+                .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+                .collect();
             let take_i = take as i64;
             let off_i = q.offset as i64;
             params.push(&take_i);
@@ -337,8 +339,10 @@ fn scalar(
     sql: &str,
     binds: &[Box<dyn rusqlite::ToSql>],
 ) -> Option<i64> {
-    let params: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = binds
+        .iter()
+        .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+        .collect();
     conn.query_row(sql, params.as_slice(), |r| r.get(0)).ok()
 }
 
@@ -359,8 +363,10 @@ fn distinct(
         "SELECT DISTINCT {column} FROM adjudication{scope_sql} \
          {joiner} {column} IS NOT NULL AND {column} != '' LIMIT 24"
     );
-    let params: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = binds
+        .iter()
+        .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+        .collect();
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };

@@ -41,9 +41,7 @@ use letibot_sessionlog::hub::CommandKind;
 use letibot_sessionlog::protocol::{
     Caps, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
 };
-use letibot_sessionlog::registry::{
-    Registry, SessionSource, SessionWiring, StoredBrief, Work,
-};
+use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief, Work};
 use letibot_sessionlog::server::{ServerHandle, serve_registry};
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
@@ -152,7 +150,10 @@ fn a_stored_session_is_listed_and_is_marked_as_not_live() {
         "the store's count, not the view's — a head that read `status.items` here \
          would see 0 and call a 56-row conversation empty"
     );
-    assert_eq!(old.status.items, 0, "there is no hub, so there is no view to cut");
+    assert_eq!(
+        old.status.items, 0,
+        "there is no hub, so there is no view to cut"
+    );
     assert_eq!(
         old.wiring.workspace, "/home/dead/Projects/rano",
         "a stored session's workspace is its own, not the daemon's"
@@ -267,7 +268,9 @@ fn an_id_nobody_has_heard_of_is_refused_differently_from_one_that_is_merely_not_
 #[test]
 fn a_rename_is_durable_or_it_is_refused() {
     let (registry, _server) = start("rename");
-    registry.rename("live", "the cache question").expect("a source is set");
+    registry
+        .rename("live", "the cache question")
+        .expect("a source is set");
     assert_eq!(
         registry
             .list()
@@ -282,7 +285,9 @@ fn a_rename_is_durable_or_it_is_refused() {
     // will be gone after a restart with nothing having said so.
     let bare = Registry::new();
     bare.create("only", "", SessionWiring::default()).unwrap();
-    let err = bare.rename("only", "nowhere").expect_err("no source, no rename");
+    let err = bare
+        .rename("only", "nowhere")
+        .expect_err("no source, no rename");
     assert!(err.contains("no store"), "{err}");
     assert_eq!(
         bare.list()[0].title,
@@ -298,7 +303,9 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
     // queue made a later session's first command overtake an earlier prompt —
     // measured, before the bell grew a second lane for opens.
     let registry = Registry::new();
-    let a = registry.create("s-a", "", SessionWiring::default()).unwrap();
+    let a = registry
+        .create("s-a", "", SessionWiring::default())
+        .unwrap();
     let ha = a.attach("tui", "alice", Caps::default(), 0);
     // Drain the open that creating `s-a` queued.
     assert!(matches!(registry.next_work(), Some(Work::Open(id)) if id == "s-a"));
@@ -311,7 +318,9 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
             text: "first".into(),
         },
     );
-    let b = registry.create("s-b", "", SessionWiring::default()).unwrap();
+    let b = registry
+        .create("s-b", "", SessionWiring::default())
+        .unwrap();
     let hb = b.attach("tui", "bob", Caps::default(), 0);
     b.submit(
         &hb.head_id,
@@ -329,14 +338,24 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
     match registry.next_work() {
         Some(Work::Command(id, cmd)) => {
             assert_eq!(id, "s-a");
-            assert_eq!(cmd.kind, CommandKind::Prompt { text: "first".into() });
+            assert_eq!(
+                cmd.kind,
+                CommandKind::Prompt {
+                    text: "first".into()
+                }
+            );
         }
         _ => panic!("the first prompt must be served first"),
     }
     match registry.next_work() {
         Some(Work::Command(id, cmd)) => {
             assert_eq!(id, "s-b");
-            assert_eq!(cmd.kind, CommandKind::Prompt { text: "second".into() });
+            assert_eq!(
+                cmd.kind,
+                CommandKind::Prompt {
+                    text: "second".into()
+                }
+            );
         }
         _ => panic!("the second prompt must be served second"),
     }

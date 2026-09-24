@@ -52,7 +52,10 @@ impl StoreTranscripts {
     /// one thing a caller can do about it is check the daemon's `--store`.
     pub fn open(path: &std::path::Path, session_id: String) -> Result<Self, String> {
         let store = Store::open(path).map_err(|e| {
-            format!("the transcript store at {} could not be opened: {e}", path.display())
+            format!(
+                "the transcript store at {} could not be opened: {e}",
+                path.display()
+            )
         })?;
         Ok(StoreTranscripts {
             store: std::sync::Mutex::new(store),
@@ -274,11 +277,7 @@ impl TranscriptSource for StoreTranscripts {
             matched.truncate(n as usize);
         }
         let total = matched.len();
-        let rows: Vec<TranscriptRow> = matched
-            .into_iter()
-            .skip(q.offset)
-            .take(q.limit)
-            .collect();
+        let rows: Vec<TranscriptRow> = matched.into_iter().skip(q.offset).take(q.limit).collect();
 
         Ok(TranscriptHits {
             rows,
@@ -338,7 +337,9 @@ fn visible_text(item: &TranscriptItem) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        TranscriptItem::Reasoning { text, truncated, .. } => {
+        TranscriptItem::Reasoning {
+            text, truncated, ..
+        } => {
             if *truncated {
                 format!("[abandoned thought] {text}")
             } else {
@@ -432,7 +433,9 @@ mod tests {
         let t = visible_text(&TranscriptItem::ToolResult {
             call_id: "c1".into(),
             name: "bash".into(),
-            outcome: ToolOutcome::Denied { req_id: "r9".into() },
+            outcome: ToolOutcome::Denied {
+                req_id: "r9".into(),
+            },
             payload: "nothing ran".into(),
             edit: None,
             origin: None,

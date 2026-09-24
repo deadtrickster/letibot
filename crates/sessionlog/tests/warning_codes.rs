@@ -185,11 +185,7 @@ fn codes_in(src: &str) -> Vec<String> {
             continue;
         }
         let rest = &b[i..];
-        for kw in [
-            &b"Warning"[..],
-            &b"Warned"[..],
-            &b"import_note"[..],
-        ] {
+        for kw in [&b"Warning"[..], &b"Warned"[..], &b"import_note"[..]] {
             let Some(tail) = rest.strip_prefix(kw) else {
                 continue;
             };

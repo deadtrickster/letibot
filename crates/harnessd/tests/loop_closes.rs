@@ -126,9 +126,8 @@ fn config() -> Config {
     // mine, environment". They are green now, against whatever is actually served.
     cfg.dialect = Dialect::Qwen;
     if let Ok(m) = std::env::var("LETIBOT_MODEL_ALIAS") {
-        cfg.dialect = Dialect::parse(&m).unwrap_or_else(|| {
-            panic!("LETIBOT_MODEL_ALIAS={m} names no dialect this build knows")
-        });
+        cfg.dialect = Dialect::parse(&m)
+            .unwrap_or_else(|| panic!("LETIBOT_MODEL_ALIAS={m} names no dialect this build knows"));
         cfg.model = m;
     }
     // What is actually behind the endpoint, asked before anything is tokenised for
@@ -184,7 +183,10 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
         "the model answered without reading the file, so this measured nothing: {:?}",
         reply.text
     );
-    assert!(reply.rounds >= 2, "a tool call costs at least two submissions");
+    assert!(
+        reply.rounds >= 2,
+        "a tool call costs at least two submissions"
+    );
     assert!(
         reply.text.contains('3'),
         "the answer did not come from the file it read: {:?}",
@@ -298,7 +300,6 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
     }
 }
 
-
 /// The daemon, driven the way a person drives it: over the Unix socket.
 ///
 /// `letibot-m1` calls `Harness::submit` directly, so it proves the loop and proves
@@ -307,10 +308,10 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
 /// same connection, with the turn's own boundary events around it.
 #[test]
 fn a_head_prompts_over_the_socket_and_sees_the_turn() {
+    use letibot_harnessd::{Daemon, Sessions};
     use letibot_sessionlog::client::{HeadClient, Inbound, pump};
     use letibot_sessionlog::event::SessionEvent;
     use letibot_sessionlog::protocol::{Caps, ServerFrame};
-    use letibot_harnessd::{Daemon, Sessions};
     use letibot_sessionlog::registry::Registry;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
@@ -354,7 +355,10 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
         let mut finished = false;
         let deadline = Instant::now() + Duration::from_secs(180);
         while Instant::now() < deadline && !finished {
-            let Ok(frame) = rx.recv_timeout(Duration::from_secs(120)).map(Inbound::frame) else {
+            let Ok(frame) = rx
+                .recv_timeout(Duration::from_secs(120))
+                .map(Inbound::frame)
+            else {
                 break;
             };
             if let ServerFrame::Event(env) = frame {

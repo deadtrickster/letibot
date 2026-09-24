@@ -108,9 +108,7 @@ fn frame_kind(f: &ServerFrame) -> String {
             body.as_ref().map(|b| b.len()).unwrap_or(0)
         ),
         ServerFrame::Peeked {
-            session_id,
-            events,
-            ..
+            session_id, events, ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),
         ServerFrame::Diagnostic {
             request_id,
@@ -239,12 +237,15 @@ fn events_in_one_session_never_reach_a_head_in_another() {
     // One event in B, after fifty in A. If anything leaked, it arrives first.
     b.publish(warn("the only thing this head should see"));
 
-    let frames = until(&rx, |f| {
-        matches!(f, ServerFrame::Event(e) if matches!(&e.event, SessionEvent::Warning { .. }))
-    });
+    let frames = until(
+        &rx,
+        |f| matches!(f, ServerFrame::Event(e) if matches!(&e.event, SessionEvent::Warning { .. })),
+    );
     let deltas = frames
         .iter()
-        .filter(|f| matches!(f, ServerFrame::Event(e) if matches!(e.event, SessionEvent::Delta { .. })))
+        .filter(
+            |f| matches!(f, ServerFrame::Event(e) if matches!(e.event, SessionEvent::Delta { .. })),
+        )
         .count();
     assert_eq!(deltas, 0, "a head in B was delivered A's stream");
     for f in &frames {
@@ -296,7 +297,9 @@ fn a_head_can_make_a_session_and_the_daemon_mints_the_id() {
     let (tx, rx) = std::sync::mpsc::channel();
     let pumping = std::thread::spawn(move || pump(reader, tx));
 
-    client.new_session("a third thing", "/home/dead/Projects/letibot").unwrap();
+    client
+        .new_session("a third thing", "/home/dead/Projects/letibot")
+        .unwrap();
     let frames = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
     let ServerFrame::Sessions {
         sessions,
@@ -349,9 +352,10 @@ fn switching_into_a_session_whose_turn_is_running_loses_no_byte_and_repeats_none
     let at = snapshot.seq;
 
     b.publish(delta("t-b", "END"));
-    let frames = until(&rx, |f| {
-        matches!(f, ServerFrame::Event(e) if matches!(&e.event, SessionEvent::Delta { text, .. } if text == "END"))
-    });
+    let frames = until(
+        &rx,
+        |f| matches!(f, ServerFrame::Event(e) if matches!(&e.event, SessionEvent::Delta { text, .. } if text == "END")),
+    );
     let first = frames
         .iter()
         .find_map(|f| match f {
@@ -362,7 +366,10 @@ fn switching_into_a_session_whose_turn_is_running_loses_no_byte_and_repeats_none
     assert_eq!(first, at + 1, "a gap or a duplicate across the switch");
 
     let expected: String = (0..200).map(|i| format!("{i} ")).collect();
-    assert_eq!(so_far, expected, "the accumulated text was not handed over whole");
+    assert_eq!(
+        so_far, expected,
+        "the accumulated text was not handed over whole"
+    );
 
     let _ = client.detach();
     server.shutdown();
@@ -431,7 +438,9 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
     std::thread::spawn(move || pump(reader, tx));
 
     // A command nobody will ever drain: this is the worker being busy.
-    client.prompt(0, "a question that will never be answered").unwrap();
+    client
+        .prompt(0, "a question that will never be answered")
+        .unwrap();
     assert!(!reg.is_closed(), "still open with work queued");
 
     // The other head, which must be told before the socket goes.
@@ -454,7 +463,9 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
             if note == letibot_sessionlog::NOTE_STOPPING)
     });
     assert!(
-        acked.iter().any(|f| matches!(f, ServerFrame::Accepted { note, .. }
+        acked
+            .iter()
+            .any(|f| matches!(f, ServerFrame::Accepted { note, .. }
             if note == letibot_sessionlog::NOTE_STOPPING)),
         "the asking head was never told `stopping`: {acked:#?}"
     );

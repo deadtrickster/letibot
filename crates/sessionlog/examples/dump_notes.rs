@@ -56,11 +56,21 @@ fn main() {
         return;
     };
 
-    println!("session {session_id} — {} warning(s), {} head(s) attached", s.warnings.len(), s.heads.len());
+    println!(
+        "session {session_id} — {} warning(s), {} head(s) attached",
+        s.warnings.len(),
+        s.heads.len()
+    );
     for h in &s.heads {
-        println!("  head: {} kind={} identity={}", h.head_id, h.kind, h.identity);
+        println!(
+            "  head: {} kind={} identity={}",
+            h.head_id, h.kind, h.identity
+        );
     }
-    println!("{:<44} {:>15}  {}", "code", "ts", "key (as /notes dismiss would store it)");
+    println!(
+        "{:<44} {:>15}  {}",
+        "code", "ts", "key (as /notes dismiss would store it)"
+    );
     let mut keys: Vec<String> = Vec::new();
     for w in &s.warnings {
         let k = key(&w.code, w.ts, &w.detail);
@@ -70,7 +80,8 @@ fn main() {
 
     // The comparison the operator asked for, done here rather than by eye.
     let cfg = std::env::var("HOME").unwrap_or_else(|_| "/home/dead".into());
-    let toml = std::fs::read_to_string(format!("{cfg}/.config/letibot/head.toml")).unwrap_or_default();
+    let toml =
+        std::fs::read_to_string(format!("{cfg}/.config/letibot/head.toml")).unwrap_or_default();
     let retired: Vec<String> = toml
         .lines()
         .find(|l| l.trim_start().starts_with("retired"))
@@ -91,10 +102,14 @@ fn main() {
                 // The useful half: which note it *wanted* to be. Code + hash, ignoring
                 // the ts, is what says "same incident, different delivery".
                 let f: Vec<&str> = k.split('|').collect();
-                let (code, hash) = (f.get(1).copied().unwrap_or(""), f.get(3).copied().unwrap_or(""));
-                let near = s.warnings.iter().position(|w| {
-                    w.code == code && format!("{:016x}", fnv1a(&w.detail)) == hash
-                });
+                let (code, hash) = (
+                    f.get(1).copied().unwrap_or(""),
+                    f.get(3).copied().unwrap_or(""),
+                );
+                let near = s
+                    .warnings
+                    .iter()
+                    .position(|w| w.code == code && format!("{:016x}", fnv1a(&w.detail)) == hash);
                 match near {
                     Some(i) => println!(
                         "  MISS   → live note {} has the SAME code and detail, ts {} against {k}'s {}",

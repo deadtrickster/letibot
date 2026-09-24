@@ -113,7 +113,12 @@ impl TaskJournal {
             .servers
             .keys()
             .map(|lang| {
-                let program = &self.lsp.servers.get(lang).map(|a| a[0].as_str()).unwrap_or("");
+                let program = &self
+                    .lsp
+                    .servers
+                    .get(lang)
+                    .map(|a| a[0].as_str())
+                    .unwrap_or("");
                 json!({
                     "language": lang,
                     "installed": installed(program),

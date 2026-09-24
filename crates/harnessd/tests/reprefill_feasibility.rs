@@ -41,12 +41,21 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
         format!("{}/models/Qwen3.8-27B-UD-Q6_K_XL.gguf", home()),
     );
     if !store_path.is_file() || !vocab_path.is_file() {
-        eprintln!("skipped: need {} and {}", store_path.display(), vocab_path.display());
+        eprintln!(
+            "skipped: need {} and {}",
+            store_path.display(),
+            vocab_path.display()
+        );
         return;
     }
 
     let wiring = letibot_harnessd::dialect::Dialect::Qwen.wiring(None);
-    let ours: String = wiring.spec().template_sha.iter().map(|b| format!("{b:02x}")).collect();
+    let ours: String = wiring
+        .spec()
+        .template_sha
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
 
     let store = Store::open(&store_path).expect("the store opens");
     let Some(transcript_id) = biggest_foreign(&store, &ours) else {
@@ -56,7 +65,8 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     let loaded = store.load_transcript(&transcript_id).expect("it loads");
 
     let vocab = Vocab::load(&vocab_path).expect("the vocabulary loads");
-    let control = resolve(&vocab, &wiring.spec().control_tokens).expect("the control tokens resolve");
+    let control =
+        resolve(&vocab, &wiring.spec().control_tokens).expect("the control tokens resolve");
 
     // Each item is rendered against the history as it stood BEFORE it — the same
     // contract `Session::append_items` renders under — so this is the real cost
@@ -65,11 +75,20 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     let mut tokens = 0usize;
     let mut by_kind: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     for (item, _, _) in &loaded.items {
-        let spans = wiring.renderer.render_incremental(&history, std::slice::from_ref(item));
+        let spans = wiring
+            .renderer
+            .render_incremental(&history, std::slice::from_ref(item));
         let n = tokenize_spans(&vocab, &control, &spans)
-            .unwrap_or_else(|e| panic!("re-rendering {}: {e}", letibot_tokencore::store::item_kind(item)))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "re-rendering {}: {e}",
+                    letibot_tokencore::store::item_kind(item)
+                )
+            })
             .len();
-        let e = by_kind.entry(letibot_tokencore::store::item_kind(item)).or_default();
+        let e = by_kind
+            .entry(letibot_tokencore::store::item_kind(item))
+            .or_default();
         e.0 += 1;
         e.1 += n;
         tokens += n;
@@ -77,7 +96,10 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     }
 
     let stored: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
-    println!("\n  transcript {transcript_id}   {} items", loaded.items.len());
+    println!(
+        "\n  transcript {transcript_id}   {} items",
+        loaded.items.len()
+    );
     println!("  {:<14} {:>7} {:>12}", "kind", "rows", "re-rendered");
     for (k, (rows, toks)) in &by_kind {
         println!("  {k:<14} {rows:>7} {toks:>12}");

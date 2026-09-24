@@ -509,7 +509,12 @@ mod the_register_census {
         }
         // And the other direction: a code that is a fact about the session, however much the
         // reader prompted it, stays red.
-        for code in ["context_wall", "ledger_chain_mismatch", "prefix_divergence", "turn_failed"] {
+        for code in [
+            "context_wall",
+            "ledger_chain_mismatch",
+            "prefix_divergence",
+            "turn_failed",
+        ] {
             assert_eq!(class(code), Class::Failure, "`{code}`");
         }
     }
@@ -519,7 +524,10 @@ mod the_register_census {
     #[test]
     fn the_unknown_code_is_still_a_failure() {
         assert!(is_routine("compacted"));
-        assert!(!is_routine("slash_refused"), "a refusal is not housekeeping");
+        assert!(
+            !is_routine("slash_refused"),
+            "a refusal is not housekeeping"
+        );
         assert!(!is_failure("slash_refused"), "and it is not red either");
         assert_eq!(class("a_code_from_the_future"), Class::Failure);
         assert!(is_failure("a_code_from_the_future"));

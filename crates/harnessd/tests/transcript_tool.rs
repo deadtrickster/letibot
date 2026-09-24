@@ -78,7 +78,9 @@ fn store_with_a_fork(dir: &std::path::Path) -> (Store, String) {
         h_init: [0u8; 32],
         vocab_source: "test".into(),
     };
-    let prefix_id = store.put_stable_prefix(&prefix).expect("putting the prefix");
+    let prefix_id = store
+        .put_stable_prefix(&prefix)
+        .expect("putting the prefix");
 
     let t0 = format!("{session_id}#t0");
     store
@@ -155,7 +157,10 @@ fn a_row_the_compaction_left_behind_is_found_and_marked_as_history() {
         .expect("searching");
     assert_eq!(hits.matched, 1, "one row says it");
     let r = &hits.rows[0];
-    assert_eq!(r.generation, 1, "it is in the transcript the fork left behind");
+    assert_eq!(
+        r.generation, 1,
+        "it is in the transcript the fork left behind"
+    );
     assert!(r.text.contains("unknown intents"), "{}", r.text);
     assert_eq!(r.kind, "user");
     // And the chain is reported, so the caller can see there was a compaction.
@@ -244,13 +249,19 @@ fn rows_come_back_newest_first_and_last_takes_the_newest_n() {
     let d = tempdir();
     let (_store, session_id) = store_with_a_fork(d.path());
     let hits = source(d.path(), &session_id)
-        .find(&TranscriptQuery { last: Some(2), ..q() })
+        .find(&TranscriptQuery {
+            last: Some(2),
+            ..q()
+        })
         .expect("searching");
     assert_eq!(hits.rows.len(), 2);
     assert_eq!(hits.rows[0].generation, 0);
     assert_eq!(hits.rows[0].seq, 2, "the newest row in the live transcript");
     assert_eq!(hits.rows[1].seq, 1);
-    assert_eq!(hits.matched, 2, "`last` is applied before the count is taken");
+    assert_eq!(
+        hits.matched, 2,
+        "`last` is applied before the count is taken"
+    );
 }
 
 /// A session named by a fragment of its title resolves, because that is how the
@@ -282,7 +293,10 @@ fn a_session_resolves_by_a_fragment_of_its_title() {
     });
     let e = miss.expect_err("a session that does not exist is an error");
     assert!(e.contains("no session matches"), "{e}");
-    assert!(e.contains("what=sessions"), "and says how to list them: {e}");
+    assert!(
+        e.contains("what=sessions"),
+        "and says how to list them: {e}"
+    );
 }
 
 /// A store with no such session id still lists — the reader is not the session,

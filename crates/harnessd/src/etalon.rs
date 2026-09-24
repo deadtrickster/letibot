@@ -127,7 +127,8 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
     // `LETIBOT_ETALON_DUMP=path` writes one line per command — its row number,
     // read and rule — so two builds can be diffed row by row, which the summary
     // cannot do: a rule that gains 500 and loses 500 shows as unchanged.
-    let mut dump = std::env::var_os("LETIBOT_ETALON_DUMP").map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("dump path")));
+    let mut dump = std::env::var_os("LETIBOT_ETALON_DUMP")
+        .map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("dump path")));
     for (row_no, line) in text.lines().take(limit).enumerate() {
         let row: Row = match serde_json::from_str(line) {
             Ok(r) => r,
@@ -164,7 +165,10 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
                         // and would read as unknown for the wrong reason.
                         let text = n.source.get(st.span.start..st.span.end).unwrap_or(&base);
                         let probe = Baseline::of_command(text, env_for_row);
-                        if probe.intents.contains(&letibot_tools::intent::Intent::Unknown) {
+                        if probe
+                            .intents
+                            .contains(&letibot_tools::intent::Intent::Unknown)
+                        {
                             *r.unknown_heads.entry(base).or_default() += 1;
                         }
                     }
@@ -181,14 +185,26 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
                 };
                 let prog = st.program_name().unwrap_or("<unresolved>");
                 let file = st.redirects.iter().find_map(|rd| match &rd.target {
-                    letibot_code::shell::RedirectTarget::File(w) if rd.op.writes() => w.text().map(str::to_string),
+                    letibot_code::shell::RedirectTarget::File(w) if rd.op.writes() => {
+                        w.text().map(str::to_string)
+                    }
                     _ => None,
                 });
                 let shebang = body.trim_start().starts_with("#!");
                 let key = match file {
                     Some(f) => {
-                        let ext = f.rsplit('/').next().unwrap_or(&f).rsplit_once('.').map(|(_, e)| e.to_string());
-                        format!("{prog} > {}{}", ext.map(|e| format!(".{e}")).unwrap_or_else(|| "(no ext)".into()), if shebang { " #!" } else { "" })
+                        let ext = f
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&f)
+                            .rsplit_once('.')
+                            .map(|(_, e)| e.to_string());
+                        format!(
+                            "{prog} > {}{}",
+                            ext.map(|e| format!(".{e}"))
+                                .unwrap_or_else(|| "(no ext)".into()),
+                            if shebang { " #!" } else { "" }
+                        )
                     }
                     None => format!("{prog}{}", if shebang { " #!" } else { "" }),
                 };
@@ -211,10 +227,16 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
             .or_default() += 1;
         match (&b.tier, &b.verdict) {
             (_, BaselineVerdict::NotRun { why }) => {
-                let key = why.split(['.', '\n']).next().unwrap_or(why).trim().to_string();
+                let key = why
+                    .split(['.', '\n'])
+                    .next()
+                    .unwrap_or(why)
+                    .trim()
+                    .to_string();
                 *r.not_run_why.entry(key).or_default() += 1;
                 if let Some(n) = &b.command {
-                    let mut kinds: Vec<&str> = n.unresolved.iter().map(|u| u.construct.as_str()).collect();
+                    let mut kinds: Vec<&str> =
+                        n.unresolved.iter().map(|u| u.construct.as_str()).collect();
                     kinds.sort();
                     kinds.dedup();
                     let alone = kinds.len() == 1;
@@ -273,7 +295,13 @@ impl Report {
             self.rows, self.commands
         ));
         // The table: rows are (source, outcome); columns are the reads.
-        let reads = [Read::Auto, Read::MayApprove, Read::AlwaysAsk, Read::Blocked, Read::NotRun];
+        let reads = [
+            Read::Auto,
+            Read::MayApprove,
+            Read::AlwaysAsk,
+            Read::Blocked,
+            Read::NotRun,
+        ];
         let mut keys: Vec<(String, String)> = self
             .cells
             .keys()
@@ -289,7 +317,11 @@ impl Report {
         for (s, o) in &keys {
             out.push_str(&format!("{s:<24} {o:<8}"));
             for rd in reads {
-                let n = self.cells.get(&(s.clone(), o.clone(), rd)).copied().unwrap_or(0);
+                let n = self
+                    .cells
+                    .get(&(s.clone(), o.clone(), rd))
+                    .copied()
+                    .unwrap_or(0);
                 out.push_str(&format!(" {n:>13}"));
             }
             out.push('\n');
@@ -302,8 +334,11 @@ impl Report {
                 .map(|(_, n)| n)
                 .sum()
         };
-        let ran = sum("ran", Read::Auto) + sum("ran", Read::MayApprove) + sum("ran", Read::AlwaysAsk)
-            + sum("ran", Read::Blocked) + sum("ran", Read::NotRun);
+        let ran = sum("ran", Read::Auto)
+            + sum("ran", Read::MayApprove)
+            + sum("ran", Read::AlwaysAsk)
+            + sum("ran", Read::Blocked)
+            + sum("ran", Read::NotRun);
         let refused: usize = reads.iter().map(|r| sum("refused", *r)).sum();
         out.push_str(&format!(
             "\nran × always_ask (would prompt now): {} of {} ({:.1}%)\n",
@@ -315,13 +350,21 @@ impl Report {
             "refused × always_ask (caught before the model): {} of {} ({:.1}%)\n",
             sum("refused", Read::AlwaysAsk) + sum("refused", Read::Blocked),
             refused,
-            pct(sum("refused", Read::AlwaysAsk) + sum("refused", Read::Blocked), refused)
+            pct(
+                sum("refused", Read::AlwaysAsk) + sum("refused", Read::Blocked),
+                refused
+            )
         ));
         out.push_str(&format!(
             "not_run (layer A could not read it): {} of {} ({:.1}%)\n",
             sum("ran", Read::NotRun) + sum("refused", Read::NotRun) + sum("error", Read::NotRun),
             self.commands,
-            pct(sum("ran", Read::NotRun) + sum("refused", Read::NotRun) + sum("error", Read::NotRun), self.commands)
+            pct(
+                sum("ran", Read::NotRun)
+                    + sum("refused", Read::NotRun)
+                    + sum("error", Read::NotRun),
+                self.commands
+            )
         ));
         if !self.prompts_by_rule.is_empty() {
             out.push_str("\nprompts on rows that ran, by rule:\n");
@@ -344,7 +387,9 @@ impl Report {
         }
         if !self.unknown_heads.is_empty() {
             let total: usize = self.unknown_heads.values().sum();
-            out.push_str(&format!("\nprogram heads layer A does not know ({total} occurrences), top 24:\n"));
+            out.push_str(&format!(
+                "\nprogram heads layer A does not know ({total} occurrences), top 24:\n"
+            ));
             let mut v: Vec<_> = self.unknown_heads.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             for (head, n) in v.into_iter().take(24) {
@@ -361,7 +406,9 @@ impl Report {
         }
         if !self.heredoc_sinks.is_empty() {
             let total: usize = self.heredoc_sinks.values().sum();
-            out.push_str(&format!("\nhere-documents ({total} stages), by where the body goes (top 24):\n"));
+            out.push_str(&format!(
+                "\nhere-documents ({total} stages), by where the body goes (top 24):\n"
+            ));
             let mut v: Vec<_> = self.heredoc_sinks.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             for (k, n) in v.into_iter().take(24) {
@@ -381,7 +428,11 @@ impl Report {
 }
 
 fn pct(n: usize, d: usize) -> f64 {
-    if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 }
+    if d == 0 {
+        0.0
+    } else {
+        100.0 * n as f64 / d as f64
+    }
 }
 
 #[cfg(test)]
@@ -417,14 +468,37 @@ mod tests {
         let r = report(&path, &env, 100).unwrap();
         assert_eq!(r.rows, 4);
         assert_eq!(r.commands, 3, "an edit row is not a command");
-        let cell = |o: &str, rd: Read| r.cells.get(&("t".into(), o.into(), rd)).copied().unwrap_or(0);
-        assert_eq!(cell("ran", Read::MayApprove) + cell("ran", Read::Auto), 1, "{:?}", r.cells);
-        assert_eq!(cell("refused", Read::AlwaysAsk) + cell("refused", Read::Blocked), 1, "{:?}", r.cells);
+        let cell = |o: &str, rd: Read| {
+            r.cells
+                .get(&("t".into(), o.into(), rd))
+                .copied()
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            cell("ran", Read::MayApprove) + cell("ran", Read::Auto),
+            1,
+            "{:?}",
+            r.cells
+        );
+        assert_eq!(
+            cell("refused", Read::AlwaysAsk) + cell("refused", Read::Blocked),
+            1,
+            "{:?}",
+            r.cells
+        );
         assert_eq!(cell("ran", Read::NotRun), 1, "{:?}", r.cells);
-        assert_eq!(r.catches_by_rule.values().sum::<usize>(), 1, "{:?}", r.catches_by_rule);
+        assert_eq!(
+            r.catches_by_rule.values().sum::<usize>(),
+            1,
+            "{:?}",
+            r.catches_by_rule
+        );
         assert!(r.prompts_by_rule.is_empty(), "{:?}", r.prompts_by_rule);
         let text = r.render();
-        assert!(text.contains("refused × always_ask (caught before the model): 1 of 1"), "{text}");
+        assert!(
+            text.contains("refused × always_ask (caught before the model): 1 of 1"),
+            "{text}"
+        );
         assert!(text.contains("would prompt now): 0 of 2"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }

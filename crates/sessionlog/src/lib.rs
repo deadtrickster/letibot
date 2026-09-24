@@ -68,29 +68,36 @@ pub mod lift_tools;
 pub use cursor::{Batch, ReadMark};
 pub use event::{
     COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, CompactionReport, CompactionSection,
-    CompactionTail, CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope,
-    FinishReason, OnTimeout, OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES, Timings,
-    Usage, display_target,
+    CompactionTail, CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget,
+    Envelope, FinishReason, OnTimeout, OptionKind, PromptProgress, SessionEvent, TARGET_MAX_BYTES,
+    Timings, Usage, display_target,
 };
 pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
-pub use question::{AnswerDefect, QuestionAnswer};
-pub use registry::{Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring};
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{
     Ack, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL,
     HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING, PROTOCOL_VERSION, ServerFrame,
     head_run_tool, head_run_verb, protocol_skew,
 };
+pub use question::{AnswerDefect, QuestionAnswer};
+pub use registry::{Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring};
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
-pub use warning::{Class, class, is_failure, is_routine};
 pub use view::{
-    CallState, CallView, OpenDecision, SessionView, SettledDecision, Snapshot, SnapshotItem,
-    TurnState, TurnView, ViewBounds,
+    CallState,
+    CallView,
+    OpenDecision,
+    SessionView,
+    SettledDecision,
+    Snapshot,
+    SnapshotItem,
+    TurnState,
+    TurnView,
+    ViewBounds,
     // **The one definition of a row's `body`** (R19.2b), re-exported because the daemon's
     // store-backed reader answers the same question and must not answer it differently.
     body_of,
 };
-
+pub use warning::{Class, class, is_failure, is_routine};
 
 #[cfg(feature = "turn")]
 pub use lift::{LogSink, from_turn_event};

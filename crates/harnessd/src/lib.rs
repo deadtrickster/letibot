@@ -85,35 +85,35 @@
 //! vocabulary id where the boundary still exists. The live view and the stored
 //! view carry the same bytes, on channels that agree.
 
-pub mod corpus;
-pub mod httphead;
-pub mod oracle;
 pub mod answers;
 pub mod backfill;
+pub mod calibrate;
+pub mod config;
+pub mod corpus;
+pub mod daemon;
+pub mod decision_source;
+pub mod dialect;
 pub mod etalon;
 pub mod etalon_map;
 pub mod etalon_oracle;
-pub mod calibrate;
-pub mod slash;
-pub mod sudo;
-pub mod config;
 pub mod facts;
-pub mod decision_source;
-pub mod transcript_source;
-pub mod daemon;
-pub mod dialect;
 pub mod harness;
+pub mod httphead;
 pub mod jobwatch;
 pub mod modes;
+pub mod oracle;
 pub mod progress;
 pub mod sessions;
+pub mod slash;
+pub mod sudo;
 pub mod tasks;
+pub mod transcript_source;
 
 pub use answers::{Answers, HeadAdjudicator};
-pub use modes::ModeStore;
 pub use config::{Config, SpillPolicy, SpillStorage};
 pub use daemon::Daemon;
-pub use sessions::{Outcome, Sessions};
 pub use dialect::{Dialect, Wiring};
 pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
+pub use modes::ModeStore;
+pub use sessions::{Outcome, Sessions};
 pub use tasks::{TaskEntry, TaskJournal};

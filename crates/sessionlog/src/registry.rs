@@ -51,6 +51,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use crate::hub::{Hub, QueuedCommand, SessionStatus};
 use crate::log::LogBounds;
@@ -171,31 +172,84 @@ impl Bell {
     /// all live in that open — running a command in it first would put all three
     /// inside somebody's prompt. The wait is bounded by a store read, not by a
     /// generation.
-    fn next_any(&self) -> Option<Ring> {
+    /// The same, giving up at DEADLINE.
+    ///
+    /// **A third answer, because `None` already means something.** The daemon's single
+    /// worker blocks here until there is work, and the one thing it could not do was
+    /// *nothing, for now* — it had no way to be told that time had passed. A caller that
+    /// needs to act on the clock (the idle todo-nag is the first) has to be woken by the
+    /// clock, and a timeout that returned `None` would be indistinguishable from the
+    /// registry closing, which ends the daemon.
+    fn next_any_until(&self, deadline: Option<Instant>) -> RingWait {
         let mut g = self.lock();
         loop {
             if let Some(id) = g.opens.pop_front() {
-                return Some(Ring::Open(id));
+                return RingWait::Ring(Ring::Open(id));
             }
             if let Some(id) = g.pending.pop_front() {
-                return Some(Ring::Command(id));
+                return RingWait::Ring(Ring::Command(id));
             }
             // **Last**, and deliberately. A wake has nobody waiting on it; a head
             // that pressed enter does. Draining wakes first would let a chatty
             // monitor put itself in front of the operator.
             if let Some(id) = g.wakes.pop_front() {
-                return Some(Ring::Woken(id));
+                return RingWait::Ring(Ring::Woken(id));
             }
             if g.closed {
-                return None;
+                return RingWait::Closed;
             }
-            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            // **The queue is empty, so this is where the clock is allowed in.** Every
+            // category above is drained first: work a person is waiting on never waits
+            // behind a timer.
+            let timed_out = match deadline {
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return RingWait::Idle;
+                    }
+                    let (guard, out) = self
+                        .cv
+                        .wait_timeout(g, d - now)
+                        .unwrap_or_else(|e| e.into_inner());
+                    g = guard;
+                    out.timed_out()
+                }
+                None => {
+                    g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    false
+                }
+            };
+            if timed_out {
+                return RingWait::Idle;
+            }
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BellInner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// What the worker found: work, or the clock.
+///
+/// `Idle` is not an error and not a shutdown — it is *the deadline passed and there was
+/// nothing to do*, which is the state the daemon acts on. See
+/// [`Registry::next_work_until`].
+pub enum WorkOrIdle {
+    Work(Work),
+    Idle,
+    Closed,
+}
+
+/// The bell's answer when it is allowed to give up on the clock.
+///
+/// Three answers and not two: `Ring` is work, `Closed` ends the daemon, and `Idle` is
+/// *the deadline passed with nothing to do* — which is what a caller that acts on the
+/// clock needs and what `Option` could not say.
+enum RingWait {
+    Ring(Ring),
+    Idle,
+    Closed,
 }
 
 /// What the daemon knows about a session that the log does not: its title, when it
@@ -397,11 +451,8 @@ pub trait RowSource: Send + Sync {
 /// `NULL` on every row written before R11 kept `oracle_reply`, and an oracle that never answered
 /// has no reply either — see [`crate::protocol::Diagnostic`]'s own doc.
 pub trait DiagnosticSource: Send + Sync {
-    fn diagnostic(
-        &self,
-        request_id: &str,
-        kind: crate::protocol::DiagnosticKind,
-    ) -> Option<String>;
+    fn diagnostic(&self, request_id: &str, kind: crate::protocol::DiagnosticKind)
+    -> Option<String>;
 }
 
 pub struct Registry {
@@ -640,10 +691,7 @@ impl Registry {
 
     /// Where the oracle's exchange can be read. See [`DiagnosticSource`].
     pub fn set_diagnostic_source(&self, diagnostics: Arc<dyn DiagnosticSource>) {
-        *self
-            .diagnostics
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(diagnostics);
+        *self.diagnostics.lock().unwrap_or_else(|e| e.into_inner()) = Some(diagnostics);
     }
 
     /// One half of one decision's exchange, or `None` when there is no source or no record.
@@ -672,7 +720,11 @@ impl Registry {
     pub fn row_body_from_store(&self, session_id: &str, row: usize) -> Option<String> {
         // The Arc is cloned out before the call, so the lock is not held across a SQLite
         // read: a head paging a trimmed row must not be able to block a listing.
-        let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        let source = self
+            .rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
         source.row_body(session_id, row)
     }
 
@@ -928,22 +980,45 @@ impl Registry {
     /// — and a resume that failed its chain check would then fail inside a prompt the
     /// operator is watching, instead of before it.
     pub fn next_work(&self) -> Option<Work> {
+        match self.next_work_until(None) {
+            WorkOrIdle::Work(w) => Some(w),
+            // Unreachable without a deadline (see `next_any`), and `Closed` is the
+            // `None` this has always returned.
+            WorkOrIdle::Idle | WorkOrIdle::Closed => None,
+        }
+    }
+
+    /// The same, giving up at DEADLINE and saying so.
+    ///
+    /// **The worker's one blocking call, with the clock as an input.** Before this the
+    /// daemon could wait for work and nothing else, so anything it wanted to do *after a
+    /// pause* had to be done at the end of a turn instead — which is exactly the shape the
+    /// operator rejected for the todo check: *"maybe wait for a timeout actually. so send it
+    /// when model is idling"*, and *"but certainly not after my message."* A turn boundary
+    /// is not an idle one; this is.
+    ///
+    /// The command queue is drained before the deadline is looked at, so a head that pressed
+    /// enter is served at once — the ordering `Bell::next_any` already keeps between work and
+    /// wakes, now kept between work and the clock.
+    pub fn next_work_until(&self, deadline: Option<Instant>) -> WorkOrIdle {
         loop {
-            match self.bell.next_any()? {
-                Ring::Open(id) => return Some(Work::Open(id)),
+            match self.bell.next_any_until(deadline) {
+                RingWait::Closed => return WorkOrIdle::Closed,
+                RingWait::Idle => return WorkOrIdle::Idle,
+                RingWait::Ring(Ring::Open(id)) => return WorkOrIdle::Work(Work::Open(id)),
                 // A wake for a session this registry does not hold is dropped, the
                 // same way a command for one is: the session is gone and there is
                 // nothing to wake.
-                Ring::Woken(id) => {
+                RingWait::Ring(Ring::Woken(id)) => {
                     if self.get(&id).is_some() {
-                        return Some(Work::Woken(id));
+                        return WorkOrIdle::Work(Work::Woken(id));
                     }
                 }
-                Ring::Command(id) => {
+                RingWait::Ring(Ring::Command(id)) => {
                     let Some(hub) = self.get(&id) else { continue };
                     if let Some(cmd) = hub.try_command() {
                         self.set_default(&id);
-                        return Some(Work::Command(id, cmd));
+                        return WorkOrIdle::Work(Work::Command(id, cmd));
                     }
                 }
             }

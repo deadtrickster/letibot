@@ -16,7 +16,10 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("letibot-askpass-{tag}-{}-{n}.sock", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "letibot-askpass-{tag}-{}-{n}.sock",
+        std::process::id()
+    ))
 }
 
 fn start(tag: &str) -> (Arc<Hub>, ServerHandle) {
@@ -32,7 +35,10 @@ fn wait_for<T>(
 ) -> T {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(std::time::Instant::now() < deadline, "nothing arrived in time");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nothing arrived in time"
+        );
         let f: ServerFrame = reader.read().expect("frame");
         if let Some(t) = pick(&f) {
             return t;
@@ -61,8 +67,10 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
             ..Caps::default()
         };
         let (mut c, _h, mut r) =
-            HeadClient::attach(&helper_path, "s", u64::MAX, "askpass", "sudo", caps).expect("helper");
-        c.askpass("[sudo] password for dead: ", "sudo apt install x").expect("ask");
+            HeadClient::attach(&helper_path, "s", u64::MAX, "askpass", "sudo", caps)
+                .expect("helper");
+        c.askpass("[sudo] password for dead: ", "sudo apt install x")
+            .expect("ask");
         wait_for(&mut r, |f| match f {
             ServerFrame::Secret { secret } => Some(secret.clone()),
             _ => None,
@@ -88,7 +96,8 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
         },
         _ => None,
     });
-    head.secret(&req_id, Some("hunter2".into())).expect("answer");
+    head.secret(&req_id, Some("hunter2".into()))
+        .expect("answer");
 
     let got = helper.join().expect("helper thread");
     assert_eq!(got.as_deref(), Some("hunter2"));
@@ -96,18 +105,26 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
     // The settlement is on the log; the secret is not, anywhere.
     let settled = wait_for(&mut head_reader, |f| match f {
         ServerFrame::Event(env) => match &env.event {
-            SessionEvent::SecretSettled { req_id: r, given, by } if r == &req_id => {
-                Some((*given, by.clone()))
-            }
+            SessionEvent::SecretSettled {
+                req_id: r,
+                given,
+                by,
+            } if r == &req_id => Some((*given, by.clone())),
             _ => None,
         },
         _ => None,
     });
     assert_eq!(settled, (true, "dead".to_string()));
     let everything = format!("{:?}", hub.snapshot());
-    assert!(!everything.contains("hunter2"), "the secret leaked into the hub's state");
+    assert!(
+        !everything.contains("hunter2"),
+        "the secret leaked into the hub's state"
+    );
     for env in hub.retained() {
-        assert!(!format!("{env:?}").contains("hunter2"), "the secret leaked into the log");
+        assert!(
+            !format!("{env:?}").contains("hunter2"),
+            "the secret leaked into the log"
+        );
     }
     server.shutdown();
 }
@@ -124,10 +141,17 @@ fn a_refusal_and_a_late_answer_are_both_honest() {
         HeadClient::attach(&path, "s", 0, "tui", "dead", caps).expect("head");
     let helper_path = path.clone();
     let helper = std::thread::spawn(move || {
-        let (mut c, _h, mut r) =
-            HeadClient::attach(&helper_path, "s", u64::MAX, "askpass", "sudo", Caps::default())
-                .expect("helper");
-        c.askpass("[sudo] password: ", "sudo rm -rf /").expect("ask");
+        let (mut c, _h, mut r) = HeadClient::attach(
+            &helper_path,
+            "s",
+            u64::MAX,
+            "askpass",
+            "sudo",
+            Caps::default(),
+        )
+        .expect("helper");
+        c.askpass("[sudo] password: ", "sudo rm -rf /")
+            .expect("ask");
         wait_for(&mut r, |f| match f {
             ServerFrame::Secret { secret } => Some(secret.clone()),
             _ => None,

@@ -50,8 +50,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use letibot_tokencore::store::{Store, StoredAdjudication};
-use letibot_tools::adjudicate::{AdjudicatedGate, EffectScope};
 use letibot_tools::GateCall;
+use letibot_tools::adjudicate::{AdjudicatedGate, EffectScope};
 use letibot_tools::authorise::{AuthorisationTrail, OracleScope};
 use letibot_tools::intent::Intent;
 use letibot_tools::schema::Access;
@@ -134,7 +134,10 @@ impl Report {
     pub fn recommended(&self) -> (Vec<Intent>, EffectScope) {
         let mut intents: Vec<Intent> = Vec::new();
         for (name, t) in &self.per_intent {
-            if t.rows >= MIN_ROWS && t.false_allows == 0 && let Some(i) = Intent::parse(name) {
+            if t.rows >= MIN_ROWS
+                && t.false_allows == 0
+                && let Some(i) = Intent::parse(name)
+            {
                 intents.push(i);
             }
         }
@@ -291,12 +294,7 @@ pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudicati
     Ok(rows.into_iter().filter(|r| r.asked).take(limit).collect())
 }
 
-pub fn replay_arm(
-    cfg: &Config,
-    store: &Path,
-    limit: usize,
-    arm: Arm,
-) -> Result<Report, String> {
+pub fn replay_arm(cfg: &Config, store: &Path, limit: usize, arm: Arm) -> Result<Report, String> {
     replay_rows(cfg, store, rows_to_replay(store, limit)?, arm)
 }
 
@@ -311,7 +309,10 @@ pub fn replay_rows(
     let mut oracle_cfg = cfg.clone();
     oracle_cfg.oracle_question = arm.question;
     oracle_cfg.oracle_scope = Some(OracleScope::declared(
-        &Intent::ALL.iter().map(|i| i.as_str().to_string()).collect::<Vec<_>>(),
+        &Intent::ALL
+            .iter()
+            .map(|i| i.as_str().to_string())
+            .collect::<Vec<_>>(),
         Some("external"),
         // The replay already reaches every rung; no per-tool grant to add.
         &[],
@@ -432,7 +433,11 @@ pub fn replay_rows(
             0,
             letibot_tools::authorise::DecisionExample {
                 action: req.baseline.clone(),
-                verdict: if row.effect == "admit" { "allowed" } else { "refused" },
+                verdict: if row.effect == "admit" {
+                    "allowed"
+                } else {
+                    "refused"
+                },
                 turns_ago: None,
             },
         );
@@ -461,7 +466,9 @@ pub fn replay_rows(
         let advice = adjudicator.last_advice();
         let ms = started.elapsed().as_millis() as u64;
         let brief = adjudicator.last_brief();
-        let guard_allowed = advice.as_ref().is_some_and(|a| a.consulted && a.would == "admit");
+        let guard_allowed = advice
+            .as_ref()
+            .is_some_and(|a| a.consulted && a.would == "admit");
         let guard_said = advice
             .as_ref()
             .map(|a| format!("{}: {}", a.would, a.basis))
@@ -603,7 +610,10 @@ impl Report {
              a refusal.\n"
         );
         if !self.per_intent.is_empty() {
-            let _ = writeln!(o, "  per intent (rows / agreed / needless prompts / FALSE ALLOWS):");
+            let _ = writeln!(
+                o,
+                "  per intent (rows / agreed / needless prompts / FALSE ALLOWS):"
+            );
             for (name, t) in &self.per_intent {
                 let ok = t.rows >= MIN_ROWS && t.false_allows == 0;
                 let _ = writeln!(
@@ -643,7 +653,11 @@ impl Report {
             .collect();
         declined.truncate(4);
         if !declined.is_empty() {
-            let _ = writeln!(o, "  why it would still have asked you (first {}):", declined.len());
+            let _ = writeln!(
+                o,
+                "  why it would still have asked you (first {}):",
+                declined.len()
+            );
             for r in declined {
                 let why = r.guard_said.splitn(2, ' ').nth(1).unwrap_or(&r.guard_said);
                 let why: String = why.chars().take(150).collect();
@@ -653,12 +667,22 @@ impl Report {
         }
         match self.earned_scope() {
             Some(s) => {
-                let _ = writeln!(o, "  earns: intents [{}] up to `{}`",
-                    s.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>().join(" "),
-                    s.max_scope.as_str());
+                let _ = writeln!(
+                    o,
+                    "  earns: intents [{}] up to `{}`",
+                    s.intents
+                        .iter()
+                        .map(|i| i.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    s.max_scope.as_str()
+                );
             }
             None => {
-                let _ = writeln!(o, "  earns nothing yet: no intent has {MIN_ROWS}+ rows and zero false allows.");
+                let _ = writeln!(
+                    o,
+                    "  earns nothing yet: no intent has {MIN_ROWS}+ rows and zero false allows."
+                );
             }
         }
         o
@@ -670,7 +694,9 @@ impl Report {
 /// edits by hand. `None` when no store is configured, which is a box that keeps no
 /// corpus and so can earn nothing.
 pub fn calibration_path(cfg: &Config) -> Option<std::path::PathBuf> {
-    cfg.store.as_ref().map(|s| s.with_extension("calibration.json"))
+    cfg.store
+        .as_ref()
+        .map(|s| s.with_extension("calibration.json"))
 }
 
 /// The serialised shape. Its own struct rather than serialising [`OracleScope`]
@@ -685,10 +711,14 @@ struct OnDisk {
 
 /// Record `scope` where the daemon reads it at startup. Returns the path written.
 pub fn write_calibration(cfg: &Config, scope: &OracleScope) -> Result<std::path::PathBuf, String> {
-    let path = calibration_path(cfg)
-        .ok_or("no --store, so there is nowhere a calibration belongs")?;
+    let path =
+        calibration_path(cfg).ok_or("no --store, so there is nowhere a calibration belongs")?;
     let on = OnDisk {
-        intents: scope.intents.iter().map(|i| i.as_str().to_string()).collect(),
+        intents: scope
+            .intents
+            .iter()
+            .map(|i| i.as_str().to_string())
+            .collect(),
         max_scope: scope.max_scope.as_str().to_string(),
         evidence: scope.evidence.clone(),
     };
@@ -752,7 +782,13 @@ mod tests {
                 }
             }
         }
-        Report { rows, per_intent, skipped: vec![], oracle: "t".into(), store: "t".into() }
+        Report {
+            rows,
+            per_intent,
+            skipped: vec![],
+            oracle: "t".into(),
+            store: "t".into(),
+        }
     }
 
     /// **One false allow withholds the intent, whatever else it got right.** Not a

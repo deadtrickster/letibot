@@ -37,8 +37,8 @@ use std::thread::JoinHandle;
 
 use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
-    ClientFrame, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION, ServerFrame,
-    HEAD_RUN_TOOLS,
+    ClientFrame, HEAD_RUN_TOOLS, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION,
+    ServerFrame,
 };
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
@@ -408,7 +408,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                              or another head answered first",
                             identity
                         ),
-                    
+
                         compaction: None,
                     });
                 }
@@ -878,7 +878,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                  --continue` reopens it. A turn already generating \
                                  finishes its round; nothing new is started."
                             ),
-                        
+
                             compaction: None,
                         });
                     }

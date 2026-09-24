@@ -400,7 +400,11 @@ mod tests {
         // round of it is legitimate. Twenty rounds of it must not be stopped.
         let mut d = ProgressDetector::new(5);
         for i in 0..20 {
-            d.observe(&call("read", &format!(r#"{{"path":"f{i}"}}"#)), &ok(), &format!("body {i}"));
+            d.observe(
+                &call("read", &format!(r#"{{"path":"f{i}"}}"#)),
+                &ok(),
+                &format!("body {i}"),
+            );
             assert_eq!(d.end_round(), Round::Progress, "round {i}");
         }
         assert!(!d.exhausted());
@@ -413,7 +417,11 @@ mod tests {
         // not, which is exactly the run the detector is counting.
         let mut d = ProgressDetector::new(3);
         for _ in 0..4 {
-            d.observe(&call("read", r#"{"path":"src/main.rs"}"#), &ok(), "the same body");
+            d.observe(
+                &call("read", r#"{"path":"src/main.rs"}"#),
+                &ok(),
+                "the same body",
+            );
             d.end_round();
         }
         assert!(d.exhausted());
@@ -453,7 +461,9 @@ mod tests {
         let mut d = ProgressDetector::new(3);
         d.observe(
             &call("bash", r#"{"command":"curl x"}"#),
-            &ToolOutcome::Failed { reason: "connection reset".into() },
+            &ToolOutcome::Failed {
+                reason: "connection reset".into(),
+            },
             "connection reset",
         );
         assert_eq!(d.end_round(), Round::Stalled);
@@ -468,7 +478,9 @@ mod tests {
         for i in 0..3 {
             d.observe(
                 &call("grep", &format!(r#"{{"pattern":"p{i}"}}"#)),
-                &ToolOutcome::Abstained { reason: "no match".into() },
+                &ToolOutcome::Abstained {
+                    reason: "no match".into(),
+                },
                 &format!("0 of 20431 lines, pattern p{i}"),
             );
             d.end_round();
@@ -491,7 +503,10 @@ mod tests {
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
         let n = d.nudge().expect("the round before the stop");
-        assert!(n.contains("read path=a"), "the nudge names the call too: {n}");
+        assert!(
+            n.contains("read path=a"),
+            "the nudge names the call too: {n}"
+        );
         assert!(!d.exhausted(), "the nudge is a correction, not the stop");
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
@@ -531,7 +546,11 @@ mod tests {
         assert!(l.contains("path=файл.rs"), "{l}");
         let long = "x".repeat(500);
         let l = label(&call("bash", &format!(r#"{{"command":"{long}"}}"#)));
-        assert!(l.chars().count() <= 90, "the label is bounded: {}", l.chars().count());
+        assert!(
+            l.chars().count() <= 90,
+            "the label is bounded: {}",
+            l.chars().count()
+        );
     }
 
     #[test]

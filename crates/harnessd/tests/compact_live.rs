@@ -68,7 +68,11 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
         .expect("turn 2");
     eprintln!("  turn 1 -> {:?}", r1.text.trim());
     eprintln!("  turn 2 -> {:?}", r2.text.trim());
-    assert!(r2.text.contains("468"), "arithmetic came back as {:?}", r2.text);
+    assert!(
+        r2.text.contains("468"),
+        "arithmetic came back as {:?}",
+        r2.text
+    );
 
     let before = h.ledger_len();
     let report = h.compact().expect("the compaction");
@@ -79,7 +83,10 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     );
     eprintln!(
         "  summary turn: cached {} of {} carryable ({} generated, {} tok summary)",
-        sum.cached_tokens, sum.reusable, sum.generated_tokens, sum.summary.len()
+        sum.cached_tokens,
+        sum.reusable,
+        sum.generated_tokens,
+        sum.summary.len()
     );
     // The structural claim: there WAS a previous request to carry, and the server
     // said it carried it. `reusable` is ours (the prefix invariant proves the

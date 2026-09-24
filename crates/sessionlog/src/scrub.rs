@@ -366,7 +366,10 @@ mod tests {
         });
         let window: Vec<_> = log.retained().cloned().collect();
         let (kept, report) = scrub_replay(log.retained(), &window);
-        assert!(kept.is_empty(), "a replayed window is a lie about now: {kept:?}");
+        assert!(
+            kept.is_empty(),
+            "a replayed window is a lie about now: {kept:?}"
+        );
         assert_eq!(report.job_output, 1);
     }
 

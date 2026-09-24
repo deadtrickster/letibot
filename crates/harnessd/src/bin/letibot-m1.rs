@@ -66,9 +66,7 @@ struct Row {
 }
 
 fn main() {
-    let mut cfg = Config::for_this_box(
-        std::env::current_dir().expect("a working directory"),
-    );
+    let mut cfg = Config::for_this_box(std::env::current_dir().expect("a working directory"));
     cfg.socket = std::env::temp_dir().join(format!("letibot-m1-{}.sock", std::process::id()));
     cfg.effort = Some("low".into());
     let mut turns = 30usize;
@@ -76,10 +74,17 @@ fn main() {
 
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
-        let mut next = || it.next().unwrap_or_else(|| die(&format!("{arg} needs a value")));
+        let mut next = || {
+            it.next()
+                .unwrap_or_else(|| die(&format!("{arg} needs a value")))
+        };
         match arg.as_str() {
             "--workspace" => cfg.workspace = PathBuf::from(next()),
-            "--turns" => turns = next().parse().unwrap_or_else(|e| die(&format!("--turns: {e}"))),
+            "--turns" => {
+                turns = next()
+                    .parse()
+                    .unwrap_or_else(|e| die(&format!("--turns: {e}")))
+            }
             "--model" => cfg.model = next(),
             "--vocab" => cfg.vocab_gguf = PathBuf::from(next()),
             "--effort" => cfg.effort = Some(next()),
@@ -91,7 +96,9 @@ fn main() {
             }
             "--endpoint" => {
                 let v = next();
-                let (h, p) = v.rsplit_once(':').unwrap_or_else(|| die("--endpoint HOST:PORT"));
+                let (h, p) = v
+                    .rsplit_once(':')
+                    .unwrap_or_else(|| die("--endpoint HOST:PORT"));
                 cfg.endpoint = Endpoint::new(h, p.parse().unwrap_or_else(|_| die("port")));
             }
             other => die(&format!("unknown argument {other}")),
@@ -129,9 +136,11 @@ fn main() {
     let prefix_at_open: Vec<TokenId> = harness.prefix_tokens().to_vec();
 
     for (i, step) in script.iter().enumerate() {
-        let after_reasoning = harness.items().iter().rev().any(|it| {
-            matches!(it, letibot_transcript::TranscriptItem::Reasoning { .. })
-        });
+        let after_reasoning = harness
+            .items()
+            .iter()
+            .rev()
+            .any(|it| matches!(it, letibot_transcript::TranscriptItem::Reasoning { .. }));
         let started = std::time::Instant::now();
         let reply = match step {
             Step::Ask(text) => harness.submit(text),
@@ -211,7 +220,9 @@ fn main() {
         println!("\nrows written to {}", path.display());
     }
 
-    let failed = verdicts.iter().any(|v| v.starts_with("C") && v.contains(" FAIL"));
+    let failed = verdicts
+        .iter()
+        .any(|v| v.starts_with("C") && v.contains(" FAIL"));
     std::process::exit(if failed { 1 } else { 0 });
 }
 
@@ -586,7 +597,9 @@ fn judge(
     let mut c6_total = 0;
     let mut c6_bad = 0;
     for (i, item) in harness.items().iter().enumerate() {
-        if let letibot_transcript::TranscriptItem::Assistant { text, tool_calls, .. } = item
+        if let letibot_transcript::TranscriptItem::Assistant {
+            text, tool_calls, ..
+        } = item
             && text.is_empty()
             && !tool_calls.is_empty()
         {
@@ -632,8 +645,8 @@ fn judge(
 
     // ---- C9: a mid-session system change ----------------------------------
     let now = harness.tokens();
-    let prefix_intact = now.len() >= prefix_at_open.len()
-        && &now[..prefix_at_open.len()] == prefix_at_open;
+    let prefix_intact =
+        now.len() >= prefix_at_open.len() && &now[..prefix_at_open.len()] == prefix_at_open;
     let update_at = harness.items().iter().position(|i| {
         matches!(i, letibot_transcript::TranscriptItem::System { .. })
             || matches!(i, letibot_transcript::TranscriptItem::User { parts, .. }

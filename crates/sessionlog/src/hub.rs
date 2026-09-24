@@ -841,7 +841,7 @@ impl Hub {
                      `admit` for a call whose outcome nobody knows, and this sentence is the \
                      only thing that says so. Nothing by that name is pending any more."
                 ),
-            
+
                 compaction: None,
             });
         }
@@ -1320,9 +1320,8 @@ impl Hub {
         // transcript row, while the two messages sent after it did.
         let mut kept = VecDeque::with_capacity(g.commands.len());
         for (i, c) in g.commands.drain(..).enumerate() {
-            let named = i < at
-                && c.head_id == cmd.head_id
-                && matches!(c.kind, CommandKind::Prompt { .. });
+            let named =
+                i < at && c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. });
             if !named {
                 kept.push_back(c);
             }
@@ -2005,7 +2004,10 @@ mod mode_steering_tests {
             } => {
                 assert_eq!(call_id, "h1-2");
                 assert_eq!(name, "read");
-                assert_eq!(who, "dead", "the identity the corpus records as `human:<who>`");
+                assert_eq!(
+                    who, "dead",
+                    "the identity the corpus records as `human:<who>`"
+                );
                 assert!(execute, "and the daemon is the one that runs it");
             }
             other => panic!("took the wrong command: {other:?}"),
@@ -2013,7 +2015,9 @@ mod mode_steering_tests {
         // Once, and the head's own call is STILL THERE for the worker — not dropped, which
         // would leave its result arriving for a call nothing admitted.
         assert!(hub.try_head_run_command().is_none());
-        let left = hub.try_command().expect("the head's own call is still queued");
+        let left = hub
+            .try_command()
+            .expect("the head's own call is still queued");
         assert!(
             matches!(left.kind, CommandKind::OperatorCall { execute: false, .. }),
             "{:?}",

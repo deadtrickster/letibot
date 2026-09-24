@@ -170,7 +170,12 @@ fn vectorise(shape: &str, n: &letibot_code::shell::Normalised) -> Vec<f32> {
         .stages
         .iter()
         .flat_map(|s| s.context.iter())
-        .filter(|c| matches!(c, letibot_code::shell::Context::Subshell | letibot_code::shell::Context::Group))
+        .filter(|c| {
+            matches!(
+                c,
+                letibot_code::shell::Context::Subshell | letibot_code::shell::Context::Group
+            )
+        })
         .count();
     for (name, k) in [
         ("stages", n.stages.len()),
@@ -215,12 +220,20 @@ fn read_word(b: &Baseline) -> &'static str {
 struct Lcg(u64);
 impl Lcg {
     fn next_f32(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 40) as f32) / ((1u64 << 24) as f32) - 0.5
     }
 }
 
-pub fn build(path: &Path, env: &Surroundings, limit: usize, points_cap: usize) -> Result<Map, String> {
+pub fn build(
+    path: &Path,
+    env: &Surroundings,
+    limit: usize,
+    points_cap: usize,
+) -> Result<Map, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut aggs: HashMap<String, ShapeAgg> = HashMap::new();
     let mut rows = 0usize;
@@ -327,7 +340,11 @@ pub fn build(path: &Path, env: &Surroundings, limit: usize, points_cap: usize) -
                     .map(|k| {
                         let (kx, ky) = cell_xy(k);
                         let d2 = (cx - kx).powi(2) + (cy - ky).powi(2);
-                        if d2 > 9.0 * radius * radius { 0.0 } else { (-d2 / r2).exp() }
+                        if d2 > 9.0 * radius * radius {
+                            0.0
+                        } else {
+                            (-d2 / r2).exp()
+                        }
                     })
                     .collect()
             })
@@ -406,14 +423,26 @@ pub fn build(path: &Path, env: &Surroundings, limit: usize, points_cap: usize) -
         let mut progs: HashMap<String, usize> = HashMap::new();
         for &i in idx.iter().take(40) {
             for t in shapes[i].shape.split_whitespace() {
-                if !t.starts_with('<') && !t.starts_with('-') && t.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '/') && t.len() > 1 {
-                    *progs.entry(t.rsplit('/').next().unwrap_or(t).to_string()).or_default() += shapes[i].count;
+                if !t.starts_with('<')
+                    && !t.starts_with('-')
+                    && t.chars()
+                        .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '/')
+                    && t.len() > 1
+                {
+                    *progs
+                        .entry(t.rsplit('/').next().unwrap_or(t).to_string())
+                        .or_default() += shapes[i].count;
                 }
             }
         }
         let mut pv: Vec<_> = progs.into_iter().collect();
         pv.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        cells[c].label = pv.iter().take(2).map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(" · ");
+        cells[c].label = pv
+            .iter()
+            .take(2)
+            .map(|(p, _)| p.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
         cells[c].top = idx
             .iter()
             .take(6)
@@ -425,7 +454,13 @@ pub fn build(path: &Path, env: &Surroundings, limit: usize, points_cap: usize) -
                     .max_by_key(|(_, n)| **n)
                     .map(|(r, _)| r.clone())
                     .unwrap_or_default();
-                (s.shape.chars().take(140).collect(), s.count, s.refused, read, s.example.clone())
+                (
+                    s.shape.chars().take(140).collect(),
+                    s.count,
+                    s.refused,
+                    read,
+                    s.example.clone(),
+                )
             })
             .collect();
     }

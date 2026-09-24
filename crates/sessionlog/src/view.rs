@@ -366,7 +366,8 @@ pub struct SessionView {
     heads: Vec<HeadPresence>,
 }
 
-impl SessionView {    // (the free function `body_of` at the foot of this file is the definition both
+impl SessionView {
+    // (the free function `body_of` at the foot of this file is the definition both
     // readers use — see its own doc)
     pub fn new(session_id: impl Into<String>, bounds: ViewBounds) -> Self {
         SessionView {
@@ -994,7 +995,11 @@ mod tests {
                 },
             );
         }
-        let bytes: usize = v.items.iter().map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0)).sum();
+        let bytes: usize = v
+            .items
+            .iter()
+            .map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0))
+            .sum();
         assert!(
             bytes <= 4_000,
             "the view held {bytes} bytes against a 4,000 bound"
@@ -1036,7 +1041,11 @@ mod tests {
                 origin: None,
             },
         );
-        assert_eq!(v.items.len(), 1, "the only row was dropped to satisfy the bound");
+        assert_eq!(
+            v.items.len(),
+            1,
+            "the only row was dropped to satisfy the bound"
+        );
         assert!(v.items[0].item.is_some(), "and its body was kept");
     }
 
@@ -1072,7 +1081,11 @@ mod tests {
                 },
             );
         }
-        let bytes: usize = v.items.iter().map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0)).sum();
+        let bytes: usize = v
+            .items
+            .iter()
+            .map(|r| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0))
+            .sum();
         assert!(
             bytes <= 2_000 + 5_000,
             "a landing body did not trim: {bytes} bytes held"

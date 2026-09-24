@@ -13,17 +13,24 @@
 
 use std::os::unix::net::UnixStream;
 
+use letibot_sessionlog::ViewBounds;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
-use letibot_sessionlog::ViewBounds;
-use letibot_sessionlog::server::{serve_conn, MAX_FETCH_ROW};
-use letibot_transcript::{ToolOutcome, TranscriptItem};
+use letibot_sessionlog::server::{MAX_FETCH_ROW, serve_conn};
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
+use letibot_transcript::{ToolOutcome, TranscriptItem};
 
 /// A row whose body is `body`, announced and then filled the way the daemon does it.
-fn a_row_with_a_body(registry: &std::sync::Arc<Registry>, session: &str, item_id: &str, body: &str) {
-    let hub = registry.get(session).expect("the session this fixture made");
+fn a_row_with_a_body(
+    registry: &std::sync::Arc<Registry>,
+    session: &str,
+    item_id: &str,
+    body: &str,
+) {
+    let hub = registry
+        .get(session)
+        .expect("the session this fixture made");
     hub.publish(SessionEvent::TranscriptAppended {
         item_id: item_id.into(),
         kind: "tool_result".into(),
@@ -221,11 +228,7 @@ fn an_ordinal_names_window_and_trimmed_rows_alike() {
         a_row_with_a_body(&registry, "s-1", &format!("i{i}"), &format!("body {i}"));
     }
     // The window dropped the first, and says so.
-    assert_eq!(
-        hub.snapshot().items_dropped,
-        1,
-        "the fixture did not trim"
-    );
+    assert_eq!(hub.snapshot().items_dropped, 1, "the fixture did not trim");
 
     let (mut w, mut r) = attach(&registry);
 
@@ -244,7 +247,10 @@ fn an_ordinal_names_window_and_trimmed_rows_alike() {
     // would answer it is R19.2(b) in `letibot`'s TODO; what matters here is that it does not
     // silently answer with the WRONG row, which is what a window-relative index would do.
     let (win, _, _) = fetch(&mut w, &mut r, 0, 0, 40);
-    assert_eq!(win, None, "a trimmed ordinal must not resolve to a held row");
+    assert_eq!(
+        win, None,
+        "a trimmed ordinal must not resolve to a held row"
+    );
 }
 
 /// **A row nobody has is not an empty row.** The two must not look alike, or a head
@@ -304,7 +310,11 @@ fn fetching_does_not_move_the_connection() {
 
     // The session has the same head, and this connection is still seated in it: a live
     // event published after the fetch still arrives on this stream.
-    assert_eq!(hub.head_seq(), before, "fetching advanced the session's head");
+    assert_eq!(
+        hub.head_seq(),
+        before,
+        "fetching advanced the session's head"
+    );
     hub.publish(SessionEvent::TurnStarted {
         turn_id: "t2".into(),
         model: "m".into(),
