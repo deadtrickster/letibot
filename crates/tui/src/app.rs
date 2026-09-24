@@ -828,8 +828,18 @@ impl Link {
 /// * `closed` — the daemon's socket file is gone. Its `shutdown` unlinks that file after
 ///   joining the accept loop, which is what the wrapper's *"the record is removed only
 ///   after the process is gone"* is the same shape of.
-/// * `gone` — the daemon's process is no longer in `/proc`. The strongest observation
-///   available, and the only one that is *the daemon has actually gone*.
+/// * `gone` — **the daemon's process has exited and been collected.** Observed by reaping it
+///   when it is this head's own child (`waitpid(WNOHANG)`) and by its `/proc` entry otherwise,
+///   **a zombie counting as gone** — because a child that has exited stays in `/proc` until its
+///   parent waits for it, and this head is that parent. The strongest observation available,
+///   and the only one that is *the daemon has actually gone*.
+///
+///   **It was `fs::metadata("/proc/{pid}")`, and that is the defect the operator reported
+///   twice**: *"they always tell me daemon not stopped after waiting for 5 sec, then `letibot
+///   --stop` tells nothing runs."* Both true — the daemon had stopped, and the test said
+///   otherwise, because a zombie keeps its directory. The wrapper's test is right where the
+///   wrapper runs and wrong here, and the difference is the relationship. See
+///   [`crate::driver::Parentage`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stopping {
     /// The identity that asked, as the daemon will have announced it.

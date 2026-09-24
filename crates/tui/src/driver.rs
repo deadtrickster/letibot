@@ -107,23 +107,140 @@ fn peer_pid(s: &UnixStream) -> Option<i32> {
     (rc == 0 && cred.pid > 0).then_some(cred.pid)
 }
 
-/// **Is that process still there?**
+/// **Where the process this head is watching came from** — R30, and the two cases are not
+/// the same test.
 ///
-/// `/proc/<pid>`, the same test the wrapper makes — *"for _ in 1 2 3 4 5 …; do [ -d
-/// "/proc/$p" ] || break"* — and for the same reason: *"stopped" is said AFTER the
-/// process is gone, not after the signal is sent.*
+/// The operator, twice: *"they always tell me daemon not stopped after waiting for 5 sec,
+/// then `letibot --stop` tells nothing runs."* Both true, and the daemon really had stopped —
+/// **the check was wrong, and the relationship is why.**
 ///
-/// `None` when the answer cannot be had: a `/proc` that does not exist, or a pid
-/// directory this user may not stat. `Some(false)` is *it is gone* and is the only answer
-/// that lets the head leave early, so an unknown is treated as *still here* and the
-/// deadline decides — the direction to be wrong in is the one that keeps looking.
-fn process_alive(pid: i32) -> Option<bool> {
-    match std::fs::metadata(format!("/proc/{pid}")) {
-        Ok(_) => Some(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        // PermissionDenied means the directory IS there; anything else is a `/proc`
-        // that cannot answer, which is not the same fact.
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Some(true),
+/// The daemon is a **child of the head**. A child that exits is not reaped by init: it becomes
+/// a **zombie**, and a zombie keeps its `/proc/<pid>` entry until its parent waits for it. So
+/// `process_alive` — which was `fs::metadata("/proc/{pid}")` — answered *alive* about a
+/// process that had already exited, the head sat out the whole deadline, printed `NOT
+/// stopped`, and exited; init reaped the zombie at that moment, which is why the operator's
+/// next command correctly said nothing was running.
+///
+/// **The docstring named the trap and did not see it.** It said this was *"the same test the
+/// wrapper makes"* — and it is, and that is the defect. In the wrapper the daemon is not its
+/// child, so a dead daemon is reaped at once and `/proc` vanishes. In the head it is,
+/// so `/proc` persists until the head reaps it — and the head is the process sitting in the
+/// loop not reaping. **Same syscall, different meaning, because the relationship differs**,
+/// and a test copied with its reason intact can still be wrong in the new place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parentage {
+    /// **A direct child of this head.** The head owes it a wait, and until that wait happens
+    /// the child is a zombie that `/proc` still lists. A `waitpid` is the only test that
+    /// answers correctly here.
+    Ours,
+    /// **Somebody else's process.** Its own parent or init reaps it, so a dead one is gone
+    /// from `/proc` and the wrapper's test is the right one — which is what an attached head
+    /// that did not spawn the daemon is looking at.
+    NotOurs,
+}
+
+/// Which of the two it is, read from `/proc` rather than assumed from how this head was
+/// launched: a head that inherited its daemon through an `exec` (which is how `~/bin/letibot`
+/// produces one) is a parent without ever having called `spawn`, so *"did I start it"* is not
+/// the question — *"is it mine"* is, and the kernel answers it.
+fn parentage(pid: i32) -> Parentage {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => match stat_ppid(&stat) {
+            Some(ppid) if ppid == std::process::id() as i32 => Parentage::Ours,
+            _ => Parentage::NotOurs,
+        },
+        // Gone, or unreadable: not something this head is the parent of, and the `/proc`
+        // test below is the honest one either way.
+        Err(_) => Parentage::NotOurs,
+    }
+}
+
+/// The `ppid` out of one `/proc/<pid>/stat` line.
+///
+/// **Field 4, found from the LAST `)`.** Field 2 is the executable's name in parentheses and
+/// may itself contain spaces and brackets — `(my ) weird (program)` — so splitting on
+/// whitespace from the left reads the wrong field for exactly the processes somebody would
+/// bother to name that way. Everything after the last `)` is whitespace-separated fields
+/// from field 3 on, which is what both this and [`stat_state`] rely on.
+fn stat_ppid(stat: &str) -> Option<i32> {
+    let after = &stat[stat.rfind(')')? + 1..];
+    let mut fields = after.split_whitespace();
+    fields.next()?; // state
+    fields.next()?.parse().ok()
+}
+
+/// The state char out of one `/proc/<pid>/stat` line — `R` running, `S` sleeping, **`Z` a
+/// zombie**, `X` dead.
+fn stat_state(stat: &str) -> Option<char> {
+    let after = &stat[stat.rfind(')')? + 1..];
+    after.split_whitespace().next()?.chars().next()
+}
+
+/// **Has that process gone** — R30's one question, asked the way the relationship makes true.
+///
+/// `Some(true)` is *gone*, and it is the only answer that lets the head leave early.
+/// `Some(false)` is *still there*. `None` is *cannot tell*, and the deadline decides — the
+/// direction to be wrong in is the one that keeps looking.
+///
+/// **The four facts stay four.** This is what `gone` means: nothing here touches `sent`,
+/// `acked` or `closed`, and the sentence the operator reads still names which of the four it
+/// observed.
+fn process_gone(pid: i32) -> Option<bool> {
+    match parentage(pid) {
+        Parentage::Ours => match reap_own_child(pid) {
+            Some(gone) => Some(gone),
+            // `ECHILD`: the kernel says this is not our child after all — or somebody has
+            // already reaped it, which is the same answer as reaping it here. Ask `/proc`.
+            None => process_gone_by_proc(pid),
+        },
+        Parentage::NotOurs => process_gone_by_proc(pid),
+    }
+}
+
+/// **Reap our own child, if it has exited** — and answer whether it is gone.
+///
+/// `waitpid(pid, WNOHANG)` and **never `waitpid(-1, …)`**: the targeted form cannot collect
+/// another child's status, and a head that reaped something else's exit would be a head
+/// corrupting a process table it does not own.
+///
+/// **This is what a parent owes a child anyway.** An unreaped zombie is a leak whether or not
+/// anything is watching: it holds a pid, a task slot and an entry in `/proc`, and the only
+/// process that can clear it is this one. So the head reaps on every tick, not only while a
+/// stop is in flight — see [`Link::tick`].
+///
+/// `None` when the kernel will not answer (`ECHILD`, or an interrupted wait), which the caller
+/// resolves through `/proc`.
+fn reap_own_child(pid: i32) -> Option<bool> {
+    let mut status: libc::c_int = 0;
+    let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    if r == pid {
+        // It had exited, and it is reaped now — the zombie this whole function exists for.
+        Some(true)
+    } else if r == 0 {
+        // Our child, and still running. `0` is the only answer that means that.
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The `/proc` test — for a process this head is not the parent of, and for the fallback.
+///
+/// **A zombie counts as gone**, which is the second half of the fix: a `Z` is a process that
+/// has exited and is waiting to be reaped, so it is not a daemon that can still be running.
+/// Without the parent's `waitpid` this is the only test available, and with it this is what
+/// answers when the kernel declines to.
+fn process_gone_by_proc(pid: i32) -> Option<bool> {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => match stat_state(&stat) {
+            Some('Z') | Some('X') => Some(true),
+            Some(_) => Some(false),
+            None => None,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(true),
+        // PermissionDenied means the entry IS there; anything else is a `/proc` that cannot
+        // answer, which is not the same fact.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Some(false),
         Err(_) => None,
     }
 }
@@ -570,6 +687,22 @@ impl Link {
                 app.link_down(&e.to_string());
             }
         }
+        // **A child this head is the parent of is reaped every tick**, and not only while a
+        // stop is in flight. That is what a parent owes a child: an unreaped zombie holds a
+        // pid, a task slot and a `/proc` entry, and the only process that can clear it is this
+        // one. It also means the daemon's own exit is collected promptly when it goes without
+        // being asked — a crash, or another head's `--stop` — rather than sitting as a zombie
+        // until this head exits.
+        //
+        // One `waitpid(WNOHANG)` per tick, on a pid the head already holds. The result is
+        // discarded here on purpose: this is the leak, not the question. The question is
+        // [`Link::watch_stop`]'s, and it asks the same function again at the moment it
+        // matters.
+        if let Some(p) = app.daemon_pid()
+            && parentage(p) == Parentage::Ours
+        {
+            let _ = reap_own_child(p);
+        }
         // **Last, every tick, and after the drawing.** R30. Nothing here sends anything:
         // it reads the four things that answer the question the operator asked.
         self.watch_stop(app);
@@ -589,8 +722,9 @@ impl Link {
     ///   that is where frames are read. It is the only evidence the request was *read*;
     /// * **the socket file** — the daemon unlinks it in `shutdown`, after joining its
     ///   accept loop;
-    /// * **the process** — `/proc/<pid>`, the wrapper's own test and the only one that is
-    ///   literally *the daemon has gone*;
+    /// * **the process** — *the daemon has gone*, and **which test says so depends on whose
+    ///   child it is**: a `waitpid` for this head's own (a zombie is still in `/proc`), the
+    ///   `/proc` entry — zombie-aware — for anybody else's. See [`Parentage`];
     /// * **the deadline** — so a head with no other answer still stops waiting.
     ///
     /// The exit condition is the process, or the deadline. The socket and the ack are
@@ -619,12 +753,17 @@ impl Link {
         if !closed && !self.socket_path.exists() {
             next_closed = true;
         }
-        // The process, and only while the pid is known. `Some(false)` is *gone* and is the
-        // only answer that ends the wait early; an unanswerable `/proc` leaves the deadline
-        // to decide, which is the direction to be wrong in — a head that left on an unknown
+        // The process, and only while the pid is known. `Some(true)` is *gone* and is the
+        // only answer that ends the wait early; an unanswerable one leaves the deadline to
+        // decide, which is the direction to be wrong in — a head that left on an unknown
         // would be the defect again with better manners.
+        //
+        // **Which test this is depends on the relationship** — see [`Parentage`]. A daemon
+        // that is this head's own child is a zombie the moment it exits, and `/proc` goes on
+        // listing it until this head waits; the wrapper's `/proc` test is right for a daemon
+        // this head merely attached to.
         if let Some(p) = pid
-            && process_alive(p) == Some(false)
+            && process_gone(p) == Some(true)
         {
             next_gone = true;
         }
@@ -665,4 +804,116 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **`ppid` and the state char come off the LAST `)`** — the field-2 trap, on the
+    /// processes somebody would actually name that way.
+    ///
+    /// `/proc/<pid>/stat` puts the executable's name in parentheses as field 2, unbounded in
+    /// length and free to contain spaces and brackets. Splitting on whitespace from the left
+    /// reads the wrong field for any process called `(my ) weird (program)`, and reading the
+    /// wrong field here means believing a nested BashArena-style `)` is the end of the name.
+    #[test]
+    fn the_stat_line_is_parsed_from_the_last_bracket() {
+        // A plain one: pid (comm) state ppid …
+        assert_eq!(stat_state("42 (harnessd) S 7 42 42 0"), Some('S'));
+        assert_eq!(stat_ppid("42 (harnessd) S 7 42 42 0"), Some(7));
+        // A comm with a space, a `)`, and more parentheses inside it.
+        let nasty = "9067 (my ) weird (program)) Z 1 9067 0";
+        assert_eq!(stat_state(nasty), Some('Z'));
+        assert_eq!(stat_ppid(nasty), Some(1));
+        // Truncated or nonsense lines answer nothing rather than guessing.
+        assert_eq!(stat_state("nonsense with no bracket"), None);
+        assert_eq!(stat_ppid("42 (x) S"), None);
+        assert_eq!(stat_ppid("42 (x) S not-a-number 1"), None);
+    }
+
+    /// **A zombie is GONE** — the defect, reproduced against a real one.
+    ///
+    /// The operator: *"they always tell me daemon not stopped after waiting for 5 sec, then
+    /// `letibot --stop` tells nothing runs."* Both statements true; the daemon had stopped and
+    /// `/proc` still listed it, because it was this process's own unreaped child.
+    ///
+    /// So this **spawns a real child, lets it exit without waiting, and asks the question** —
+    /// the zombie is making the same `/proc` entry the daemon made, and this is the only test
+    /// that reproduces the mechanism rather than describing it. `Child` is held and never
+    /// waited on: dropping it does not reap it either, which is the point.
+    #[test]
+    fn an_unreaped_child_that_has_exited_is_gone() {
+        use std::process::Command;
+        let mut child = Command::new("/bin/true")
+            .spawn()
+            .expect("`/bin/true` starts");
+        let pid = child.id() as i32;
+        // It is ours, and the kernel says so — which is what decides which test runs.
+        assert_eq!(
+            parentage(pid),
+            Parentage::Ours,
+            "a process this test spawned is not seen as this process's child"
+        );
+        // Let it exit without waiting for it. A short sleep is the only synchronisation
+        // available: there is no event for "it has exited but not been reaped", which is
+        // exactly the state under test.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // **It is a zombie, and `/proc` says so** — the observation the old test read as
+        // `alive`. Asserted directly, so this test fails loudly rather than silently turning
+        // into a test of something else if the timing below ever changes.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        assert_eq!(
+            stat_state(&stat),
+            Some('Z'),
+            "the child exited but is not a zombie — this test is not testing what it says: {stat:?}"
+        );
+        // **And the answer is GONE**, which the old `fs::metadata` could not give: the
+        // directory is there for a zombie.
+        assert_eq!(
+            process_gone(pid),
+            Some(true),
+            "an exited child was reported as still running, which is the defect"
+        );
+        // And the reap really happened: a second ask finds no `/proc` entry at all, because
+        // this process has now collected it.
+        assert_eq!(process_gone(pid), Some(true));
+        let _ = child.wait();
+    }
+
+    /// **A live child is still there** — the negative, without which the test above would pass
+    /// on a function that answered `gone` to everything.
+    #[test]
+    fn a_running_child_is_not_gone() {
+        use std::process::Command;
+        let mut child = Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .expect("`/bin/sleep` starts");
+        let pid = child.id() as i32;
+        assert_eq!(parentage(pid), Parentage::Ours);
+        assert_eq!(process_gone(pid), Some(false), "a running child read as gone");
+        // **And asking did not kill it** — `WNOHANG` returns without waiting, and a version
+        // that blocked here would hang the turn for five seconds while looking healthy.
+        assert_eq!(process_gone(pid), Some(false));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(process_gone(pid), Some(true), "a killed child is gone once reaped");
+    }
+
+    /// **A process this head is not the parent of is answered by `/proc`, and a pid that never
+    /// existed is gone.** The second is the wrapper's own case, and it must not have been
+    /// broken by routeing the child case through `waitpid`.
+    #[test]
+    fn a_pid_that_is_not_this_processs_child_is_answered_from_proc() {
+        // **PID 1 is nobody's child**, so this takes the `/proc` path — and it is running, so
+        // the answer is *not gone*.
+        assert_eq!(parentage(1), Parentage::NotOurs);
+        assert_eq!(process_gone(1), Some(false), "init read as gone");
+        // A pid that cannot exist. `i32::MAX` is above every `pid_max` on Linux, so this asks
+        // the question about a process that was never there — which is what the operator's
+        // `letibot --stop` saw a moment after the head exited.
+        assert_eq!(parentage(i32::MAX), Parentage::NotOurs);
+        assert_eq!(process_gone(i32::MAX), Some(true), "an absent pid is gone");
+    }
 }
