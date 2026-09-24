@@ -9672,6 +9672,62 @@ impl App {
             segs.push(Seg::Borrowed(&gap));
         }
 
+        // **THE QUEUED ECHO IS DRAWN HERE — IMMEDIATELY BEFORE THE LIVE PANE, WHICH IS WHERE ITS
+        // ROW WILL LAND.**
+        //
+        // It used to be pushed after the turn pane, under a comment that said *"at the tail —
+        // the place their rows will land"*. That premise is false: a queued prompt's row is
+        // APPENDED to the transcript, and the live pane is drawn after every committed row, so
+        // the row lands HERE — above the turn — while the echo was starting below it. The
+        // operator saw the consequence twice: *"and again, i saw your reply before my message
+        // was unqueued"*, and then, naming it exactly: *"a message was queued to harnessd,
+        // delivered to model, reply started streaming above the queued message and then some
+        // tick goes off and queued message dequeued and rendered rightfully above the reply.
+        // pure ui desync."*
+        //
+        // **The relationship that stays true is *immediately before the live pane*.** Rows
+        // committed afterwards arrive above BOTH the echo and the pane, so the echo stays glued
+        // to the pane's head — the same place the appended row takes the moment the daemon
+        // announces it, and the same place it keeps. The block brings its own leading blank,
+        // which is the air the landed row will have; without it the announcement still moved
+        // every row below it by one.
+        //
+        // The prompts this head has sent that the transcript does not hold yet. See
+        // `pending_prompts` for why this is the head's own queue and not the hub's.
+        if !self.pending_prompts.is_empty() {
+            // **THE AIR GOES AFTER THE ECHO, NOT BEFORE IT** — because that is where a landed row's
+            // air is. `hist_lines` is followed by `gap`, and a row that has LANDED is part of
+            // `hist_lines`, so a committed row has its blank BELOW it. The echo's blank used to be
+            // in front, which put the echo one row higher than the row that replaces it and moved
+            // every row between them when the announcement arrived — the same desync, one row out.
+            // Measured: with the blank in front, the announcement lifts the echo by one; with it
+            // behind, the frame is identical.
+            let mut owned: Vec<String> = Vec::new();
+            let open = self.echo_open;
+            let unconfirmed = self.unconfirmed.clone();
+            for q in &self.pending_prompts {
+                // **An echo a row on screen is already drawing is not drawn twice.**
+                // The row that announced it carries the words now — in the transcript's own
+                // place, above the reply — and this block is for the queue, which is what is
+                // *not* in the conversation yet.
+                if echoes_on_screen.contains(q) {
+                    continue;
+                }
+                let mark = if unconfirmed.iter().any(|u| u == q) {
+                    UNCONFIRMED
+                } else {
+                    QUEUED
+                };
+                owned.extend(queued_lines(q, &cfg, mark, open));
+            }
+            // The trailing blank is the air the landed row will have, so it goes if the block is
+            // empty: a lone blank row above the pane is a row of nothing.
+            if !owned.is_empty() {
+                owned.push(String::new());
+                segs.push(Seg::Owned(owned));
+            }
+        }
+
         if let Some(t) = turn {
             let running = matches!(t.state, Some(TurnState::Running));
             let think_elapsed = if t.think_started_ms == 0 {
@@ -9812,36 +9868,6 @@ impl App {
             }
             if let Some(s) = state {
                 segs.push(Seg::Owned(turn_footer(&cfg, s)));
-            }
-        }
-
-        // The prompts this head has sent that the transcript does not hold yet, at
-        // the tail — the place their rows will land — so a message typed while a
-        // turn runs stays on the screen until the step boundary appends it. See
-        // `pending_prompts` for why this is the head's own queue and not the hub's.
-        if !self.pending_prompts.is_empty() {
-            let mut owned: Vec<String> = vec![String::new()];
-            let open = self.echo_open;
-            let unconfirmed = self.unconfirmed.clone();
-            for q in &self.pending_prompts {
-                // **An echo a row on screen is already drawing is not drawn twice.**
-                // The row that announced it carries the words now — in the
-                // transcript's own place, above the reply — and this tail block is
-                // for the queue, which is what is *not* in the conversation yet.
-                if echoes_on_screen.contains(q) {
-                    continue;
-                }
-                let mark = if unconfirmed.iter().any(|u| u == q) {
-                    UNCONFIRMED
-                } else {
-                    QUEUED
-                };
-                owned.extend(queued_lines(q, &cfg, mark, open));
-            }
-            // The leading blank is the block's own air, so it goes if the block is
-            // empty: a lone blank row at the tail is a row of nothing.
-            if owned.len() > 1 {
-                segs.push(Seg::Owned(owned));
             }
         }
 
@@ -17278,6 +17304,74 @@ mod tests {
             },
         );
         assert!(a.pending_prompts.is_empty());
+    }
+
+    /// **The echo does not move when its row is announced** — the operator's own report, and the
+    /// reason the block above is drawn where it is.
+    ///
+    /// *"A message was queued to harnessd, delivered to model, reply started streaming above the
+    /// queued message and then some tick goes off and queued message dequeued and rendered
+    /// rightfully above the reply. pure ui desync."*
+    ///
+    /// The echo used to be pushed AFTER the live pane, under a comment that said *"at the tail —
+    /// the place their rows will land"*. It is not: a queued row is appended to the transcript,
+    /// and the live pane is drawn after every committed row, so the row lands ABOVE the pane. The
+    /// echo started below it and crossed the reply when the announcement arrived.
+    ///
+    /// **What is asserted is stronger than *in the right place*: the frame is the same frame.**
+    /// Row for row, before the announcement and after it — because a row that has been announced
+    /// and has no body yet still wears the `queued` mark, the two frames are identical, and the
+    /// announcement is invisible. That is what a queued prompt should be: the reader's own
+    /// sentence, sitting still, waiting.
+    #[test]
+    fn a_queued_echo_does_not_move_when_its_row_is_announced() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // The reply starts streaming FIRST, which is the latency the whole defect is about:
+        // `Delta` carries its text and `TranscriptAppended` carries only an id.
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", "R2 the reply being streamed now"),
+        )));
+        typed(&mut a, "Q2 the message queued mid-turn");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("Q2 the message queued mid-turn".into()))
+        );
+        let before = a.screen(100, 24);
+        let before_text = before.join("\n");
+        assert!(
+            before_text.contains("queued · Q2 the message queued mid-turn"),
+            "{before_text}"
+        );
+        let echo = before
+            .iter()
+            .position(|l| l.contains("queued · Q2 the message"))
+            .expect("the echo is on the screen");
+        let reply = before
+            .iter()
+            .position(|l| l.contains("R2 the reply"))
+            .expect("the reply is on the screen");
+        assert!(
+            echo < reply,
+            "**the echo is ABOVE the reply — where its row will land**, and the first cut had it
+ below: {before_text}"
+        );
+
+        // The daemon appends the row at its step boundary and announces it.
+        a.apply(ServerFrame::Event(env(3, testing::appended("s.9", "user"))));
+        let after = a.screen(100, 24);
+        assert_eq!(
+            before,
+            after,
+            "**NOT ONE ROW CHANGES across the announcement** — that is the whole of *pure ui
+ desync*: the frame before it and the frame after it are the same frame"
+        );
     }
 
     /// **The prompt is on the screen before the reply to it — requirement R2.**
