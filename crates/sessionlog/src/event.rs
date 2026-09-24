@@ -572,6 +572,59 @@ pub struct CompactionTail {
     pub dropped: u64,
 }
 
+impl CompactionTail {
+    /// **WHY this compaction's tail is what it is, in one sentence** — or `None` when
+    /// there is nothing to explain.
+    ///
+    /// The operator, after an automatic compaction of leticl's wrote no tail at all:
+    /// *"the head should be able to say which treatment a compaction got. A reader who cannot
+    /// tell whether the tail was omitted by policy or by accident is in the position R41's job
+    /// pane was in: an absence with two causes and one appearance."*
+    ///
+    /// **Zero has three causes and they were one appearance.** `local_model` is R27's ruling
+    /// working; `nothing_fits` is the budget losing to a single item; `no_turns` is an empty
+    /// history. Nothing on any screen or in any row distinguished them, and this is the one
+    /// place both readers meet: `harnessd` writes it into the transcript's own note (which is
+    /// durable) and into the `compacted` sentence a head draws (which is not), so the two
+    /// cannot come to say different things about one compaction.
+    ///
+    /// **`budget` is silent on purpose.** The tail exists, the count beside it says how much,
+    /// and a sentence explaining that what fitted was what fitted is the furniture this file
+    /// keeps deleting.
+    ///
+    /// **An unknown value is printed raw**, per this struct's own rule: a head does not hold
+    /// the daemon's vocabulary, and dropping the fact or inventing one are the two things it
+    /// must not do.
+    pub fn why_line(&self) -> Option<String> {
+        match self.because.as_str() {
+            // R27's ruled split, and the reason has to be in the sentence: a reader who does
+            // not know the rule reads this as the head having lost their history.
+            "local_model" => Some(
+                "No verbatim tail: this conversation's turns go to the LOCAL model, and R27's \
+                 split gives the tail to a remote one only — a local model is bounded by the \
+                 KV cache, where a tail competes with the pressure that called this compaction."
+                    .into(),
+            ),
+            "nothing_fits" => Some(format!(
+                "No verbatim tail: the newest exchange by itself is larger than the whole tail \
+                 budget, and this engine never cuts an item in half. {carried} item(s) were in \
+                 the history it was chosen from.",
+                carried = self.carried
+            )),
+            "no_turns" => Some(
+                "No verbatim tail: there was nothing to carry — the history was empty."
+                    .into(),
+            ),
+            // A reason this build does not know, shown rather than swallowed.
+            other if !other.is_empty() => Some(format!(
+                "No verbatim tail, and the daemon gave a reason this build does not know: \
+                 `{other}`."
+            )),
+            _ => None,
+        }
+    }
+}
+
 /// **A compaction's account of itself, beside its sentence rather than inside it.**
 ///
 /// R27. The `Warning` that already announces a compaction carries a `detail` written for

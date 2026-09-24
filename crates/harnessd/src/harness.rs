@@ -973,6 +973,18 @@ pub struct ForkReport {
     /// Why the tail is what it is — [`ForkTail::because`], carried through so the report
     /// can put it on the wire without recomputing a decision that has already been made.
     pub tail_because: String,
+    /// **The tail as the WIRE describes it**, carrying the reason in the shape both readers
+    /// already share.
+    ///
+    /// `tail_because` above is the same fact as a bare string, and this is the object the
+    /// warning carries — `carried` plus `because` plus `dropped` — so the sentence a head
+    /// draws and the row this report becomes cannot say different things about one
+    /// compaction. [`letibot_sessionlog::event::CompactionTail::why_line`] is the one place
+    /// the reason becomes words.
+    ///
+    /// `None` for a fork that is not a compaction — a re-seat, a re-ingest — where a reason
+    /// would be a claim about a decision nobody made.
+    pub tail_why: Option<letibot_sessionlog::event::CompactionTail>,
 }
 
 /// What a compaction left behind: the fork's numbers and the summary turn's.
@@ -4753,7 +4765,34 @@ impl<'a> Harness<'a> {
         // newest exchanges verbatim: the reader can see both, and a note that
         // claims a region was replaced while showing it is the same class of
         // contradiction as the re-ingest case above.
+        // One implementation with the sentence the head is given: see
+        // `CompactionTail::why_line`, which both readers call.
+        let tail_why_text = (!tail.because.is_empty()).then(|| {
+            letibot_sessionlog::event::CompactionTail {
+                turns: Vec::new(),
+                carried: tail_items.len() as u64,
+                because: tail.because.to_string(),
+                dropped: 0,
+            }
+            .why_line()
+            .unwrap_or_default()
+        });
         let carried = match tail_items.len() {
+            // **WHY there is no tail, said in the row itself** — R41's shape one document
+            // over: an absence with two causes and one appearance. The `carried` clause below
+            // says how much when there is some; with none, this said nothing at all, so a
+            // reader of the record could not tell R27's ruling working from the budget losing
+            // to one item.
+            //
+            // **Here and not only on the wire, because this is the durable one.** The
+            // `compacted` warning is published to attached heads and the store has no events
+            // table: after a restart the transcript item is all a reader has, and it is where
+            // the question has to be answerable. `tail.because` is empty for a re-seat, which
+            // is not a compaction and gets no clause.
+            0 if !tail.because.is_empty() => format!(
+                " {}",
+                tail_why_text.unwrap_or_default()
+            ),
             0 => String::new(),
             n => format!(
                 " The last {n} item(s) of it follow this note VERBATIM — as they were \
@@ -4835,6 +4874,16 @@ impl<'a> Harness<'a> {
             base_tokens: self.session.ledger.len(),
             truncated: outcome.truncated,
             tail_items: tail_items.len(),
+            // The reason, in the wire's own shape — and `None` when there is no reason to
+            // give, which is a re-seat and a re-ingest (`ForkTail::NONE` passes `""`).
+            tail_why: (!tail.because.is_empty()).then(|| {
+                letibot_sessionlog::event::CompactionTail {
+                    turns: tail_turns.clone(),
+                    carried: tail_items.len() as u64,
+                    because: tail.because.to_string(),
+                    dropped: tail_split.map(|s| s.dropped as u64).unwrap_or(0),
+                }
+            }),
             tail_dropped: tail_split.map(|s| s.dropped),
             tail_turns,
             tail_because: tail.because.to_string(),

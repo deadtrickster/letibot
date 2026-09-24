@@ -860,3 +860,84 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
         said[0]
     );
 }
+
+/// **The transcript's own note says WHY it has no tail** — and this half is the DURABLE one.
+///
+/// The `compacted` warning reaches attached heads; the store has no events table. After a
+/// restart, the note in the new transcript is all a reader has — so with no tail it said
+/// nothing about one, and R27's ruling working was the same row as the budget losing to a
+/// single item. That is R41's shape one document over: an absence with three causes and one
+/// appearance.
+///
+/// The reason is CHOSEN here rather than hoped for from a fixture's sizes, which is the whole
+/// reason `ForkTail::because` is a parameter.
+#[test]
+fn the_compaction_note_says_why_it_has_no_tail() {
+    let dir = TempDir::new("harnessd-compact-why");
+    let path = dir.path().join("sessions.db");
+    for (because, want) in [
+        ("local_model", "LOCAL model"),
+        ("nothing_fits", "larger than the whole tail budget"),
+        ("no_turns", "nothing to carry"),
+    ] {
+        // **A fresh session per case**, because a fork replaces the transcript and the second
+        // fork would be reading the first one's note.
+        let session_id = format!("compact-why-{because}");
+        let cfg = config(&path, &session_id);
+        let parts = load_parts(&cfg);
+        let mut h = opened(&cfg, &parts);
+        let report = h
+            .fork_to_summary(
+                &outcome("## Objective\n- nothing carried"),
+                None,
+                None,
+                ForkTail {
+                    items: &[],
+                    split: None,
+                    because,
+                },
+            )
+            .expect("the fork lands");
+        assert_eq!(report.tail_items, 0, "this case carries no tail");
+        assert_eq!(report.tail_because, because);
+        let store = Store::open(&path).expect("reopening");
+        let words = store
+            .load_transcript(&report.transcript_id)
+            .expect("reading the fork")
+            .items;
+        let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+            panic!("the base's first item is the note");
+        };
+        assert!(
+            text.contains(want),
+            "a compaction with no tail did not say why ({because}): {text}"
+        );
+        assert!(
+            !text.contains("follow this note VERBATIM"),
+            "the note claims a tail it does not have: {text}"
+        );
+    }
+    // **And a fork that is not a compaction gets no clause at all.** A re-seat passes an empty
+    // `because`, and a reason for it would be a claim about a decision nobody made.
+    let session_id = "compact-why-reseat";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+    let report = h
+        .fork_to_summary(&outcome(""), None, None, ForkTail::NONE)
+        .expect("the re-seat lands");
+    let store = Store::open(&path).expect("reopening");
+    let words = store
+        .load_transcript(&report.transcript_id)
+        .expect("reading the fork")
+        .items;
+    let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+        panic!("the base's first item is the note");
+    };
+    for excuse in ["LOCAL model", "tail budget", "nothing to carry", "No verbatim tail"] {
+        assert!(
+            !text.contains(excuse),
+            "a re-seat got a tail's excuse (`{excuse}`): {text}"
+        );
+    }
+}

@@ -2140,6 +2140,16 @@ fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>)
              gone — so its first message answers something that is no longer there."
         ));
     }
+    // **And WHICH zero, when there is no tail.** This comment two paragraphs up claims the
+    // non-zero count is *"evidence of which path ran rather than a restatement of the policy
+    // (R27)"* — and that was true in one direction only: zero printed nothing, so policy and
+    // accident were one appearance, on the screen and in the record. See
+    // `CompactionTail::why_line`.
+    if r.fork.tail_items == 0
+        && let Some(line) = r.fork.tail_why.as_ref().and_then(|t| t.why_line())
+    {
+        said.push_str(&format!(" {line}"));
+    }
     if !r.summary_was_streamed {
         said.push_str(&format!(
             " Nothing of the summary turn reached this screen — it ran over a scratch \
@@ -2261,6 +2271,49 @@ mod the_wire_report {
     use crate::harness::{CompactReport, ForkReport};
     use letibot_sessionlog::event::CompactionTurn;
 
+    /// **Zero has three causes, and the sentence says which** — R41's shape one document
+    /// over, and the operator's own ask after an automatic compaction of leticl's wrote no
+    /// tail:
+    ///
+    /// *"the head should be able to say which treatment a compaction got. A reader who cannot
+    /// tell whether the tail was omitted by policy or by accident is in the position R41's job
+    /// pane was in: an absence with two causes and one appearance."*
+    ///
+    /// The comment above `compaction_said` claimed the non-zero count was *"evidence of which
+    /// path ran rather than a restatement of the policy (R27)"* — true in one direction only.
+    /// All three of these are `carried == 0` and they were one screen.
+    #[test]
+    fn a_compaction_with_no_tail_says_which_zero_it_is() {
+        let none = |because: &str| report("a summary", Vec::new(), 0, because);
+        let local = compaction_said(&none("local_model"), None);
+        let nothing = compaction_said(&none("nothing_fits"), None);
+        let empty = compaction_said(&none("no_turns"), None);
+        assert!(local.contains("LOCAL model"), "{local}");
+        assert!(local.contains("R27"), "the ruling must be named: {local}");
+        assert!(nothing.contains("larger than the whole tail budget"), "{nothing}");
+        assert!(empty.contains("nothing to carry"), "{empty}");
+        // **And they are three different sentences**, which is the whole requirement: an
+        // absence with one appearance was the defect.
+        assert_ne!(local, nothing);
+        assert_ne!(local, empty);
+        assert_ne!(nothing, empty);
+        // **`budget` stays silent**: the tail exists and the count beside it says how much, so
+        // a sentence explaining that what fitted was what fitted is furniture.
+        let with_tail = compaction_said(
+            &report("a summary", vec![CompactionTurn {
+                role: "operator".into(),
+                text: "hi".into(),
+            }], 1, "budget"),
+            None,
+        );
+        assert!(!with_tail.contains("No verbatim tail"), "{with_tail}");
+        assert!(with_tail.contains("carried over verbatim"), "{with_tail}");
+        // **A reason this build does not know is shown, not swallowed** — the wire's own rule
+        // for `because`, and the shape that would catch a daemon one version ahead.
+        let unknown = compaction_said(&none("something_new"), None);
+        assert!(unknown.contains("something_new"), "{unknown}");
+    }
+
     fn report(summary: &str, tail: Vec<CompactionTurn>, carried: usize, because: &str) -> CompactReport {
         CompactReport {
             fork: ForkReport {
@@ -2275,6 +2328,14 @@ mod the_wire_report {
                 // derives this from the plan, and a plan that carries nothing has no
                 // split. Set here the same way, so the test cannot assert one.
                 tail_dropped: (carried > 0).then_some(2),
+                // The same reason in the wire's shape, built here the way the daemon builds
+                // it so a test of the sentence is a test of what a reader meets.
+                tail_why: (!because.is_empty()).then(|| letibot_sessionlog::event::CompactionTail {
+                    turns: tail.clone(),
+                    carried: carried as u64,
+                    because: because.into(),
+                    dropped: u64::from(carried > 0) * 2,
+                }),
                 tail_turns: tail,
                 tail_because: because.into(),
             },
