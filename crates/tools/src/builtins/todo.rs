@@ -61,6 +61,71 @@ impl TodoBoard {
     }
 }
 
+/// **The plan a turn ended without finishing**, as a message for the model, or `None`
+/// when there is nothing to say — which is the common case and is meant to be.
+///
+/// The operator, on what this is for: *"i guess the expectation from harness can be like
+/// this - that if model stops the turn while there are todos pending it gets respective
+/// notification."*
+///
+/// **Why this is not a convenience.** A plan is a thing a model writes and then may
+/// quietly abandon: the turn ends, the list still says `in_progress`, and nothing in the
+/// loop says a word about it. The plan's only enforcement was the model's own attention,
+/// which is exactly the thing that fails on a long session — so *the model forgot what it
+/// was doing* was a whole class of failure the loop had no mechanism against. This makes
+/// the list a contract at the one moment the contract can be honoured: the turn boundary.
+///
+/// **The trigger is PENDING WORK**, and that is the whole of the condition. The obvious
+/// way to get this wrong is a notification that fires on every turn end regardless of the
+/// list — which teaches the model to clear its todos to make the message stop, worse than
+/// no check at all. An empty list, or one where everything is `Completed`, is silent.
+///
+/// **And it is answerable**, which is the other half of the same point: the model is told
+/// what to do about it. *Do them*, *mark them done*, and *drop what you no longer mean to
+/// do* are the three honest answers, and without the third the check is a loop a model
+/// escapes by lying about its own statuses — the failure it exists to prevent. A model
+/// that is deliberately stopping is told to say so, which is a fourth answer the harness
+/// can read: it is the turn's own reply, and the next turn is a new decision.
+///
+/// [`TodoBoard::snapshot`] is the state, taken at the turn boundary rather than watched,
+/// so a list written and finished inside one turn never produces a message.
+pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
+    let open: Vec<&TodoItem> = todos
+        .iter()
+        .filter(|t| t.status != TodoStatus::Completed)
+        .collect();
+    if open.is_empty() {
+        return None;
+    }
+    let mut out = format!(
+        "[todo check] this turn is finished and {} of {} item(s) are not:\n",
+        open.len(),
+        todos.len()
+    );
+    for t in open.iter().take(MAX_PLAN_LINES) {
+        let state = match t.status {
+            TodoStatus::InProgress => " (in progress)",
+            _ => "",
+        };
+        out.push_str(&format!("  - {}{}\n", t.content.trim(), state));
+    }
+    if open.len() > MAX_PLAN_LINES {
+        out.push_str(&format!("  … and {} more\n", open.len() - MAX_PLAN_LINES));
+    }
+    out.push_str(
+        "do them, or mark them done, or drop the ones you no longer mean to do — a plan \
+         left open is a plan nobody is following. If you are stopping here deliberately, \
+         say why in your reply.",
+    );
+    Some(out)
+}
+
+/// How many unfinished items the message names before it counts the rest. The same
+/// reasoning as `intent`'s `MAX_FINDINGS`: a model that wrote forty items needs to know
+/// the plan is open, not to be read its own list back. Six is what that one uses, and two
+/// checks in one session should not disagree about how much of a list is worth printing.
+const MAX_PLAN_LINES: usize = 6;
+
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
     board: Arc<TodoBoard>,
@@ -279,6 +344,93 @@ mod tests {
         // Nothing was written by any refusal.
         assert_eq!(board.version(), 0);
         assert!(board.snapshot().is_empty());
+    }
+
+    // -- the turn boundary ------------------------------------------------
+
+    fn item(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status,
+        }
+    }
+
+    /// **The trigger is pending work and nothing else.** The obvious way to get this
+    /// wrong is a message that fires whenever a turn ends, which teaches the model to
+    /// clear its todos to make it stop — worse than no check at all. So the silence cases
+    /// are asserted first and with the same weight as the firing one.
+    #[test]
+    fn a_plan_with_nothing_open_has_nothing_to_say() {
+        assert!(unfinished_plan(&[]).is_none(), "no plan at all");
+        assert!(
+            unfinished_plan(&[
+                item("one", TodoStatus::Completed),
+                item("two", TodoStatus::Completed),
+            ])
+            .is_none(),
+            "a finished plan is not a finding, it is the answer"
+        );
+    }
+
+    /// And when it does fire it names what is open, because a count alone is a nag: the
+    /// model cannot act on *three items* without being told which three.
+    #[test]
+    fn an_open_plan_names_what_is_open_and_what_to_do_about_it() {
+        let msg = unfinished_plan(&[
+            item("wire the check", TodoStatus::InProgress),
+            item("test it", TodoStatus::Pending),
+            item("write it up", TodoStatus::Completed),
+        ])
+        .expect("one in progress and one pending is work left open");
+        assert!(msg.contains("2 of 3"), "the count, against the list: {msg}");
+        assert!(msg.contains("wire the check (in progress)"), "{msg}");
+        assert!(msg.contains("test it"), "{msg}");
+        assert!(
+            !msg.contains("write it up"),
+            "a completed item is not part of what is open: {msg}"
+        );
+        // **all three honest answers are offered, and the third is the one that keeps this
+        // from being a trap.** Without *drop what you no longer mean to do* the model's only
+        // exit is to lie about its own statuses, which is the failure this exists to stop.
+        assert!(msg.contains("do them"), "{msg}");
+        assert!(msg.contains("mark them done"), "{msg}");
+        assert!(msg.contains("drop the ones you no longer mean to do"), "{msg}");
+        assert!(
+            msg.contains("deliberately"),
+            "and stopping on purpose is answerable: {msg}"
+        );
+        assert!(msg.starts_with("[todo check]"), "the house prefix: {msg}");
+    }
+
+    /// A long plan is a COUNT and a few lines, not the model's own list read back to it —
+    /// the same rule (and the same number) `intent`'s steering follows.
+    #[test]
+    fn a_long_plan_is_capped_and_says_how_many_it_did_not_print() {
+        let todos: Vec<TodoItem> = (0..10)
+            .map(|i| item(&format!("item {i}"), TodoStatus::Pending))
+            .collect();
+        let msg = unfinished_plan(&todos).expect("ten open items is a finding");
+        assert!(msg.contains("10 of 10"), "{msg}");
+        assert!(msg.contains("and 4 more"), "ten minus the six printed: {msg}");
+        assert!(msg.contains("item 5"), "{msg}");
+        assert!(
+            !msg.contains("item 6"),
+            "the seventh is counted, not named: {msg}"
+        );
+    }
+
+    /// **A list written and finished inside the turn says nothing**, which is what taking a
+    /// SNAPSHOT at the boundary buys: the check asks the state of the plan at the moment the
+    /// turn stopped, not what the model did with it on the way.
+    #[test]
+    fn a_plan_written_and_completed_says_nothing() {
+        let board = TodoBoard::new(vec![]);
+        board.replace(vec![item("do the thing", TodoStatus::InProgress)]);
+        board.replace(vec![item("do the thing", TodoStatus::Completed)]);
+        assert!(
+            unfinished_plan(&board.snapshot()).is_none(),
+            "the plan as it STANDS is what is asked about"
+        );
     }
 
     #[test]

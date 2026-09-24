@@ -53,7 +53,7 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
-use letibot_tools::builtins::todo::TodoBoard;
+use letibot_tools::builtins::todo::{unfinished_plan, TodoBoard};
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,
@@ -5651,6 +5651,13 @@ impl<'a> Harness<'a> {
     /// * `IntentLedger::reconcile(turn_id, "")` is the tool-declared half alone,
     ///   which that method's own doc calls *"the deterministic one"*.
     ///
+    /// **And it is TWO questions, not one** — both of them *did this turn stop with
+    /// something it said it would do still open*. The ledger answers it of the intentions
+    /// the turn declared; `todo::unfinished_plan` answers it of the model's OWN plan,
+    /// which is the larger half because the plan is where a long session's work actually
+    /// lives. Both findings are true and the model should hear both, so they are joined
+    /// rather than one being chosen over the other; either alone is the message.
+    ///
     /// The deterministic half is the default because of the rule this whole strand
     /// is under: **nothing widens by default.** The prose heuristic can only fire on
     /// a turn that ran nothing at all, which for a plain answer is the normal case,
@@ -5663,7 +5670,21 @@ impl<'a> Harness<'a> {
     /// used `todo` or `goal`, and those are seated only by a role that names them.
     /// A default `letibot` session is behaviourally identical.
     fn close_the_turn(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items)
+        self.close_the_turn_with(turn_id, items, &unfinished_plan(&self.todos.snapshot()))
+    }
+
+    /// The same, with the plan's finding supplied — so the join is reachable from a test
+    /// without a board or a model server.
+    fn close_the_turn_with(
+        &self,
+        turn_id: &str,
+        items: &[TranscriptItem],
+        plan: &Option<String>,
+    ) -> Option<String> {
+        join_steering(
+            steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items),
+            plan.clone(),
+        )
     }
 
     /// The authorisation trail this session would show an adjudicator right now.
@@ -6480,6 +6501,37 @@ fn steer_for_turn(
     }
 }
 
+/// **The two findings of one turn boundary, joined.** `None` when neither has anything to
+/// say, which is the common case and is meant to be.
+///
+/// * **The declared intention first, the plan second.** The ledger's finding names a
+///   specific thing the turn promised and did not do; `todo::unfinished_plan` is the state
+///   of the whole list. Specific before general is the order a reader can act on, and it is
+///   the order they appear in the transcript when both fire.
+/// * **Both are said, not one chosen.** They are different facts about the same turn — *you
+///   promised X and did not* and *your plan is still open* — and a turn can be both. Picking
+///   one would leave the model to rediscover the other on the next turn, which is the turn
+///   the check exists to save.
+/// * **Either alone is the whole message**, so a session with no intent ledger and a session
+///   with no plan are both served by the one path.
+/// * **Joining is what keeps this inside the one-nudge budget.** The caller has `nudges_left
+///   = 1` per user turn, on the rule its own comment states — *"one is the error signal; two
+///   is the harness insisting… if the model explains itself and stops, that is a legitimate
+///   answer to the check."* Choosing between the two findings would spend that single nudge
+///   on one of them and leave the other to be rediscovered next turn; saying both costs one
+///   nudge and is the reason this is a join rather than a priority.
+///
+/// A free function for the reason `steer_for_turn` is one: the choice it makes is the choice
+/// worth testing, and testing it through a `Harness` would need a model server.
+fn join_steering(intent: Option<String>, plan: Option<String>) -> Option<String> {
+    match (intent, plan) {
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+    }
+}
+
 /// A provider backend from its config: the preset, the key (a missing one is a
 /// refusal naming the variable and the file), the model, the switches.
 pub fn build_provider(
@@ -7104,6 +7156,42 @@ mod tests {
         assert!(e.contains("src/main.rs"), "it names the evidence: {e}");
         assert!(e.contains("0 of 2"), "with its denominator: {e}");
         assert!(!e.contains("without answering"), "{e}");
+    }
+
+    /// **One turn boundary, two findings, and the join between them.** The operator's own
+    /// ask is what this is for: *"if model stops the turn while there are todos pending it
+    /// gets respective notification."* The intent half already existed; the plan half is new,
+    /// and what is asserted here is how the two are put together — which is the part neither
+    /// of the two `unfinished_plan` tests can reach.
+    #[test]
+    fn the_two_findings_of_a_turn_boundary_are_both_said_and_said_in_order() {
+        let plan =
+            Some("[todo check] this turn is finished and 1 of 2 item(s) are not".to_string());
+        let intent = Some("[intent check] this turn declared 1 item(s)".to_string());
+
+        // Neither, which is the common case and is meant to be silent.
+        assert!(join_steering(None, None).is_none());
+        // Either alone is the whole message: a session with no plan and a session with no
+        // ledger are both served by this one path.
+        assert_eq!(
+            join_steering(None, plan.clone()).unwrap(),
+            plan.clone().unwrap()
+        );
+        assert_eq!(
+            join_steering(intent.clone(), None).unwrap(),
+            intent.clone().unwrap()
+        );
+        // **And both, which is the case that has to be got right**: a turn can promise
+        // something it did not do AND leave its own plan open, and the model should hear both
+        // rather than one of them.
+        let both = join_steering(intent.clone(), plan.clone()).unwrap();
+        assert!(both.contains("[intent check]"), "{both}");
+        assert!(both.contains("[todo check]"), "{both}");
+        assert!(
+            both.find("[intent check]").unwrap() < both.find("[todo check]").unwrap(),
+            "**the specific finding is read first** — what the turn promised, then the state \
+             of the whole list: {both}"
+        );
     }
 
     /// **An unattached encoder is loud, not silent.** The state this is asserting
