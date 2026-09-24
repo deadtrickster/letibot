@@ -941,3 +941,97 @@ fn the_compaction_note_says_why_it_has_no_tail() {
         );
     }
 }
+
+/// **A switch clears the token ratio, in BOTH directions** — ruled 2026-09-24.
+///
+/// `ledger_scale` is a measurement: `(this box's ledger tokens, the model's own prompt
+/// tokens)` for one prompt on one model. A ratio from one model is not evidence about another,
+/// and carrying it forward presents a stale measurement as current. **Cleared rather than
+/// re-derived**, because there is nothing to derive it from at the moment of the switch — the
+/// first round on the new model is what produces it — and inventing one would be a guess
+/// wearing a number's clothes.
+///
+/// Both directions, and the second had a live defect behind it: the per-round setter was
+/// guarded on `self.provider.is_some()`, so a LOCAL round never refreshed the ratio and a
+/// provider → local switch kept the provider's scale for the rest of the session.
+#[test]
+fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
+    let dir = TempDir::new("harnessd-switch-scale");
+    let path = dir.path().join("sessions.db");
+    let cfg = config(&path, "switch-scale-test");
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+
+    // A measurement exists — as it would after any metered round.
+    h.config_mut().ledger_scale = Some((1_000_699, 671_280));
+    assert!(h.config().tokens_are_converted(), "the fixture is scaled");
+
+    // **A switch that CANNOT be built changes nothing**, which is this method's own promise:
+    // a provider whose key is missing is refused, and a scale dropped for a refusal would be
+    // a change made by a thing that did not happen.
+    let before = h.config().ledger_scale;
+    let refused = h.set_provider(Some(letibot_harnessd::config::ProviderConfig {
+        name: "deepseek".into(),
+        model: None,
+        // An empty key is not a key: `keys::resolve` falls through to the environment and the
+        // file, and neither has one for this name in a test.
+        api_key: Some(String::new()),
+        thinking: false,
+    }));
+    if refused.is_err() {
+        assert_eq!(
+            h.config().ledger_scale,
+            before,
+            "a refused switch dropped the measurement"
+        );
+    }
+
+    // **A switch that CAN be built clears it.** An explicit key resolves without any network,
+    // so this is the success path and not a mock of it.
+    let line = h
+        .set_provider(Some(letibot_harnessd::config::ProviderConfig {
+            name: "deepseek".into(),
+            model: None,
+            api_key: Some("test-key-not-used-on-the-wire".into()),
+            thinking: false,
+        }))
+        .expect("a provider with a key on the flag builds");
+    assert!(!line.is_empty(), "the switch says what answers now");
+    assert_eq!(
+        h.config().ledger_scale,
+        None,
+        "the switch carried a measurement made on another model"
+    );
+    // **And the fact is SAYABLE**, which is the ruling's other half: a reader of an unscaled
+    // number must be able to tell it from a calibrated one.
+    assert!(
+        h.config().tokens_are_unscaled(),
+        "a metered model with no measurement must say so"
+    );
+    assert!(
+        !h.config().tokens_are_converted(),
+        "and it is not converted"
+    );
+
+    // **Back to local clears it too** — the direction that had the live defect.
+    h.set_provider(None).expect("local is not refused");
+    assert_eq!(h.config().ledger_scale, None);
+    // And a local session is not "unscaled" in the sense that needs saying: its two counts
+    // agree by construction, so an unconverted number there is the whole truth.
+    assert!(
+        !h.config().tokens_are_unscaled(),
+        "a local session's counts need no measurement and are not a warning"
+    );
+    // **And a LOCAL round may set the ratio.** The setter's guard used to be
+    // `self.provider.is_some()`, so this assignment was impossible and a session that had ever
+    // been switched ran unscaled for ever.
+    h.config_mut().ledger_scale = Some((1_000_699, 1_000_699));
+    assert!(
+        !h.config().tokens_are_unscaled(),
+        "a local round's own measurement must clear the unscaled state"
+    );
+    assert!(
+        !h.config().tokens_are_converted(),
+        "a ratio of one is not a conversion: the two counts are the same number"
+    );
+}

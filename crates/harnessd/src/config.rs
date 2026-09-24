@@ -771,6 +771,22 @@ impl Config {
             .is_some_and(|v| v != 1_000_000)
     }
 
+    /// **A metered model with no measurement of the ratio yet** — the window between a
+    /// switch and the first round on the new model.
+    ///
+    /// **Not the same question as `!tokens_are_converted()`**, which is why it is its own
+    /// predicate: a local session's two counts agree by construction, so an unconverted
+    /// number there is the whole truth, while an unconverted number on a metered model is a
+    /// ledger figure standing in for a provider's — up to the clamp's factor of four out, in
+    /// the direction that compacts early.
+    ///
+    /// The ruling's own words: *"until then the unscaled count stands and anything that reads
+    /// it must be able to say it is unscaled rather than silently treating it as
+    /// calibrated."*
+    pub fn tokens_are_unscaled(&self) -> bool {
+        self.provider.is_some() && self.ledger_scale.is_none()
+    }
+
     pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
         let (ledger, provider) = self.ledger_scale?;
         if ledger == 0 || provider == 0 {

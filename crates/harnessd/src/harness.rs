@@ -3489,9 +3489,28 @@ impl<'a> Harness<'a> {
         &mut self,
         choice: Option<crate::config::ProviderConfig>,
     ) -> Result<String, HarnessError> {
+        // **A switch clears the ratio, in BOTH directions** — ruled 2026-09-24, and the
+        // reason is this document's own: **a measurement made on one model is not evidence
+        // about another.** `ledger_scale` is `(ledger tokens, the model's prompt tokens)` for
+        // one prompt on one model, and carrying it across a switch presents a stale
+        // measurement as a current one.
+        //
+        // **Not re-derived.** There is nothing to re-derive it FROM at the moment of the
+        // switch — the first round on the new model is what produces it — so "re-derive"
+        // would mean inventing a ratio, which is a guess wearing a number's clothes. Cleared,
+        // and the first round sets it; until then the unscaled count stands, which
+        // `Config::planning_window` already returns when the scale is `None`, and
+        // `Config::tokens_are_unscaled` is how a reader says so rather than treating it as
+        // calibrated.
+        //
+        // **The clear is inside each arm and not before the `match`**, because this method
+        // promises that a switch which cannot be built changes nothing — and a scale dropped
+        // for a provider whose key turned out to be missing would be a change made by a
+        // refusal.
         match choice {
             None => {
                 self.provider = None;
+                self.cfg.ledger_scale = None;
                 self.cfg.provider = None;
                 // Back to the server's own window, which is the one its `/props`
                 // reported at startup. Restored rather than recomputed: the local
@@ -3530,6 +3549,8 @@ impl<'a> Harness<'a> {
                 // cloud model was measured against the llama-server's window, and
                 // compacted at the wrong time or not at all.
                 line.push_str(&self.retune_window(&pc));
+                // After everything that can fail, and before anything reads it.
+                self.cfg.ledger_scale = None;
                 self.provider = Some(p);
                 self.cfg.provider = Some(pc);
                 // **Say it, or the head goes on drawing the old name.** The
@@ -5082,6 +5103,21 @@ impl<'a> Harness<'a> {
                              ledger says {resident} of {window}, and it over-counts \
                              because it holds the reasoning the provider is not sent)"
                         )
+                    } else if self.cfg.tokens_are_unscaled() {
+                        // **The switch window, named rather than presented as calibrated.**
+                        // No round has run on this model yet, so these are the ledger's own
+                        // counts against a window measured on the model before it — and a
+                        // reader who is not told cannot tell that from a measured sentence.
+                        format!(
+                            " (these are this box's own ledger counts: no round has run on \
+                             {model} since it took over, so nothing has measured how its \
+                             tokens relate to the ledger's. One round sets it)",
+                            model = self
+                                .provider
+                                .as_ref()
+                                .map(|p| format!("{}/{}", p.name(), p.model()))
+                                .unwrap_or_default()
+                        )
                     } else {
                         String::new()
                     };
@@ -5257,7 +5293,14 @@ impl<'a> Harness<'a> {
             // one and dropped from the other — so this is the only honest way to
             // convert between them, and it is a measurement rather than a
             // constant. See `Config::ledger_scale`.
-            if self.provider.is_some() && ok.metrics.prompt_tokens > 0 {
+            // **Any round, local included.** The guard here used to be
+            // `self.provider.is_some()`, which meant a local round never refreshed the ratio:
+            // after a provider → local switch the provider's scale stayed for the rest of the
+            // session, and a session that had never been switched ran unscaled for ever. The
+            // ledger and the server count the same prompt, so a local round measures a ratio
+            // that is 1 by construction — and measuring it rather than assuming it is the
+            // same rule the rest of this field follows.
+            if ok.metrics.prompt_tokens > 0 {
                 self.cfg.ledger_scale =
                     Some((self.session.ledger.len() as u64, ok.metrics.prompt_tokens));
             }
