@@ -1164,6 +1164,63 @@ mod tests {
         assert!(!a.try_withdraw_command());
     }
 
+    /// **A PROMPT TYPED AFTER THE TAKE-BACK IS NOT ONE OF THE PROMPTS IT NAMES.**
+    ///
+    /// The take-back is a RECALL OF WHAT IS QUEUED, and its whole point is that the
+    /// operator gets those words back in the composer to edit. What they send next is
+    /// the edited copy — or a new message entirely — and it arrives in this queue
+    /// *after* the withdraw, because the two go out on one socket in the order they
+    /// were typed. Dropping it loses what the operator wrote with no frame to say so,
+    /// and the head keeps drawing `queued` for a row that is never coming.
+    ///
+    /// **Measured, on the operator's own session.** They queued
+    /// `lol, it is a bag`, pressed Up to fix the typo, and sent `lol, it is a bug`.
+    /// The edited copy never became a transcript row — the two messages they sent
+    /// after it became rows `#t20.2966` and `#t20.2979` — so their screen said
+    /// `queued · lol, it is a bug` for the rest of the session.
+    #[test]
+    fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
+        let r = reg();
+        let a = r.create("s-a", "", SessionWiring::default()).unwrap();
+        let ha = a.attach("tui", "alice", Caps::default(), 0);
+
+        // the message the operator wants back
+        a.submit(
+            &ha.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "lol, it is a bag".into(),
+            },
+        );
+        // Up — the recall itself
+        a.submit(&ha.head_id, "c2", 0, CommandKind::WithdrawPrompts);
+        // and the corrected copy, typed after the recall and sent after it
+        a.submit(
+            &ha.head_id,
+            "c3",
+            0,
+            CommandKind::Prompt {
+                text: "lol, it is a bug".into(),
+            },
+        );
+
+        assert!(a.try_withdraw_command(), "the take-back was acted on");
+        let left: Vec<_> = (0..3).filter_map(|_| a.try_steering_command()).collect();
+        assert_eq!(
+            left.len(),
+            1,
+            "the recalled prompt is gone and the corrected copy is not: {left:?}"
+        );
+        assert_eq!(
+            left[0].kind,
+            CommandKind::Prompt {
+                text: "lol, it is a bug".into()
+            },
+            "the prompt typed AFTER the take-back survives it"
+        );
+    }
+
     #[test]
     fn a_ring_whose_command_was_already_drained_does_not_return_an_empty_wake() {
         // What happens for real: a turn is running, `HubSteering` drains the queue

@@ -1287,17 +1287,47 @@ impl Hub {
     /// engine has not seen them yet. Scanned rather than popped-and-dropped like
     /// [`Self::try_steering_command`], and scoped to the head that asked, so one
     /// head's recall never takes another head's queued prompt.
+    ///
+    /// **And scoped to the queue as it stood, not to the head.** *"Still-queued"* is
+    /// positional: the recall names the prefix that was in front of it, and a prompt
+    /// the operator sent afterwards is the corrected copy they just re-submitted —
+    /// never something they asked to take back. See the body for the measurement.
     pub fn try_withdraw_command(&self) -> bool {
         let mut g = self.lock();
-        let Some(cmd) = (0..g.commands.len())
+        let Some(at) = (0..g.commands.len())
             .find(|&i| matches!(g.commands[i].kind, CommandKind::WithdrawPrompts))
-            .and_then(|i| g.commands.remove(i))
         else {
             return false;
         };
-        g.commands.retain(|c| {
-            !(c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. }))
-        });
+        let cmd = g
+            .commands
+            .remove(at)
+            .expect("the index was just found in this deque");
+        // **ONLY THE PROMPTS THAT WERE QUEUED WHEN THE OPERATOR PRESSED UP — the
+        // prefix, `0..at`.**
+        //
+        // *"Still-queued"* is the whole content of the rule, and it is positional: a
+        // prompt sitting here at the moment of the recall is one the operator meant to
+        // take back, and a prompt submitted AFTER it is the corrected copy they just
+        // sent — or a new message entirely. The two travel on one socket in the order
+        // they were typed, so *after the withdraw* is exactly *not named by it*.
+        //
+        // Dropping the whole head's prompts is not a small overreach: the operator
+        // gets no frame saying their message was thrown away, so the head goes on
+        // drawing `queued` for a row that is never coming. **Measured on the
+        // operator's own session** — they queued `lol, it is a bag`, pressed Up to fix
+        // the typo, and sent `lol, it is a bug`; the corrected copy never became a
+        // transcript row, while the two messages sent after it did.
+        let mut kept = VecDeque::with_capacity(g.commands.len());
+        for (i, c) in g.commands.drain(..).enumerate() {
+            let named = i < at
+                && c.head_id == cmd.head_id
+                && matches!(c.kind, CommandKind::Prompt { .. });
+            if !named {
+                kept.push_back(c);
+            }
+        }
+        g.commands = kept;
         true
     }
 
