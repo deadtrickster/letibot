@@ -98,6 +98,10 @@ struct Observation {
     repeat_call: bool,
     /// This turn had already seen these exact result bytes.
     repeat_payload: bool,
+    /// The call was BACKGROUNDED — handed to the job watcher and still running. See
+    /// `end_round` for why this is its own field rather than a third reading of
+    /// `effect`.
+    backgrounded: bool,
     /// `Ok`, by the ledger's predicate.
     effect: bool,
 }
@@ -170,14 +174,43 @@ impl ProgressDetector {
             repeat_call,
             repeat_payload,
             effect: is_effect(outcome),
+            backgrounded: matches!(outcome, ToolOutcome::Backgrounded { .. }),
         });
     }
 
     /// Close the round and score it. Call once per round that ran tools.
     pub fn end_round(&mut self) -> Round {
         let pending = std::mem::take(&mut self.pending);
-        // The rule, in one line: an `Ok` carrying bytes this turn has not seen.
-        if pending.iter().any(|o| o.effect && !o.repeat_payload) {
+        // The rule, in one line: an `Ok` carrying bytes this turn has not seen — **or a
+        // round that STARTED A BACKGROUND JOB**.
+        //
+        // **`is_effect` cannot answer that, and asking it was a false positive.** The
+        // predicate is the intent ledger's, and from the ledger's side a `backgrounded`
+        // outcome is not an effect at all: the job was handed off and has not produced
+        // anything yet, so nothing can be recorded as done. That is right for a ledger
+        // about declared intentions and wrong here, where the question is *did this round
+        // tell the model something it did not know* — and a backgrounded call does, in the
+        // strongest sense: it says a job exists, names its handle, and the model can go and
+        // read it.
+        //
+        // MEASURED on the operator's own session, and it is what the nudge was complaining
+        // about: four rounds in a row, each backgrounding one job:
+        //
+        //     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
+        //     not already seen (4 backgrounded)
+        //
+        // Four jobs started, four rounds scored STALLED, and the turn was one round from
+        // being stopped for looping. **`backgrounded` was printed in the evidence while
+        // failing to be the thing that counted**, which is the shape of the bug: the
+        // instrument knew and the rule did not ask.
+        //
+        // `repeat_payload` still applies: backgrounding the same command twice with no
+        // other tool call in between is quiet, and the handle in the notice (which is what
+        // makes two of them differ) is not an excuse to call every round progress.
+        if pending
+            .iter()
+            .any(|o| (o.effect || o.backgrounded) && !o.repeat_payload)
+        {
             self.run = 0;
             self.window.clear();
             Round::Progress
@@ -392,6 +425,70 @@ mod tests {
 
     fn ok() -> ToolOutcome {
         ToolOutcome::Ok
+    }
+
+    /// **Starting a background job is progress**, and the operator's own session is where it
+    /// was measured: four rounds in a row, each backgrounding one job, scored as four STALLED
+    /// rounds and drew the nudge —
+
+    ///     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
+    ///     not already seen (4 backgrounded)
+
+    /// Four jobs started, and the turn one round from being stopped for looping.
+    ///
+    /// The cause was `is_effect`, which is the intent ledger's predicate and answers a
+    /// different question: from the ledger's side a backgrounded outcome is not an effect,
+    /// because the job was handed off and has produced nothing to record as done. Here the
+    /// question is whether the round told the model something new, and a job handle is new.
+    #[test]
+    fn starting_a_background_job_is_not_a_stalled_round() {
+        let mut d = ProgressDetector::new(5);
+        for i in 0..6 {
+            d.observe(
+                &call(
+                    "bash",
+                    &format!(r#"{{"command":"sleep {i}","background":true}}"#),
+                ),
+                &ToolOutcome::Backgrounded {
+                    handle: format!("j{}", 100 + i),
+                    ran_for_ms: 120,
+                    how: letibot_transcript::Backgrounding::Asked,
+                    next: "carry on".into(),
+                },
+                // the notice names the handle, which is what makes two of them differ
+                &format!("as `j{}` — carry on", 100 + i),
+            );
+            assert!(
+                matches!(d.end_round(), Round::Progress),
+                "round {i} started a job and was scored stalled"
+            );
+        }
+        assert_eq!(d.stalled_run(), 0);
+        assert!(!d.exhausted());
+    }
+
+    /// The other half: backgrounding the SAME command twice in a row, with nothing else
+    /// between, is quiet — the fix is not a licence to call every round progress.
+    #[test]
+    fn the_same_background_call_twice_is_still_quiet() {
+        let mut d = ProgressDetector::new(5);
+        for _ in 0..3 {
+            d.observe(
+                &call("bash", r#"{"command":"sleep 9","background":true}"#),
+                &ToolOutcome::Backgrounded {
+                    handle: "j7".into(),
+                    ran_for_ms: 120,
+                    how: letibot_transcript::Backgrounding::Asked,
+                    next: "carry on".into(),
+                },
+                "as `j7` — carry on",
+            );
+            d.end_round();
+        }
+        // **The FIRST one is still progress and the repeats are not** — which is the rule
+        // read correctly rather than a leniency: that round told the model `j7` exists, and
+        // the two after it told it the same thing again.
+        assert_eq!(d.stalled_run(), 2, "identical bytes are not progress");
     }
 
     #[test]
