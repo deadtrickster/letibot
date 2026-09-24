@@ -2736,7 +2736,13 @@ impl<'a> Harness<'a> {
         h.publish_settings();
         h.publish_jobs();
         if h.resumed.is_some() {
-            h.republish();
+            // **The RESUME's own sentence, and it is not the carry's.** The operator read the
+            // carry's wording here and asked the obvious question — *"why it was decided to carry
+            // the conversation to the new prompt?"* — about an operation that rebuilds no prompt:
+            // a resume re-announces stored rows so the head can draw the conversation it already
+            // had. Naming the wrong operation is the same defect the `Filling` event was written
+            // to end, one layer up: an indicator must be the fact, not a rendering of the fact.
+            h.republish("restoring the stored conversation");
         }
         // **R6: a session whose id marks an opencode conversation reads it in.**
         //
@@ -3097,23 +3103,23 @@ impl<'a> Harness<'a> {
     /// replay of the turns that produced it, and inventing turn boundaries here would
     /// put timings on the screen that no clock measured.
     ///
-    /// **And it says what it is doing.** A resume or a re-seat announces thousands of
-    /// rows, and that is a real wait on a real session — so the operation is named here,
-    /// by the daemon that is doing it, rather than left for a head to infer from the
-    /// body-less rows it happens to see. One `Filling` per row is the counter; the head
-    /// draws it whenever the total is large enough to be worth a bar.
-    fn republish(&self) {
+    /// **And it says what it is doing** — in the caller's words, because the callers are
+    /// different operations. A resume re-announces stored rows so an attaching head can draw
+    /// the conversation; a re-seat carries that conversation onto a rebuilt prompt. Both
+    /// announce thousands of rows and both are a real wait on a real session, but only one of
+    /// them rebuilds a prompt, and a single sentence for the two told the operator they were
+    /// watching the other one. That is why `what` is a parameter: **the layer that owns the
+    /// fact states it**, which is this event's own rule.
+    ///
+    /// One `Filling` per row is the counter; the head draws it whenever the total is large
+    /// enough to be worth a bar.
+    fn republish(&self, what: &str) {
         let total = self.session.ledger.rows().len() as u64;
         for (i, row) in self.session.ledger.rows().iter().enumerate() {
             let Some(item) = self.session.items.get(i) else {
                 continue;
             };
-            self.filling(
-                "carrying the conversation onto the new prompt",
-                "rows",
-                i as u64 + 1,
-                total,
-            );
+            self.filling(what, "rows", i as u64 + 1, total);
             self.hub
                 .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
                     item_id: row.item_id.clone(),
