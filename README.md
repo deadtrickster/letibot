@@ -62,52 +62,6 @@ cargo build --release
 Requires Rust 1.98 and edition 2024. The model endpoint is any OpenAI-shaped server; the dialects
 exist because the local ones disagree about how a tool call is spelled.
 
-## A sample of the code
-
-The daemon has one worker and **one blocking call**, and that call takes the clock as an input.
-That is what lets it act on a *pause* and not only on an event — which is the difference between a
-check that runs after every turn and a check that runs when nobody is waiting:
-
-```rust
-pub enum WorkOrIdle {
-    Work(Work),
-    Idle,
-    Closed,
-}
-
-/// The command queue is drained before the deadline is looked at, so a head that
-/// pressed enter is served at once — the ordering `Bell::next_any` already keeps
-/// between work and wakes, now kept between work and the clock.
-pub fn next_work_until(&self, deadline: Option<Instant>) -> WorkOrIdle {
-    loop {
-        match self.bell.next_any_until(deadline) {
-            RingWait::Closed => return WorkOrIdle::Closed,
-            RingWait::Idle => return WorkOrIdle::Idle,
-            RingWait::Ring(Ring::Open(id)) => return WorkOrIdle::Work(Work::Open(id)),
-            // A wake for a session this registry does not hold is dropped, the
-            // same way a command for one is: the session is gone and there is
-            // nothing to wake.
-            RingWait::Ring(Ring::Woken(id)) => {
-                if self.get(&id).is_some() {
-                    return WorkOrIdle::Work(Work::Woken(id));
-                }
-            }
-            RingWait::Ring(Ring::Command(id)) => {
-                let Some(hub) = self.get(&id) else { continue };
-                if let Some(cmd) = hub.try_command() {
-                    self.set_default(&id);
-                    return WorkOrIdle::Work(Work::Command(id, cmd));
-                }
-            }
-        }
-    }
-}
-```
-
-Three answers rather than the obvious two, because `None` already meant something: the registry
-closed, so **stop the daemon**. A timeout that returned `None` would kill the process instead of
-waking it.
-
 ## Documentation
 
 `docs/` holds the design documents the code argues against — `design-brief.md` for the thesis,
