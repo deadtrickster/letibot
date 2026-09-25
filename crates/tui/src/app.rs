@@ -1459,6 +1459,18 @@ pub struct App {
     /// exists" is a fact an operator should not have to infer from a gap in a
     /// conversation.
     pub orphan_bodies: u64,
+    /// **The counter values this reader has already been shown** — R51 item 17.
+    ///
+    /// The `⚠` on the composer's edge is a pointer at `/status`, and this is what makes it
+    /// dismissible: the mark is drawn while a counter exceeds its value HERE, so reading the screen
+    /// clears it and a counter that moves afterwards brings it back. Zero for a head that has read
+    /// nothing, which is the same state as a fresh head because every counter starts at zero too.
+    ///
+    /// **Not persisted, and it must not be.** The counters are counts of what THIS process
+    /// survived — they start at zero with it and die with it — so an acknowledgement written to
+    /// disk would outlive the numbers it was an acknowledgement OF, and a restarted head would
+    /// come up having already forgiven incidents it has not had.
+    acked: Counters,
     /// Scroll offset from the bottom, in lines. 0 is "following the stream".
     pub scroll: usize,
     /// The composer. `letibot_ui::editor::Editor` — multi-line, with history, a
@@ -2350,6 +2362,7 @@ impl App {
             gaps: 0,
             behind: 0,
             orphan_bodies: 0,
+            acked: Counters::default(),
             scroll: 0,
             editor: Editor::new(),
             model: String::new(),
@@ -6857,6 +6870,20 @@ impl App {
                 self.stats = !self.stats;
                 self.pane_scroll = 0;
                 self.redraw = true;
+                // **Opening the screen IS the acknowledgement** (R51 item 17). The `⚠` on the
+                // composer's edge is a pointer at these numbers, so the act of going to read them
+                // is what clears it — there is no separate key, and there should not be: a second
+                // verb for *I have read it* is a second thing to learn about a mark whose whole
+                // job is to send you here.
+                //
+                // **Only on the way IN.** Closing it acknowledges nothing, and a reader who
+                // opened it by accident and did not look has still not read the numbers — but they
+                // also cannot have missed them, because the screen is the thing they were looking
+                // at. The asymmetry that matters is the one `Counters::exceeds` holds: a counter
+                // that moves AFTER this brings the mark straight back.
+                if self.stats {
+                    self.acknowledge_counters();
+                }
                 None
             }
             "think" | "r" => {
@@ -10956,28 +10983,62 @@ impl App {
     fn todos_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
-        out.push(dim(&self.cfg, "  this session — the model's plan, live:"));
-        if self.todos.is_empty() {
-            out.push(dim(
-                &self.cfg,
-                "    none written yet. The model writes them with todo_write.",
-            ));
-        }
-        for t in &self.todos {
-            // The same three marks and the same three colours the repo's half
-            // uses below, and the jobs pane uses for its own states. Two
-            // vocabularies for one fact is how a head stops being readable.
-            let mark = match t.status {
-                letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
-                letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
-                letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
-            };
-            out.push(format!(
-                "    {} {}",
-                mark.painted(&self.cfg),
-                without_control_lines(&t.content)
-            ));
-        }
+        // **ONE LIST ON THE WIRE, TWO AUTHORS ON THE SCREEN** — R51 item 18, and this is the half
+        // that was wrong.
+        //
+        // `TodoBoard::snapshot` is the UNION — the model's rows first, then the operator's —
+        // because that is what *"the existing getter should return mine and yours"* asks for, and
+        // it is what the model must see. A pane that draws the union under one heading therefore
+        // shows the operator's rows **as the model's plan**: the defect leticl measured and handed
+        // back, which on its head rendered the same row twice with two different authors.
+        //
+        // So each half is drawn once, under its own heading, by the `by` tag the wire already
+        // carries. **The order is the daemon's own** — model first, then the operator's, which is
+        // the order `snapshot` builds — so the screen does not re-sort a list it does not own.
+        let (mine, theirs): (Vec<_>, Vec<_>) = self
+            .todos
+            .iter()
+            .partition(|t| t.by == letibot_sessionlog::event::TodoBy::Model);
+        let mark_of = |t: &letibot_sessionlog::event::TodoEntry| match t.status {
+            letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
+            letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
+            letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
+        };
+        let mut half = |out: &mut Vec<String>, heading: &str, none: &str, rows: &[&letibot_sessionlog::event::TodoEntry]| {
+            let cfg = &self.cfg;
+            out.push(dim(cfg, heading));
+            if rows.is_empty() {
+                out.push(dim(cfg, none));
+            }
+            for t in rows {
+                out.push(format!(
+                    "    {} {}",
+                    mark_of(t).painted(cfg),
+                    without_control_lines(&t.content)
+                ));
+            }
+        };
+        // The model's half, and **its own sentence when it is empty** — which is the common case
+        // for a session whose plan the operator has taken over, and not the same statement as *your
+        // rows are missing*.
+        half(
+            &mut out,
+            "  the model's plan, live:",
+            "    none written yet. The model writes them with todo_write.",
+            &mine,
+        );
+        out.push(String::new());
+        // **The operator's half is NOT read-only, and saying so is the point.** The model may move
+        // a row's state (by quoting its words — there is no id on the wire, and the operator has
+        // ruled out a bump for one); it may not remove the row, because membership and order are
+        // the head's while status is the daemon's.
+        half(
+            &mut out,
+            "  yours — the rows you wrote:",
+            "    none: everything here is the model's, or has not arrived yet. Your own rows \
+             come from this head's store and reach the daemon on attach and on every change.",
+            &theirs,
+        );
         out.push(String::new());
         out.push(dim(
             &self.cfg,
@@ -12257,23 +12318,78 @@ impl App {
         None
     }
 
-    /// The disclosure line: the read mark, what this head suppressed, what the
-    /// daemon will never send, and what it stripped on the way.
+}
+
+/// **The six disclosure counters, as one comparable value** — R51 item 17.
+///
+/// A struct rather than six arguments, because the alarm and its acknowledgement have to agree
+/// about WHICH numbers count, and a list spelled out at two call sites is a list that grows at one.
+/// The doc that used to sit on `alarmed`'s six-term sum already says what each one is; this is the
+/// same six, named once so `exceeds` can be the single definition of *has anything moved*.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counters {
+    dropped: u64,
+    scrubbed: u64,
+    resyncs: u64,
+    unreadable: u64,
+    gaps: u64,
+    orphan_bodies: u64,
+}
+
+impl Counters {
+    /// **Has any counter moved past what was acknowledged** — the alarm's whole question.
     ///
-    /// Ordered by how likely it is to matter, and truncated from the right, because
-    /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
-    /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
-    /// impossible to miss. Anything nonzero is promoted to the front.
-    /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
-    /// border has something to say at all.
+    /// Per counter, so acknowledging is *I have seen `2 resyncs`* and not *stop telling me about
+    /// resyncs*: the third one exceeds the second and the mark returns. A counter that somehow went
+    /// BACKWARDS (a resync that cleared the state) is not news, and an alarm that fired on a
+    /// decrease would be a mark nobody could ever clear.
+    fn exceeds(self, seen: Counters) -> bool {
+        self.dropped > seen.dropped
+            || self.scrubbed > seen.scrubbed
+            || self.resyncs > seen.resyncs
+            || self.unreadable > seen.unreadable
+            || self.gaps > seen.gaps
+            || self.orphan_bodies > seen.orphan_bodies
+    }
+}
+
+impl App {
+    /// True when a §13.2b disclosure counter has moved **past what this reader has been shown**.
+    ///
+    /// R51 item 17: the triangle is a POINTER at `/status`, and reading that screen acknowledges
+    /// it. Without the second half the mark is permanent — the counters are cumulative and start
+    /// at zero with the process, so a head that took two resyncs carried `⚠` for the rest of its
+    /// life while saying nothing new, and the operator asked the only question available:
+    /// *"how to hide that resync counter arrow?"*
+    ///
+    /// **Up to the value that was READ, and not a switch.** A resync *after* the one that was
+    /// acknowledged is a new fact about this head, so the mark comes back — which is what makes
+    /// acknowledging safe rather than a way to turn the alarm off and forget it.
     fn alarmed(&self) -> bool {
-        self.dropped
-            + self.scrubbed
-            + self.resyncs
-            + self.unreadable
-            + self.gaps
-            + self.orphan_bodies
-            > 0
+        self.counters().exceeds(self.acked)
+    }
+
+    /// **This head's six disclosure counters, as one value** — the shape the alarm and its
+    /// acknowledgement both compare, so *"has anything moved"* has one definition.
+    fn counters(&self) -> Counters {
+        Counters {
+            dropped: self.dropped,
+            scrubbed: self.scrubbed,
+            resyncs: self.resyncs,
+            unreadable: self.unreadable,
+            gaps: self.gaps,
+            orphan_bodies: self.orphan_bodies,
+        }
+    }
+
+    /// **The reader has read the numbers; stop pointing at them.**
+    ///
+    /// Called when `/status` opens, and only then: the screen is where the counters are read, so
+    /// the act of reading it is the acknowledgement. Nothing is reset — the screen keeps showing
+    /// the raw values, `/status` still lists them, and a counter that moves again starts the
+    /// conversation over.
+    fn acknowledge_counters(&mut self) {
+        self.acked = self.counters();
     }
 
     /// The alarm line for the **unboxed** composer — the degenerate short-screen
@@ -12303,6 +12419,13 @@ impl App {
     /// because a second colour inside a border reads as damage and this *is*
     /// damage — that was the argument for painting it grey and it was the wrong
     /// way round.
+    /// The disclosure line: the read mark, what this head suppressed, what the
+    /// daemon will never send, and what it stripped on the way.
+    ///
+    /// Ordered by how likely it is to matter, and truncated from the right, because
+    /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
+    /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
+    /// impossible to miss. Anything nonzero is promoted to the front.
     fn status_line(&self, w: usize) -> String {
         if !self.alarmed() {
             return String::new();
@@ -12347,6 +12470,21 @@ impl App {
     fn status_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![p.paint(Role::Strong, "this head"), String::new()];
+        // **The screen says what it just did** (R51 item 17). Opening it acknowledged the alarm,
+        // and a mark that vanishes with nothing said is a mark the reader cannot tell from a bug —
+        // the numbers below are unchanged, which is precisely why the sentence is owed.
+        //
+        // Only when there was something to acknowledge, and only while it is true: on a first read
+        // of a clean head there is nothing to say, and a permanent sentence about a mark that is not
+        // there is the furniture this file keeps deleting.
+        if self.acked != Counters::default() {
+            out.push(dim(
+                &self.cfg,
+                "  the alarm is acknowledged up to the values below — the ⚠ is gone, and any \
+                 counter that moves again brings it back",
+            ));
+            out.push(String::new());
+        }
         let mut row = |k: &str, v: String, why: &str| {
             let head = format!("  {k:<12}");
             out.push(format!(
@@ -20455,6 +20593,16 @@ mod tests {
             !screen.contains("dropped 12"),
             "the numbers are /status's, not the border's: {screen}"
         );
+        // The unboxed composer — no border to pin a triangle to — names them on a
+        // line of its own, read HERE, before the screen below acknowledges the alarm
+        // (R51 item 17; the assertion used to sit after the `/status` read).
+        let border = a.status_line(200);
+        assert!(border.contains("dropped 12"), "{border}");
+        assert!(border.contains("resync 1"), "{border}");
+        assert!(
+            border.contains("/status"),
+            "and says where the rest is: {border}"
+        );
         // …where they keep their names and their counts.
         a.command("status");
         let stats = a.screen(120, 40).join("\n");
@@ -20468,14 +20616,71 @@ mod tests {
             .find(|l| l.contains("resync"))
             .expect("the resync row is on the /status screen");
         assert!(resync_row.contains('1'), "{resync_row}");
-        // The unboxed composer — no border to pin a triangle to — still names
-        // them on a line of its own.
-        let border = a.status_line(200);
-        assert!(border.contains("dropped 12"), "{border}");
-        assert!(border.contains("resync 1"), "{border}");
+
+        // **And READING it acknowledged the alarm** — R51 item 17, in the test that already had
+        // the whole story of one counter arriving. The numbers stay on the screen (asserted
+        // above, after the read), the mark goes, and the screen says what it did.
         assert!(
-            border.contains("/status"),
-            "and says where the rest is: {border}"
+            stats.contains("acknowledged"),
+            "the screen did not say what opening it just did: {stats}"
+        );
+        a.command("status"); // close it again
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            !screen.contains('⚠'),
+            "the mark outlived the reading: {screen}"
+        );
+        assert_eq!(a.status_line(200), "", "nor on the unboxed path");
+
+        // **A counter that moves AFTER the reading is a new fact, and the mark comes back.**
+        // This is the half that makes acknowledging safe rather than a way to switch the alarm
+        // off and forget it.
+        a.apply(ServerFrame::Resync {
+            reason: "queue overflow again".into(),
+            dropped: 3,
+            snapshot: Box::new(hub.snapshot()),
+            scrubbed: Default::default(),
+        });
+        let screen = a.screen(120, 24).join("\n");
+        assert!(
+            screen.contains('⚠'),
+            "a NEW incident did not raise the alarm again: {screen}"
+        );
+    }
+
+    /// **The acknowledgement is per counter and only up to what was read** — R51 item 17's
+    /// *must not differ*, stated as arithmetic rather than through a screen.
+    #[test]
+    fn acknowledging_a_counter_silences_it_only_up_to_the_value_that_was_seen() {
+        let none = Counters::default();
+        // Nothing has moved: no alarm, and reading a clean screen acknowledges nothing.
+        assert!(!none.exceeds(none));
+        // One incident, and the alarm.
+        let one = Counters {
+            resyncs: 1,
+            ..Counters::default()
+        };
+        assert!(one.exceeds(none), "the first resync is news");
+        // Read it: acknowledged, and STILL not news — the second reading of the same number is
+        // what a reader does not need a second time.
+        assert!(!one.exceeds(one));
+        // A resync after the one that was read is a different fact.
+        let two = Counters {
+            resyncs: 2,
+            ..Counters::default()
+        };
+        assert!(two.exceeds(one), "the second resync is news again");
+        // **Per counter, not as a total.** A counter whose value went DOWN is not news — an alarm
+        // that fired on a decrease would be a mark nobody could ever clear — and a DIFFERENT
+        // counter reaching a value this one already has is still its own news.
+        assert!(!none.exceeds(one), "a decrease is not an incident");
+        assert!(
+            Counters {
+                gaps: 1,
+                ..Counters::default()
+            }
+            .exceeds(one),
+            "`1 gap` is not silenced by having read `1 resync`"
         );
     }
 
@@ -21910,6 +22115,112 @@ mod tests {
         assert!(
             screen.contains("/") && screen.contains("["),
             "headings carry a [done/total] cookie: {screen}"
+        );
+    }
+
+    /// **A row is drawn ONCE, under the author that wrote it** — R51 item 18, and the defect it
+    /// records is the one leticl measured and handed back.
+    ///
+    /// The wire's list is the **union** (`TodoBoard::snapshot`: the model's rows, then the
+    /// operator's), because that is what the model has to see. A pane that drew it under one
+    /// heading therefore showed the operator's rows **as the model's plan** — on leticl's head the
+    /// same row appeared twice with two different authors:
+    ///
+    /// ```text
+    /// [x] push leticl to github  — you
+    /// [x] push leticl to github  — model
+    /// ```
+    ///
+    /// a duplicate AND a false author, from one row on the board. This asserts the two halves of
+    /// the fix: each row once, and each under the heading of the half that owns it.
+    #[test]
+    fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
+        use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+        let row = |content: &str, by| TodoEntry {
+            by,
+            content: content.into(),
+            status: TodoStatus::Pending,
+        };
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // The union, in the order the daemon builds it: the model's half first.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TodosUpdated {
+                todos: vec![
+                    row("seat the tool", TodoBy::Model),
+                    row("push leticl to github", TodoBy::Operator),
+                ],
+            },
+        )));
+        a.todos_pane = true;
+        let screen = a.screen(110, 40).join("\n");
+        // **Once each.** The duplicate is the defect, so a count is the assertion.
+        for content in ["seat the tool", "push leticl to github"] {
+            assert_eq!(
+                screen.matches(content).count(),
+                1,
+                "`{content}` is drawn more than once: {screen}"
+            );
+        }
+        // **And each under its own author.** The operator's row must not be inside the model's
+        // plan — which is where it was, because the union went under one heading.
+        let model_head = screen
+            .find("the model's plan")
+            .expect("the model's half is headed");
+        let yours_head = screen
+            .find("yours")
+            .expect("the operator's half is headed");
+        let tool = screen.find("seat the tool").unwrap();
+        let push = screen.find("push leticl to github").unwrap();
+        assert!(
+            model_head < tool && tool < yours_head,
+            "the model's row is not under the model's heading: {screen}"
+        );
+        assert!(
+            yours_head < push,
+            "the operator's row is not under its own heading — it is wearing the model's: {screen}"
+        );
+    }
+
+    /// **An empty half says which half is empty** — the two sentences are not the same statement.
+    ///
+    /// A session whose plan the operator has taken over has no model rows and several of their own;
+    /// one where the model has written a plan has none of theirs. `none written yet` over a list the
+    /// MODEL is supposed to be keeping and over a list the OPERATOR owns are different facts about
+    /// different halves, and this is the split that makes saying so possible.
+    #[test]
+    fn each_half_of_the_board_says_when_it_is_the_empty_one() {
+        use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TodosUpdated {
+                todos: vec![TodoEntry {
+                    by: TodoBy::Operator,
+                    content: "my own row".into(),
+                    status: TodoStatus::Pending,
+                }],
+            },
+        )));
+        a.todos_pane = true;
+        let screen = a.screen(110, 40).join("\n");
+        assert!(
+            screen.contains("none written yet"),
+            "the model's half does not say it is empty: {screen}"
+        );
+        assert!(
+            screen.contains("my own row"),
+            "and the operator's row is still drawn: {screen}"
         );
     }
 
