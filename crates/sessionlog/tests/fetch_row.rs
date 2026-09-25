@@ -319,6 +319,7 @@ fn fetching_does_not_move_the_connection() {
         turn_id: "t2".into(),
         model: "m".into(),
         ledger_head: "0000".into(),
+        began_ms: None,
     });
     match r.read::<ServerFrame>().expect("the live event") {
         ServerFrame::Event(e) => {

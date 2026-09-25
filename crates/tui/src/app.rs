@@ -21461,10 +21461,12 @@ mod tests {
             SessionEvent::TodosUpdated {
                 todos: vec![
                     letibot_sessionlog::event::TodoEntry {
+                        by: letibot_sessionlog::event::TodoBy::Model,
                         content: "seat the tool".into(),
                         status: letibot_sessionlog::event::TodoStatus::Completed,
                     },
                     letibot_sessionlog::event::TodoEntry {
+                        by: letibot_sessionlog::event::TodoBy::Model,
                         content: "render the pane".into(),
                         status: letibot_sessionlog::event::TodoStatus::InProgress,
                     },
@@ -21930,10 +21932,13 @@ mod tests {
             SessionEvent::TodosUpdated {
                 todos: vec![
                     letibot_sessionlog::event::TodoEntry {
+                        by: letibot_sessionlog::event::TodoBy::Model,
                         content: "seated".into(),
                         status: letibot_sessionlog::event::TodoStatus::Completed,
                     },
                     letibot_sessionlog::event::TodoEntry {
+                        // A model's plan, which is also the field's serde default.
+                        by: letibot_sessionlog::event::TodoBy::Model,
                         content: "seating".into(),
                         status: letibot_sessionlog::event::TodoStatus::InProgress,
                     },
@@ -23689,6 +23694,7 @@ mod tests {
             2,
             SessionEvent::TodosUpdated {
                 todos: vec![letibot_sessionlog::event::TodoEntry {
+                    by: letibot_sessionlog::event::TodoBy::Model,
                     content: format!("tidy up{HOSTILE}"),
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                 }],
@@ -28901,6 +28907,9 @@ mod tests {
                 turn_id: "t1".into(),
                 model: "deepseek/deepseek-flash".into(),
                 ledger_head: "0000".into(),
+                // The turn's own start, stamped once per prompt; `None` is a row from a
+                // snapshot, which has no timestamps.
+                began_ms: None,
             },
         )));
         let h = a.header_line(200);
