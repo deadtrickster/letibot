@@ -10499,10 +10499,24 @@ impl App {
             tail.chars().count() + 2
         };
 
+        // **The header is FACTS, and neither half of it is a sentence** (R51 item 10).
+        //
+        // The name used to open with `▌` in the user-accent register, and that glyph is how both
+        // heads say *a person said this* — so on the row the reader crosses on every return to the
+        // field, the session's own name read as somebody's message. The operator: *"the project
+        // directory and session name are pinned in the first row with the same blue bar we use for
+        // my messages. very confusing. just make both gray and remove the bar."*
+        //
+        // **Deleted, not recoloured**: a grey bar is still a bar and still makes the claim. And
+        // the name loses `Strong` as well as the bar — one quiet register for the header, because
+        // the two things on it are the same kind of fact (which session, and where) and a reader
+        // sounding out which half is emphasised learns nothing from either.
+        //
+        // Note the departure this settles: leticl recorded the register as *its* choice against
+        // letibot (`4110e7b`), and the operator is now asking for it here too.
         let mut left = String::new();
-        left.push_str(&p.paint(Role::UserAccent, "▌ "));
-        left.push_str(&p.paint(Role::Strong, &without_control_lines(&name)));
-        let mut left_cols = 2 + visible_width(&name);
+        left.push_str(&p.paint(Role::Faint, &without_control_lines(&name)));
+        let mut left_cols = visible_width(&name);
         // The workspace fills whatever is left, shortened from its *left*: the end
         // of a path is the part that identifies it.
         if !self.wiring.workspace.is_empty() {
@@ -23347,6 +23361,60 @@ mod tests {
         assert!(screen[row2].contains("why did the cache miss"));
     }
 
+    /// **The caret is on the body row even when a row has been added above the box** — R51
+    /// item 11, and the order constraint it exists as.
+    ///
+    /// leticl broke this by adding a status row: the box moved down from row 0 to row 1 and the
+    /// body from 1 to 2, and the caret — *the one consumer that computes against the composer's
+    /// rows WITHOUT composing them* — stayed where it was. The operator, one keystroke later:
+    /// *"hmm cursor now goes above the text i type lol."*
+    ///
+    /// **This head computes it from one notion rather than a `+1` per call site** — the caret's
+    /// offset is `chrome.len() + caret_row`, read *after* every row above the box has been pushed —
+    /// and this test is what holds that property: it asserts the status row, the box's top edge and
+    /// the body row are three consecutive rows, in that order, with the caret on the third.
+    ///
+    /// It exists because cluster 1 of this port DID add a row above the box (the turn's status),
+    /// which is exactly the change that broke it on the other head.
+    #[test]
+    fn the_caret_is_on_the_body_row_with_a_status_row_above_the_box() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "t1".into(),
+                model: "m".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
+        let screen = a.screen(100, 30);
+        let (row, _) = a.cursor().expect("a composer always has a caret");
+        // The premise, and it is the whole point of the test: the extra row IS above the box.
+        assert!(
+            screen[row - 2].contains("Responding"),
+            "the premise: the status row is up there: {:?}",
+            screen[row - 2]
+        );
+        assert!(
+            screen[row - 1].contains('╭'),
+            "and the box's top edge is between it and the body: {:?}",
+            screen[row - 1]
+        );
+        assert!(
+            screen[row].contains('│'),
+            "the caret is on the body row, between the walls: {:?}",
+            screen[row]
+        );
+        assert!(
+            screen[row + 1].contains('╰'),
+            "and the bottom edge is below it: {:?}",
+            screen[row + 1]
+        );
+    }
+
     #[test]
     fn the_facts_and_the_keys_are_on_their_own_rows_not_in_the_field() {
         let mut a = app();
@@ -28767,6 +28835,59 @@ mod tests {
                 .any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
             "an epoch rendered as a duration: {line}"
         );
+    }
+
+    /// **The header is facts: no accent bar, no emphasis, both halves in one quiet register** —
+    /// R51 item 10, and it SETTLES a deliberate divergence rather than adding a preference.
+    ///
+    /// leticl recorded this as its own choice against letibot (`4110e7b`: *"This DEPARTS from
+    /// letibot, whose `header_line` paints the bar `UserAccent` and the title `Strong`"*). The
+    /// operator is now asking for it here too, so the divergence goes in favour of the new register.
+    ///
+    /// **`▌` in the user-accent register is how both heads say *a person said this*.** On the row
+    /// the reader crosses on every return to the field, it made the session's own name read as
+    /// somebody's sentence — the operator: *"the project directory and session name are pinned in the
+    /// first row with the same blue bar we use for my messages. very confusing. just make both gray
+    /// and remove the bar."*
+    ///
+    /// Asserted on the ESCAPES, because the words are identical either way and the register is the
+    /// whole of what changed: the row must carry the faint code and neither the bold nor the accent.
+    #[test]
+    fn the_header_has_no_bar_and_no_emphasis() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        let screen = a.screen(100, 24);
+        let head = screen
+            .iter()
+            .find(|l| l.contains("▌") || l.contains("one"))
+            .expect("the header is drawn");
+        // **The bar is DELETED, not recoloured** — a grey bar is still a bar and still claims a
+        // person said this. The glyph is what says it; the register only underlines it.
+        assert!(
+            !head.contains('▌'),
+            "the header still opens with the user accent bar: {head:?}"
+        );
+        // And nothing on the row is emphasised or accented.
+        assert!(
+            !head.contains(sgr::BOLD),
+            "the name is still bold: {head:?}"
+        );
+        assert!(
+            !head.contains("\x1b[34m"),
+            "something is still in the user-accent register: {head:?}"
+        );
+        assert!(
+            head.contains("\x1b[2m"),
+            "the header is not in the quiet register at all: {head:?}"
+        );
+        // The name is still *there* — this is a register change and not a deletion of the row.
+        assert!(head.contains("one"), "the session name went with the bar: {head:?}");
     }
 
     #[test]

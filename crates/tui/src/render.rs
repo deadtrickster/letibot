@@ -372,10 +372,17 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             // language we are not colouring is honest, and inventing one we are is not.
             // A *recognised* one is named by the grammar that actually ran, so the
             // header cannot claim TypeScript over a fence that was parsed as TSX.
+            //
+            // **And a fence the model did not label gets NO label at all** (R51 item 12).
+            // It used to say `code`, which is the head inventing a word the author never
+            // wrote — the same defect as the arm above, one step further. Every other head
+            // surveyed names a language it is not colouring; none of them manufactures one.
+            // The frame is still drawn, so a bare block is visibly a block: `┌─` and `└─`
+            // with nothing between them but the code.
             let head = match paint.language() {
                 Some(l) => format!("┌─ {}", l.name()),
                 None if !lang.is_empty() => format!("┌─ {lang}"),
-                None => "┌─ code".to_string(),
+                None => "┌─".to_string(),
             };
             out.push(cfg.c(FRAME, &head));
             for l in painted {
@@ -1635,12 +1642,15 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
 
     /// The language in the info string is what gets coloured, and nothing else is.
     ///
-    /// A fence that names no language renders `┌─ code` and its body plain, because there
-    /// is nothing to colour with: `StreamingCode` needs a language, and guessing one from
-    /// the shape of the text is the kind of invention a head should not do. The operator
-    /// read that as "colourisation is gone" (2026-09-20) while looking at a message whose
-    /// illustrative fences were bare; this test is here so the next reader can tell the
-    /// difference between a plain block and a broken painter in one line.
+    /// A fence that names no language renders its frame with no label and its body plain, because
+    /// there is nothing to colour with: `StreamingCode` needs a language, and guessing one from
+    /// the shape of the text is the kind of invention a head should not do. The operator read that
+    /// as "colourisation is gone" (2026-09-20) while looking at a message whose illustrative
+    /// fences were bare; this test is here so the next reader can tell the difference between a
+    /// plain block and a broken painter in one line.
+    ///
+    /// **And the rule carries no label either** (R51 item 12): it was `┌─ code` until the operator
+    /// asked for the word to go — the label is the same invention the colouring would have been.
     ///
     /// The *content* being a fence does not make it a fence: inside a four-backtick block
     /// the line ```rust is the bytes a model wrote about a fence.
@@ -1656,11 +1666,17 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
 
         let bare = lex("```\nfn main() {}\n```\n");
         let out = render_block(&bare[0], &cfg()).join("\n");
-        assert!(out.contains("┌─ code"), "{out:?}");
+        // **The frame, with no label in it** (R51 item 12): `┌─` and not `┌─ code`, because the
+        // model never wrote the word and a head that writes it is inventing a language.
+        assert!(!out.contains("┌─ code"), "invented a label: {out:?}");
+        assert!(out.contains("┌─"), "the frame is drawn: {out:?}");
         assert!(!out.contains(sgr::MAGENTA), "invented a language: {out:?}");
         assert!(!out.contains(sgr::GREEN), "invented a language: {out:?}");
-        // The frame is still drawn, so a bare block is visibly a code block.
-        assert!(out.contains("┌─ ") && out.contains("└─"), "{out:?}");
+        // The frame is still drawn, so a bare block is visibly a code block — and **the rule
+        // carries nothing else**, which is `┌─ ` absent: no label follows the frame, however it is
+        // painted.
+        assert!(!out.contains("┌─ "), "a label follows the frame: {out:?}");
+        assert!(out.contains("└─"), "{out:?}");
 
         // A four-backtick block holding a three-backtick fence. **This is the case where
         // the fence's own length is the author's signal**, and the two cases want opposite
@@ -1677,17 +1693,15 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         let quoted = lex("````\n```rust\nlet a = 1;\n```\n````\n");
         assert_eq!(quoted.len(), 1, "{quoted:#?}");
         let out = render_block(&quoted[0], &cfg()).join("\n");
-        assert!(out.contains("┌─ code"), "{out:?}");
-        assert!(
-            !out.contains("┌─ rust"),
-            "the inner fence was interpreted: {out:?}"
-        );
+        // The outer fence is bare, so its rule carries no label (item 12) — and the point of the
+        // assertion is that the inner fence was NOT interpreted, which `┌─ rust` would prove.
+        assert!(!out.contains("┌─ rust"), "the inner fence was interpreted: {out:?}");
         // Not one byte of the demonstration was eaten.
         for line in ["```rust", "let a = 1;", "```"] {
             assert!(out.contains(line), "{line:?} is missing from {out:?}");
         }
         // No box inside the box: one frame, not two.
-        assert_eq!(out.matches("┌─ ").count(), 1, "{out:?}");
+        assert_eq!(out.matches("┌─").count(), 1, "{out:?}");
         assert_eq!(out.matches("└─").count(), 1, "{out:?}");
 
         // The outer fence can name the language being demonstrated, and then the *label*
@@ -1805,13 +1819,21 @@ mod code_fences_are_coloured_by_rano {
         assert_eq!(strip(&out), "┌─ brainfuck\n│ +[->+<]\n└─", "{out:?}");
     }
 
-    /// A bare fence is `┌─ code`, plain — the rule the operator mistook for broken
-    /// colouring, now that the engine behind it is a grammar rather than a word list.
+    /// A fence that names no language renders a rule with **no label in it** — `┌─` and `└─`,
+    /// the frame the reader needs and nothing the author did not write.
+    ///
+    /// It used to say `┌─ code`, and the operator asked for the label to go (`3c5540d` in leticl,
+    /// R51 item 12): a fence the model did not label is a fence whose language is unknown, and
+    /// `code` in the rule is the head inventing a label. **This test used to assert the opposite**
+    /// and is the reason the brief's uncertainty — *"it may already be right"* — was worth
+    /// checking rather than porting: the old behaviour was pinned here, so a grep for the
+    /// behaviour found a test that agreed with it.
     #[test]
-    fn a_bare_fence_is_named_code_and_left_plain() {
+    fn a_bare_fence_draws_a_rule_with_no_label_in_it() {
         let out = painted("", "fn main() {}\n");
-        assert!(out.contains("┌─ code"), "{out:?}");
-        assert_eq!(strip(&out), "┌─ code\n│ fn main() {}\n└─", "{out:?}");
+        assert!(out.contains("┌─"), "the frame is drawn: {out:?}");
+        assert!(!out.contains("code"), "a label was invented: {out:?}");
+        assert_eq!(strip(&out), "┌─\n│ fn main() {}\n└─", "{out:?}");
     }
 
     /// **Structure rather than shape.** These are the cases the hand-written lexer got
