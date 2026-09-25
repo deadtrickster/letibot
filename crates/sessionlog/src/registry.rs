@@ -1195,6 +1195,11 @@ mod tests {
         );
     }
 
+    /// **THE OPERATOR'S RULING, 2026-09-25, IS THIS TEST: *"yes whole messages queue is dequeued in
+    /// one go."*** Alice queues `alice one`, then `alice two`, then recalls: **both** go, in one
+    /// take-back, because the head put both back in the composer in one press — the queue drains as
+    /// a unit and never a message at a time. What the `↑` could not have taken is anything that
+    /// arrives *behind* the withdraw, which is the next test.
     #[test]
     fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
         let r = reg();

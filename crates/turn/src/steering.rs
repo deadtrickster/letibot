@@ -204,6 +204,31 @@ impl Pending {
             return Some(u);
         }
         if source.try_withdraw() {
+            // **The whole held operator run, in one go** — the engine's half of the take-back, and
+            // the half that satisfies the operator's ruling (*"yes whole messages queue is
+            // dequeued in one go"*, 2026-09-25). The hub drops the prompts that have not reached
+            // this poll yet; this drops the ones that have.
+            //
+            // **Two edges, and the order of the two statements here is what holds the second.**
+            //
+            // * **The corrected resend survives, and not by accident.** The operator recalls,
+            //   edits, and sends; that resend can be sitting in the hub when this very call runs.
+            //   It is not dropped because the `retain` runs *before* the drain below: the resend
+            //   is still in the source, and what this drops is the run that was already held.
+            //   Reverse the two and a take-back eats the operator's edit — the same class of
+            //   defect `56151c1` measured on the hub's half, where the resend it ate had never
+            //   been in the queue the operator took back.
+            // * **A notice is never dropped.** `from_operator: false` is the harness's own words
+            //   or a fired monitor, and they stand alone.
+            //
+            // **What this does NOT have is a head.** The take-back that reaches here says only
+            // *a* head asked; the held run it drops is every operator line in the queue, whoever
+            // sent it (`HubSteering::try_next` throws `QueuedCommand::head_id` away when it makes
+            // the message, and the merge below is by `from_operator`, not by author). One head's
+            // `↑` therefore takes a second head's held words with it, and two heads' consecutive
+            // prompts land as one user turn. Filed in the parity document as a finding, not fixed
+            // here: it wants an author on `SteeringMessage`, which is a change to this type's
+            // shape rather than to this rule.
             self.queued.retain(|m| !m.from_operator);
         }
         while let Some(m) = source.try_next() {

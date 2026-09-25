@@ -1302,10 +1302,28 @@ impl Hub {
     /// [`Self::try_steering_command`], and scoped to the head that asked, so one
     /// head's recall never takes another head's queued prompt.
     ///
-    /// **And scoped to the queue as it stood, not to the head.** *"Still-queued"* is
-    /// positional: the recall names the prefix that was in front of it, and a prompt
-    /// the operator sent afterwards is the corrected copy they just re-submitted —
-    /// never something they asked to take back. See the body for the measurement.
+    /// **And it takes the head's whole queue, in one go.** The operator ruled it, 2026-09-25: *"yes
+    /// whole messages queue is dequeued in one go"* — and the `↑` they were describing is exactly
+    /// this: the head recalls **every** line it is holding above the composer into the composer in
+    /// one press (the head's own `submit` merges the run into a single echo behind a running
+    /// turn, so what the operator sees as *the queue* is one entry with N lines). So the daemon drops every
+    /// queued prompt of that head, not one of them, and not the oldest alone.
+    ///
+    /// **"Every prompt of that head that was here when it asked" — which is the same sentence.**
+    /// The rule is positional (`0..at`, the prefix in front of the withdraw frame) and that is not
+    /// a narrowing: the head submits each line **as it is typed**, so everything in its queue at
+    /// recall time is already in front of the withdraw on the socket, and everything behind it
+    /// arrived after — the copy the operator re-sent from the composer, which was never in the
+    /// queue they took back and must not be dropped with it. Both halves matter, and the second is
+    /// measured: dropping a head's whole run *regardless of when it arrived* is what this function
+    /// did before `56151c1`, and on the operator's own session it ate the corrected resend
+    /// (`lol, it is a bag` → `↑` → `lol, it is a bug`, the resend never landing) while the head sat
+    /// drawing `queued` over a sentence the conversation had never seen.
+    ///
+    /// **The frame already says this**, and needs no field to say it: `WithdrawPrompts` carries no
+    /// payload naming prompts, and arrival order is the payload. Read the body for where the other
+    /// half of the take-back lives, which is `Pending::absorb`'s `retain` — and read *that* one for
+    /// the head it does not name.
     pub fn try_withdraw_command(&self) -> bool {
         let mut g = self.lock();
         let Some(at) = (0..g.commands.len())
@@ -1317,21 +1335,16 @@ impl Hub {
             .commands
             .remove(at)
             .expect("the index was just found in this deque");
-        // **ONLY THE PROMPTS THAT WERE QUEUED WHEN THE OPERATOR PRESSED UP — the
-        // prefix, `0..at`.**
+        // **THE WHOLE OF THE HEAD'S QUEUE AS IT STOOD — the prefix, `0..at`.** Read the docstring
+        // for the ruling this satisfies (**two** queued lines are both taken, in one go) and for
+        // the measurement that fixes the other edge (`56151c1`: a resend that arrives after the
+        // withdraw is the operator's corrected copy and survives, because it was never in the
+        // queue they took back).
         //
-        // *"Still-queued"* is the whole content of the rule, and it is positional: a
-        // prompt sitting here at the moment of the recall is one the operator meant to
-        // take back, and a prompt submitted AFTER it is the corrected copy they just
-        // sent — or a new message entirely. The two travel on one socket in the order
-        // they were typed, so *after the withdraw* is exactly *not named by it*.
-        //
-        // Dropping the whole head's prompts is not a small overreach: the operator
-        // gets no frame saying their message was thrown away, so the head goes on
-        // drawing `queued` for a row that is never coming. **Measured on the
-        // operator's own session** — they queued `lol, it is a bag`, pressed Up to fix
-        // the typo, and sent `lol, it is a bug`; the corrected copy never became a
-        // transcript row, while the two messages sent after it did.
+        // The two facts that make the positional rule the whole-queue rule, both checked in the
+        // head rather than assumed here: `submit` sends each line the moment Enter is pressed
+        // (`Action::Prompt`, one socket, in order), and nothing re-sends a held line later — the
+        // only thing that can arrive behind this withdraw is something typed *after* the recall.
         let mut kept = VecDeque::with_capacity(g.commands.len());
         for (i, c) in g.commands.drain(..).enumerate() {
             let named =
