@@ -212,6 +212,18 @@ use crate::view::Snapshot;
 /// into the same state, and the mode store already has one.
 /// # 19: a head can take back what it queued
 ///
+/// **[`ClientFrame::SetOperatorTodos`] is a new client frame, so this IS a bump.** The precedent it
+/// follows is `WithdrawPrompts` below: an added, DEFAULTED FIELD on an existing struct needs no
+/// version (a head that does not read it sees what it always did), while a new FRAME does — an older
+/// daemon cannot deserialise it at all, and because `ClientFrame` is internally tagged that failure
+/// takes the whole connection rather than one frame.
+///
+/// MEASURED before the bump: with both sides at 25, the new head's first `set_operator_todos`
+/// reached an old daemon, failed the deserializer, and closed the socket — which the daemon says in
+/// a sentence (*"this connection sent a frame this daemon could not read … restart the daemon"*) and
+/// which would have happened on EVERY todo the operator added. At 26 the same combination is refused
+/// once, at ATTACH, naming both numbers.
+///
 /// [`ClientFrame::WithdrawPrompts`] is a new client frame, so a version-18
 /// daemon would fail to parse it — the version-4 argument, and the same
 /// ATTACH-time refusal. It exists because the queue it names is real: a prompt
@@ -276,7 +288,7 @@ use crate::view::Snapshot;
 /// **This version is also where the signpost learned about `ServerFrame`.** The check that every
 /// frame is accounted for covered the two directions that already existed and not the third, so
 /// a new server frame broke an old head with nothing asking about it — found by adding one.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1433,6 +1445,7 @@ mod tests {
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
                 | ClientFrame::SetOperatorTodos { .. }
+                | ClientFrame::SetOperatorTodos { .. }
                 | ClientFrame::WithdrawPrompts { .. } => {}
             }
         }
@@ -1502,8 +1515,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 25,
-            "the match above was last reconciled with the frame list at 25"
+            PROTOCOL_VERSION, 26,
+            "the match above was last reconciled with the frame list at 26 — bumped for \
+             `SetOperatorTodos`, a NEW frame (which an old daemon cannot read at all), as opposed \
+             to an added defaulted field, which is the case that needs no bump"
         );
     }
 
