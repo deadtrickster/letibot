@@ -14,7 +14,7 @@
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
-use letibot_tokencore::store::{SessionRecord, Store, TodoItem, TodoStatus};
+use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoStatus};
 
 const WANTED: Dialect = Dialect::Qwen;
 
@@ -64,14 +64,17 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
                 TodoItem {
                     content: "read the harness".into(),
                     status: TodoStatus::Completed,
+                    by: TodoBy::Model,
                 },
                 TodoItem {
                     content: "seat the tool".into(),
                     status: TodoStatus::InProgress,
+                    by: TodoBy::Model,
                 },
                 TodoItem {
                     content: "render the pane".into(),
                     status: TodoStatus::Pending,
+                    by: TodoBy::Model,
                 },
             ],
         )
