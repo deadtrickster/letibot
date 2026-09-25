@@ -4048,6 +4048,18 @@ impl<'a> Harness<'a> {
     /// path the model's do, with no second mechanism.
     pub fn set_operator_todos(&mut self, items: Vec<letibot_tokencore::store::TodoItem>) {
         self.todos.set_operator(items);
+        // **AND PERSIST IT AND TELL EVERY HEAD, which is the half the version bump alone does not
+        // do.** `flush_todos` is version-gated and runs at every TURN BOUNDARY — so on a session
+        // where no turn ever runs again, the operator's rows would sit on the board unpublished and
+        // unwritten, and `Sessions::dispatch` is the one place that can flush them at the moment they
+        // arrive. MEASURED as an omission by reading the path rather than by watching it fail: the
+        // bump makes `flush_todos` willing, and nothing made it happen.
+        //
+        // The row does not reach the model's TOOL REPLY — that is `todo`'s own — so nothing here is
+        // a turn.
+        if let Err(e) = self.flush_todos() {
+            eprintln!("  todos: could not publish the operator's row: {e}");
+        }
     }
 
     pub fn nag_notice(&self) -> Option<String> {
